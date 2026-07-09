@@ -19,13 +19,14 @@ storage design; no fallback needed yet.
 ## Gotchas (all handled in-repo)
 
 1. **lbug 0.18.0 ships a prebuilt `liblbug.a` but omits its OpenSSL link
-   directives** (fixed upstream post-0.18.0). Workaround: `-lssl -lcrypto` +
-   Homebrew search path in `.cargo/config.toml` rustflags. Drop when a newer
-   lbug releases. Requires `brew install openssl@3 pkg-config`.
+   directives** (fixed upstream post-0.18.0). Workaround: `RUSTFLAGS` in
+   `mise.toml` `[env]`, with the lib dir resolved via
+   `pkg-config --variable=libdir openssl` so any OpenSSL source works (nix,
+   Homebrew, …). Drop when a newer lbug releases.
 2. **Extensions dlopen against host-exported symbols.** Static linking needs
    `-Wl,-export_dynamic` (macOS spelling of `-rdynamic`) or `LOAD EXTENSION`
-   fails with `symbol not found in flat namespace`. Also in `.cargo/config.toml`;
-   also emitted by the fixed upstream build script.
+   fails with `symbol not found in flat namespace`. Also in the mise
+   `RUSTFLAGS`; also emitted by the fixed upstream build script.
 3. `INSTALL X; LOAD X;` as one multi-statement `query()` call does not load the
    extension — issue `INSTALL FTS` and `LOAD EXTENSION FTS` as separate calls.
 4. `INSTALL` downloads the extension (network) into `~/.lbdb/extension/<ver>/`;

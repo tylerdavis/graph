@@ -1,14 +1,21 @@
 # System dependencies and task runner for graph-cli.
 # https://mise.jdx.dev
 #
-# openssl@3 is not managed here — install it with `brew install openssl@3`;
-# the link flags live in .cargo/config.toml (see crates/graph-store/SPIKE.md,
-# temporary until lbug > 0.18.0).
+# openssl itself is not managed here — any source works (nix, homebrew, ...)
+# as long as `pkg-config --variable=libdir openssl` resolves.
 
 [tools]
 rust = "1.94"
 cmake = "4"
 pkg-config = "latest"
+
+[env]
+# lbug 0.18's prebuilt liblbug.a needs OpenSSL but its build script emits no
+# link directives (fixed upstream post-0.18.0), and its dlopen'd extensions
+# (FTS, VECTOR) need host-exported symbols. Resolve the OpenSSL lib dir via
+# pkg-config so the flags are independent of where openssl is installed.
+# Drop this when lbug > 0.18.0 ships. Details: crates/graph-store/SPIKE.md.
+RUSTFLAGS = "-L{{ exec(command='pkg-config --variable=libdir openssl') }} -lssl -lcrypto -Clink-arg=-Wl,-export_dynamic"
 
 [tasks.build]
 description = "Build the whole workspace"

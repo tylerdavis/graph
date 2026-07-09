@@ -33,10 +33,10 @@ standalone, single-user CLI:
 ## Building (macOS)
 
 Tooling (Rust, cmake, pkg-config) and tasks are managed with
-[mise](https://mise.jdx.dev); OpenSSL comes from Homebrew:
+[mise](https://mise.jdx.dev). OpenSSL can come from anywhere (nix, Homebrew,
+…) as long as `pkg-config` can resolve it:
 
 ```nu
-brew install openssl@3
 mise trust
 mise install
 mise run build
@@ -45,8 +45,10 @@ mise run build
 Common tasks: `mise run test`, `mise run test:spike`, `mise run lint`,
 `mise run run -- config show`.
 
-`lbug` 0.18 needs the OpenSSL link flags in `.cargo/config.toml` (see
-`crates/graph-store/SPIKE.md` for why; temporary until the next lbug release).
+`lbug` 0.18 needs OpenSSL link flags that its build script forgot to emit;
+mise's `[env]` sets `RUSTFLAGS` with the pkg-config-resolved lib dir (see
+`crates/graph-store/SPIKE.md`; temporary until the next lbug release). Plain
+`cargo build` outside a mise-activated shell will fail at link time.
 
 ## Status
 
