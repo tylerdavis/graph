@@ -46,3 +46,36 @@ pub trait ToolRegistry: Send + Sync {
     /// Invoke a tool by its namespaced name.
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError>;
 }
+
+/// Merge several registries into one catalog. Invocation tries each in
+/// order; `Unknown` falls through to the next.
+pub struct CompositeRegistry {
+    registries: Vec<std::sync::Arc<dyn ToolRegistry>>,
+}
+
+impl CompositeRegistry {
+    pub fn new(registries: Vec<std::sync::Arc<dyn ToolRegistry>>) -> Self {
+        Self { registries }
+    }
+}
+
+#[async_trait]
+impl ToolRegistry for CompositeRegistry {
+    async fn tools(&self) -> Result<Vec<ToolDef>, ToolError> {
+        let mut all = Vec::new();
+        for registry in &self.registries {
+            all.extend(registry.tools().await?);
+        }
+        Ok(all)
+    }
+
+    async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
+        for registry in &self.registries {
+            match registry.invoke(name, input.clone()).await {
+                Err(ToolError::Unknown(_)) => continue,
+                other => return other,
+            }
+        }
+        Err(ToolError::Unknown(name.to_string()))
+    }
+}

@@ -78,7 +78,7 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         std::process::exit(EXIT_NEEDS_INPUT);
     }
 
-    let store = runtime.store()?;
+    let handles = runtime.store_handles()?;
     // Non-JSON runs stream the solver's answer to stdout as it generates;
     // --json buffers and emits the envelope instead.
     let events: Arc<dyn graph_core::EventSink> = if json {
@@ -86,7 +86,7 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
     } else {
         Arc::new(TtySink::for_plan_run())
     };
-    let pipeline = runtime.pipeline(store, events).await?;
+    let pipeline = runtime.pipeline(&handles, events).await?;
     let query = format!("Run the '{}' plan", doc.name);
     let finish = doc.finish();
     let result = pipeline

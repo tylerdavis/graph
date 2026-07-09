@@ -372,3 +372,71 @@ impl Store for GraphStore {
             .collect()
     }
 }
+
+// ── Cypher access for user-defined tools ─────────────────────────────────
+
+fn db_value_to_json(value: &DbValue) -> Value {
+    match value {
+        DbValue::Null(_) => Value::Null,
+        DbValue::Bool(b) => Value::Bool(*b),
+        DbValue::Int64(n) => Value::from(*n),
+        DbValue::Int32(n) => Value::from(*n),
+        DbValue::Int16(n) => Value::from(*n),
+        DbValue::Int8(n) => Value::from(*n),
+        DbValue::UInt64(n) => Value::from(*n),
+        DbValue::UInt32(n) => Value::from(*n),
+        DbValue::UInt16(n) => Value::from(*n),
+        DbValue::UInt8(n) => Value::from(*n),
+        DbValue::Double(f) => Value::from(*f),
+        DbValue::Float(f) => Value::from(*f as f64),
+        DbValue::String(s) => Value::String(s.clone()),
+        DbValue::Json(v) => v.clone(),
+        other => Value::String(other.to_string()),
+    }
+}
+
+fn json_to_db_value(value: &Value) -> Result<DbValue, String> {
+    Ok(match value {
+        Value::String(s) => DbValue::String(s.clone()),
+        Value::Bool(b) => DbValue::Bool(*b),
+        Value::Number(n) if n.is_i64() => DbValue::Int64(n.as_i64().unwrap()),
+        Value::Number(n) => DbValue::Double(n.as_f64().unwrap_or_default()),
+        other => return Err(format!("unsupported cypher parameter type: {other}")),
+    })
+}
+
+#[async_trait::async_trait]
+impl graph_core::user_tools::CypherExecutor for GraphStore {
+    async fn query(
+        &self,
+        cypher: &str,
+        params: Vec<(String, Value)>,
+    ) -> Result<Vec<serde_json::Map<String, Value>>, graph_core::ToolError> {
+        let cypher = cypher.to_string();
+        let bound: Vec<(String, DbValue)> = params
+            .iter()
+            .map(|(k, v)| json_to_db_value(v).map(|db| (k.clone(), db)))
+            .collect::<Result<_, String>>()
+            .map_err(graph_core::ToolError::Transport)?;
+        self.exec(move |conn| {
+            let mut stmt = conn.prepare(&cypher)?;
+            let bound_refs: Vec<(&str, DbValue)> =
+                bound.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+            let result = conn.execute(&mut stmt, bound_refs)?;
+            let columns = result.get_column_names();
+            let rows = result
+                .into_iter()
+                .map(|row| {
+                    columns
+                        .iter()
+                        .cloned()
+                        .zip(row.iter().map(db_value_to_json))
+                        .collect::<serde_json::Map<String, Value>>()
+                })
+                .collect();
+            Ok(rows)
+        })
+        .await
+        .map_err(|e| graph_core::ToolError::Transport(e.to_string()))
+    }
+}
