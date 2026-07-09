@@ -8,12 +8,14 @@ pub async fn run(command: McpCommand) -> Result<()> {
     let loaded = graph_config::load()?;
     let manager = McpManager::new(loaded.config.mcp.clone());
 
-    match command {
+    let result = match command {
         McpCommand::List => list(&loaded.config),
         McpCommand::Tools { server } => tools(&manager, server).await,
         McpCommand::Test { server } => test(&manager, &server).await,
         McpCommand::Probe { .. } => bail!("probe lands with the shape cache (phase 4)"),
-    }
+    };
+    manager.shutdown().await;
+    result
 }
 
 fn list(config: &graph_config::Config) -> Result<()> {

@@ -7,6 +7,12 @@ use graph_core::ToolRegistry;
 
 pub async fn run(command: ToolsCommand) -> Result<()> {
     let runtime = Runtime::init()?;
+    let result = dispatch(&runtime, command).await;
+    runtime.shutdown().await;
+    result
+}
+
+async fn dispatch(runtime: &Runtime, command: ToolsCommand) -> Result<()> {
     match command {
         ToolsCommand::List => {
             let defs = runtime.registry.tools().await?;

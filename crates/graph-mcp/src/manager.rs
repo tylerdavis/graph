@@ -63,6 +63,23 @@ impl McpManager {
     fn split(name: &str) -> Option<(&str, &str)> {
         name.split_once(NAMESPACE_SEPARATOR)
     }
+
+    /// Gracefully close every live connection, killing stdio child processes.
+    ///
+    /// Must be called before the tokio runtime shuts down: rmcp kills
+    /// children from an async Drop that spawns a task, which never runs if
+    /// the runtime is already tearing down — leaving orphaned servers
+    /// attached to the user's terminal.
+    pub async fn shutdown(&self) {
+        for handle in self.servers.values() {
+            let connection = handle.connection.lock().await.take();
+            if let Some(connection) = connection {
+                if let Err(e) = connection.client.cancel().await {
+                    tracing::debug!(server = handle.name, error = %e, "mcp shutdown");
+                }
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -145,13 +162,21 @@ impl ServerHandle {
         let info = client_info();
         let client: Client = if let Some(command) = &self.config.command {
             let cmd = tokio::process::Command::new(command);
-            let transport = TokioChildProcess::new(cmd.configure(|cmd| {
+            let configured = cmd.configure(|cmd| {
                 cmd.args(&self.config.args);
                 for (key, value) in &self.config.env {
                     cmd.env(key, value);
                 }
-            }))
-            .map_err(|e| ToolError::Transport(format!("spawn '{command}': {e}")))?;
+                // Backstop: kill the server on abnormal exits (graceful
+                // shutdown goes through McpManager::shutdown → cancel()).
+                cmd.kill_on_drop(true);
+            });
+            // Keep the server's stderr off the user's terminal — rmcp's
+            // spawn overrides whatever the Command itself sets.
+            let (transport, _stderr) = TokioChildProcess::builder(configured)
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|e| ToolError::Transport(format!("spawn '{command}': {e}")))?;
             info.serve(transport)
                 .await
                 .map_err(|e| ToolError::Transport(e.to_string()))?

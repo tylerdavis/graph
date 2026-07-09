@@ -32,7 +32,9 @@ pub async fn run(args: AskArgs) -> Result<()> {
     let agent = runtime.agent(events)?;
 
     let mut messages = vec![ChatMessage::User { content: message }];
-    let outcome = agent.run_turn(&mut messages).await?;
+    let result = agent.run_turn(&mut messages).await;
+    runtime.shutdown().await;
+    let outcome = result?;
 
     if args.json {
         let envelope = serde_json::json!({

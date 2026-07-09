@@ -51,9 +51,13 @@ pub async fn run(thread: Option<String>, r#continue: bool) -> Result<()> {
             }
             Ok(Signal::CtrlC) => continue,
             Ok(Signal::CtrlD) => break,
-            Err(e) => bail!("readline failed: {e}"),
+            Err(e) => {
+                runtime.shutdown().await;
+                bail!("readline failed: {e}");
+            }
         }
     }
+    runtime.shutdown().await;
     Ok(())
 }
 

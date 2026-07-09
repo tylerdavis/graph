@@ -24,6 +24,13 @@ impl Runtime {
         })
     }
 
+    /// Gracefully close MCP connections. Call before returning from a
+    /// command; skipping it orphans stdio MCP servers (their async-Drop
+    /// cleanup never runs once the tokio runtime starts shutting down).
+    pub async fn shutdown(&self) {
+        self.registry.shutdown().await;
+    }
+
     pub fn agent(&self, events: Arc<dyn EventSink>) -> Result<Agent> {
         let (provider, choice) = self
             .router
