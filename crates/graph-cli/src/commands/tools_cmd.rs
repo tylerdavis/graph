@@ -7,15 +7,22 @@ use graph_core::ToolRegistry;
 
 pub async fn run(command: ToolsCommand) -> Result<()> {
     let runtime = Runtime::init()?;
-    let result = dispatch(&runtime, command).await;
+    let store = runtime.store()?;
+    let toolbox = runtime
+        .toolbox(store, std::sync::Arc::new(graph_core::NullSink))
+        .await?;
+    let result = dispatch(toolbox.as_ref(), command).await;
     runtime.shutdown().await;
     result
 }
 
-async fn dispatch(runtime: &Runtime, command: ToolsCommand) -> Result<()> {
+async fn dispatch(
+    registry: &(dyn ToolRegistry + Send + Sync),
+    command: ToolsCommand,
+) -> Result<()> {
     match command {
         ToolsCommand::List => {
-            let defs = runtime.registry.tools().await?;
+            let defs = registry.tools().await?;
             if defs.is_empty() {
                 println!("no tools available — configure [mcp.*] servers");
                 return Ok(());
@@ -26,7 +33,7 @@ async fn dispatch(runtime: &Runtime, command: ToolsCommand) -> Result<()> {
             Ok(())
         }
         ToolsCommand::Show { name } => {
-            let defs = runtime.registry.tools().await?;
+            let defs = registry.tools().await?;
             let Some(def) = defs.into_iter().find(|d| d.name == name) else {
                 bail!("unknown tool: {name}");
             };
@@ -45,7 +52,7 @@ async fn dispatch(runtime: &Runtime, command: ToolsCommand) -> Result<()> {
         }
         ToolsCommand::Test { name, inputs } => {
             let input = parse_inputs(&inputs)?;
-            let outcome = runtime.registry.invoke(&name, input).await?;
+            let outcome = registry.invoke(&name, input).await?;
             if outcome.is_error {
                 eprintln!("tool returned an error:");
             }

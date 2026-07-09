@@ -1,6 +1,8 @@
 //! Shared wiring: config → providers → MCP registry → store → agent.
 
 use anyhow::{Context, Result};
+use graph_core::pipeline::{doc::PlanDoc, Pipeline};
+use graph_core::toolbox::AgentToolbox;
 use graph_core::{Agent, EventSink, Store, ThreadMeta, ToolRegistry};
 use graph_llm::ModelRouter;
 use graph_mcp::McpManager;
@@ -66,6 +68,89 @@ impl Runtime {
     pub fn recording_registry(&self, store: Arc<GraphStore>) -> Arc<dyn ToolRegistry> {
         Arc::new(RecordingRegistry::new(self.registry.clone(), store))
     }
+
+    /// Plan documents whose `requires_servers` are all configured.
+    pub fn plan_docs(&self) -> Result<Vec<PlanDoc>> {
+        let dirs: Vec<std::path::PathBuf> = self
+            .config
+            .plans
+            .paths
+            .iter()
+            .map(|p| graph_config::expand_tilde(p))
+            .collect();
+        let docs = graph_core::pipeline::doc::load_plan_docs(&dirs)?;
+        Ok(docs
+            .into_iter()
+            .filter(|doc| {
+                let ok = doc
+                    .requires_servers
+                    .iter()
+                    .all(|server| self.config.mcp.contains_key(server));
+                if !ok {
+                    tracing::info!(
+                        plan = doc.identifier,
+                        "hidden: required MCP server not configured"
+                    );
+                }
+                ok
+            })
+            .collect())
+    }
+
+    /// The plan pipeline over a base registry (shape-recording MCP tools).
+    pub async fn pipeline(
+        &self,
+        store: Arc<GraphStore>,
+        events: Arc<dyn EventSink>,
+    ) -> Result<Arc<Pipeline>> {
+        let base = self.recording_registry(store.clone());
+        let shapes = store
+            .tool_shapes()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|shape| (shape.tool.clone(), shape))
+            .collect();
+        let user_context = user_context_text(&self.config.user);
+        Ok(Arc::new(Pipeline {
+            router: self.router.clone(),
+            registry: base,
+            events,
+            shapes,
+            user_context,
+            current_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
+            max_attempts: self.config.settings.planning_attempts.max(1),
+        }))
+    }
+
+    /// The agent's full tool catalog: MCP tools + plan tools + plan_and_execute.
+    pub async fn toolbox(
+        &self,
+        store: Arc<GraphStore>,
+        events: Arc<dyn EventSink>,
+    ) -> Result<Arc<AgentToolbox>> {
+        let base = self.recording_registry(store.clone());
+        let pipeline = self.pipeline(store, events).await?;
+        Ok(Arc::new(AgentToolbox::new(
+            base,
+            pipeline,
+            self.plan_docs()?,
+        )))
+    }
+}
+
+fn user_context_text(user: &graph_config::UserConfig) -> String {
+    let mut out = String::new();
+    if let Some(name) = &user.name {
+        out.push_str(&format!("Name: {name}\n"));
+    }
+    if let Some(context) = &user.context {
+        out.push_str(context);
+    }
+    if out.is_empty() {
+        out.push_str("(none provided)");
+    }
+    out
 }
 
 /// Open the store without the rest of the runtime (for `threads`, which

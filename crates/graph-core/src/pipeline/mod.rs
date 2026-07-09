@@ -10,6 +10,7 @@
 //!   In both modes, `EmptyData` (plan fine, data ran out) goes straight to
 //!   the solver.
 
+pub mod doc;
 pub mod plan;
 mod prompts;
 mod state;
@@ -91,7 +92,7 @@ impl Pipeline {
         loop {
             state.plan_attempts += 1;
             if state.plan_attempts > 1 {
-                self.events.iteration(state.plan_attempts);
+                self.events.replanning(state.plan_attempts);
             }
             match self.plan_node(&mut state).await {
                 Ok(()) => {}

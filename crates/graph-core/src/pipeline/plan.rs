@@ -12,6 +12,7 @@ pub struct Step {
     /// Sequential id: "E0", "E1", …
     pub id: String,
     /// Exact tool name from the tool list, e.g. "linear__search_issues".
+    #[serde(alias = "tool_name")]
     pub tool_name: String,
     /// Tool input. String values may reference earlier steps with
     /// templates like {{E0.values.0.id}}.
@@ -28,9 +29,10 @@ pub type Plan = Vec<Step>;
 pub struct SolverData {
     /// The question the solver must answer; always includes the user's
     /// original task.
+    #[serde(alias = "query_to_answer", default)]
     pub query_to_answer: String,
     /// Extra system-prompt guidance for the solver.
-    #[serde(default)]
+    #[serde(default, alias = "system_prompt")]
     pub system_prompt: Option<String>,
     /// Data collected from steps, as templates: {"issues": "{{E1}}"}.
     #[serde(default)]

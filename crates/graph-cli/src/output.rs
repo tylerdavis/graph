@@ -46,4 +46,8 @@ impl EventSink for TtySink {
         let marker = if is_error { "✗" } else { "✓" };
         eprintln!("{}", self.dim(&format!("{marker} {name} {elapsed:.1?}")));
     }
+
+    fn replanning(&self, attempt: u32) {
+        eprintln!("{}", self.dim(&format!("↻ replanning (attempt {attempt})")));
+    }
 }

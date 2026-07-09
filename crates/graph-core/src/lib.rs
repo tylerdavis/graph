@@ -9,6 +9,7 @@ pub mod prompts;
 pub mod shapes;
 pub mod store;
 pub mod template;
+pub mod toolbox;
 pub mod tools;
 
 pub use agent::{Agent, AgentError, EventSink, NullSink, TurnOutcome};

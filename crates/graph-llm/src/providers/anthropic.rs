@@ -97,19 +97,36 @@ impl AnthropicProvider {
         }
         Ok(response)
     }
+
+    /// POST, retrying once without `temperature` when the model rejects it
+    /// (newer models deprecate the parameter; per-role config may still set
+    /// it for models that accept it).
+    async fn post_with_retry(&self, mut body: Value) -> Result<reqwest::Response, LlmError> {
+        match self.post(&body).await {
+            Err(LlmError::Api {
+                status: 400,
+                body: message,
+            }) if message.contains("temperature") && body.get("temperature").is_some() => {
+                body.as_object_mut().unwrap().remove("temperature");
+                tracing::debug!("model rejected temperature; retrying without it");
+                self.post(&body).await
+            }
+            other => other,
+        }
+    }
 }
 
 #[async_trait]
 impl ChatProvider for AnthropicProvider {
     async fn chat(&self, req: ChatRequest) -> Result<ChatResponse, LlmError> {
         let body = self.build_body(&req, false);
-        let value: Value = self.post(&body).await?.json().await?;
+        let value: Value = self.post_with_retry(body).await?.json().await?;
         parse_response(&value)
     }
 
     async fn chat_stream(&self, req: ChatRequest) -> Result<EventStream, LlmError> {
         let body = self.build_body(&req, true);
-        let response = self.post(&body).await?;
+        let response = self.post_with_retry(body).await?;
         let mut assembler = StreamAssembler::default();
 
         let stream = response

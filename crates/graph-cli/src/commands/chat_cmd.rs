@@ -16,10 +16,9 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
     let runtime = Runtime::init()?;
     let store = runtime.store()?;
     let mut thread: Option<ThreadMeta> = resolve_thread(store.as_ref(), thread).await?;
-    let agent = runtime.agent(
-        Arc::new(TtySink::new(false)),
-        runtime.recording_registry(store.clone()),
-    )?;
+    let events: Arc<dyn graph_core::EventSink> = Arc::new(TtySink::new(false));
+    let toolbox = runtime.toolbox(store.clone(), events.clone()).await?;
+    let agent = runtime.agent(events, toolbox)?;
 
     let mut messages: Vec<ChatMessage> = match &thread {
         Some(meta) => {

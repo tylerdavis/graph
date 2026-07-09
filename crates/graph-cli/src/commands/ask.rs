@@ -28,7 +28,8 @@ pub async fn run(args: AskArgs) -> Result<()> {
     } else {
         Arc::new(TtySink::new(!stream_text))
     };
-    let agent = runtime.agent(events, runtime.recording_registry(store.clone()))?;
+    let toolbox = runtime.toolbox(store.clone(), events.clone()).await?;
+    let agent = runtime.agent(events, toolbox)?;
 
     let mut messages = match &existing {
         Some(thread) => store.load_messages(&thread.id).await?,

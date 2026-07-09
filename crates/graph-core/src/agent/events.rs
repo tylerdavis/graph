@@ -11,8 +11,10 @@ pub trait EventSink: Send + Sync {
     fn tool_started(&self, _name: &str, _args: &Value) {}
     /// A tool invocation finished.
     fn tool_finished(&self, _name: &str, _elapsed: Duration, _is_error: bool) {}
-    /// The model requested tools and the loop is going around again.
+    /// The model requested tools and the agent loop is going around again.
     fn iteration(&self, _n: u32) {}
+    /// The pipeline discarded a defective plan and is replanning.
+    fn replanning(&self, _attempt: u32) {}
 }
 
 /// Discards everything (used by `--json` and tests).
