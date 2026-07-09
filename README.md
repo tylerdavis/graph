@@ -30,6 +30,16 @@ standalone, single-user CLI:
 | `graph-store` | LadybugDB storage and built-in graph tools |
 | `graph-config` | layered TOML config + YAML plan/tool documents |
 
+## Building (macOS)
+
+```nu
+brew install openssl@3 pkg-config cmake
+cargo build
+```
+
+`lbug` 0.18 needs the OpenSSL link flags in `.cargo/config.toml` (see
+`crates/graph-store/SPIKE.md` for why; temporary until the next lbug release).
+
 ## Status
 
 Early scaffold. See the plan in the originating repo for the roadmap.
