@@ -10,8 +10,7 @@ use std::sync::Arc;
 
 pub struct AskArgs {
     pub message: Option<String>,
-    pub thread: Option<String>,
-    pub r#continue: bool,
+    pub thread: Option<Option<String>>,
     pub json: bool,
     pub no_stream: bool,
 }
@@ -21,7 +20,7 @@ pub async fn run(args: AskArgs) -> Result<()> {
 
     let runtime = Runtime::init()?;
     let store = runtime.store()?;
-    let existing = resolve_thread(store.as_ref(), args.thread, args.r#continue).await?;
+    let existing = resolve_thread(store.as_ref(), args.thread).await?;
 
     let stream_text = !args.json && !args.no_stream;
     let events: Arc<dyn graph_core::EventSink> = if args.json {
@@ -68,7 +67,7 @@ pub async fn run(args: AskArgs) -> Result<()> {
             println!("{}", outcome.text);
         }
         eprintln!(
-            "\x1b[2mthread {} — continue with `graph ask --continue \"…\"`\x1b[0m",
+            "\x1b[2mthread {} — continue with `graph ask \"…\" --thread`\x1b[0m",
             thread.id
         );
     }

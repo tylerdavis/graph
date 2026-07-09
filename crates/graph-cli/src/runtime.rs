@@ -76,26 +76,24 @@ pub fn open_store(config: &graph_config::Config) -> Result<GraphStore> {
 }
 
 /// Resolve which existing thread to continue, if any.
+///
+/// `None` → new thread; `Some(None)` (bare `--thread`) → most recent thread,
+/// or a new one when none exist yet; `Some(Some(id))` → that thread or error.
 pub async fn resolve_thread(
     store: &dyn Store,
-    thread: Option<String>,
-    r#continue: bool,
+    thread: Option<Option<String>>,
 ) -> Result<Option<ThreadMeta>> {
-    if let Some(id) = thread {
-        let meta = store
-            .get_thread(&id)
-            .await?
-            .with_context(|| format!("no thread with id {id} (see `graph threads list`)"))?;
-        return Ok(Some(meta));
+    match thread {
+        None => Ok(None),
+        Some(Some(id)) => {
+            let meta = store
+                .get_thread(&id)
+                .await?
+                .with_context(|| format!("no thread with id {id} (see `graph threads list`)"))?;
+            Ok(Some(meta))
+        }
+        Some(None) => Ok(store.latest_thread().await?),
     }
-    if r#continue {
-        let meta = store
-            .latest_thread()
-            .await?
-            .context("no threads yet — run without --continue first")?;
-        return Ok(Some(meta));
-    }
-    Ok(None)
 }
 
 /// Derive a thread title from the first user message.

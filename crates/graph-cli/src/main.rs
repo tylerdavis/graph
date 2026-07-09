@@ -20,20 +20,18 @@ async fn main() -> Result<()> {
         Command::Ask {
             message,
             thread,
-            r#continue,
             json,
             no_stream,
         } => {
             commands::ask::run(commands::ask::AskArgs {
                 message,
                 thread,
-                r#continue,
                 json,
                 no_stream,
             })
             .await
         }
-        Command::Chat { thread, r#continue } => commands::chat_cmd::run(thread, r#continue).await,
+        Command::Chat { thread } => commands::chat_cmd::run(thread).await,
         Command::Threads { command } => commands::threads_cmd::run(command).await,
         Command::Db { command } => commands::db_cmd::run(command).await,
         Command::Plan { .. } | Command::Sync { .. } => {

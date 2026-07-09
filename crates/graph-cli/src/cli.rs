@@ -24,12 +24,10 @@ pub enum Command {
     Ask {
         /// The message; reads stdin when omitted and piped
         message: Option<String>,
-        /// Continue an existing thread by id
-        #[arg(long, conflicts_with = "cont")]
-        thread: Option<String>,
-        /// Continue the most recent thread
-        #[arg(long = "continue", id = "cont")]
-        r#continue: bool,
+        /// Continue a thread: `--thread <id>` for a specific one, bare
+        /// `--thread` for the most recent. Omit to start a new thread.
+        #[arg(long)]
+        thread: Option<Option<String>>,
         /// Emit a JSON envelope instead of streaming text
         #[arg(long)]
         json: bool,
@@ -39,10 +37,10 @@ pub enum Command {
     },
     /// Interactive chat (REPL)
     Chat {
-        #[arg(long, conflicts_with = "cont")]
-        thread: Option<String>,
-        #[arg(long = "continue", id = "cont")]
-        r#continue: bool,
+        /// Continue a thread: `--thread <id>` for a specific one, bare
+        /// `--thread` for the most recent. Omit to start a new thread.
+        #[arg(long)]
+        thread: Option<Option<String>>,
     },
     /// Manage and run plan documents
     Plan {

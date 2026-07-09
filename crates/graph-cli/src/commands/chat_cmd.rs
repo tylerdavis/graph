@@ -9,13 +9,13 @@ use graph_store::GraphStore;
 use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use std::sync::Arc;
 
-pub async fn run(thread: Option<String>, r#continue: bool) -> Result<()> {
+pub async fn run(thread: Option<Option<String>>) -> Result<()> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         bail!("chat needs an interactive terminal — use `graph ask` for scripted queries");
     }
     let runtime = Runtime::init()?;
     let store = runtime.store()?;
-    let mut thread: Option<ThreadMeta> = resolve_thread(store.as_ref(), thread, r#continue).await?;
+    let mut thread: Option<ThreadMeta> = resolve_thread(store.as_ref(), thread).await?;
     let agent = runtime.agent(
         Arc::new(TtySink::new(false)),
         runtime.recording_registry(store.clone()),
@@ -80,7 +80,7 @@ pub async fn run(thread: Option<String>, r#continue: bool) -> Result<()> {
     }
     runtime.shutdown().await;
     if let Some(meta) = &thread {
-        eprintln!("thread {} — resume with `graph chat --continue`", meta.id);
+        eprintln!("thread {} — resume with `graph chat --thread`", meta.id);
     }
     Ok(())
 }
