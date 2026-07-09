@@ -13,7 +13,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/launchnotes/graph-cli"
+repository = "https://github.com/tylerdavis/graph"
 
 [workspace.dependencies]
 graph-core = { path = "crates/graph-core" }
