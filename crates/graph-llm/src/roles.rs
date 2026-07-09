@@ -34,7 +34,10 @@ impl ModelRouter {
                             "provider '{name}': openai_compat requires base_url"
                         ))
                     })?;
-                    Arc::new(OpenAiCompatProvider::new(base_url, provider.api_key.clone()))
+                    Arc::new(OpenAiCompatProvider::new(
+                        base_url,
+                        provider.api_key.clone(),
+                    ))
                 }
                 ProviderKind::Bedrock => {
                     return Err(LlmError::Unsupported(format!(
@@ -71,7 +74,11 @@ impl ModelRouter {
         provider.chat(req).await
     }
 
-    pub async fn chat_stream(&self, role: Role, mut req: ChatRequest) -> Result<EventStream, LlmError> {
+    pub async fn chat_stream(
+        &self,
+        role: Role,
+        mut req: ChatRequest,
+    ) -> Result<EventStream, LlmError> {
         let (provider, choice) = self.resolve(role)?;
         req.model = choice.model.clone();
         req.temperature = req.temperature.or(choice.temperature);

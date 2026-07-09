@@ -111,8 +111,9 @@ fn expand_env(input: &str) -> Result<String> {
             .find('}')
             .with_context(|| format!("unterminated ${{...}} in config value: {input:?}"))?;
         let var = &after[..end];
-        let value = std::env::var(var)
-            .with_context(|| format!("environment variable {var} referenced in config is not set"))?;
+        let value = std::env::var(var).with_context(|| {
+            format!("environment variable {var} referenced in config is not set")
+        })?;
         out.push_str(&value);
         rest = &after[end + 1..];
     }
@@ -199,7 +200,7 @@ mod tests {
             api_key = "${GRAPH_TEST_KEY}"
             "#,
         );
-        let loaded = load_from(&[path.clone()]).unwrap();
+        let loaded = load_from(std::slice::from_ref(&path)).unwrap();
         let provider = &loaded.config.providers["anthropic"];
         assert_eq!(provider.kind, ProviderKind::Anthropic);
         assert_eq!(provider.api_key.as_deref(), Some("sk-123"));

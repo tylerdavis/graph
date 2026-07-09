@@ -123,7 +123,11 @@ impl OpenAiCompatProvider {
         stream: bool,
     ) -> Result<reqwest::Response, LlmError> {
         let mode = self.structured_mode.load(Ordering::Relaxed);
-        let first_mode = if mode == MODE_UNKNOWN { MODE_JSON_SCHEMA } else { mode };
+        let first_mode = if mode == MODE_UNKNOWN {
+            MODE_JSON_SCHEMA
+        } else {
+            mode
+        };
         let body = self.build_body(req, stream, first_mode);
         match self.post(&body).await {
             Ok(response) => {
@@ -137,7 +141,8 @@ impl OpenAiCompatProvider {
             {
                 let body = self.build_body(req, stream, MODE_JSON_OBJECT);
                 let response = self.post(&body).await?;
-                self.structured_mode.store(MODE_JSON_OBJECT, Ordering::Relaxed);
+                self.structured_mode
+                    .store(MODE_JSON_OBJECT, Ordering::Relaxed);
                 Ok(response)
             }
             Err(e) => Err(e),
@@ -185,7 +190,11 @@ struct StreamAssembler {
 impl StreamAssembler {
     fn handle(&mut self, data: &str) -> Vec<Result<StreamEvent, LlmError>> {
         if data.trim() == "[DONE]" {
-            return if self.done { vec![] } else { vec![self.finish()] };
+            return if self.done {
+                vec![]
+            } else {
+                vec![self.finish()]
+            };
         }
         let parsed: Value = match serde_json::from_str(data) {
             Ok(v) => v,
@@ -209,7 +218,8 @@ impl StreamAssembler {
         for call in delta["tool_calls"].as_array().cloned().unwrap_or_default() {
             let index = call["index"].as_u64().unwrap_or(0) as usize;
             while self.tool_calls.len() <= index {
-                self.tool_calls.push((String::new(), String::new(), String::new()));
+                self.tool_calls
+                    .push((String::new(), String::new(), String::new()));
             }
             let slot = &mut self.tool_calls[index];
             if let Some(id) = call["id"].as_str() {
@@ -217,7 +227,9 @@ impl StreamAssembler {
             }
             if let Some(name) = call["function"]["name"].as_str() {
                 slot.1.push_str(name);
-                events.push(Ok(StreamEvent::ToolCallStarted { name: slot.1.clone() }));
+                events.push(Ok(StreamEvent::ToolCallStarted {
+                    name: slot.1.clone(),
+                }));
             }
             if let Some(fragment) = call["function"]["arguments"].as_str() {
                 slot.2.push_str(fragment);
@@ -239,7 +251,11 @@ impl StreamAssembler {
                 serde_json::from_str(&raw)
                     .map_err(|e| LlmError::Parse(format!("tool arguments for {name}: {e}")))?
             };
-            tool_calls.push(ToolCall { id, name, arguments });
+            tool_calls.push(ToolCall {
+                id,
+                name,
+                arguments,
+            });
         }
         let text = std::mem::take(&mut self.text);
         let structured = if self.wants_structured && !text.is_empty() {
@@ -267,7 +283,10 @@ fn to_openai_messages(messages: &[ChatMessage]) -> Vec<Value> {
         .iter()
         .map(|message| match message {
             ChatMessage::User { content } => json!({"role": "user", "content": content}),
-            ChatMessage::Assistant { content, tool_calls } => {
+            ChatMessage::Assistant {
+                content,
+                tool_calls,
+            } => {
                 let mut msg = Map::new();
                 msg.insert("role".into(), json!("assistant"));
                 msg.insert("content".into(), json!(content));
@@ -312,8 +331,15 @@ fn parse_response(value: &Value, wants_structured: bool) -> Result<ChatResponse,
     let text = message["content"].as_str().unwrap_or_default().to_string();
 
     let mut tool_calls = Vec::new();
-    for call in message["tool_calls"].as_array().cloned().unwrap_or_default() {
-        let name = call["function"]["name"].as_str().unwrap_or_default().to_string();
+    for call in message["tool_calls"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+    {
+        let name = call["function"]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         let raw = call["function"]["arguments"].as_str().unwrap_or("{}");
         let arguments = serde_json::from_str(raw)
             .map_err(|e| LlmError::Parse(format!("tool arguments for {name}: {e}")))?;

@@ -48,7 +48,10 @@ impl AnthropicProvider {
             "max_tokens".into(),
             json!(req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS)),
         );
-        body.insert("messages".into(), json!(to_anthropic_messages(&req.messages)));
+        body.insert(
+            "messages".into(),
+            json!(to_anthropic_messages(&req.messages)),
+        );
         if !req.system.is_empty() {
             body.insert("system".into(), json!(req.system));
         }
@@ -176,7 +179,9 @@ impl StreamAssembler {
                         let index = parsed["index"].as_u64().unwrap_or(0) as usize;
                         if let Some(Some(slot)) = self.block_kinds.get(index) {
                             if let Some(block) = self.tool_blocks.get_mut(*slot) {
-                                block.2.push_str(delta["partial_json"].as_str().unwrap_or(""));
+                                block
+                                    .2
+                                    .push_str(delta["partial_json"].as_str().unwrap_or(""));
                             }
                         }
                         vec![]
@@ -215,7 +220,11 @@ impl StreamAssembler {
             if name == STRUCTURED_TOOL {
                 structured = Some(arguments);
             } else {
-                tool_calls.push(ToolCall { id, name, arguments });
+                tool_calls.push(ToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
             }
         }
         Ok(StreamEvent::Completed(ChatResponse {
@@ -228,12 +237,6 @@ impl StreamAssembler {
     }
 }
 
-impl Default for StopReason {
-    fn default() -> Self {
-        StopReason::Other
-    }
-}
-
 fn to_anthropic_messages(messages: &[ChatMessage]) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     for message in messages {
@@ -241,7 +244,10 @@ fn to_anthropic_messages(messages: &[ChatMessage]) -> Vec<Value> {
             ChatMessage::User { content } => {
                 out.push(json!({"role": "user", "content": content}));
             }
-            ChatMessage::Assistant { content, tool_calls } => {
+            ChatMessage::Assistant {
+                content,
+                tool_calls,
+            } => {
                 let mut blocks = Vec::new();
                 if let Some(text) = content {
                     if !text.is_empty() {
@@ -368,12 +374,28 @@ mod tests {
             ChatMessage::Assistant {
                 content: None,
                 tool_calls: vec![
-                    ToolCall { id: "a".into(), name: "t1".into(), arguments: json!({}) },
-                    ToolCall { id: "b".into(), name: "t2".into(), arguments: json!({}) },
+                    ToolCall {
+                        id: "a".into(),
+                        name: "t1".into(),
+                        arguments: json!({}),
+                    },
+                    ToolCall {
+                        id: "b".into(),
+                        name: "t2".into(),
+                        arguments: json!({}),
+                    },
                 ],
             },
-            ChatMessage::ToolResult { tool_call_id: "a".into(), content: json!({"x": 1}), is_error: false },
-            ChatMessage::ToolResult { tool_call_id: "b".into(), content: json!("plain"), is_error: false },
+            ChatMessage::ToolResult {
+                tool_call_id: "a".into(),
+                content: json!({"x": 1}),
+                is_error: false,
+            },
+            ChatMessage::ToolResult {
+                tool_call_id: "b".into(),
+                content: json!("plain"),
+                is_error: false,
+            },
         ];
         let rendered = to_anthropic_messages(&messages);
         assert_eq!(rendered.len(), 2);
@@ -400,7 +422,10 @@ mod tests {
     #[test]
     fn stream_assembler_accumulates_tool_input_json() {
         let mut assembler = StreamAssembler::default();
-        assembler.handle("message_start", r#"{"message":{"usage":{"input_tokens":5}}}"#);
+        assembler.handle(
+            "message_start",
+            r#"{"message":{"usage":{"input_tokens":5}}}"#,
+        );
         assembler.handle(
             "content_block_start",
             r#"{"index":0,"content_block":{"type":"tool_use","id":"tc1","name":"search"}}"#,

@@ -4,7 +4,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "graph", version, about = "A command-line agent with a plan-based execution engine")]
+#[command(
+    name = "graph",
+    version,
+    about = "A command-line agent with a plan-based execution engine"
+)]
 pub struct Cli {
     /// Increase log verbosity (-v info, -vv debug, -vvv trace)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]

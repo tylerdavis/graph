@@ -66,12 +66,7 @@ impl ModelRouter {
             .ok_or_else(|| LlmError::SchemaMismatch("model produced no structured output".into()))
     }
 
-    async fn repair(
-        &self,
-        broken: &Value,
-        schema: &Value,
-        error: &str,
-    ) -> Result<Value, LlmError> {
+    async fn repair(&self, broken: &Value, schema: &Value, error: &str) -> Result<Value, LlmError> {
         let system = "You fix JSON documents. Given a JSON document, the JSON Schema it must \
                       conform to, and the validation error, produce a corrected document. \
                       Preserve the original content and intent; change only what is needed \

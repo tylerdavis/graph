@@ -65,12 +65,13 @@ pub struct ChatRequest {
     pub response_schema: Option<ResponseSchema>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     EndTurn,
     ToolUse,
     MaxTokens,
+    #[default]
     Other,
 }
 
@@ -98,7 +99,9 @@ pub struct ChatResponse {
 pub enum StreamEvent {
     TextDelta(String),
     /// The model started emitting a tool call (name known, arguments pending).
-    ToolCallStarted { name: String },
+    ToolCallStarted {
+        name: String,
+    },
     Completed(ChatResponse),
 }
 

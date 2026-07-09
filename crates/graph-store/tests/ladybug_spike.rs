@@ -57,8 +57,10 @@ fn merge_upserts_and_prepared_statements_with_params() {
     let db = open(dir.path());
     let conn = Connection::new(&db).unwrap();
 
-    conn.query("CREATE NODE TABLE IF NOT EXISTS Repo(name STRING, stars INT64, PRIMARY KEY(name));")
-        .unwrap();
+    conn.query(
+        "CREATE NODE TABLE IF NOT EXISTS Repo(name STRING, stars INT64, PRIMARY KEY(name));",
+    )
+    .unwrap();
 
     let mut upsert = conn
         .prepare("MERGE (r:Repo {name: $name}) ON CREATE SET r.stars = $stars ON MATCH SET r.stars = $stars;")
@@ -75,7 +77,9 @@ fn merge_upserts_and_prepared_statements_with_params() {
         .expect("execute MERGE");
     }
 
-    let result = conn.query("MATCH (r:Repo) RETURN r.name, r.stars;").unwrap();
+    let result = conn
+        .query("MATCH (r:Repo) RETURN r.name, r.stars;")
+        .unwrap();
     let rows: Vec<Vec<Value>> = result.into_iter().collect();
     assert_eq!(rows.len(), 1, "MERGE must upsert, not duplicate");
     assert_eq!(rows[0][1], Value::Int64(3));
@@ -87,8 +91,10 @@ fn json_blob_round_trip_for_checkpoints() {
     let db = open(dir.path());
     let conn = Connection::new(&db).unwrap();
 
-    conn.query("CREATE NODE TABLE IF NOT EXISTS Checkpoint(id STRING, state STRING, PRIMARY KEY(id));")
-        .unwrap();
+    conn.query(
+        "CREATE NODE TABLE IF NOT EXISTS Checkpoint(id STRING, state STRING, PRIMARY KEY(id));",
+    )
+    .unwrap();
 
     let state = serde_json::json!({
         "plan": [{"id": "E0", "toolName": "linear__search_teams", "input": {"query": "Platform"}}],
@@ -122,7 +128,8 @@ fn fts_extension_loads_and_searches() {
     let conn = Connection::new(&db).unwrap();
 
     conn.query("INSTALL FTS;").expect("install FTS extension");
-    conn.query("LOAD EXTENSION FTS;").expect("load FTS extension");
+    conn.query("LOAD EXTENSION FTS;")
+        .expect("load FTS extension");
 
     conn.query("CREATE NODE TABLE IF NOT EXISTS Doc(id STRING, body STRING, PRIMARY KEY(id));")
         .unwrap();
@@ -147,11 +154,15 @@ fn vector_extension_loads_and_finds_nearest() {
     let db = open(dir.path());
     let conn = Connection::new(&db).unwrap();
 
-    conn.query("INSTALL VECTOR;").expect("install vector extension");
-    conn.query("LOAD EXTENSION VECTOR;").expect("load vector extension");
+    conn.query("INSTALL VECTOR;")
+        .expect("install vector extension");
+    conn.query("LOAD EXTENSION VECTOR;")
+        .expect("load vector extension");
 
-    conn.query("CREATE NODE TABLE IF NOT EXISTS Exemplar(id STRING, embedding FLOAT[4], PRIMARY KEY(id));")
-        .unwrap();
+    conn.query(
+        "CREATE NODE TABLE IF NOT EXISTS Exemplar(id STRING, embedding FLOAT[4], PRIMARY KEY(id));",
+    )
+    .unwrap();
     conn.query("CREATE (:Exemplar {id: 'e1', embedding: [1.0, 0.0, 0.0, 0.0]});")
         .unwrap();
     conn.query("CREATE (:Exemplar {id: 'e2', embedding: [0.0, 1.0, 0.0, 0.0]});")

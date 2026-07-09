@@ -14,3 +14,13 @@ thiserror.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+http = "1"
+rmcp = { version = "2.2", default-features = false, features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+] }
+
+[dev-dependencies]
+toml.workspace = true

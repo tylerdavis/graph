@@ -2,3 +2,7 @@
 //!
 //! Defines the `ToolRegistry` and `Store` traits implemented by graph-mcp
 //! and graph-store respectively.
+
+pub mod tools;
+
+pub use tools::{ToolDef, ToolError, ToolOutcome, ToolRegistry};

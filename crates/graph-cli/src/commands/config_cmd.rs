@@ -70,7 +70,11 @@ fn path() -> Result<()> {
         graph_config::project_config_path(),
     ] {
         let expanded = graph_config::expand_tilde(&candidate);
-        let marker = if expanded.exists() { "exists" } else { "missing" };
+        let marker = if expanded.exists() {
+            "exists"
+        } else {
+            "missing"
+        };
         println!("{}\t{marker}", expanded.display());
     }
     Ok(())
