@@ -158,8 +158,9 @@ output_schema:
 
 #[tokio::test]
 async fn cypher_tool_binds_input_params() {
+    type SeenQuery = (String, Vec<(String, Value)>);
     struct FakeCypher {
-        seen: std::sync::Mutex<Vec<(String, Vec<(String, Value)>)>>,
+        seen: std::sync::Mutex<Vec<SeenQuery>>,
     }
     #[async_trait]
     impl CypherExecutor for FakeCypher {
