@@ -1,0 +1,42 @@
+# System dependencies and task runner for graph-cli.
+# https://mise.jdx.dev
+#
+# openssl@3 is not managed here — install it with `brew install openssl@3`;
+# the link flags live in .cargo/config.toml (see crates/graph-store/SPIKE.md,
+# temporary until lbug > 0.18.0).
+
+[tools]
+rust = "1.94"
+cmake = "4"
+pkg-config = "latest"
+
+[tasks.build]
+description = "Build the whole workspace"
+run = "cargo build"
+
+[tasks.test]
+description = "Run all workspace tests"
+run = "cargo test"
+
+[tasks."test:spike"]
+description = "Run the LadybugDB spike tests"
+run = "cargo test -p graph-store --test ladybug_spike"
+
+[tasks.lint]
+description = "Check formatting and run clippy"
+run = [
+    "cargo fmt --all --check",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+]
+
+[tasks.fmt]
+description = "Format the workspace"
+run = "cargo fmt --all"
+
+[tasks.run]
+description = "Run the graph binary (pass args after --)"
+run = "cargo run -p graph-cli --"
+
+[tasks.release]
+description = "Build the release binary"
+run = "cargo build --release"
