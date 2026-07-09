@@ -35,11 +35,6 @@ impl Runtime {
         self.registry.shutdown().await;
     }
 
-    /// Open the configured runtime-state store (see `open_store`).
-    pub fn store(&self) -> Result<Arc<dyn Store>> {
-        Ok(open_store(&self.config)?.store)
-    }
-
     /// Open the store keeping the Cypher handle (ladybug backend only).
     pub fn store_handles(&self) -> Result<StoreHandles> {
         open_store(&self.config)
