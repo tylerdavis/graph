@@ -12,8 +12,11 @@ pub struct LoadedConfig {
     pub sources: Vec<PathBuf>,
 }
 
+/// `~/.config/graph/config.toml` on every platform — CLI convention rather
+/// than the OS-native config dir (`~/Library/Application Support` on macOS).
 pub fn global_config_path() -> PathBuf {
-    dirs::config_dir()
+    dirs::home_dir()
+        .map(|home| home.join(".config"))
         .unwrap_or_else(|| PathBuf::from("~/.config"))
         .join("graph")
         .join("config.toml")

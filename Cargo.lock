@@ -624,6 +624,7 @@ dependencies = [
  "graph-store",
  "serde_json",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]
