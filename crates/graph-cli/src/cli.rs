@@ -91,7 +91,10 @@ pub enum PlanCommand {
     /// Run a plan directly (bypasses the agent loop)
     Run {
         name: String,
-        /// Plan inputs as key=value pairs
+        /// Inputs as a JSON object: inline ('{"a":1}'), @file.json, or - for stdin
+        #[arg(value_name = "JSON|@FILE|-")]
+        input: Option<String>,
+        /// Override individual input keys (applied on top of the JSON document)
         #[arg(long = "input", value_name = "KEY=VALUE")]
         inputs: Vec<String>,
         #[arg(long)]
@@ -105,9 +108,13 @@ pub enum ToolsCommand {
     List,
     /// Show one tool's description and schemas
     Show { name: String },
-    /// Invoke a tool directly with key=value inputs
+    /// Invoke a tool directly
     Test {
         name: String,
+        /// Input as a JSON object: inline ('{"a":1}'), @file.json, or - for stdin
+        #[arg(value_name = "JSON|@FILE|-")]
+        input: Option<String>,
+        /// Override individual input keys (applied on top of the JSON document)
         #[arg(long = "input", value_name = "KEY=VALUE")]
         inputs: Vec<String>,
     },

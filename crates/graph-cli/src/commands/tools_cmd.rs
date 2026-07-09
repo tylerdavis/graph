@@ -50,8 +50,12 @@ async fn dispatch(
             }
             Ok(())
         }
-        ToolsCommand::Test { name, inputs } => {
-            let input = parse_inputs(&inputs)?;
+        ToolsCommand::Test {
+            name,
+            input,
+            inputs,
+        } => {
+            let input = crate::commands::input::resolve_input(input.as_deref(), &inputs)?;
             let outcome = registry.invoke(&name, input).await?;
             if outcome.is_error {
                 eprintln!("tool returned an error:");
@@ -60,19 +64,4 @@ async fn dispatch(
             Ok(())
         }
     }
-}
-
-/// key=value pairs → JSON object; values parse as JSON when possible,
-/// otherwise as strings.
-pub fn parse_inputs(pairs: &[String]) -> Result<serde_json::Value> {
-    let mut map = serde_json::Map::new();
-    for pair in pairs {
-        let Some((key, value)) = pair.split_once('=') else {
-            bail!("--input must be key=value, got: {pair}");
-        };
-        let parsed = serde_json::from_str(value)
-            .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
-        map.insert(key.to_string(), parsed);
-    }
-    Ok(serde_json::Value::Object(map))
 }

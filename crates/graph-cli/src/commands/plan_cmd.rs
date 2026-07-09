@@ -1,7 +1,7 @@
 //! `graph plan` — list/show/validate/run plan documents.
 
 use crate::cli::PlanCommand;
-use crate::commands::tools_cmd::parse_inputs;
+use crate::commands::input::resolve_input;
 use crate::output::TtySink;
 use crate::runtime::Runtime;
 use anyhow::{bail, Result};
@@ -49,17 +49,22 @@ pub async fn run(command: PlanCommand) -> Result<()> {
             println!("ok: '{}' — {} steps", doc.identifier, doc.steps.len());
             Ok(())
         }
-        PlanCommand::Run { name, inputs, json } => run_plan(&name, &inputs, json).await,
+        PlanCommand::Run {
+            name,
+            input,
+            inputs,
+            json,
+        } => run_plan(&name, input.as_deref(), &inputs, json).await,
     }
 }
 
-async fn run_plan(name: &str, inputs: &[String], json: bool) -> Result<()> {
+async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: bool) -> Result<()> {
     let runtime = Runtime::init()?;
     let docs = runtime.plan_docs()?;
     let Some(doc) = docs.into_iter().find(|d| d.identifier == name) else {
         bail!("no plan named '{name}' (see `graph plan list`)");
     };
-    let input = parse_inputs(inputs)?;
+    let input = resolve_input(document, inputs)?;
 
     if let Err(problems) = validate_input(&doc, &input) {
         eprintln!("plan '{name}' needs inputs:");
