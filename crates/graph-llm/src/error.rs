@@ -1,0 +1,19 @@
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum LlmError {
+    #[error("http request failed: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("provider returned {status}: {body}")]
+    Api { status: u16, body: String },
+    #[error("failed to parse provider response: {0}")]
+    Parse(String),
+    #[error("model output did not match the requested schema: {0}")]
+    SchemaMismatch(String),
+    #[error("provider '{0}' is not configured")]
+    UnknownProvider(String),
+    #[error("no model configured for role '{0}' and no default set")]
+    NoModelForRole(String),
+    #[error("{0}")]
+    Unsupported(String),
+}
