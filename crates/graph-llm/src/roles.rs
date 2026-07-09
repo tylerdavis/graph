@@ -13,6 +13,14 @@ pub struct ModelRouter {
 }
 
 impl ModelRouter {
+    /// Build from explicit provider instances — custom providers, tests.
+    pub fn with_providers(
+        providers: HashMap<String, Arc<dyn ChatProvider>>,
+        roles: graph_config::ModelRoles,
+    ) -> Self {
+        Self { providers, roles }
+    }
+
     pub fn from_config(config: &Config) -> Result<Self, LlmError> {
         let mut providers: HashMap<String, Arc<dyn ChatProvider>> = HashMap::new();
         for (name, provider) in &config.providers {

@@ -22,6 +22,36 @@ mod render;
 
 pub use render::{render_input, render_str, render_value, Roots};
 
+/// Parse a template and return the root names it references (`E0`, `input`,
+/// …) — used by static plan validation to check reference ordering.
+pub fn referenced_roots(template: &str) -> Result<Vec<String>, RenderError> {
+    fn collect(nodes: &[parser::Node], roots: &mut Vec<String>) {
+        for node in nodes {
+            match node {
+                parser::Node::Var(parser::Path::Data(segs))
+                | parser::Node::Section {
+                    path: parser::Path::Data(segs),
+                    ..
+                } => {
+                    if let Some(parser::Seg::Key(root)) = segs.first() {
+                        if !roots.contains(root) {
+                            roots.push(root.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if let parser::Node::Section { body, .. } = node {
+                collect(body, roots);
+            }
+        }
+    }
+    let nodes = parser::parse(template)?;
+    let mut roots = Vec::new();
+    collect(&nodes, &mut roots);
+    Ok(roots)
+}
+
 /// Why a template failed to render. The caller decides policy:
 /// `MissingStep`/`BadPath` are plan defects (replan in `plan_and_execute`,
 /// hard failure for explicit plans); `EmptyData` means the plan was fine
