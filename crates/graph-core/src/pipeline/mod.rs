@@ -261,7 +261,7 @@ impl Pipeline {
             let roots = Roots::new(&state.results);
             let rendered = match render_input(&Value::Object(step.input.clone()), &roots) {
                 Ok(value) => value,
-                Err(e @ (RenderError::EmptyData { .. })) => {
+                Err(e @ RenderError::EmptyData { .. }) => {
                     return ExecutionEnd::Empty {
                         step: step.id.clone(),
                         message: e.to_string(),
