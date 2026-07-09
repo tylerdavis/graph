@@ -6,7 +6,7 @@ use graph_core::toolbox::AgentToolbox;
 use graph_core::{Agent, EventSink, Store, ThreadMeta, ToolRegistry};
 use graph_llm::ModelRouter;
 use graph_mcp::McpManager;
-use graph_store::{GraphStore, RecordingRegistry};
+use graph_store::{GraphStore, MemoryStore, RecordingRegistry};
 use std::sync::Arc;
 
 pub struct Runtime {
@@ -34,9 +34,9 @@ impl Runtime {
         self.registry.shutdown().await;
     }
 
-    /// Open the embedded database at `[settings].data_dir/db`.
-    pub fn store(&self) -> Result<Arc<GraphStore>> {
-        Ok(Arc::new(open_store(&self.config)?))
+    /// Open the configured runtime-state store (see `open_store`).
+    pub fn store(&self) -> Result<Arc<dyn Store>> {
+        open_store(&self.config)
     }
 
     /// Build the chat agent. Tool calls route through `registry` — pass a
@@ -65,7 +65,7 @@ impl Runtime {
     }
 
     /// Registry wrapped with shape recording.
-    pub fn recording_registry(&self, store: Arc<GraphStore>) -> Arc<dyn ToolRegistry> {
+    pub fn recording_registry(&self, store: Arc<dyn Store>) -> Arc<dyn ToolRegistry> {
         Arc::new(RecordingRegistry::new(self.registry.clone(), store))
     }
 
@@ -100,7 +100,7 @@ impl Runtime {
     /// The plan pipeline over a base registry (shape-recording MCP tools).
     pub async fn pipeline(
         &self,
-        store: Arc<GraphStore>,
+        store: Arc<dyn Store>,
         events: Arc<dyn EventSink>,
     ) -> Result<Arc<Pipeline>> {
         let base = self.recording_registry(store.clone());
@@ -126,7 +126,7 @@ impl Runtime {
     /// The agent's full tool catalog: MCP tools + plan tools + plan_and_execute.
     pub async fn toolbox(
         &self,
-        store: Arc<GraphStore>,
+        store: Arc<dyn Store>,
         events: Arc<dyn EventSink>,
     ) -> Result<Arc<AgentToolbox>> {
         let base = self.recording_registry(store.clone());
@@ -153,9 +153,25 @@ fn user_context_text(user: &graph_config::UserConfig) -> String {
     out
 }
 
-/// Open the store without the rest of the runtime (for `threads`, which
-/// needs neither providers nor MCP servers).
-pub fn open_store(config: &graph_config::Config) -> Result<GraphStore> {
+/// Open the configured runtime-state store. Backend selection:
+/// `GRAPH_STORAGE` env var (`ladybug` | `memory`) wins over
+/// `[storage].backend`; the default is the embedded LadybugDB.
+pub fn open_store(config: &graph_config::Config) -> Result<Arc<dyn Store>> {
+    let backend = match std::env::var("GRAPH_STORAGE").ok().as_deref() {
+        Some("memory") => graph_config::StorageBackend::Memory,
+        Some("ladybug") => graph_config::StorageBackend::Ladybug,
+        Some(other) => anyhow::bail!("GRAPH_STORAGE must be 'ladybug' or 'memory', got '{other}'"),
+        None => config.storage.backend,
+    };
+    match backend {
+        graph_config::StorageBackend::Memory => Ok(Arc::new(MemoryStore::new())),
+        graph_config::StorageBackend::Ladybug => Ok(Arc::new(open_ladybug(config)?)),
+    }
+}
+
+/// Open the embedded LadybugDB directly (Ladybug-only surfaces such as
+/// `graph db query`).
+pub fn open_ladybug(config: &graph_config::Config) -> Result<GraphStore> {
     let dir = graph_config::expand_tilde(&config.settings.data_dir).join("db");
     GraphStore::open(&dir).map_err(Into::into)
 }

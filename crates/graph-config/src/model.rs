@@ -25,7 +25,27 @@ pub struct Config {
     #[serde(default)]
     pub graph: GraphConfig,
     #[serde(default)]
+    pub storage: StorageConfig,
+    #[serde(default)]
     pub user: UserConfig,
+}
+
+/// Runtime-state storage. Ships with (and defaults to) the embedded
+/// LadybugDB so a fresh install needs zero configuration; `memory` runs
+/// ephemeral (CI jobs, or dodging the embedded single-process lock).
+/// Centralized backends (postgres/remote) slot in behind the same trait.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct StorageConfig {
+    pub backend: StorageBackend,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageBackend {
+    #[default]
+    Ladybug,
+    Memory,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

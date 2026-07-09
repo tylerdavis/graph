@@ -11,5 +11,6 @@ pub use load::{
 };
 pub use model::{
     Config, GraphConfig, McpServerConfig, ModelChoice, ModelRoles, PlanPaths, ProviderConfig,
-    ProviderKind, Role, Settings, ToolOverride, ToolPaths, UserConfig,
+    ProviderKind, Role, Settings, StorageBackend, StorageConfig, ToolOverride, ToolPaths,
+    UserConfig,
 };

@@ -11,6 +11,10 @@ const STARTER_CONFIG: &str = r#"# graph configuration
 # max_agent_iterations = 15
 # planning_attempts = 2
 
+# [storage]
+# backend = "ladybug"   # default: embedded, zero-config, single process at a time
+# backend = "memory"    # ephemeral (CI jobs); or set GRAPH_STORAGE=memory
+
 [providers.anthropic]
 type = "anthropic"
 api_key = "${ANTHROPIC_API_KEY}"

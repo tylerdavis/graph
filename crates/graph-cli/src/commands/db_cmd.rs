@@ -1,12 +1,12 @@
 //! `graph db` — raw access to the embedded database.
 
 use crate::cli::DbCommand;
-use crate::runtime::open_store;
+use crate::runtime::open_ladybug;
 use anyhow::Result;
 
 pub async fn run(command: DbCommand) -> Result<()> {
     let config = graph_config::load()?.config;
-    let store = open_store(&config)?;
+    let store = open_ladybug(&config)?;
     match command {
         DbCommand::Query { cypher, json } => {
             let rows = store.raw_query(&cypher).await?;

@@ -5,7 +5,6 @@ use crate::runtime::{resolve_thread, title_from, Runtime};
 use anyhow::{bail, Result};
 use graph_core::{Store, ThreadMeta};
 use graph_llm::types::ChatMessage;
-use graph_store::GraphStore;
 use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use std::sync::Arc;
 
@@ -85,7 +84,7 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
 }
 
 async fn persist_turn(
-    store: &GraphStore,
+    store: &dyn Store,
     thread: &mut Option<ThreadMeta>,
     first_message: &str,
     new_messages: &[ChatMessage],
