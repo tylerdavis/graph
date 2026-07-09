@@ -20,7 +20,7 @@ mod tests;
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
 pub use state::{BusEntry, BusKind, RunState};
 
-use crate::store::ToolShape;
+use crate::store::{Store, ToolShape};
 use crate::template::{render_input, render_str, RenderError, Roots};
 use crate::tools::{ToolOutcome, ToolRegistry};
 use crate::EventSink;
@@ -36,8 +36,10 @@ pub struct Pipeline {
     pub router: Arc<ModelRouter>,
     pub registry: Arc<dyn ToolRegistry>,
     pub events: Arc<dyn EventSink>,
-    /// Observed output shapes, keyed by tool name (feeds planner prompts).
-    pub shapes: HashMap<String, ToolShape>,
+    /// Source of observed output shapes for planner prompts. Read fresh at
+    /// each planning attempt so shapes recorded earlier in the same run
+    /// (agent tool calls, prior steps) are visible immediately.
+    pub store: Option<Arc<dyn Store>>,
     pub user_context: String,
     pub current_date: String,
     pub max_attempts: u32,
@@ -241,7 +243,17 @@ impl Pipeline {
     async fn plan_node(&self, state: &mut RunState) -> Result<(), PipelineError> {
         self.events.planning();
         let tools = self.registry.tools().await.unwrap_or_default();
-        let tools_text = prompts::describe_tools(&tools, &self.shapes);
+        let shapes: HashMap<String, ToolShape> = match &self.store {
+            Some(store) => store
+                .tool_shapes()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|shape| (shape.tool.clone(), shape))
+                .collect(),
+            None => HashMap::new(),
+        };
+        let tools_text = prompts::describe_tools(&tools, &shapes);
         let executed = state.executed_steps();
         let existing_plan = if executed.is_empty() {
             "(none)".to_string()
@@ -300,9 +312,7 @@ impl Pipeline {
         if state.plan.is_empty() {
             problems.push("plan has no steps".to_string());
         }
-        let known_tools: Vec<String> = self.shapes.keys().cloned().collect();
-        let _ = known_tools; // tool existence checked at execution against the live registry
-
+        // Tool existence is checked at execution against the live registry.
         let mut seen: Vec<&str> = vec!["input"];
         for step in &state.plan {
             // Template parse + reference-ordering check on every string input.

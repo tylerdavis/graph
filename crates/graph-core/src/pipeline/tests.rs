@@ -130,7 +130,7 @@ fn pipeline(
             router,
             registry,
             events: Arc::new(NullSink),
-            shapes: Default::default(),
+            store: None,
             user_context: "test user".into(),
             current_date: "2026-07-09".into(),
             max_attempts,

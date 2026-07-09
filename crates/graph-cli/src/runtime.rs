@@ -104,19 +104,12 @@ impl Runtime {
         events: Arc<dyn EventSink>,
     ) -> Result<Arc<Pipeline>> {
         let base = self.recording_registry(store.clone());
-        let shapes = store
-            .tool_shapes()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|shape| (shape.tool.clone(), shape))
-            .collect();
         let user_context = user_context_text(&self.config.user);
         Ok(Arc::new(Pipeline {
             router: self.router.clone(),
             registry: base,
             events,
-            shapes,
+            store: Some(store),
             user_context,
             current_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
             max_attempts: self.config.settings.planning_attempts.max(1),

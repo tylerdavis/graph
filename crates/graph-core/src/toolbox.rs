@@ -241,7 +241,7 @@ mod tests {
             router,
             registry: base.clone(),
             events: Arc::new(crate::NullSink),
-            shapes: Default::default(),
+            store: None,
             user_context: String::new(),
             current_date: "2026-07-09".into(),
             max_attempts: 2,
