@@ -7,6 +7,7 @@ pub mod agent;
 pub mod prompts;
 pub mod shapes;
 pub mod store;
+pub mod template;
 pub mod tools;
 
 pub use agent::{Agent, AgentError, EventSink, NullSink, TurnOutcome};
