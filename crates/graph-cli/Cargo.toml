@@ -24,3 +24,6 @@ toml.workspace = true
 reedline = "0.36"
 chrono.workspace = true
 serde_yaml.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
