@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/graph-cli",
+    "crates/graph-core",
+    "crates/graph-llm",
+    "crates/graph-mcp",
+    "crates/graph-store",
+    "crates/graph-config",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/launchnotes/graph-cli"
+
+[workspace.dependencies]
+graph-core = { path = "crates/graph-core" }
+graph-llm = { path = "crates/graph-llm" }
+graph-mcp = { path = "crates/graph-mcp" }
+graph-store = { path = "crates/graph-store" }
+graph-config = { path = "crates/graph-config" }
+
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+schemars = "0.8"
+jsonschema = "0.26"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+futures = "0.3"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+
+[profile.release]
+lto = "thin"
+strip = true
