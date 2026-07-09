@@ -33,8 +33,11 @@ pub enum Node {
     },
 }
 
+/// An in-progress section: its header (None for the root frame) and body.
+type Frame = (Option<(Path, bool, String)>, Vec<Node>);
+
 pub fn parse(template: &str) -> Result<Vec<Node>, RenderError> {
-    let mut nodes_stack: Vec<(Option<(Path, bool, String)>, Vec<Node>)> = vec![(None, Vec::new())];
+    let mut nodes_stack: Vec<Frame> = vec![(None, Vec::new())];
     let mut rest = template;
 
     while let Some(open) = rest.find("{{") {
@@ -110,7 +113,7 @@ pub fn parse(template: &str) -> Result<Vec<Node>, RenderError> {
     Ok(nodes)
 }
 
-fn top<'a>(stack: &'a mut [(Option<(Path, bool, String)>, Vec<Node>)]) -> &'a mut Vec<Node> {
+fn top(stack: &mut [Frame]) -> &mut Vec<Node> {
     &mut stack.last_mut().expect("non-empty stack").1
 }
 
