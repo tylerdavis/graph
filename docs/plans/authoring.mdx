@@ -1,0 +1,100 @@
+---
+title: "Authoring plans"
+description: "From blank file to running plan"
+icon: "pen-to-square"
+---
+
+This walkthrough builds `project_status` — a real plan — from scratch. The workflow generalizes: **probe the tools, chain the steps, shape the finish.**
+
+## 1. Probe the tools you'll use
+
+Before writing any step, learn each tool's input schema and *actual* output shape:
+
+```bash
+graph tools show linear__list_projects          # input schema
+graph tools test linear__list_projects '{"query":"New Relic"}'   # real output
+```
+
+Probing pays twice: you author correct `{{Ex.path}}` references, and every probe feeds the [shape cache](/tools/shape-cache).
+
+<Tip>
+Prefer tool parameters that accept **names** over ids when available — `linear__list_issues` takes `project` by name, which means fewer fragile deep references between steps.
+</Tip>
+
+## 2. Header and inputs
+
+```yaml
+identifier: project_status          # tool-name-safe: [a-zA-Z0-9_-]
+name: Project Status
+description: Status report for a Linear project — health, activity, risks.
+exemplars:                          # how users will ask for this (routing signal)
+  - "How is the New Relic migration going?"
+requires_servers: [linear]          # hidden if this MCP server isn't configured
+input_schema:                       # JSON Schema; referenced as {{input.*}}
+  type: object
+  required: [project]
+  properties:
+    project: { type: string, description: The Linear project name }
+```
+
+Missing required inputs are handled for you: `plan run` exits with code 3 and prints the schema; in chat, the agent receives the error, asks the user, and re-calls with complete inputs.
+
+## 3. Steps
+
+Steps run **sequentially**; each input may reference plan inputs and any earlier step:
+
+```yaml
+steps:
+  - id: E0                                        # ids are E0, E1, … in order
+    tool_name: linear__list_projects
+    input: { query: "{{input.project}}", limit: 5 }
+    reasoning: Find the project and its metadata.  # optional, shown in traces
+  - id: E1
+    tool_name: linear__list_milestones
+    input: { project: "{{E0.projects.0.name}}" }
+  - id: E2
+    tool_name: linear__list_issues
+    input: { project: "{{E0.projects.0.name}}", updatedAt: "-P14D", limit: 250 }
+  - id: E3
+    tool_name: linear__get_status_updates
+    input: { project: "{{E0.projects.0.name}}", type: project, limit: 3 }
+```
+
+Design notes worth stealing:
+
+- **One deep reference, reused.** Only `{{E0.projects.0.name}}` reaches into a result; if the project isn't found, that produces one clean "empty data" outcome instead of four different failures.
+- **Types survive templating.** `limit: 5` stays an integer; a string that is *exactly* one tag splices the raw JSON value. See [Template language](/plans/template-language).
+- **Steps are LLM-free.** However many steps you add, execution costs zero inference.
+
+## 4. The finish
+
+Choose how the plan ends — a solver report, structured output, or silence ([details](/plans/finish-modes)):
+
+```yaml
+solver:
+  query_to_answer: |
+    Write a status report for the "{{E0.projects.0.name}}" Linear project.
+    1. Header: "# <name>: <health emoji> <HEALTH>" from the latest update's health field.
+    2. "## Recent activity" — group issues by label; exact counts; link every issue.
+    {{#E1.milestones}}{{#@first}}
+    3. "## Milestones" — one line each with target date.
+    {{/@first}}{{/E1.milestones}}
+  data:
+    project: "{{E0.projects.0}}"
+    milestones: "{{E1.milestones}}"
+    recentIssues: "{{E2.issues}}"
+    statusUpdates: "{{E3.statusUpdates}}"
+```
+
+- `data` is what the solver sees — whole results spliced by template. Oversized payloads are automatically truncated/sampled.
+- `query_to_answer` is itself a template: conditional sections (like the milestones block above) adapt the instructions to the data.
+- The tighter the output spec, the more consistent the report run-over-run. For strict formats, write the structure as a grammar — see `sprint_analysis` in the [cookbook](/plans/cookbook).
+
+## 5. Validate and run
+
+```bash
+graph plan validate project_status
+graph plan run project_status '{"project":"New Relic"}'
+```
+
+Validation catches structural problems at load time: template syntax errors, references to steps that haven't run yet (`E2` referencing `E5`), bad ids, unknown fields. What it *can't* catch — a path that doesn't exist in a tool's real output — surfaces at run time as a typed error with the available keys listed. See [Errors & replanning](/plans/errors-and-replanning).

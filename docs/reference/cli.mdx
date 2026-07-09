@@ -1,0 +1,86 @@
+---
+title: "CLI reference"
+description: "Every command and flag"
+icon: "square-terminal"
+---
+
+Global: `-v/-vv/-vvv` raises log verbosity (stderr); `GRAPH_LOG` accepts a tracing filter string.
+
+## `graph ask`
+
+One agent turn.
+
+```
+graph ask "<message>" [--thread [<id>]] [--json] [--no-stream]
+```
+
+| Flag | Effect |
+|---|---|
+| `--thread` (bare) | continue the most recent thread |
+| `--thread <id>` | continue a specific thread |
+| `--json` | emit `{content, tool_calls_made, usage, thread_id}` instead of streaming |
+| `--no-stream` | print the final answer without token streaming |
+| piped stdin | appended to the message as input context |
+
+Put `--thread` after the message (it takes an optional value).
+
+## `graph chat`
+
+Interactive REPL. `--thread [<id>]` as above. Slash commands: `/thread`, `/state`, `/quit`.
+
+## `graph plan`
+
+```
+graph plan list
+graph plan show <name>
+graph plan validate <name|path>
+graph plan run <name> [<json>|@file|-] [--input k=v]... [--json]
+```
+
+`run` exit codes: `0` ok, `3` missing/invalid inputs (schema printed to stderr), `1` failure. Solver output streams to stdout; output-mode plans print JSON; silent plans print nothing.
+
+## `graph tools`
+
+```
+graph tools list
+graph tools show <name>
+graph tools test <name> [<json>|@file|-] [--input k=v]...
+```
+
+Operates on the full catalog: MCP (`server__`), user (`user__`), plan (`plan__`), and `plan_and_execute`.
+
+## `graph threads`
+
+```
+graph threads list
+graph threads show <id> [--state]
+graph threads rm <id>
+```
+
+## `graph mcp`
+
+```
+graph mcp list              # configured servers
+graph mcp tools [server]    # discovered tools
+graph mcp test <server>     # connect, count tools and declared output schemas
+```
+
+## `graph db`
+
+```
+graph db query "<cypher>" [--json]
+```
+
+Raw read access to the embedded database (ladybug backend only).
+
+## `graph config`
+
+```
+graph config show    # merged effective config
+graph config init    # write a commented starter (global)
+graph config path    # config file locations and which exist
+```
+
+## `graph sync`
+
+Reserved for the entity-graph sync flow (roadmap).

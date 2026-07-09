@@ -1,0 +1,45 @@
+---
+title: "Threads"
+description: "Persistent conversations across invocations"
+icon: "clock-rotate-left"
+---
+
+Every successful `ask` and `chat` turn persists to a thread — the full message history including tool calls and their results. Threads live in the embedded database and survive across processes.
+
+## Managing threads
+
+```bash
+graph threads list
+# 62dac762e251  2026-07-09 14:32   6 msgs  Compute 123 plus 456…
+# f14a6899c585  2026-07-09 13:07   4 msgs  Run the sum_report plan…
+
+graph threads show 62dac762e251            # rendered transcript with tool traces
+graph threads show 62dac762e251 --state    # raw JSON (every message, every tool call)
+graph threads rm 62dac762e251
+```
+
+`show` renders the conversation the way it executed:
+
+```
+user> run plan project_status "New Relic to AWS Migration"
+  → plan__project_status {"project":"New Relic to AWS Migration"}
+  ✓ {"answer":"# New Relic to AWS Migration: ✅ ON TRACK…"}
+assistant> ## New Relic to AWS Migration — ✅ ON TRACK …
+```
+
+This is the primary audit surface: when you want to know *whether the agent used a plan or improvised*, the transcript shows the exact tool calls.
+
+## Continuation semantics
+
+| Invocation | Behavior |
+|---|---|
+| `graph ask "…"` | new thread |
+| `graph ask "…" --thread` | most recent thread (new one if none exist) |
+| `graph ask "…" --thread <id>` | that thread, or an error listing alternatives |
+| `graph chat` / `--thread` / `--thread <id>` | same semantics, interactive |
+
+Thread titles derive from the first message. Only successful turns persist — a turn that errors leaves the thread untouched, so retries don't duplicate messages.
+
+<Note>
+Threads require the default `ladybug` storage backend. With `GRAPH_STORAGE=memory` everything works but nothing survives the process — the right trade for CI. See [Storage](/architecture/storage).
+</Note>

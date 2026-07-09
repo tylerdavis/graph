@@ -1,0 +1,84 @@
+---
+title: "Cookbook"
+description: "Three real plans, annotated"
+icon: "book-open"
+---
+
+Three plans that ship as working examples — each demonstrates a different finish mode and a different design lesson.
+
+## `project_status` — solver report, resilient references
+
+A status report for a Linear project: metadata → milestones → 14 days of issues → latest human status updates → synthesized report.
+
+```yaml
+steps:
+  - id: E0
+    tool_name: linear__list_projects
+    input: { query: "{{input.project}}", limit: 5 }
+  - id: E1
+    tool_name: linear__list_milestones
+    input: { project: "{{E0.projects.0.name}}" }
+  - id: E2
+    tool_name: linear__list_issues
+    input: { project: "{{E0.projects.0.name}}", updatedAt: "-P14D", limit: 250 }
+  - id: E3
+    tool_name: linear__get_status_updates
+    input: { project: "{{E0.projects.0.name}}", type: project, limit: 3 }
+```
+
+**Lessons:**
+- Later steps pass the project *by name* (`{{E0.projects.0.name}}`) — one canonical deep reference instead of chained ids. A bad project name produces exactly one clean `EmptyData` outcome.
+- The solver template conditionally includes a Milestones section only when milestones exist:
+  ```
+  {{#E1.milestones}}{{#@first}} …section instructions… {{/@first}}{{/E1.milestones}}
+  ```
+- Real-world constraint encoded as a comment in the plan: Linear's API rejects `includeMilestones` on project listing (query complexity), so milestones are their own step.
+
+## `sprint_analysis` — strict output via a grammar
+
+Ported from graph's predecessor. Its solver template pins the report *structure* with a context-free grammar, which buys week-over-week consistency:
+
+```
+<document> ::= <sprint-header> <rationale-section> <project-snapshot>
+<sprint-header> ::= "# Sprint " NAME ": " <status-emoji> " " <status-text> …
+<status-text> ::= "AT RISK" | "ON TRACK" | "NEEDS ATTENTION"
+```
+
+**Lessons:**
+- A grammar (or any rigid spec) in `query_to_answer` is the tool for reports that get diffed or posted on a schedule — prose specs drift more.
+- The plan handles "team has no active cycle" honestly via an inverted section that switches the instructions:
+  ```
+  {{^E1}}NOTE: this team has NO active cycle. Say so plainly…{{/E1}}
+  ```
+- Aggregation (ticket counts, story points) is done *by the solver from raw data* — no computation in templates, by design.
+
+## `urgent_issues` — output mode, zero LLM
+
+```yaml
+steps:
+  - id: E0
+    tool_name: linear__list_issues
+    input: { priority: 1, limit: 50 }
+output:
+  count: "{{E0.issues.length}}"
+  issues: "{{E0.issues}}"
+```
+
+```bash
+graph plan run urgent_issues | jq '.count'
+```
+
+**Lessons:**
+- No `solver` + an `output` map = structured JSON on stdout, zero inference, sub-second after the tool call.
+- As a plan tool in chat, the agent receives the raw data — it can then reason over actual issue objects rather than a prose summary.
+- The typed splice does the heavy lifting: `"{{E0.issues}}"` is a real JSON array in the output, `"{{E0.issues.length}}"` a real number.
+
+## Patterns to reuse
+
+| Pattern | How |
+|---|---|
+| Optional data section | `{{#Ex.field}}…{{/Ex.field}}` around instructions |
+| "Nothing found" handling | `{{^Ex.values}}say so{{/Ex.values}}` (solver mode) |
+| Fan-in for the solver | multiple `data:` keys, one per step result |
+| Time windows | ISO-8601 durations in tool params: `updatedAt: "-P14D"` |
+| Repo-local plans | commit to `./.graph/plans/` — loaded automatically in that project |

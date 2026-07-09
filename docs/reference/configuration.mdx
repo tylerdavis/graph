@@ -1,0 +1,113 @@
+---
+title: "Configuration"
+description: "config.toml, section by section"
+icon: "sliders"
+---
+
+Config is layered TOML — later wins, tables deep-merge:
+
+1. `~/.config/graph/config.toml` (global)
+2. `./.graph/config.toml` (project)
+3. Environment variables (`GRAPH_STORAGE`, `GRAPH_LOG`)
+4. CLI flags
+
+`${VAR}` in any string value resolves from the environment at load time and **errors when unset** — secrets never silently become empty strings.
+
+## `[settings]`
+
+```toml
+[settings]
+data_dir = "~/.local/share/graph"   # embedded DB location
+max_agent_iterations = 15           # agent-loop tool rounds per turn
+planning_attempts = 2               # plan_and_execute replan budget
+history_limit = 20                  # conversation trimming
+```
+
+## `[providers.*]`
+
+```toml
+[providers.anthropic]
+type = "anthropic"                  # anthropic | openai | openai_compat | bedrock
+api_key = "${ANTHROPIC_API_KEY}"
+
+[providers.local]
+type = "openai_compat"
+base_url = "http://localhost:11434/v1"    # Ollama, vLLM, LM Studio…
+
+[providers.bedrock]                 # roadmap
+type = "bedrock"
+region = "us-east-1"
+profile = "default"
+```
+
+Provider notes: structured output uses each provider's native mechanism, with automatic fallback on OpenAI-compatible servers that reject strict JSON-schema mode; Anthropic requests retry once without `temperature` when a model rejects the parameter.
+
+## `[models]` — per-role assignment
+
+Each pipeline role resolves to a model, falling back to `default`:
+
+```toml
+[models]
+default = { provider = "anthropic", model = "claude-sonnet-5" }
+chat    = { provider = "anthropic", model = "claude-sonnet-5" }
+planner = { provider = "anthropic", model = "claude-sonnet-5" }
+solver  = { provider = "anthropic", model = "claude-haiku-4-5", temperature = 0.4 }
+repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
+```
+
+| Role | Used for |
+|---|---|
+| `chat` | the agent loop (`ask`/`chat`) |
+| `planner` | `plan_and_execute` plan authoring |
+| `solver` | plan report synthesis |
+| `repair` | one-shot JSON repair when structured output fails to parse |
+
+A common cost setup: strong model for `chat`/`planner`, fast model for `solver`/`repair`.
+
+## `[mcp.*]`
+
+See [MCP servers](/tools/mcp-servers) for full detail.
+
+```toml
+[mcp.<name>]
+command = "…"            # stdio — XOR with url
+args = ["…"]
+env = { KEY = "${VAR}" }
+url = "https://…"        # streamable HTTP
+headers = { Authorization = "Bearer ${VAR}" }
+include_tools = ["…"]    # optional allowlist
+exclude_tools = ["…"]    # optional blocklist
+
+[mcp.<name>.tool_overrides.<tool>]
+description = "…"
+output_schema = { … }    # declare shapes the server omits
+```
+
+## `[plans]` and `[tools]`
+
+```toml
+[plans]
+paths = ["~/.config/graph/plans", "./.graph/plans"]
+
+[tools]
+paths = ["~/.config/graph/tools", "./.graph/tools"]
+```
+
+## `[storage]`
+
+```toml
+[storage]
+backend = "ladybug"     # default: embedded, zero-config, single-process
+# backend = "memory"    # ephemeral (CI); or GRAPH_STORAGE=memory
+```
+
+## `[user]`
+
+Injected into the agent's and planner's context:
+
+```toml
+[user]
+name = "Tyler"
+context = "CEO and technical architect of LaunchNotes. Primary Linear team: LaunchNotes."
+timezone = "America/Chicago"
+```

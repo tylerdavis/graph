@@ -1,0 +1,84 @@
+---
+title: "User-defined tools"
+description: "Wrap commands, queries, and prompts as first-class tools"
+icon: "screwdriver-wrench"
+---
+
+Drop a YAML file in `~/.config/graph/tools/` (or `./.graph/tools/` for repo-local tools) and it becomes `user__<name>` — callable by the agent, referenced in plan steps, invocable from the CLI. Three kinds.
+
+## `exec` — wrap any command
+
+```yaml
+name: git_log
+description: Recent git commits for a local repository path.
+kind: exec
+command: git
+args:
+  - "-C"
+  - "{{input.repo}}"
+  - "log"
+  - "-n"
+  - "{{input.count}}"
+  - "--pretty=format:{\"hash\":\"%h\",\"subject\":\"%s\"},"
+output: text                # or json: stdout parsed as JSON
+read_only: true
+input_schema:
+  type: object
+  required: [repo]
+  properties:
+    repo: { type: string, description: Absolute path to a git repository }
+    count: { type: integer }
+```
+
+- `args` are templated from the input (`{{input.*}}` only — step references don't exist inside a tool).
+- `env` values support `${VAR}` from the parent environment; `cwd` and `timeout_secs` (default 60) are available.
+- `output: json` parses stdout; unparseable output, non-zero exit (with stderr captured), and timeouts all return as structured tool errors.
+
+<Warning>
+Exec tools are **arbitrary code execution, by design** — you author them, graph runs them. Treat the tools directory like you treat your shell profile.
+</Warning>
+
+## `cypher` — saved queries over the embedded database
+
+```yaml
+name: shape_cache
+description: Which tools graph has learned output shapes for.
+kind: cypher
+query: "MATCH (s:ToolShape) RETURN s.tool AS tool, s.seen_count AS seen ORDER BY s.seen_count DESC"
+```
+
+Input fields bind as `$name` parameters; rows return keyed by column name:
+
+```bash
+graph tools test user__shape_cache
+# {"count": 8, "rows": [{"tool": "linear__list_issues", "seen": 11}, …]}
+```
+
+Requires the default `ladybug` storage backend (errors cleanly under `GRAPH_STORAGE=memory`). Read-only by nature — this is also the query surface that the upcoming entity graph will use.
+
+## `prompt` — an LLM call as a tool
+
+```yaml
+name: summarize
+description: Summarize any text into a gist and three keywords.
+kind: prompt
+prompt: |
+  Summarize into a single-sentence gist and exactly three keywords:
+
+  {{input.text}}
+role: chat                   # chat | planner | solver | repair (model role to run under)
+output_schema:               # optional → enforced structured output
+  type: object
+  required: [gist, keywords]
+  properties:
+    gist: { type: string }
+    keywords: { type: array, items: { type: string } }
+```
+
+With an `output_schema`, the result is validated JSON; without one, `{"text": …}`. Useful as a cheap sub-task inside plans — classify, extract, reword — with the model role controlling cost.
+
+## Shared behavior
+
+- `input_schema` validates before dispatch — missing fields return actionable errors (in chat, the agent asks and retries).
+- `output_schema`, when declared, feeds the planner's shape knowledge just like an MCP output schema.
+- Names must match `[a-zA-Z0-9_-]+`; templates referencing anything but `{{input.*}}` are load-time errors.

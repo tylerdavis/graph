@@ -1,0 +1,53 @@
+---
+title: "Finish modes"
+description: "Solver report, structured output, or silence"
+icon: "flag-checkered"
+---
+
+After the steps run, a plan finishes one of three ways. Pick per plan by including `solver`, `output`, or neither (they're mutually exclusive).
+
+## `solver` — an LLM-written report
+
+```yaml
+solver:
+  query_to_answer: |
+    Summarize the sprint for {{input.team}}…
+  system_prompt: Optional extra guidance for the writer.
+  data:
+    issues: "{{E1.issues}}"
+```
+
+The collected `data` goes to the solver model, which writes prose. In `plan run` the report **streams to stdout as it generates**; as a plan tool, it returns to the agent as `{"answer": …}`. One LLM call.
+
+Use for: human-readable reports, analysis, anything with judgment in the presentation.
+
+## `output` — structured JSON, zero LLM
+
+```yaml
+output:
+  count: "{{E0.issues.length}}"
+  issues: "{{E0.issues}}"
+```
+
+The template map renders against the results and is emitted as JSON — no inference at all.
+
+```bash
+graph plan run urgent_issues | jq '.count'
+```
+
+As a plan tool, the agent receives the **actual data structure** rather than prose — better grounding for follow-up reasoning. Use for: data extraction, feeding other tools, anything a machine consumes.
+
+## Silent — side effects only
+
+A plan with neither `solver` nor `output` runs its steps and exits `0`, printing only a `✓ plan completed (N steps)` note to stderr. Combined with write-capable tools (`linear__save_comment`, an exec tool that deploys, …), this is a complete zero-inference automation job.
+
+## Empty data behaves differently per mode
+
+When a step's data runs out mid-plan (a `.0.` reference into an empty search result):
+
+| Mode | Behavior |
+|---|---|
+| `solver` | degrades gracefully — the solver still answers, honestly reporting what wasn't found |
+| `output` / silent | **hard failure** with a typed `empty_data` error — automation must see that the data ran out rather than receive silently truncated JSON |
+
+Rationale: a narrator can explain emptiness; a JSON contract can't. More in [Errors & replanning](/plans/errors-and-replanning).

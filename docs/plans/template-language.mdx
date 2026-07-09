@@ -1,0 +1,62 @@
+---
+title: "Template language"
+description: "The {{Ex.path}} dialect: typed dataflow between steps"
+icon: "brackets-curly"
+---
+
+Plan steps, solver templates, and user-tool arguments all share one small, strict, logic-less template language. It exists to move **data** between steps — not to compute.
+
+## Variables
+
+```
+{{E0.values.0.id}}     dotted keys and numeric array indices
+{{input.team}}         plan inputs
+{{E1.issues.length}}   array/string length (final segment only)
+```
+
+Roots are step ids (`E0`, `E1`, …) and `input`. Root-anchored paths are **strict** — a path that doesn't resolve is a typed error, never a silent empty string (see below).
+
+## Typed splice
+
+A string that is **exactly one variable tag** resolves to the raw JSON value — numbers stay numbers, arrays stay arrays:
+
+```yaml
+input:
+  limit: "{{input.max}}"          # → 50        (number)
+  ids: "{{E0.ids}}"               # → [1,2,3]   (array)
+  q: "team {{E0.teams.0.name}}"   # → "team Core"  (mixed text → string)
+```
+
+In mixed text, objects and arrays serialize as JSON.
+
+## Sections
+
+Sections iterate arrays and gate on truthiness — used mostly in solver templates:
+
+```
+{{#E1.values}}{{title}} ({{state}}){{^@last}}, {{/@last}}{{/E1.values}}
+```
+
+- Inside a section, bare keys (`{{title}}`) read from the current item, falling back to enclosing scopes and roots.
+- Loop variables: `{{@index}}` (0-based), `{{@first}}`, `{{@last}}` — booleans usable as sections, e.g. the comma-separation idiom above.
+- **Inverted sections** render when the value is missing, false, or empty:
+  ```
+  {{^E1.values}}no results found{{/E1.values}}
+  ```
+- A bare key missing on a list item renders empty (items legitimately omit optional fields). A **root-anchored** section path that goes nowhere is falsy rather than an error — sections are conditionals.
+
+## Error taxonomy
+
+Variable resolution failures are typed, because different failures deserve different handling:
+
+| Error | Meaning | Example |
+|---|---|---|
+| `MissingStep` | the referenced step doesn't exist | `{{E7.x}}` with no E7 |
+| `BadPath` | data exists, path walks off it — **the message lists the available keys** | `{{E0.values.0.idd}}` |
+| `EmptyData` | path is plausible, data ran out | `{{E0.values.0.id}}` when `values: []`, index out of range, or walking into `null` |
+
+How each is handled depends on who authored the plan — see [Errors & replanning](/plans/errors-and-replanning). The short version: `EmptyData` means "nothing found", not "broken plan".
+
+## Not supported, on purpose
+
+No conditionals, functions, partials, comments, or inheritance. The language is deliberately logic-less: anything requiring computation belongs in a step (a [user-defined tool](/tools/user-defined) is a fine place for it) or in the solver's instructions. Unsupported syntax is a parse error at load time, not a silent no-op.

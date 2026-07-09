@@ -1,0 +1,70 @@
+---
+title: "Quickstart"
+description: "From zero to a working agent in ten minutes"
+icon: "rocket"
+---
+
+<Steps>
+  <Step title="Create a config">
+    ```bash
+    graph config init
+    ```
+    This writes a commented starter to `~/.config/graph/config.toml`. The minimal working config is a provider, a default model, and one MCP server:
+
+    ```toml
+    [providers.anthropic]
+    type = "anthropic"
+    api_key = "${ANTHROPIC_API_KEY}"   # read from your environment at load time
+
+    [models]
+    default = { provider = "anthropic", model = "claude-sonnet-5" }
+
+    [mcp.linear]
+    url = "https://mcp.linear.app/mcp"
+    headers = { Authorization = "Bearer ${LINEAR_API_KEY}" }
+    ```
+
+    <Tip>
+    `${VAR}` references fail loudly when the variable is unset — misconfigured secrets never silently send empty strings.
+    </Tip>
+  </Step>
+  <Step title="Test the MCP connection">
+    ```bash
+    graph mcp test linear
+    # ok: 'linear' initialized in 1.7s — 57 tools (0 declare output schemas)
+
+    graph tools list
+    ```
+  </Step>
+  <Step title="Ask something">
+    ```bash
+    graph ask "What are the urgent issues in Linear right now?"
+    ```
+    Tool activity streams to stderr (dim), the answer to stdout. The thread persists:
+    ```bash
+    graph ask "Which of those touches production?" --thread
+    ```
+  </Step>
+  <Step title="Go interactive">
+    ```bash
+    graph chat
+    ```
+    A REPL with the same tools and persistent history. `/thread` shows the current thread id, `/quit` exits, and the closing hint tells you how to resume.
+  </Step>
+</Steps>
+
+## Where things live
+
+| Path | What |
+|---|---|
+| `~/.config/graph/config.toml` | global config (providers, models, MCP servers) |
+| `./.graph/config.toml` | optional per-project overrides, deep-merged over global |
+| `~/.config/graph/plans/` | your [plan documents](/plans/authoring) |
+| `~/.config/graph/tools/` | your [user-defined tools](/tools/user-defined) |
+| `~/.local/share/graph/db/` | the embedded database (threads, learned tool shapes) |
+
+## Next
+
+- [Author your first plan](/plans/authoring) — freeze a workflow into a repeatable file.
+- [Add your own tools](/tools/user-defined) — wrap a CLI, a query, or a prompt.
+- [Wire it into CI](/automation/ci) — exit codes, JSON output, ephemeral storage.

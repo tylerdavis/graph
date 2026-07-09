@@ -1,0 +1,31 @@
+---
+title: "How the agent picks tools"
+description: "Routing between direct calls, your plans, and on-the-fly planning"
+icon: "route"
+---
+
+When you ask something, the agent chooses among everything in the catalog: direct tool calls, your plan tools, and `plan_and_execute`. The choice is the model's — but you have real influence over it.
+
+## The routing heuristics
+
+- **Simple lookups** → direct tool calls. "List my urgent issues" is one `linear__list_issues` call; no plan needed.
+- **Queries matching a plan's purpose** → the plan tool. The agent reads each plan's `description` and `exemplars`, so "how's the sprint going?" routes to `plan__sprint_analysis` when those exemplars say exactly that.
+- **Novel multi-step tasks** → `plan_and_execute`, which authors and runs a validated plan with dataflow between steps.
+
+The agent also **recovers across layers**: if a plan tool fails (missing inputs, a dead step), it can fall back to direct tool calls and still answer — you'll see that in the tool trace.
+
+## Steering the router
+
+1. **Write exemplars like your users talk.** Exemplars are folded into the plan tool's description verbatim — they're the strongest routing signal:
+   ```yaml
+   exemplars:
+     - "How is the New Relic migration going?"
+     - "Where do things stand on <project>?"
+   ```
+2. **Make descriptions contrastive.** If two plans overlap, say when to use which ("…for teams that track work by *project*, not cycles").
+3. **Force it when it matters.** Naming the plan works reliably in conversation ("run the project_status plan for X"), and `graph plan run` bypasses routing entirely — the guaranteed path for automation.
+4. **Trim the catalog.** Per-server `include_tools`/`exclude_tools` in `[mcp.*]` config keeps irrelevant tools out of the agent's context — fewer distractors, better choices.
+
+## Verifying what happened
+
+The stderr trace shows routing live (`→ plan__project_status …` vs bare `linear__*` calls), and [`graph threads show`](/using/threads) preserves it after the fact. If the agent keeps improvising where a plan should fire, the fix is almost always sharper exemplars.

@@ -1,0 +1,69 @@
+---
+title: "What is a plan"
+description: "Repeatable workflows as reviewable YAML files"
+icon: "diagram-project"
+---
+
+A **plan** is a YAML document describing a workflow: a sequence of tool calls with data flowing between them, finished by a report, structured output, or nothing at all. Plans are the answer to a specific problem with agents: *improvisation is great until you need the same thing twice*.
+
+```yaml
+identifier: project_status
+name: Project Status
+description: Status report for a Linear project — health, activity, risks.
+exemplars:
+  - "How is the New Relic migration going?"
+requires_servers: [linear]
+input_schema:
+  type: object
+  required: [project]
+  properties:
+    project: { type: string, description: The Linear project name }
+steps:
+  - id: E0
+    tool_name: linear__list_projects
+    input: { query: "{{input.project}}", limit: 5 }
+  - id: E1
+    tool_name: linear__list_issues
+    input: { project: "{{E0.projects.0.name}}", updatedAt: "-P14D", limit: 250 }
+solver:
+  query_to_answer: |
+    Write a status report for "{{E0.projects.0.name}}"…
+  data:
+    project: "{{E0.projects.0}}"
+    recentIssues: "{{E1.issues}}"
+```
+
+## Three ways to run a plan
+
+<CardGroup cols={3}>
+  <Card title="Directly" icon="terminal">
+    `graph plan run project_status '{"project":"New Relic"}'` — deterministic, scriptable, one LLM call (the solver) or zero (output/silent plans).
+  </Card>
+  <Card title="As an agent tool" icon="comments">
+    Every plan is a tool named `plan__<identifier>`. In chat, "how's the migration going?" routes to it via the plan's exemplars.
+  </Card>
+  <Card title="Authored by the planner" icon="wand-magic-sparkles">
+    `plan_and_execute` writes a plan on the fly for novel tasks — same engine, same template language, plus replanning on failure.
+  </Card>
+</CardGroup>
+
+## When to write a plan (vs letting the agent improvise)
+
+Write a plan when any of these are true:
+
+- **You'll run it more than twice.** Plans eliminate run-to-run variance in which tools get called and how.
+- **It feeds automation.** [Output-mode plans](/plans/finish-modes) emit structured JSON; silent plans perform actions. Both are CI primitives.
+- **The workflow embodies judgment.** Which fields matter, what "recent" means, how to group — encode it once, in review-able form, instead of hoping the model re-derives it.
+- **Cost/latency matter.** A plan run makes 0–1 LLM calls regardless of how many tool calls it performs.
+
+Let the agent improvise when the question is genuinely novel or conversational — that's what `ask`/`chat` and `plan_and_execute` are for.
+
+## Plan discovery
+
+Plans load from the directories in `[plans].paths` (default: `~/.config/graph/plans` and `./.graph/plans`, so repos can carry their own). A plan whose `requires_servers` lists an unconfigured MCP server is hidden rather than broken.
+
+```bash
+graph plan list
+graph plan show project_status
+graph plan validate project_status        # or a file path, pre-commit
+```

@@ -1,0 +1,62 @@
+---
+title: "MCP servers"
+description: "Connecting stdio and HTTP MCP servers"
+icon: "plug"
+---
+
+graph consumes any [Model Context Protocol](https://modelcontextprotocol.io) server. Each `[mcp.<name>]` entry in config becomes a set of `<name>__*` tools.
+
+## Transports
+
+**stdio** — graph spawns and manages the process:
+
+```toml
+[mcp.github]
+command = "docker"
+args = ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"]
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}" }
+```
+
+**Streamable HTTP** — for hosted servers:
+
+```toml
+[mcp.linear]
+url = "https://mcp.linear.app/mcp"
+headers = { Authorization = "Bearer ${LINEAR_API_KEY}" }
+```
+
+`command` and `url` are mutually exclusive; `${VAR}` in `env`/`headers` values resolves from your environment at load time and fails loudly when unset.
+
+<Note>
+Auth is static headers/env — servers requiring an interactive OAuth flow aren't supported directly. Many hosted servers (Linear included) accept API keys as bearer tokens.
+</Note>
+
+## Lifecycle
+
+Servers connect lazily on first use and are cached for the process. stdio children are shut down cleanly on exit — and force-killed as a backstop on abnormal exits — so nothing lingers attached to your terminal. Server stderr is silenced.
+
+```bash
+graph mcp list              # configured servers and transports
+graph mcp test linear       # connect + count tools + how many declare output schemas
+graph mcp tools linear      # full tool listing with descriptions
+```
+
+## Filtering and overrides
+
+```toml
+[mcp.everything]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-everything"]
+include_tools = ["echo", "get-sum"]        # expose only these
+exclude_tools = ["create_repository"]      # or hide these
+
+# Patch a tool's metadata — most usefully, declare an output schema the
+# server omits, which upgrades planner references for that tool:
+[mcp.everything.tool_overrides.get-sum]
+description = "Adds two integers."
+output_schema = { type = "object", properties = { text = { type = "string" } } }
+```
+
+## Result handling
+
+Tool results prefer MCP `structuredContent` when the server provides it; otherwise text content that parses as JSON is used as-is; otherwise the text is wrapped as `{"text": …}`. Server-side errors (`isError`) come back as structured tool errors — visible in traces, recoverable by the agent, and replan fuel for `plan_and_execute`.

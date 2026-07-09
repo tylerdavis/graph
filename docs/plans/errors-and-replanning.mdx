@@ -1,0 +1,51 @@
+---
+title: "Errors & replanning"
+description: "Why your plans never replan, and what plan_and_execute does differently"
+icon: "shield-halved"
+---
+
+The core policy: **who authored the plan determines what failure means.**
+
+## Human-authored plans never replan
+
+When you run a plan — via `plan run` or as a `plan__*` tool — you asked for *that* plan. If a step fails, rewriting your workflow behind your back would be worse than failing, so graph doesn't. You get a structured, attributable error:
+
+```
+Error: plan failed at step E2 (linear__list_issues): 'linear' exited with …
+```
+
+- `plan run`: non-zero exit, message on stderr.
+- As a plan tool: an `is_error` tool result — the agent explains it or works around it *visibly* (you'll see any fallback tool calls in the trace).
+
+## `plan_and_execute` replans
+
+Plans authored by the LLM planner are drafts. Defects trigger a **replan**: the error — including, for bad data references, a digest of the keys that actually exist — feeds back to the planner, which revises the plan. Executed steps are preserved and never re-run; only the broken tail is replaced. After the configured attempts (`planning_attempts`, default 2), it degrades to an honest error summary instead of raw failure.
+
+```
+→ plan_and_execute {"query":"…"}
+  ✎ planning…
+  → linear__list_teams …
+  ✗ step E1 failed: bad path 'E0.teams.0.idd' (available: id, name, …)
+  ↻ replanning (attempt 2)
+  → linear__list_issues …          ← fixed reference, E0 not re-executed
+```
+
+## The three failure classes
+
+Template resolution errors are typed ([details](/plans/template-language#error-taxonomy)), and each class routes differently:
+
+| Class | Meaning | Your plans | `plan_and_execute` |
+|---|---|---|---|
+| `BadPath` / `MissingStep` | the plan is wrong | hard failure | replan with key digest |
+| Tool error | a step's tool failed | hard failure | replan |
+| `EmptyData` | plan fine, **nothing found** | solver explains it (solver mode); typed hard failure (output/silent) | straight to solver — replanning can't conjure data |
+
+The `EmptyData` distinction is the one that matters day-to-day: a search returning zero results is an *answer* ("no active cycle"), not a defect. Solver-mode plans report it gracefully; automation-mode plans surface it as `empty_data: true` so pipelines can branch on it.
+
+## Where validation happens
+
+1. **Load time** (`plan validate`, and automatically on every load): YAML shape, template syntax, forward references (`E0` referencing `E2`), id format, unknown tools in steps.
+2. **Input time**: JSON Schema validation of inputs, before any step runs.
+3. **Run time**: everything that depends on real data — path existence against actual results, tool errors, emptiness.
+
+The design accepts that run-time is where data-shaped errors belong: with MCP tools that don't declare output schemas, pretending to verify paths statically would be false confidence. Instead, run-time errors are made maximally actionable (key digests) and the [shape cache](/tools/shape-cache) shrinks the unknown over time.

@@ -1,0 +1,43 @@
+---
+title: "Storage"
+description: "Embedded by default, abstracted for scale"
+icon: "database"
+---
+
+graph ships with — and defaults to — [LadybugDB](https://ladybugdb.com), an embedded graph database. Zero setup: the database appears at `~/.local/share/graph/db/` on first use.
+
+## What's stored
+
+| Data | Purpose |
+|---|---|
+| Threads & messages | conversation continuity (`--thread`), audit (`threads show`) |
+| Tool shapes | the [shape cache](/tools/shape-cache) that trains planning |
+| Entity graph | *(roadmap)* your synced domain data, queryable via Cypher |
+
+`graph db query "<cypher>"` gives raw read access; [cypher user tools](/tools/user-defined) give curated access.
+
+## Backends
+
+Storage resolves through a backend abstraction, selected by `[storage].backend` or `GRAPH_STORAGE`:
+
+| Backend | Character | Use when |
+|---|---|---|
+| `ladybug` (default) | persistent, embedded, **single-process** | daily interactive use |
+| `memory` | ephemeral, lock-free | CI jobs, concurrent one-shots |
+
+The single-process constraint is real: a running `graph chat` holds the database lock, and other invocations against the same `data_dir` fail with a clear error naming the holder. `memory` never touches the directory at all.
+
+## Scaling path
+
+The abstraction exists so centralized backends can slot in without re-architecture — the runtime depends only on a narrow storage trait. The planned trajectory:
+
+- **Centralized state** (e.g. Postgres): threads and — most valuably — a **shared shape cache**, so every CI job inherits every other job's learned tool shapes.
+- **Entity graph**: built-in `graph__cypher_query` / `graph__ingest` tools plus a `graph sync` flow that pipes MCP results into your own queryable graph; separable from state storage so a fleet can centralize one without the other.
+
+Both are roadmap; the seams are already in place.
+
+## Operational notes
+
+- Back up by copying `data_dir` (it's just files).
+- The [Ladybug Explorer](https://github.com/LadybugDB) container can browse the database — note it takes the same single-process lock while running.
+- First use of certain database extensions downloads them to `~/.lbdb/` (network required once).

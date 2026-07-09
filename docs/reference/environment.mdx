@@ -1,0 +1,39 @@
+---
+title: "Environment & exit codes"
+description: "Environment variables and process conventions"
+icon: "list-check"
+---
+
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `GRAPH_STORAGE` | `ladybug` \| `memory` — overrides `[storage].backend`. Invalid values error. |
+| `GRAPH_LOG` | [tracing filter](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for diagnostics on stderr (e.g. `GRAPH_LOG=debug`, `GRAPH_LOG=graph_mcp=trace`). Overrides `-v` flags. |
+| anything referenced as `${VAR}` in config | provider keys, MCP auth, tool env — resolved at load, required |
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | success |
+| `1` | failure (step/tool error, config error, `empty_data` on output/silent plans) |
+| `3` | plan inputs missing or invalid — input schema printed to stderr |
+
+## Stream conventions
+
+- **stdout**: the deliverable only (answer text, output-mode JSON, `--json` envelopes)
+- **stderr**: tool activity, progress markers (`✎ planning…`, `✎ synthesizing…`, `↻ replanning`), solver streaming during chat, dim hints
+
+## Data locations
+
+| Path | Contents |
+|---|---|
+| `~/.config/graph/config.toml` | global config |
+| `~/.config/graph/plans/`, `~/.config/graph/tools/` | global plans and user tools |
+| `./.graph/` | project-level config/plans/tools, layered over global |
+| `~/.local/share/graph/db/` | embedded database (threads, shape cache) — `[settings].data_dir` |
+
+## Concurrency
+
+The embedded database is single-process: a running `graph chat` blocks other graph invocations against the same `data_dir` (you'll get a clear lock error naming the holding PID). Options: exit the other process, use `GRAPH_STORAGE=memory`, or point a project config at a different `data_dir`.

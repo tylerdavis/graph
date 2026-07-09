@@ -1,0 +1,80 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "graph",
+  "colors": {
+    "primary": "#16A34A",
+    "light": "#22C55E",
+    "dark": "#15803D"
+  },
+  "favicon": "/favicon.svg",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Getting Started",
+        "pages": [
+          "getting-started/introduction",
+          "getting-started/installation",
+          "getting-started/quickstart",
+          "getting-started/concepts"
+        ]
+      },
+      {
+        "group": "Using graph",
+        "pages": [
+          "using/chat-and-ask",
+          "using/threads",
+          "using/tool-selection"
+        ]
+      },
+      {
+        "group": "Plans",
+        "pages": [
+          "plans/overview",
+          "plans/authoring",
+          "plans/template-language",
+          "plans/finish-modes",
+          "plans/inputs",
+          "plans/errors-and-replanning",
+          "plans/cookbook"
+        ]
+      },
+      {
+        "group": "Tools",
+        "pages": [
+          "tools/overview",
+          "tools/mcp-servers",
+          "tools/user-defined",
+          "tools/shape-cache"
+        ]
+      },
+      {
+        "group": "Automation & CI",
+        "pages": [
+          "automation/scripting",
+          "automation/ci"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/cli",
+          "reference/configuration",
+          "reference/environment"
+        ]
+      },
+      {
+        "group": "Architecture",
+        "pages": [
+          "architecture/execution-model",
+          "architecture/storage"
+        ]
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/launchnotes/graph-cli"
+    }
+  }
+}

@@ -1,0 +1,43 @@
+---
+title: "The tool catalog"
+description: "One namespace for MCP, user, plan, and built-in tools"
+icon: "toolbox"
+---
+
+Every capability in graph is a tool in a single catalog, visible to the agent, the planner, and plan steps alike. Namespacing tells you where each tool comes from:
+
+| Name | Source |
+|---|---|
+| `linear__list_issues` | the `[mcp.linear]` server — [MCP servers](/tools/mcp-servers) |
+| `user__git_log` | a YAML file in `[tools].paths` — [user-defined](/tools/user-defined) |
+| `plan__project_status` | a plan document — [plans](/plans/overview) |
+| `plan_and_execute` | built-in: on-the-fly planning |
+
+## Inspecting and invoking
+
+```bash
+graph tools list                     # the whole catalog
+graph tools show linear__list_issues # description + input/output schemas
+graph tools test user__git_log '{"repo":"/path","count":3}'   # direct invocation
+```
+
+`tools test` uses the same [input model](/plans/inputs) as plans (`'{json}'`, `@file`, `-`, `--input k=v`) and is the fastest way to learn a tool's real output shape before referencing it in a plan.
+
+## Composition rules
+
+- **Plan steps can call MCP and user tools** — and user tools can wrap anything executable, so plans can orchestrate arbitrary local commands alongside API calls.
+- **Plans cannot call plans.** Plan steps execute against the base catalog (MCP + user + built-ins), which keeps execution non-recursive and predictable.
+- **Everything feeds the [shape cache](/tools/shape-cache)** — every successful call from any surface records the tool's observed output shape.
+
+## Keeping the catalog sharp
+
+The agent reasons over every tool description in the catalog, so curation improves both cost and routing:
+
+```toml
+[mcp.github]
+command = "docker"
+args = ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"]
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}" }
+include_tools = ["list_pull_requests", "search_issues"]   # allowlist
+# exclude_tools = ["create_repository"]                   # or blocklist
+```

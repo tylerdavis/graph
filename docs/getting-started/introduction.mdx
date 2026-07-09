@@ -1,0 +1,54 @@
+---
+title: "Introduction"
+description: "A command-line agent with a plan-based execution engine"
+icon: "hand-wave"
+---
+
+**graph** is a command-line AI agent for engineering workflows. It answers questions by calling tools — Linear, GitHub, or anything that speaks [MCP](https://modelcontextprotocol.io) — and it lets you freeze the workflows that work into **plans**: repeatable, shareable automations that run identically every time.
+
+```bash
+# ask anything — the agent picks tools and answers from live data
+graph ask "How is the New Relic migration going?"
+
+# or run a saved plan — same steps, same order, every time
+graph plan run project_status '{"project":"New Relic to AWS Migration"}'
+```
+
+## The two layers
+
+graph is built as two cooperating layers:
+
+<CardGroup cols={2}>
+  <Card title="The agent" icon="comments">
+    A ReAct-style chat loop behind `graph ask` and `graph chat`. It sees every tool you've connected, calls them as needed, and streams answers. Good at novel questions and conversation.
+  </Card>
+  <Card title="The plan engine" icon="diagram-project">
+    A deterministic pipeline that executes **plans** — YAML documents describing a sequence of tool calls with data flowing between steps. Good at repeatability, automation, and CI.
+  </Card>
+</CardGroup>
+
+The layers compose: every plan you author becomes a **tool the agent can call**, and for novel multi-step questions the agent can invoke `plan_and_execute` — an LLM planner that authors a validated plan on the fly, executes it, and self-corrects when steps fail.
+
+## What makes it different
+
+- **Plans are files.** A plan is a small YAML document you check into a repo, review in a PR, and share with your team. No UI state, no prompt roulette — your Monday status report is the same report every Monday.
+- **Plans finish three ways.** An LLM-written report (`solver`), structured JSON for other tools (`output`), or nothing at all — a silent side-effect job. That makes the same plan format equally at home in a terminal, a cron job, or a CI pipeline.
+- **It learns tool shapes.** Every tool call teaches graph what that tool's output looks like (the [shape cache](/tools/shape-cache)), so the planner writes better data references over time.
+- **Bring your own everything.** Any MCP server, any model (Anthropic, OpenAI, OpenAI-compatible/local), your own [exec/cypher/prompt tools](/tools/user-defined). Single binary; data stays on your machine in an embedded database.
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/getting-started/quickstart">
+    Config to first answer in ten minutes.
+  </Card>
+  <Card title="Core concepts" icon="lightbulb" href="/getting-started/concepts">
+    The tool catalog, threads, and how a turn executes.
+  </Card>
+  <Card title="Author a plan" icon="pen-to-square" href="/plans/authoring">
+    From blank file to running plan, using a real example.
+  </Card>
+  <Card title="Automation & CI" icon="gears" href="/automation/ci">
+    Exit codes, JSON envelopes, and ephemeral storage for pipelines.
+  </Card>
+</CardGroup>

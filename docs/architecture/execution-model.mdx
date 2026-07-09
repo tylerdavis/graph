@@ -1,0 +1,56 @@
+---
+title: "Execution model"
+description: "Exactly what runs, and what it costs, per invocation"
+icon: "microchip"
+---
+
+graph has two engines that compose. Knowing which runs when explains every trace and every token bill.
+
+## The agent loop
+
+`ask` and `chat` run a tool-calling loop with the `chat`-role model:
+
+```
+message + tool catalog → model
+  ├─ tool calls? → execute (parallel within a round) → results → model again
+  └─ text answer → done
+```
+
+Bounded by `max_agent_iterations`. Tool failures return *into* the loop as error results — the agent explains or works around them visibly.
+
+## The plan pipeline
+
+Plans execute as: **validate → run steps sequentially → finish**.
+
+- Step inputs render against prior results via the [template language](/plans/template-language) — typed dataflow, zero inference.
+- The finish is a `solver` LLM call, an `output` render (no LLM), or nothing ([finish modes](/plans/finish-modes)).
+- For `plan_and_execute`, a `planner`-role call authors the plan first, and defects loop back as replans (executed steps preserved). Human-authored plans skip planning and never replan.
+
+## The anatomy of a chat turn using a plan
+
+```
+1. chat model    — decides to call plan__project_status        (inference #1)
+   ├─ E0..E3     — four Linear tool calls                      (no inference)
+   └─ solver     — writes the report from collected data       (inference #2)
+2. chat model    — reads the report, answers you               (inference #3)
+```
+
+The solver's report streams dim to stderr as progress; the agent's answer is the authoritative stdout. Yes, calls #2 and #3 partially overlap in purpose — the agent layer adds condensing, conversation, and follow-ups. When you don't want that layer, `plan run` invokes the pipeline directly: one inference (solver) or zero (output/silent).
+
+## Cost table
+
+| Invocation | Inference calls |
+|---|---|
+| `plan run` (output / silent) | 0 |
+| `plan run` (solver) | 1 |
+| `ask` → direct tools | 1 + one per tool round |
+| `ask` → plan tool | 3 |
+| `ask` → `plan_and_execute` | 4 + 1 per replan |
+
+## Model roles
+
+Every inference site resolves through `[models]` role assignment (`chat`, `planner`, `solver`, `repair` — falling back to `default`), so cost tuning is pure config: strong model where judgment lives, fast model where volume lives. Structured outputs (planner, prompt tools) get one automatic `repair`-role fix-up attempt before erroring into the replan loop.
+
+## Learning across turns
+
+Every successful tool call feeds the [shape cache](/tools/shape-cache); the planner reads it fresh at each planning attempt. The system genuinely gets better at planning the more it's used — including within a single run.

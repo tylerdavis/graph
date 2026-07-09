@@ -1,0 +1,70 @@
+---
+title: "Chat & ask"
+description: "The interactive surfaces: one-shot questions and the REPL"
+icon: "comments"
+---
+
+## One-shot: `graph ask`
+
+```bash
+graph ask "Summarize open urgent issues"
+graph ask "Now group them by project" --thread            # continue latest thread
+graph ask "…" --thread 62dac762e251                       # continue a specific thread
+```
+
+- **Streaming**: the answer streams to stdout; tool activity (dim `→ tool {args}` / `✓ tool 0.8s` lines) goes to stderr. `graph ask "…" > out.md` captures just the answer.
+- **Piped stdin** becomes context:
+  ```bash
+  git diff | graph ask "review this change"
+  cat error.log | graph ask "what's failing?"
+  ```
+- **`--json`** buffers and emits a machine-readable envelope instead:
+  ```json
+  {
+    "content": "…the answer…",
+    "tool_calls_made": 3,
+    "usage": { "input_tokens": 2055, "output_tokens": 100 },
+    "thread_id": "62dac762e251"
+  }
+  ```
+- **`--no-stream`** prints the final answer only, without token streaming.
+
+<Warning>
+Put `--thread` **after** the message. It takes an optional value, so `graph ask --thread "question"` parses the question as a thread id.
+</Warning>
+
+## Interactive: `graph chat`
+
+```bash
+graph chat                      # new thread
+graph chat --thread             # resume the most recent
+graph chat --thread <id>        # resume a specific one
+```
+
+Slash commands inside the REPL:
+
+| Command | Effect |
+|---|---|
+| `/thread` | show the current thread id and title |
+| `/state` | dump the conversation (including tool calls) as JSON |
+| `/quit`, `/exit`, `/q` | leave (Ctrl-D also works) |
+
+A failed turn keeps the session alive and rolls the conversation back so a retry starts clean. On exit you get a copy-pasteable resume hint:
+
+```
+resume with `graph chat --thread 8d36b7003df9`
+```
+
+## Reading the output
+
+```
+→ plan__project_status {"project":"New Relic"}     ← agent called a plan tool
+  → linear__list_projects {"limit":5,…}            ← steps indent under it
+  ✓ linear__list_projects 631ms
+  ✎ synthesizing answer…                           ← the plan's solver is writing
+  …dim streamed report…                            ← solver progress (stderr)
+✓ plan__project_status 8.8s
+The migration is on track…                         ← the agent's answer (stdout)
+```
+
+Dim text is progress; solid text is the answer. The distinction matters for piping — only the answer is on stdout.

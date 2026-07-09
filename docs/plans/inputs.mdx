@@ -1,0 +1,68 @@
+---
+title: "Plan inputs"
+description: "Schemas, JSON documents, and layered overrides"
+icon: "keyboard"
+---
+
+## Declaring inputs
+
+A plan declares its inputs as a JSON Schema; steps and solver templates reference them as `{{input.<name>}}`:
+
+```yaml
+input_schema:
+  type: object
+  required: [project]
+  properties:
+    project: { type: string, description: The Linear project name }
+```
+
+Inputs validate **before any step runs** — missing or mistyped fields fail fast with per-field messages.
+
+## Supplying inputs
+
+All of these are equivalent; they compose by layering:
+
+```bash
+# inline JSON
+graph plan run project_status '{"project":"New Relic"}'
+
+# key=value flags (values parse as JSON when possible: a=19 is a number)
+graph plan run project_status --input project="New Relic"
+
+# from a file (curl-style @)
+graph plan run project_status @inputs.json
+
+# from stdin (explicit -, never auto-detected)
+echo '{"project":"New Relic"}' | graph plan run project_status -
+
+# layered: document as base, flags override individual keys
+graph plan run report @base.json --input window="-P7D"
+```
+
+The layering (document first, `--input` overrides on top) is the CI pattern: a checked-in fixture plus per-run overrides.
+
+<Note>
+Stdin is read only on an explicit `-`. Auto-detection is a hang risk in automation (a job whose stdin never closes would block forever), so it costs one character instead.
+</Note>
+
+## When inputs are missing
+
+**`plan run`**: exit code `3`, with the problems and the input schema printed to stderr — a calling script knows exactly what to send:
+
+```
+plan 'project_status' needs inputs:
+  - "project" is a required property
+input schema:
+{ "type": "object", "required": ["project"], … }
+```
+
+**In chat**: the plan tool returns the same information as a tool error; the agent asks you for the missing values and re-invokes with complete inputs. No special resume machinery — just a conversation.
+
+## Same API on `graph tools test`
+
+Direct tool invocation uses the identical input model:
+
+```bash
+graph tools test linear__list_issues '{"team":"Core","limit":5}'
+graph tools test user__git_log @fixture.json --input count=3
+```

@@ -1,0 +1,50 @@
+---
+title: "Installation"
+description: "Build graph from source with mise"
+icon: "download"
+---
+
+graph is currently built from source. Tooling (Rust, cmake, pkg-config) is managed with [mise](https://mise.jdx.dev); OpenSSL can come from any source (nix, Homebrew, …) as long as `pkg-config` can resolve it.
+
+<Steps>
+  <Step title="Clone and set up the toolchain">
+    ```bash
+    git clone https://github.com/launchnotes/graph-cli
+    cd graph-cli
+    mise trust
+    mise install
+    ```
+  </Step>
+  <Step title="Build and install">
+    ```bash
+    mise run install
+    ```
+    This builds the release binary and installs `graph` onto your PATH (`~/.cargo/bin`).
+
+    <Note>
+    Build from a mise-activated shell inside the repo — the linker flags for the embedded database live in mise's environment. The **installed binary** has no such dependency; only the build does.
+    </Note>
+  </Step>
+  <Step title="Verify">
+    ```bash
+    graph --help
+    ```
+    <Info>
+    The very first run of a freshly built binary pauses ~1s while macOS scans it (Gatekeeper). Every run after that is instant, until the next rebuild.
+    </Info>
+  </Step>
+</Steps>
+
+## Requirements
+
+| Requirement | Notes |
+|---|---|
+| Rust 1.94+ | installed by `mise install` |
+| cmake, pkg-config | installed by `mise install` |
+| OpenSSL | from nix, Homebrew, or system — must be visible to `pkg-config` |
+| An LLM provider key | e.g. `ANTHROPIC_API_KEY` — see [Quickstart](/getting-started/quickstart) |
+
+## First-run notes
+
+- graph creates its embedded database at `~/.local/share/graph/db/` on first use (configurable via `[settings] data_dir`).
+- The embedded database is **single-process**: one running `graph chat` holds a lock that blocks other graph commands against the same data directory. Use `GRAPH_STORAGE=memory` for concurrent/ephemeral runs — see [Storage](/architecture/storage).

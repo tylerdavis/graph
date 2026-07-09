@@ -1,0 +1,32 @@
+---
+title: "The shape cache"
+description: "How graph learns what tools return"
+icon: "graduation-cap"
+---
+
+The planner can only write `{{E0.teams.0.name}}` if it knows `linear__list_teams` returns `{teams: [{name, …}]}`. MCP tools rarely declare output schemas — so graph learns them empirically.
+
+## How it works
+
+After **every successful tool call** — from chat, `ask`, a plan step, or `tools test` — graph infers a compact JSON Schema and a truncated example from the actual result and stores them keyed by tool name, with a seen-count.
+
+At planning time (`plan_and_execute`, and every replan attempt), each tool's entry in the planner's context includes the best available shape, in priority order:
+
+1. a **declared** output schema (from the MCP server, a `tool_overrides` entry, or a user tool's `output_schema`)
+2. the **observed** shape from the cache, marked as empirical
+
+The cache is read fresh at each planning attempt — a shape observed earlier in the *same run* (an agent tool call, a prior step) is already available to the next plan.
+
+## What this means in practice
+
+- **Everyday usage trains the planner.** After you've used `linear__list_issues` once, `plan_and_execute` writes correct field references against it forever after.
+- **Cold caches degrade, not break.** With no shape, the planner is instructed to use whole-result references (`{{E0}}`) or stop and continue planning after real results exist; a wrong deep path fails with a digest of the keys that *do* exist, and one replan fixes it.
+- **You can inspect it.** It's just data in the embedded database:
+  ```bash
+  graph db query "MATCH (s:ToolShape) RETURN s.tool, s.seen_count"
+  ```
+  (Or wrap that as a [cypher tool](/tools/user-defined) — the shipped `shape_cache` example does exactly this.)
+
+## Backend caveat
+
+The cache lives in the storage backend. With the default `ladybug` backend it accumulates across runs; with `GRAPH_STORAGE=memory` (CI mode) each process starts cold and learns only within its own run — one reason a future centralized backend is attractive for CI fleets. See [Storage](/architecture/storage).
