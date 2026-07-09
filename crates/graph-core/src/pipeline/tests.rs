@@ -26,8 +26,13 @@ impl ChatProvider for ScriptedProvider {
         Ok(responses.remove(0))
     }
 
-    async fn chat_stream(&self, _req: ChatRequest) -> Result<EventStream, LlmError> {
-        unimplemented!("pipeline uses non-streaming chat")
+    async fn chat_stream(&self, req: ChatRequest) -> Result<EventStream, LlmError> {
+        use futures::StreamExt;
+        let response = self.chat(req).await?;
+        Ok(
+            futures::stream::iter(vec![Ok(graph_llm::types::StreamEvent::Completed(response))])
+                .boxed(),
+        )
     }
 }
 

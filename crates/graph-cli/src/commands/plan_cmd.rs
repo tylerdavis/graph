@@ -79,7 +79,13 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
     }
 
     let store = runtime.store()?;
-    let events: Arc<dyn graph_core::EventSink> = Arc::new(TtySink::new(true));
+    // Non-JSON runs stream the solver's answer to stdout as it generates;
+    // --json buffers and emits the envelope instead.
+    let events: Arc<dyn graph_core::EventSink> = if json {
+        Arc::new(TtySink::new(true))
+    } else {
+        Arc::new(TtySink::for_plan_run())
+    };
     let pipeline = runtime.pipeline(store, events).await?;
     let query = format!("Run the '{}' plan", doc.name);
     let result = pipeline
@@ -98,7 +104,8 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
             }))?
         );
     } else {
-        println!("{}", outcome.answer);
+        // Already streamed; just terminate the line.
+        println!();
     }
     Ok(())
 }

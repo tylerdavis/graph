@@ -24,6 +24,7 @@ use crate::store::ToolShape;
 use crate::template::{render_input, render_str, RenderError, Roots};
 use crate::tools::{ToolOutcome, ToolRegistry};
 use crate::EventSink;
+use futures::StreamExt;
 use graph_config::Role;
 use graph_llm::types::{ChatMessage, ChatRequest};
 use graph_llm::ModelRouter;
@@ -111,10 +112,10 @@ impl Pipeline {
             }
 
             match self.execute_all(&mut state).await {
-                ExecutionEnd::Completed => return self.solve(state, false).await,
+                ExecutionEnd::Completed => return self.solve(state).await,
                 ExecutionEnd::Empty { step, message } => {
                     state.push_bus(&step, BusKind::EmptyData, message);
-                    return self.solve(state, false).await;
+                    return self.solve(state).await;
                 }
                 ExecutionEnd::Failed {
                     step,
@@ -157,10 +158,10 @@ impl Pipeline {
             return Err(PipelineError::InvalidPlan(problems.join("; ")));
         }
         match self.execute_all(&mut state).await {
-            ExecutionEnd::Completed => self.solve(state, false).await,
+            ExecutionEnd::Completed => self.solve(state).await,
             ExecutionEnd::Empty { step, message } => {
                 state.push_bus(&step, BusKind::EmptyData, message);
-                self.solve(state, false).await
+                self.solve(state).await
             }
             ExecutionEnd::Failed {
                 step,
@@ -177,6 +178,7 @@ impl Pipeline {
     // ── Planner ──────────────────────────────────────────────────────────
 
     async fn plan_node(&self, state: &mut RunState) -> Result<(), PipelineError> {
+        self.events.planning();
         let tools = self.registry.tools().await.unwrap_or_default();
         let tools_text = prompts::describe_tools(&tools, &self.shapes);
         let executed = state.executed_steps();
@@ -305,11 +307,7 @@ impl Pipeline {
 
     // ── Solver ───────────────────────────────────────────────────────────
 
-    async fn solve(
-        &self,
-        mut state: RunState,
-        _stream: bool,
-    ) -> Result<PipelineOutcome, PipelineError> {
+    async fn solve(&self, mut state: RunState) -> Result<PipelineOutcome, PipelineError> {
         let roots = Roots::new(&state.results);
         // Render the solver payload; a broken solver template must not sink
         // the run — fall back to raw results.
@@ -355,9 +353,10 @@ impl Pipeline {
             serde_json::to_string_pretty(&payload).unwrap_or_default()
         );
 
-        let response = self
+        self.events.synthesizing();
+        let mut stream = self
             .router
-            .chat(
+            .chat_stream(
                 Role::Solver,
                 ChatRequest {
                     system,
@@ -366,6 +365,19 @@ impl Pipeline {
                 },
             )
             .await?;
+        let mut response = None;
+        while let Some(event) = stream.next().await {
+            match event.map_err(PipelineError::Llm)? {
+                graph_llm::types::StreamEvent::TextDelta(text) => self.events.solver_delta(&text),
+                graph_llm::types::StreamEvent::ToolCallStarted { .. } => {}
+                graph_llm::types::StreamEvent::Completed(r) => response = Some(r),
+            }
+        }
+        let response = response.ok_or_else(|| {
+            PipelineError::Llm(graph_llm::LlmError::Parse(
+                "solver stream ended without completing".into(),
+            ))
+        })?;
 
         state.push_bus("solver", BusKind::Info, "answered");
         Ok(PipelineOutcome {
@@ -390,6 +402,7 @@ impl Pipeline {
             plan_text,
             errors.join("\n")
         );
+        self.events.synthesizing();
         let response = self
             .router
             .chat(
