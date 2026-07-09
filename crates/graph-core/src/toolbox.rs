@@ -72,11 +72,18 @@ impl AgentToolbox {
         let query = format!("Run the '{}' plan", doc.name);
         match self
             .pipeline
-            .run_explicit(&query, doc.steps.clone(), doc.solver.clone(), Some(input))
+            .run_explicit(&query, doc.steps.clone(), doc.finish(), Some(input))
             .await
         {
             Ok(outcome) => ToolOutcome {
-                result: json!({"answer": outcome.answer}),
+                result: match outcome.structured {
+                    Some(structured) => structured,
+                    None if outcome.answer.is_empty() => json!({
+                        "ok": true,
+                        "steps_executed": outcome.state.results.len(),
+                    }),
+                    None => json!({"answer": outcome.answer}),
+                },
                 is_error: false,
             },
             Err(PipelineError::StepFailed {
@@ -86,6 +93,13 @@ impl AgentToolbox {
             }) => ToolOutcome {
                 result: json!({
                     "error": format!("plan '{}' failed at step {step} ({tool}): {message}", doc.identifier),
+                }),
+                is_error: true,
+            },
+            Err(PipelineError::EmptyData { step, message }) => ToolOutcome {
+                result: json!({
+                    "error": format!("plan '{}' had no data at step {step}: {message}", doc.identifier),
+                    "empty_data": true,
                 }),
                 is_error: true,
             },

@@ -47,3 +47,7 @@ run = "cargo run -p graph-cli --"
 [tasks.release]
 description = "Build the release binary"
 run = "cargo build --release"
+
+[tasks.explorer]
+description = "Ladybug DB Explorer"
+run = "podman run -p 8888:8000 -v ~/.local/share/graph:/database -e LBUG_FILE=db --rm ghcr.io/ladybugdb/explorer:latest"

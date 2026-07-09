@@ -88,8 +88,9 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
     };
     let pipeline = runtime.pipeline(store, events).await?;
     let query = format!("Run the '{}' plan", doc.name);
+    let finish = doc.finish();
     let result = pipeline
-        .run_explicit(&query, doc.steps.clone(), doc.solver.clone(), Some(input))
+        .run_explicit(&query, doc.steps.clone(), finish, Some(input))
         .await;
     runtime.shutdown().await;
 
@@ -98,13 +99,22 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "answer": outcome.answer,
+                "answer": (!outcome.answer.is_empty()).then_some(&outcome.answer),
+                "output": outcome.structured,
                 "plan": doc.identifier,
                 "steps_executed": outcome.state.results.len(),
             }))?
         );
+    } else if let Some(structured) = &outcome.structured {
+        println!("{}", serde_json::to_string_pretty(structured)?);
+    } else if outcome.answer.is_empty() {
+        eprintln!(
+            "✓ plan '{}' completed ({} steps)",
+            doc.identifier,
+            outcome.state.results.len()
+        );
     } else {
-        // Already streamed; just terminate the line.
+        // Solver output already streamed; just terminate the line.
         println!();
     }
     Ok(())

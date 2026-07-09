@@ -276,7 +276,7 @@ async fn explicit_plans_fail_hard_without_replanning() {
     ]))
     .unwrap();
     let err = pipeline
-        .run_explicit("q", plan, SolverData::default(), None)
+        .run_explicit("q", plan, Finish::Solve(SolverData::default()), None)
         .await
         .unwrap_err();
     assert!(matches!(err, PipelineError::StepFailed { .. }));
@@ -299,7 +299,7 @@ async fn explicit_plans_render_input_root() {
         .run_explicit(
             "q",
             plan,
-            SolverData::default(),
+            Finish::Solve(SolverData::default()),
             Some(json!({"team": "Platform"})),
         )
         .await
@@ -320,11 +320,70 @@ async fn validation_rejects_forward_references() {
     ]))
     .unwrap();
     let err = pipeline
-        .run_explicit("q", plan, SolverData::default(), None)
+        .run_explicit("q", plan, Finish::Solve(SolverData::default()), None)
         .await
         .unwrap_err();
     let PipelineError::InvalidPlan(message) = err else {
         panic!("expected InvalidPlan");
     };
     assert!(message.contains("E1"));
+}
+
+#[tokio::test]
+async fn render_finish_emits_structured_output_without_llm() {
+    let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
+    let (pipeline, provider) = pipeline(vec![], registry, 1);
+
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}}
+    ]))
+    .unwrap();
+    let mut output = serde_json::Map::new();
+    output.insert("teams".into(), json!("{{E0.values}}"));
+    output.insert("count".into(), json!("{{E0.values.length}}"));
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Render(output), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.structured,
+        Some(json!({"teams": [{"id": "team-1"}], "count": 1}))
+    );
+    assert!(provider.requests.lock().unwrap().is_empty(), "no LLM calls");
+}
+
+#[tokio::test]
+async fn silent_finish_runs_steps_and_produces_nothing() {
+    let registry = search_registry(json!({"ok": true}));
+    let (pipeline, provider) = pipeline(vec![], registry.clone(), 1);
+
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}}
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert!(outcome.answer.is_empty());
+    assert!(outcome.structured.is_none());
+    assert_eq!(registry.invocations.lock().unwrap().len(), 1, "step ran");
+    assert!(provider.requests.lock().unwrap().is_empty(), "no LLM calls");
+}
+
+#[tokio::test]
+async fn empty_data_is_a_hard_failure_without_a_solver() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "t__issues", "input": {"teamId": "{{E0.values.0.id}}"}}
+    ]))
+    .unwrap();
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PipelineError::EmptyData { .. }));
 }

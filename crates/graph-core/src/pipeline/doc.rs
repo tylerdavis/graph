@@ -2,8 +2,9 @@
 //! and runnable directly via `graph plan run`.
 
 use super::plan::{step_number, Plan, SolverData};
+use super::Finish;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,8 +25,15 @@ pub struct PlanDoc {
     #[serde(default)]
     pub input_schema: Option<Value>,
     pub steps: Plan,
-    #[serde(default)]
-    pub solver: SolverData,
+    /// LLM synthesis of the results into prose. Optional — see `output`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solver: Option<SolverData>,
+    /// Structured output: a template map rendered against results and
+    /// emitted as JSON, with no LLM involved. Mutually exclusive with
+    /// `solver`; when both are absent the plan is a silent side-effect
+    /// plan (runs, exits, no output).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<Map<String, Value>>,
     /// Source file, set by the loader.
     #[serde(skip)]
     pub path: Option<PathBuf>,
@@ -127,12 +135,24 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
         }
         seen.push(&step.id);
     }
-    for value in doc.solver.data.values() {
-        if let Value::String(template) = value {
-            crate::template::referenced_roots(template).map_err(|e| e.to_string())?;
+    if doc.solver.is_some() && doc.output.is_some() {
+        return Err("`solver` and `output` are mutually exclusive — pick one".to_string());
+    }
+    if let Some(solver) = &doc.solver {
+        for value in solver.data.values() {
+            if let Value::String(template) = value {
+                crate::template::referenced_roots(template).map_err(|e| e.to_string())?;
+            }
+        }
+        crate::template::referenced_roots(&solver.query_to_answer).map_err(|e| e.to_string())?;
+    }
+    if let Some(output) = &doc.output {
+        for value in output.values() {
+            if let Value::String(template) = value {
+                crate::template::referenced_roots(template).map_err(|e| e.to_string())?;
+            }
         }
     }
-    crate::template::referenced_roots(&doc.solver.query_to_answer).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -184,6 +204,17 @@ pub fn validate_input(doc: &PlanDoc, input: &Value) -> Result<(), Vec<String>> {
 }
 
 impl PlanDoc {
+    /// How the plan finishes: solve, render structured output, or silence.
+    pub fn finish(&self) -> Finish {
+        if let Some(solver) = &self.solver {
+            Finish::Solve(solver.clone())
+        } else if let Some(output) = &self.output {
+            Finish::Render(output.clone())
+        } else {
+            Finish::Silent
+        }
+    }
+
     /// The tool description shown to the agent and planner.
     pub fn tool_description(&self) -> String {
         let mut description = format!("{} — {}", self.name, self.description);

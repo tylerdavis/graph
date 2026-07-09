@@ -55,11 +55,28 @@ pub enum PipelineError {
     },
     #[error("invalid plan: {0}")]
     InvalidPlan(String),
+    #[error("plan data ran out at step {step}: {message}")]
+    EmptyData { step: String, message: String },
+    #[error("failed to render plan output: {0}")]
+    OutputRender(String),
+}
+
+/// How an explicit plan finishes.
+#[derive(Debug, Clone)]
+pub enum Finish {
+    /// LLM synthesis of the results into prose.
+    Solve(SolverData),
+    /// Render a template map against the results into structured JSON.
+    Render(Map<String, Value>),
+    /// Side-effect plan: run the steps, produce no output.
+    Silent,
 }
 
 #[derive(Debug)]
 pub struct PipelineOutcome {
     pub answer: String,
+    /// Structured output (Finish::Render plans only).
+    pub structured: Option<Value>,
     pub state: RunState,
     /// True when the answer is an error summary rather than a solution.
     pub degraded: bool,
@@ -136,20 +153,24 @@ impl Pipeline {
     }
 
     /// Human-authored flow: validate and execute exactly the given plan.
-    /// No replanning — defects are hard errors. EmptyData still solves.
+    /// No replanning — defects are hard errors. EmptyData degrades to the
+    /// solver when there is one; output/silent plans fail hard on it
+    /// (automation must see that the data ran out).
     pub async fn run_explicit(
         &self,
         query: &str,
         plan: Plan,
-        solver_data: SolverData,
+        finish: Finish,
         input: Option<Value>,
     ) -> Result<PipelineOutcome, PipelineError> {
         let mut state = RunState {
             query: query.to_string(),
             plan,
-            solver_data,
             ..Default::default()
         };
+        if let Finish::Solve(solver_data) = &finish {
+            state.solver_data = solver_data.clone();
+        }
         if let Some(input) = input {
             state.results.insert("input".to_string(), input);
         }
@@ -158,11 +179,16 @@ impl Pipeline {
             return Err(PipelineError::InvalidPlan(problems.join("; ")));
         }
         match self.execute_all(&mut state).await {
-            ExecutionEnd::Completed => self.solve(state).await,
-            ExecutionEnd::Empty { step, message } => {
-                state.push_bus(&step, BusKind::EmptyData, message);
-                self.solve(state).await
-            }
+            ExecutionEnd::Completed => self.finish(state, finish).await,
+            ExecutionEnd::Empty { step, message } => match finish {
+                Finish::Solve(_) => {
+                    state.push_bus(&step, BusKind::EmptyData, message);
+                    self.solve(state).await
+                }
+                Finish::Render(_) | Finish::Silent => {
+                    Err(PipelineError::EmptyData { step, message })
+                }
+            },
             ExecutionEnd::Failed {
                 step,
                 tool,
@@ -171,6 +197,41 @@ impl Pipeline {
                 step,
                 tool,
                 message,
+            }),
+        }
+    }
+
+    /// Complete an explicit run per its finish mode.
+    async fn finish(
+        &self,
+        state: RunState,
+        finish: Finish,
+    ) -> Result<PipelineOutcome, PipelineError> {
+        match finish {
+            Finish::Solve(_) => self.solve(state).await,
+            Finish::Render(output) => {
+                let roots = Roots::new(&state.results);
+                let mut rendered = Map::new();
+                for (key, value) in &output {
+                    let item = match value {
+                        Value::String(template) => crate::template::render_value(template, &roots)
+                            .map_err(|e| PipelineError::OutputRender(e.to_string()))?,
+                        other => other.clone(),
+                    };
+                    rendered.insert(key.clone(), item);
+                }
+                Ok(PipelineOutcome {
+                    answer: String::new(),
+                    structured: Some(Value::Object(rendered)),
+                    state,
+                    degraded: false,
+                })
+            }
+            Finish::Silent => Ok(PipelineOutcome {
+                answer: String::new(),
+                structured: None,
+                state,
+                degraded: false,
             }),
         }
     }
@@ -382,6 +443,7 @@ impl Pipeline {
         state.push_bus("solver", BusKind::Info, "answered");
         Ok(PipelineOutcome {
             answer: response.content.unwrap_or_default(),
+            structured: None,
             state,
             degraded: false,
         })
@@ -416,6 +478,7 @@ impl Pipeline {
             .await?;
         Ok(PipelineOutcome {
             answer: response.content.unwrap_or_default(),
+            structured: None,
             state,
             degraded: true,
         })
