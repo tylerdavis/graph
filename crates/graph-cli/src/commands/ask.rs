@@ -3,7 +3,7 @@
 use crate::output::TtySink;
 use crate::runtime::{resolve_thread, title_from, Runtime};
 use anyhow::{bail, Result};
-use graph_core::{NullSink, Store};
+use graph_core::NullSink;
 use graph_llm::types::ChatMessage;
 use std::io::{IsTerminal, Read};
 use std::sync::Arc;

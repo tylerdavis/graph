@@ -4,7 +4,6 @@
 use crate::cli::ThreadsCommand;
 use crate::runtime::open_store;
 use anyhow::{bail, Result};
-use graph_core::Store;
 use graph_llm::types::ChatMessage;
 
 pub async fn run(command: ThreadsCommand) -> Result<()> {
