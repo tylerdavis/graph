@@ -387,3 +387,107 @@ async fn empty_data_is_a_hard_failure_without_a_solver() {
         .unwrap_err();
     assert!(matches!(err, PipelineError::EmptyData { .. }));
 }
+
+/// Minimal in-test Store: only the shape-cache methods matter here.
+struct ShapeOnlyStore {
+    shapes: Mutex<Vec<crate::store::ToolShape>>,
+}
+
+#[async_trait]
+impl crate::store::Store for ShapeOnlyStore {
+    async fn create_thread(
+        &self,
+        _: &str,
+    ) -> Result<crate::store::ThreadMeta, crate::store::StoreError> {
+        unimplemented!()
+    }
+    async fn get_thread(
+        &self,
+        _: &str,
+    ) -> Result<Option<crate::store::ThreadMeta>, crate::store::StoreError> {
+        unimplemented!()
+    }
+    async fn latest_thread(
+        &self,
+    ) -> Result<Option<crate::store::ThreadMeta>, crate::store::StoreError> {
+        unimplemented!()
+    }
+    async fn list_threads(
+        &self,
+    ) -> Result<Vec<crate::store::ThreadMeta>, crate::store::StoreError> {
+        unimplemented!()
+    }
+    async fn delete_thread(&self, _: &str) -> Result<bool, crate::store::StoreError> {
+        unimplemented!()
+    }
+    async fn set_title(&self, _: &str, _: &str) -> Result<(), crate::store::StoreError> {
+        unimplemented!()
+    }
+    async fn append_messages(
+        &self,
+        _: &str,
+        _: &[graph_llm::types::ChatMessage],
+    ) -> Result<(), crate::store::StoreError> {
+        unimplemented!()
+    }
+    async fn load_messages(
+        &self,
+        _: &str,
+    ) -> Result<Vec<graph_llm::types::ChatMessage>, crate::store::StoreError> {
+        unimplemented!()
+    }
+    async fn record_tool_shape(
+        &self,
+        tool: &str,
+        schema: &Value,
+        example: &Value,
+    ) -> Result<(), crate::store::StoreError> {
+        self.shapes.lock().unwrap().push(crate::store::ToolShape {
+            tool: tool.to_string(),
+            schema: schema.clone(),
+            example: example.clone(),
+            seen_count: 1,
+        });
+        Ok(())
+    }
+    async fn tool_shapes(&self) -> Result<Vec<crate::store::ToolShape>, crate::store::StoreError> {
+        Ok(self.shapes.lock().unwrap().clone())
+    }
+}
+
+#[tokio::test]
+async fn shapes_recorded_mid_run_reach_the_next_planning_attempt() {
+    let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
+    let store = Arc::new(ShapeOnlyStore {
+        shapes: Mutex::new(Vec::new()),
+    });
+    let (mut pipeline, provider) = pipeline(
+        vec![
+            structured(two_step_plan("E0.values.0.idd")), // BadPath → replan
+            structured(two_step_plan("E0.values.0.id")),
+            text("done"),
+        ],
+        registry,
+        2,
+    );
+    pipeline.store = Some(store.clone());
+
+    // The pipeline was constructed BEFORE this shape is recorded — under the
+    // old construction-time snapshot, no planner prompt would ever see it.
+    store
+        .record_tool_shape(
+            "t__search",
+            &json!({"type": "object"}),
+            &json!({"values": [{"id": "team-1"}]}),
+        )
+        .await
+        .unwrap();
+
+    pipeline.run_planned("q").await.unwrap();
+    let requests = provider.requests.lock().unwrap();
+    assert!(
+        requests[0].system.contains("observedOutputShape"),
+        "planner prompts must read the shape cache at plan time, not construction time"
+    );
+    assert!(requests[1].system.contains("observedOutputShape"));
+}
