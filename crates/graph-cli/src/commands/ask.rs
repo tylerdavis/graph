@@ -68,7 +68,7 @@ pub async fn run(args: AskArgs) -> Result<()> {
             println!("{}", outcome.text);
         }
         eprintln!(
-            "\x1b[2mthread {} — continue with `graph ask \"…\" --thread`\x1b[0m",
+            "\x1b[2mresume with `graph chat --thread {}`\x1b[0m",
             thread.id
         );
     }

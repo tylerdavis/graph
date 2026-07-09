@@ -79,7 +79,7 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
     }
     runtime.shutdown().await;
     if let Some(meta) = &thread {
-        eprintln!("thread {} — resume with `graph chat --thread`", meta.id);
+        eprintln!("resume with `graph chat --thread {}`", meta.id);
     }
     Ok(())
 }
