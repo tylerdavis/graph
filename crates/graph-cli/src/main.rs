@@ -1,5 +1,7 @@
 mod cli;
 mod commands;
+mod output;
+mod runtime;
 
 use anyhow::Result;
 use clap::Parser;
@@ -14,10 +16,25 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Config { command } => commands::config_cmd::run(command),
         Command::Mcp { command } => commands::mcp_cmd::run(command).await,
-        Command::Ask { .. }
-        | Command::Chat { .. }
-        | Command::Plan { .. }
-        | Command::Tools { .. }
+        Command::Tools { command } => commands::tools_cmd::run(command).await,
+        Command::Ask {
+            message,
+            thread,
+            r#continue,
+            json,
+            no_stream,
+        } => {
+            commands::ask::run(commands::ask::AskArgs {
+                message,
+                thread,
+                r#continue,
+                json,
+                no_stream,
+            })
+            .await
+        }
+        Command::Chat { thread, r#continue } => commands::chat_cmd::run(thread, r#continue).await,
+        Command::Plan { .. }
         | Command::Threads { .. }
         | Command::Sync { .. }
         | Command::Db { .. } => {
