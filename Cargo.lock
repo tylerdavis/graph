@@ -824,6 +824,7 @@ dependencies = [
  "chrono",
  "graph-config",
  "graph-core",
+ "graph-llm",
  "lbug",
  "serde",
  "serde_json",

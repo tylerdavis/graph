@@ -34,10 +34,9 @@ async fn main() -> Result<()> {
             .await
         }
         Command::Chat { thread, r#continue } => commands::chat_cmd::run(thread, r#continue).await,
-        Command::Plan { .. }
-        | Command::Threads { .. }
-        | Command::Sync { .. }
-        | Command::Db { .. } => {
+        Command::Threads { command } => commands::threads_cmd::run(command).await,
+        Command::Db { command } => commands::db_cmd::run(command).await,
+        Command::Plan { .. } | Command::Sync { .. } => {
             anyhow::bail!("not implemented yet — this command lands in a later phase")
         }
     }

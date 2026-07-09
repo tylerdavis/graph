@@ -1,9 +1,9 @@
-//! `graph ask` — one agent turn.
+//! `graph ask` — one agent turn, persisted to a thread.
 
 use crate::output::TtySink;
-use crate::runtime::Runtime;
+use crate::runtime::{resolve_thread, title_from, Runtime};
 use anyhow::{bail, Result};
-use graph_core::NullSink;
+use graph_core::{NullSink, Store};
 use graph_llm::types::ChatMessage;
 use std::io::{IsTerminal, Read};
 use std::sync::Arc;
@@ -17,37 +17,60 @@ pub struct AskArgs {
 }
 
 pub async fn run(args: AskArgs) -> Result<()> {
-    if args.thread.is_some() || args.r#continue {
-        bail!("thread persistence lands in phase 3 — omit --thread/--continue for now");
-    }
     let message = resolve_message(args.message)?;
 
     let runtime = Runtime::init()?;
+    let store = runtime.store()?;
+    let existing = resolve_thread(store.as_ref(), args.thread, args.r#continue).await?;
+
     let stream_text = !args.json && !args.no_stream;
     let events: Arc<dyn graph_core::EventSink> = if args.json {
         Arc::new(NullSink)
     } else {
         Arc::new(TtySink::new(!stream_text))
     };
-    let agent = runtime.agent(events)?;
+    let agent = runtime.agent(events, runtime.recording_registry(store.clone()))?;
 
-    let mut messages = vec![ChatMessage::User { content: message }];
+    let mut messages = match &existing {
+        Some(thread) => store.load_messages(&thread.id).await?,
+        None => Vec::new(),
+    };
+    let pre_len = messages.len();
+    messages.push(ChatMessage::User {
+        content: message.clone(),
+    });
+
     let result = agent.run_turn(&mut messages).await;
     runtime.shutdown().await;
     let outcome = result?;
+
+    // Persist only successful turns; a new thread is created on demand.
+    let thread = match existing {
+        Some(thread) => thread,
+        None => store.create_thread(&title_from(&message)).await?,
+    };
+    store
+        .append_messages(&thread.id, &messages[pre_len..])
+        .await?;
 
     if args.json {
         let envelope = serde_json::json!({
             "content": outcome.text,
             "tool_calls_made": outcome.tool_calls_made,
             "usage": outcome.usage,
-            "thread_id": null,
+            "thread_id": thread.id,
         });
         println!("{}", serde_json::to_string_pretty(&envelope)?);
-    } else if stream_text {
-        println!();
     } else {
-        println!("{}", outcome.text);
+        if stream_text {
+            println!();
+        } else {
+            println!("{}", outcome.text);
+        }
+        eprintln!(
+            "\x1b[2mthread {} — continue with `graph ask --continue \"…\"`\x1b[0m",
+            thread.id
+        );
     }
     Ok(())
 }

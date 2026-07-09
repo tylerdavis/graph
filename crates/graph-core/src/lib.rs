@@ -5,7 +5,10 @@
 
 pub mod agent;
 pub mod prompts;
+pub mod shapes;
+pub mod store;
 pub mod tools;
 
 pub use agent::{Agent, AgentError, EventSink, NullSink, TurnOutcome};
+pub use store::{Store, StoreError, ThreadMeta, ToolShape};
 pub use tools::{ToolDef, ToolError, ToolOutcome, ToolRegistry};
