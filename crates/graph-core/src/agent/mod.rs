@@ -39,6 +39,8 @@ pub struct TurnOutcome {
     pub text: String,
     pub usage: Usage,
     pub tool_calls_made: u32,
+    /// Names of tools invoked this turn, in first-use order, deduplicated.
+    pub tools_used: Vec<String>,
 }
 
 impl Agent {
@@ -52,6 +54,7 @@ impl Agent {
         let tools = self.tool_specs().await;
         let mut usage = Usage::default();
         let mut tool_calls_made = 0u32;
+        let mut tools_used: Vec<String> = Vec::new();
 
         for iteration in 0..self.max_iterations {
             if iteration > 0 {
@@ -71,10 +74,16 @@ impl Agent {
                     text: response.content.unwrap_or_default(),
                     usage,
                     tool_calls_made,
+                    tools_used,
                 });
             }
 
             tool_calls_made += response.tool_calls.len() as u32;
+            for call in &response.tool_calls {
+                if !tools_used.contains(&call.name) {
+                    tools_used.push(call.name.clone());
+                }
+            }
             let results = self.execute_calls(&response.tool_calls).await;
             messages.extend(results);
         }

@@ -1,6 +1,5 @@
 //! `graph chat` — interactive REPL with persistent threads.
 
-use crate::output::TtySink;
 use crate::runtime::{resolve_thread, title_from, Runtime};
 use anyhow::{bail, Result};
 use graph_core::{Store, ThreadMeta};
@@ -16,7 +15,7 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
     let handles = runtime.store_handles()?;
     let store = handles.store.clone();
     let mut thread: Option<ThreadMeta> = resolve_thread(store.as_ref(), thread).await?;
-    let events: Arc<dyn graph_core::EventSink> = Arc::new(TtySink::new(false));
+    let events: Arc<dyn graph_core::EventSink> = crate::output::make_sink(false, false);
     let toolbox = runtime.toolbox(&handles, events.clone()).await?;
     let agent = runtime.agent(events, toolbox)?;
 

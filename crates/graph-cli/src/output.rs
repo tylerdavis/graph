@@ -118,3 +118,69 @@ impl EventSink for TtySink {
         }
     }
 }
+
+/// Machine-readable event sink: one JSON line per event on stderr.
+/// Selected by `GRAPH_EVENTS=jsonl` — CI logs become parseable traces.
+pub struct JsonlSink {
+    /// Suppress streaming text (final answer printed by the caller).
+    quiet_text: bool,
+}
+
+impl JsonlSink {
+    pub fn new(quiet_text: bool) -> Self {
+        Self { quiet_text }
+    }
+
+    fn emit(&self, value: serde_json::Value) {
+        eprintln!("{value}");
+    }
+}
+
+impl EventSink for JsonlSink {
+    fn text_delta(&self, text: &str) {
+        if !self.quiet_text {
+            print!("{text}");
+            let _ = std::io::stdout().flush();
+        }
+    }
+
+    fn tool_started(&self, name: &str, args: &Value) {
+        self.emit(serde_json::json!({"event": "tool_started", "tool": name, "args": args}));
+    }
+
+    fn tool_finished(&self, name: &str, elapsed: Duration, is_error: bool) {
+        self.emit(serde_json::json!({
+            "event": "tool_finished", "tool": name,
+            "ms": elapsed.as_millis() as u64, "is_error": is_error,
+        }));
+    }
+
+    fn iteration(&self, n: u32) {
+        self.emit(serde_json::json!({"event": "agent_round", "n": n}));
+    }
+
+    fn replanning(&self, attempt: u32) {
+        self.emit(serde_json::json!({"event": "replanning", "attempt": attempt}));
+    }
+
+    fn planning(&self) {
+        self.emit(serde_json::json!({"event": "planning"}));
+    }
+
+    fn synthesizing(&self) {
+        self.emit(serde_json::json!({"event": "synthesizing"}));
+    }
+    // solver_delta intentionally not emitted: token-level noise.
+}
+
+/// The standard sink choice: JSONL when `GRAPH_EVENTS=jsonl`, else the TTY
+/// sink. `solver_stdout` only applies to the TTY sink (plan run).
+pub fn make_sink(quiet_text: bool, solver_stdout: bool) -> std::sync::Arc<dyn EventSink> {
+    if std::env::var("GRAPH_EVENTS").as_deref() == Ok("jsonl") {
+        std::sync::Arc::new(JsonlSink::new(quiet_text))
+    } else if solver_stdout {
+        std::sync::Arc::new(TtySink::for_plan_run())
+    } else {
+        std::sync::Arc::new(TtySink::new(quiet_text))
+    }
+}

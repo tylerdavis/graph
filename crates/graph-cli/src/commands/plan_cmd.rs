@@ -2,7 +2,6 @@
 
 use crate::cli::PlanCommand;
 use crate::commands::input::resolve_input;
-use crate::output::TtySink;
 use crate::runtime::Runtime;
 use anyhow::{bail, Result};
 use graph_core::pipeline::doc::{load_plan_doc, validate_input};
@@ -84,11 +83,7 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
     let handles = runtime.store_handles()?;
     // Non-JSON runs stream the solver's answer to stdout as it generates;
     // --json buffers and emits the envelope instead.
-    let events: Arc<dyn graph_core::EventSink> = if json {
-        Arc::new(TtySink::new(true))
-    } else {
-        Arc::new(TtySink::for_plan_run())
-    };
+    let events: Arc<dyn graph_core::EventSink> = crate::output::make_sink(json, !json);
     let pipeline = runtime.pipeline(&handles, events).await?;
     let query = format!("Run the '{}' plan", doc.name);
     let finish = doc.finish();

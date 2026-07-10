@@ -1,6 +1,5 @@
 //! `graph ask` — one agent turn, persisted to a thread.
 
-use crate::output::TtySink;
 use crate::runtime::{resolve_thread, title_from, Runtime};
 use anyhow::{bail, Result};
 use graph_core::NullSink;
@@ -25,9 +24,14 @@ pub async fn run(args: AskArgs) -> Result<()> {
 
     let stream_text = !args.json && !args.no_stream;
     let events: Arc<dyn graph_core::EventSink> = if args.json {
-        Arc::new(NullSink)
+        // Quiet unless JSONL events were explicitly requested.
+        if std::env::var("GRAPH_EVENTS").as_deref() == Ok("jsonl") {
+            crate::output::make_sink(true, false)
+        } else {
+            Arc::new(NullSink)
+        }
     } else {
-        Arc::new(TtySink::new(!stream_text))
+        crate::output::make_sink(!stream_text, false)
     };
     let toolbox = runtime.toolbox(&handles, events.clone()).await?;
     let agent = runtime.agent(events, toolbox)?;
@@ -58,6 +62,7 @@ pub async fn run(args: AskArgs) -> Result<()> {
         let envelope = serde_json::json!({
             "content": outcome.text,
             "tool_calls_made": outcome.tool_calls_made,
+            "tools_used": outcome.tools_used,
             "usage": outcome.usage,
             "thread_id": thread.id,
         });
