@@ -28,9 +28,15 @@
           "plans/finish-modes",
           "plans/inputs",
           "plans/escape-hatch",
-          "plans/errors-and-replanning",
-          "plans/ci-cookbook",
-          "plans/cookbook"
+          "plans/errors-and-replanning"
+        ]
+      },
+      {
+        "group": "Cookbook",
+        "pages": [
+          "cookbook/ci-checks",
+          "cookbook/reporting",
+          "cookbook/automation"
         ]
       },
       {
@@ -43,10 +49,9 @@
         ]
       },
       {
-        "group": "Automation & CI",
+        "group": "Automation",
         "pages": [
-          "automation/scripting",
-          "automation/ci"
+          "automation/scripting"
         ]
       },
       {
@@ -78,5 +83,19 @@
     "socials": {
       "github": "https://github.com/tylerdavis/graph"
     }
-  }
+  },
+  "redirects": [
+    {
+      "source": "/plans/ci-cookbook",
+      "destination": "/cookbook/ci-checks"
+    },
+    {
+      "source": "/plans/cookbook",
+      "destination": "/cookbook/reporting"
+    },
+    {
+      "source": "/automation/ci",
+      "destination": "/cookbook/ci-checks"
+    }
+  ]
 }
