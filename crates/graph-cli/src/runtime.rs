@@ -65,12 +65,14 @@ impl Runtime {
         })
     }
 
-    /// Base tool catalog (MCP servers + user-defined tools), wrapped with
-    /// shape recording.
+    /// Base tool catalog (MCP servers + builtin packs + user-defined
+    /// tools), wrapped with shape recording.
     pub fn recording_registry(&self, handles: &StoreHandles) -> Result<Arc<dyn ToolRegistry>> {
+        let builtin_tools = self.builtin_tools(handles.cypher.clone())?;
         let user_tools = self.user_tools(handles.cypher.clone())?;
         let base: Arc<dyn ToolRegistry> = Arc::new(CompositeRegistry::new(vec![
             self.registry.clone() as Arc<dyn ToolRegistry>,
+            builtin_tools,
             user_tools,
         ]));
         Ok(Arc::new(RecordingRegistry::new(
@@ -79,8 +81,21 @@ impl Runtime {
         )))
     }
 
-    /// User-defined tools from `[tools].paths`, layered over any enabled
-    /// `[tools].packs` (a user tool shadows a same-named pack tool).
+    /// Bundled pack tools from `[tools].packs`, served under `builtin__`.
+    pub fn builtin_tools(
+        &self,
+        cypher: Option<Arc<dyn CypherExecutor>>,
+    ) -> Result<Arc<dyn ToolRegistry>> {
+        let docs = graph_core::user_tools::load_pack_tools(&self.config.tools.packs)
+            .map_err(anyhow::Error::msg)?;
+        Ok(Arc::new(UserToolRegistry::builtins(
+            docs,
+            self.router.clone(),
+            cypher,
+        )))
+    }
+
+    /// User-defined tools from `[tools].paths`, served under `user__`.
     pub fn user_tools(
         &self,
         cypher: Option<Arc<dyn CypherExecutor>>,
@@ -92,8 +107,7 @@ impl Runtime {
             .iter()
             .map(|p| graph_config::expand_tilde(p))
             .collect();
-        let docs = graph_core::user_tools::load_tools_with_packs(&self.config.tools.packs, &dirs)
-            .map_err(anyhow::Error::msg)?;
+        let docs = graph_core::user_tools::load_user_tools(&dirs).map_err(anyhow::Error::msg)?;
         Ok(Arc::new(UserToolRegistry::new(
             docs,
             self.router.clone(),

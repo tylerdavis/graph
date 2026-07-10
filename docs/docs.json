@@ -45,6 +45,7 @@
           "tools/overview",
           "tools/mcp-servers",
           "tools/user-defined",
+          "tools/builtins",
           "tools/shape-cache"
         ]
       },

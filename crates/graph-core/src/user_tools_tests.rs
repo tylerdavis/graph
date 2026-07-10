@@ -266,25 +266,30 @@ fn unknown_pack_errors_with_available_list() {
     assert!(err.contains("github"), "{err}");
 }
 
-#[test]
-fn user_tool_shadows_pack_tool() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        dir.path().join("git_diff.yaml"),
-        r#"
-name: git_diff
-description: local override
-kind: exec
-command: echo
-"#,
-    )
-    .unwrap();
-    let docs = load_tools_with_packs(&["github".to_string()], &[dir.path().to_path_buf()]).unwrap();
-    let overridden = docs.iter().find(|d| d.name == "git_diff").unwrap();
-    assert_eq!(overridden.description, "local override");
-    assert_eq!(docs.iter().filter(|d| d.name == "git_diff").count(), 1);
-    // The rest of the pack is still present.
-    assert!(docs.iter().any(|d| d.name == "gh_pr_meta"));
+#[tokio::test]
+async fn pack_tools_serve_under_builtin_namespace() {
+    let docs = load_pack_tools(&["github".to_string()]).unwrap();
+    let registry = UserToolRegistry::builtins(docs, router(), None);
+
+    let names: Vec<String> = registry
+        .tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+    assert!(
+        names.iter().all(|n| n.starts_with("builtin__")),
+        "{names:?}"
+    );
+    assert!(names.contains(&"builtin__gh_pr_meta".to_string()));
+
+    // Invocation honors the namespace: builtin__ resolves, user__ doesn't.
+    let err = registry
+        .invoke("user__gh_pr_meta", json!({"pr": 1}))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::Unknown(_)));
 }
 
 // ── Prompt-tool output_schema enforcement ────────────────────────────────

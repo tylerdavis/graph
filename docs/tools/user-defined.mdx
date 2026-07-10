@@ -77,25 +77,9 @@ output_schema:               # optional → enforced structured output
 
 With an `output_schema`, the result is validated JSON; without one, `{"text": …}`. Useful as a cheap sub-task inside plans — classify, extract, reword — with the model role controlling cost.
 
-## Bundled packs
+## Built-in packs
 
-Common tools ship inside the binary as **packs** — same YAML, same validation, same `user__` catalog as tools you author. Enable per pack:
-
-```toml
-[tools]
-packs = ["github"]
-```
-
-The `github` pack (exec tools; expect `git`, `gh`, and `jq` on PATH, with `GH_TOKEN` or `gh auth` for the `gh_*` tools — all present on GitHub Actions runners):
-
-| Tool | Does |
-|---|---|
-| `gh_pr_meta` | PR title/body/base sha/head sha/state/author via `gh pr view` |
-| `gh_pr_comment` | Post-or-update a PR comment (`--edit-last`, so reruns keep one comment) |
-| `git_diff` | Merge-base diff between two refs, path-scoped, with excludes, truncated to a byte budget |
-| `git_changed_files` | Changed files between two refs filtered by prefix, with a count — the cheap input for [exit gates](/plans/escape-hatch) |
-
-A user tool with the same name **shadows** the pack version — copy a pack tool into your tools directory to pin or tweak it. Unknown pack names fail at startup, not at plan time. These are the building blocks for CI plans; see [CI checks](/cookbook/ci-checks).
+The same YAML format also powers [**built-in tools**](/tools/builtins): packs compiled into the binary and served under the `builtin__` namespace (enable with `[tools] packs = ["github"]`). To customize one, copy its YAML into a tools directory and reference your `user__` copy from plans.
 
 ## Shared behavior
 
