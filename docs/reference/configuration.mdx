@@ -61,6 +61,7 @@ repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
 | `planner` | `plan_and_execute` plan authoring |
 | `solver` | plan report synthesis |
 | `repair` | one-shot JSON repair when structured output fails to parse |
+| `judge` | yes/no verdicts for [inferred exit gates](/plans/escape-hatch) |
 
 A common cost setup: strong model for `chat`/`planner`, fast model for `solver`/`repair`.
 

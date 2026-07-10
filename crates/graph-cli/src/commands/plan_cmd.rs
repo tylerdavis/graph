@@ -9,6 +9,9 @@ use std::sync::Arc;
 
 /// Exit code for "the plan needs inputs you didn't provide".
 const EXIT_NEEDS_INPUT: i32 = 3;
+/// Exit code for "an exit step asserted failure" — distinct from 1
+/// (infrastructure failure) so CI can branch on it.
+const EXIT_PLAN_ASSERTED: i32 = 4;
 
 pub async fn run(command: PlanCommand) -> Result<()> {
     match command {
@@ -93,6 +96,10 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
     runtime.shutdown().await;
 
     let outcome = result?;
+    let exited_error = matches!(
+        &outcome.exit,
+        Some(e) if e.status == graph_core::pipeline::ExitStatus::Error
+    );
     if json {
         println!(
             "{}",
@@ -101,8 +108,19 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
                 "output": outcome.structured,
                 "plan": doc.identifier,
                 "steps_executed": outcome.state.steps_executed(),
+                "exit": outcome.exit,
             }))?
         );
+    } else if let Some(exit) = &outcome.exit {
+        // Exit-step endings: message to the human, output (if any) to stdout.
+        if let Some(structured) = &outcome.structured {
+            println!("{}", serde_json::to_string_pretty(structured)?);
+        }
+        if exited_error {
+            eprintln!("✗ {}", exit.message);
+        } else {
+            eprintln!("✓ {}", exit.message);
+        }
     } else if let Some(structured) = &outcome.structured {
         println!("{}", serde_json::to_string_pretty(structured)?);
     } else if outcome.answer.is_empty() {
@@ -114,6 +132,9 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
     } else {
         // Solver output already streamed; just terminate the line.
         println!();
+    }
+    if exited_error {
+        std::process::exit(EXIT_PLAN_ASSERTED);
     }
     Ok(())
 }

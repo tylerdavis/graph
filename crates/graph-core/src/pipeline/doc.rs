@@ -124,7 +124,10 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
         if step_number(&step.id).is_none() {
             return Err(format!("step id '{}' must look like E0, E1, …", step.id));
         }
-        if !step.tool_name.contains("__") && step.tool_name != "plan_and_execute" {
+        if !step.tool_name.contains("__")
+            && step.tool_name != "plan_and_execute"
+            && step.tool_name != super::EXIT_TOOL
+        {
             return Err(format!(
                 "step {} tool '{}' is not a namespaced tool name",
                 step.id, step.tool_name

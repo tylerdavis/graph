@@ -22,6 +22,7 @@ So `graph plan run report '{"project":"X"}' > report.md` captures a clean report
 | `0` | success |
 | `1` | any failure — step failed, tool errored, config invalid, `empty_data` on an output/silent plan |
 | `3` | **needs input** — required plan inputs missing/invalid; the input schema prints to stderr so the caller knows what to send |
+| `4` | **assertion fired** — an [exit gate](/plans/escape-hatch) ended the plan with an error state; infrastructure is fine, the condition is real |
 
 ## JSON envelopes
 

@@ -19,6 +19,7 @@ icon: "list-check"
 | `0` | success |
 | `1` | failure (step/tool error, config error, `empty_data` on output/silent plans) |
 | `3` | plan inputs missing or invalid — input schema printed to stderr |
+| `4` | an [exit gate](/plans/escape-hatch) asserted failure — the plan ran correctly and its assertion fired |
 
 ## Stream conventions
 

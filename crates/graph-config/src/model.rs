@@ -113,6 +113,8 @@ pub struct ModelRoles {
     pub use_case_solver: Option<ModelChoice>,
     pub repair: Option<ModelChoice>,
     pub embedder: Option<ModelChoice>,
+    /// Cheap verdict calls for inferred exit gates.
+    pub judge: Option<ModelChoice>,
 }
 
 /// One pipeline/agent role that needs a model.
@@ -124,6 +126,7 @@ pub enum Role {
     UseCaseSolver,
     Repair,
     Embedder,
+    Judge,
 }
 
 impl ModelRoles {
@@ -136,6 +139,7 @@ impl ModelRoles {
             Role::UseCaseSolver => &self.use_case_solver,
             Role::Repair => &self.repair,
             Role::Embedder => &self.embedder,
+            Role::Judge => &self.judge,
         };
         specific.as_ref().or(self.default.as_ref())
     }

@@ -491,3 +491,121 @@ async fn shapes_recorded_mid_run_reach_the_next_planning_attempt() {
     );
     assert!(requests[1].system.contains("observedOutputShape"));
 }
+
+fn exit_plan(when_value: &str, status: &str) -> Plan {
+    serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "exit", "input": {
+            "when": {"value": when_value, "op": "eq", "to": 0},
+            "status": status,
+            "message": "gate fired",
+        }},
+        {"id": "E2", "toolName": "t__issues", "input": {"q": "{{E0.values}}"}}
+    ]))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn exit_success_skips_remaining_steps_and_solver() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = pipeline(vec![], registry.clone(), 1);
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            exit_plan("{{E0.values.length}}", "success"),
+            Finish::Solve(SolverData::default()),
+            None,
+        )
+        .await
+        .unwrap();
+    let exit = outcome.exit.expect("exited");
+    assert_eq!(exit.status, crate::pipeline::ExitStatus::Success);
+    assert_eq!(outcome.answer, "gate fired");
+    // E2 never ran; solver never called.
+    assert_eq!(registry.invocations.lock().unwrap().len(), 1);
+    assert!(provider.requests.lock().unwrap().is_empty(), "no LLM calls");
+}
+
+#[tokio::test]
+async fn exit_gate_passes_and_plan_continues() {
+    let registry = search_registry(json!({"values": [{"id": 1}]}));
+    let (pipeline, _) = pipeline(vec![text("done")], registry.clone(), 1);
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            exit_plan("{{E0.values.length}}", "success"),
+            Finish::Solve(SolverData::default()),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(outcome.exit.is_none());
+    assert_eq!(outcome.answer, "done");
+    // Gate result is referenceable.
+    assert_eq!(outcome.state.results["E1"]["passed"], json!(true));
+    assert_eq!(
+        registry.invocations.lock().unwrap().len(),
+        2,
+        "E0 and E2 ran"
+    );
+}
+
+#[tokio::test]
+async fn inferred_exit_uses_judge_verdict() {
+    let registry = search_registry(json!({"values": [{"id": 1}]}));
+    let (pipeline, provider) = pipeline(
+        vec![structured(
+            json!({"verdict": true, "reason": "clearly blocked"}),
+        )],
+        registry,
+        1,
+    );
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "exit", "input": {
+            "infer": "Is this blocked? {{E0.values}}",
+            "status": "error",
+            "message": "Blocked",
+        }}
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    let exit = outcome.exit.expect("exited");
+    assert_eq!(exit.status, crate::pipeline::ExitStatus::Error);
+    assert_eq!(exit.message, "Blocked (clearly blocked)");
+    assert_eq!(exit.reason.as_deref(), Some("clearly blocked"));
+    // The verdict question included the rendered data.
+    let requests = provider.requests.lock().unwrap();
+    assert!(matches!(
+        &requests[0].messages[0],
+        graph_llm::types::ChatMessage::User { content } if content.contains("\"id\"")
+    ));
+}
+
+#[tokio::test]
+async fn planner_gets_the_exit_tool_and_authored_exits_work() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = pipeline(
+        vec![structured(json!({
+            "plan": [
+                {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+                {"id": "E1", "toolName": "exit", "input": {
+                    "when": {"value": "{{E0.values.length}}", "op": "eq", "to": 0},
+                    "status": "success",
+                    "message": "nothing to do",
+                }}
+            ],
+            "solverData": {"queryToAnswer": "q", "data": {}}
+        }))],
+        registry,
+        1,
+    );
+    let outcome = pipeline.run_planned("find work").await.unwrap();
+    assert_eq!(outcome.exit.expect("exited").message, "nothing to do");
+    // The planner prompt described the exit tool.
+    let requests = provider.requests.lock().unwrap();
+    assert!(requests[0].system.contains("\"name\":\"exit\""));
+}

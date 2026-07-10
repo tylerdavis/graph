@@ -27,6 +27,7 @@
           "plans/template-language",
           "plans/finish-modes",
           "plans/inputs",
+          "plans/escape-hatch",
           "plans/errors-and-replanning",
           "plans/cookbook"
         ]

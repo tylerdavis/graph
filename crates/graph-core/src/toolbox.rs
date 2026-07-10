@@ -78,17 +78,34 @@ impl AgentToolbox {
             .run_explicit(&query, doc.steps.clone(), doc.finish(), Some(input))
             .await
         {
-            Ok(outcome) => ToolOutcome {
-                result: match outcome.structured {
-                    Some(structured) => structured,
-                    None if outcome.answer.is_empty() => json!({
-                        "ok": true,
-                        "steps_executed": outcome.state.steps_executed(),
-                    }),
-                    None => json!({"answer": outcome.answer}),
-                },
-                is_error: false,
-            },
+            Ok(outcome) => {
+                if let Some(exit) = &outcome.exit {
+                    let is_error = exit.status == crate::pipeline::ExitStatus::Error;
+                    let mut result = json!({
+                        "exited": true,
+                        "status": if is_error { "error" } else { "success" },
+                        "message": exit.message,
+                    });
+                    if let Some(output) = &exit.output {
+                        result["output"] = Value::Object(output.clone());
+                    }
+                    if is_error {
+                        result["error"] = json!(exit.message);
+                    }
+                    return ToolOutcome { result, is_error };
+                }
+                ToolOutcome {
+                    result: match outcome.structured {
+                        Some(structured) => structured,
+                        None if outcome.answer.is_empty() => json!({
+                            "ok": true,
+                            "steps_executed": outcome.state.steps_executed(),
+                        }),
+                        None => json!({"answer": outcome.answer}),
+                    },
+                    is_error: false,
+                }
+            }
             Err(PipelineError::StepFailed {
                 step,
                 tool,

@@ -112,6 +112,9 @@ Classify the request before planning and note it in step reasoning:
 
 ### Identity Handling
 - Do not filter by missing values or placeholders; skip a filter when the data for it is unavailable.
+
+### Early Exits
+- Use the `exit` tool to end the plan gracefully instead of proceeding with empty or meaningless data: exit with status "success" and a clear message when there is nothing to do, or "error" to assert a failure condition the user should see.
 "#,
         current_date = args.current_date,
         last_error = last_error,

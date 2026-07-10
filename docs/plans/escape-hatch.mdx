@@ -1,0 +1,78 @@
+---
+title: "Exit gates"
+description: "End a plan early with a success or error state"
+icon: "door-open"
+---
+
+An `exit` step is a plan's escape hatch: a gate that ends execution early with an explicit **success** or **error** state — skipping every remaining step *and the solver*. Gates make plans CI-shaped: guard clauses, assertions, and judgment calls live in the plan instead of in shell scripting around it.
+
+```yaml
+steps:
+  - id: E0
+    tool_name: linear__list_issues
+    input: { priority: 1, limit: 50 }
+
+  # Guard: nothing to do → clean success, zero further cost
+  - id: E1
+    tool_name: exit
+    input:
+      when: { value: "{{E0.issues.length}}", op: eq, to: 0 }
+      status: success
+      message: "No urgent issues — nothing to report."
+      output: { count: 0 }
+
+  # Assertion: urgent issues present → fail the pipeline
+  - id: E2
+    tool_name: exit
+    input:
+      when: { value: "{{E0.issues.length}}", op: gt, to: 5 }
+      status: error
+      message: "More than 5 urgent issues — paging on-call."
+```
+
+When a gate doesn't fire, its step result is `{passed: true, …}` and the plan continues.
+
+## Logical gates: `when`
+
+A single comparison — `value` (usually a template; [typed splice](/plans/template-language#typed-splice) keeps numbers numeric) against `to`:
+
+| `op` | Meaning |
+|---|---|
+| `eq`, `ne` | equality on any JSON value |
+| `gt`, `lt`, `gte`, `lte` | numeric ordering |
+| `empty`, `not_empty` | arrays, strings, objects, null (`to` omitted) |
+| `contains` | substring, or array membership |
+
+Need OR? Use two exit steps. Need more? Use an inferred gate, or compute in a [user tool](/tools/user-defined) step first.
+
+## Inferred gates: `infer`
+
+A yes/no question judged by the `judge` model role (falls back to `default` — point it at a cheap model):
+
+```yaml
+  - id: E3
+    tool_name: exit
+    input:
+      infer: |
+        Does this status update indicate the project is blocked?
+
+        {{E2.statusUpdates.0.body}}
+      status: error
+      message: "Project appears blocked."
+```
+
+The judgment is a forced-schema call returning `{verdict, reason}`; the gate fires only on a yes, the model's reason is appended to the message and carried in the envelope, and a no leaves `{passed: true, verdict: false, reason}` as the step result for downstream reference. One cheap inference, only when the gate is reached.
+
+For reusable or complex judgments, the composition form keeps reasoning as first-class data: a [prompt tool](/tools/user-defined#prompt-an-llm-call-as-a-tool) step returning a verdict, followed by a logical `exit when {{Ex.verdict}} eq true`.
+
+## Exit semantics
+
+| Surface | success exit | error exit |
+|---|---|---|
+| `plan run` | message on stderr, `output` map (if any) on stdout, **exit 0** | message on stderr, **exit 4** — distinct from `1` (infrastructure failure) so CI can branch |
+| as a plan tool | `{exited: true, status, message, output?}` | `is_error` tool result with the message |
+| `--json` envelope | `"exit": {status, message, reason?, step}` | same |
+
+`plan_and_execute`'s planner also has the exit tool, with a standing instruction to exit gracefully rather than fabricate results when data comes up empty.
+
+Omitting both `when` and `infer` makes the exit unconditional — useful as the terminal step after a judgment chain.

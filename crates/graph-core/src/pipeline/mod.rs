@@ -11,12 +11,14 @@
 //!   the solver.
 
 pub mod doc;
+pub mod exit;
 pub mod plan;
 mod prompts;
 mod state;
 #[cfg(test)]
 mod tests;
 
+pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
 pub use state::{BusEntry, BusKind, RunState};
 
@@ -77,15 +79,19 @@ pub enum Finish {
 #[derive(Debug)]
 pub struct PipelineOutcome {
     pub answer: String,
-    /// Structured output (Finish::Render plans only).
+    /// Structured output (Finish::Render plans, or an exit step's output).
     pub structured: Option<Value>,
     pub state: RunState,
     /// True when the answer is an error summary rather than a solution.
     pub degraded: bool,
+    /// Set when an `exit` step ended the plan early.
+    pub exit: Option<PlanExit>,
 }
 
 enum ExecutionEnd {
     Completed,
+    /// An `exit` step ended the plan.
+    Exited(PlanExit),
     /// Plan defect or tool failure (replan-eligible in planned mode).
     Failed {
         step: String,
@@ -132,6 +138,7 @@ impl Pipeline {
 
             match self.execute_all(&mut state).await {
                 ExecutionEnd::Completed => return self.solve(state).await,
+                ExecutionEnd::Exited(exit) => return Ok(self.exit_outcome(state, exit)),
                 ExecutionEnd::Empty { step, message } => {
                     state.push_bus(&step, BusKind::EmptyData, message);
                     return self.solve(state).await;
@@ -182,6 +189,7 @@ impl Pipeline {
         }
         match self.execute_all(&mut state).await {
             ExecutionEnd::Completed => self.finish(state, finish).await,
+            ExecutionEnd::Exited(exit) => Ok(self.exit_outcome(state, exit)),
             ExecutionEnd::Empty { step, message } => match finish {
                 Finish::Solve(_) => {
                     state.push_bus(&step, BusKind::EmptyData, message);
@@ -200,6 +208,24 @@ impl Pipeline {
                 tool,
                 message,
             }),
+        }
+    }
+
+    /// Package a triggered exit: the message is the answer, the step's
+    /// output map (already rendered) is the structured output, and the
+    /// solver never runs.
+    fn exit_outcome(&self, mut state: RunState, exit: PlanExit) -> PipelineOutcome {
+        state.push_bus(
+            &exit.step.clone(),
+            BusKind::Info,
+            format!("exited: {}", exit.message),
+        );
+        PipelineOutcome {
+            answer: exit.message.clone(),
+            structured: exit.output.clone().map(Value::Object),
+            state,
+            degraded: false,
+            exit: Some(exit),
         }
     }
 
@@ -227,6 +253,7 @@ impl Pipeline {
                     structured: Some(Value::Object(rendered)),
                     state,
                     degraded: false,
+                    exit: None,
                 })
             }
             Finish::Silent => Ok(PipelineOutcome {
@@ -234,6 +261,7 @@ impl Pipeline {
                 structured: None,
                 state,
                 degraded: false,
+                exit: None,
             }),
         }
     }
@@ -242,7 +270,8 @@ impl Pipeline {
 
     async fn plan_node(&self, state: &mut RunState) -> Result<(), PipelineError> {
         self.events.planning();
-        let tools = self.registry.tools().await.unwrap_or_default();
+        let mut tools = self.registry.tools().await.unwrap_or_default();
+        tools.push(exit::exit_tool_def());
         let shapes: HashMap<String, ToolShape> = match &self.store {
             Some(store) => store
                 .tool_shapes()
@@ -350,6 +379,35 @@ impl Pipeline {
                 }
             };
 
+            if step.tool_name == EXIT_TOOL {
+                self.events.tool_started(EXIT_TOOL, &rendered);
+                let started = std::time::Instant::now();
+                let eval = exit::evaluate(&step.id, &rendered, &self.router).await;
+                match eval {
+                    Ok(exit::ExitEval::Passed(result)) => {
+                        self.events
+                            .tool_finished(EXIT_TOOL, started.elapsed(), false);
+                        state.results.insert(step.id.clone(), result);
+                        state.push_bus(&step.id, BusKind::Info, "gate passed");
+                        continue;
+                    }
+                    Ok(exit::ExitEval::Exited(exit)) => {
+                        self.events
+                            .tool_finished(EXIT_TOOL, started.elapsed(), false);
+                        return ExecutionEnd::Exited(exit);
+                    }
+                    Err(message) => {
+                        self.events
+                            .tool_finished(EXIT_TOOL, started.elapsed(), true);
+                        return ExecutionEnd::Failed {
+                            step: step.id.clone(),
+                            tool: EXIT_TOOL.to_string(),
+                            message,
+                        };
+                    }
+                }
+            }
+
             self.events.tool_started(&step.tool_name, &rendered);
             let started = std::time::Instant::now();
             let outcome = self
@@ -456,6 +514,7 @@ impl Pipeline {
             structured: None,
             state,
             degraded: false,
+            exit: None,
         })
     }
 
@@ -491,6 +550,7 @@ impl Pipeline {
             structured: None,
             state,
             degraded: true,
+            exit: None,
         })
     }
 }
