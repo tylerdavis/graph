@@ -1,6 +1,6 @@
 ---
 title: "Built-ins"
-description: "Tool packs that ship inside the binary"
+description: "Tool packs that ship with Graph"
 icon: "box"
 ---
 
@@ -25,12 +25,12 @@ Building blocks for PR-shaped plans — see the [CI checks cookbook](/cookbook/c
 
 Metadata for a pull request — the starting point for anything that diffs or reviews a PR. Read-only.
 
-| Input | Type | |
-|---|---|---|
+| Input | Type |  |
+| --- | --- | --- |
 | `pr` | integer | required — pull request number |
 
-| Output | Type | |
-|---|---|---|
+| Output | Type |  |
+| --- | --- | --- |
 | `title` | string | PR title |
 | `body` | string | PR description (`""` when empty) |
 | `base_sha` | string | tip of the base branch |
@@ -42,8 +42,8 @@ Metadata for a pull request — the starting point for anything that diffs or re
 
 Post or update a comment on the PR conversation. Updates the token identity's most recent comment when one exists (`--edit-last --create-if-none`), so repeated runs keep a single comment instead of stacking. **Side-effecting** (`read_only: false`).
 
-| Input | Type | |
-|---|---|---|
+| Input | Type |  |
+| --- | --- | --- |
 | `pr` | integer | required |
 | `body` | string | required — markdown comment body (render it with [template sections](/plans/template-language#sections)) |
 
@@ -53,8 +53,8 @@ Output: `{ "text": "<comment URL>" }`.
 
 Unified diff between two refs (merge-base three-dot diff), path-scoped, truncated to a byte budget — sized for LLM consumption. Read-only. Needs a checkout with enough history to resolve both refs (`fetch-depth: 0` in CI).
 
-| Input | Type | |
-|---|---|---|
+| Input | Type |  |
+| --- | --- | --- |
 | `base` | string | required — ref or sha |
 | `head` | string | required — ref or sha |
 | `paths` | string | required — space-separated pathspecs; `"."` for everything |
@@ -67,13 +67,13 @@ Output: `{ "text": "<diff>" }` — empty string when nothing changed, which pair
 
 Files changed between two refs, filtered to a path prefix, with a count — the cheap input for gating before any LLM call. Read-only. Fails loudly on bad refs rather than returning an empty list a gate would misread.
 
-| Input | Type | |
-|---|---|---|
+| Input | Type |  |
+| --- | --- | --- |
 | `base` | string | required |
 | `head` | string | required |
 | `prefix` | string | required — path prefix filter; `""` matches every file |
 
-| Output | Type | |
-|---|---|---|
+| Output | Type |  |
+| --- | --- | --- |
 | `files` | array of string | matching paths |
 | `count` | integer | `files.length`, ready for `eq`/`gt` gates |
