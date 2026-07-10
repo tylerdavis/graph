@@ -17,6 +17,12 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # See ci.yaml: compiler-invocation caching, incl. lbug's C++ via cmake.
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+  CMAKE_C_COMPILER_LAUNCHER: sccache
+  CMAKE_CXX_COMPILER_LAUNCHER: sccache
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   build:
@@ -37,6 +43,8 @@ jobs:
       - name: Install OpenSSL dev (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - uses: mozilla/sccache-action@v0.0.10
 
       - uses: jdx/mise-action@v2
         with:

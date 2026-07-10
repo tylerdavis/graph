@@ -9,6 +9,17 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # sccache caches individual compiler invocations in the Actions cache, so
+  # a Cargo.lock or toolchain rotation no longer recompiles every dependency
+  # from scratch. The CMAKE_*_COMPILER_LAUNCHER vars are the load-bearing
+  # part: they route lbug's vendored C++ build (cmake via graph-store's
+  # build.rs) through the cache — that's where cold runs lose ~15 minutes.
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+  CMAKE_C_COMPILER_LAUNCHER: sccache
+  CMAKE_CXX_COMPILER_LAUNCHER: sccache
+  # sccache can't cache incremental artifacts (and CI can't reuse them).
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   test:
@@ -25,6 +36,8 @@ jobs:
       - name: Install OpenSSL dev (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - uses: mozilla/sccache-action@v0.0.10
 
       - uses: jdx/mise-action@v2
         with:
