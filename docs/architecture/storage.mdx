@@ -36,8 +36,13 @@ The abstraction exists so centralized backends can slot in without re-architectu
 
 Both are roadmap; the seams are already in place.
 
+## Extensions
+
+The engine's FTS and vector extensions ship **inside the graph binary**: the build fetches the matching extension binaries once (pinned to the engine version; set `GRAPH_LBUG_EXT_DIR` to a directory of pre-fetched `lib<ext>.lbug_extension` files for offline/hermetic builds), and at runtime they materialize under `<data_dir>/extensions/<version>/` and load by file path. No network at runtime, no dependency on the extension CDN being up — the runtime `INSTALL <ext>` download path (and its `~/.lbdb/` cache) is not used.
+
+These back the future entity-graph features (full-text and semantic search over synced data); nothing loads them in the current CLI surface.
+
 ## Operational notes
 
 - Back up by copying `data_dir` (it's just files).
 - The [Ladybug Explorer](https://github.com/LadybugDB) container can browse the database — note it takes the same single-process lock while running.
-- First use of certain database extensions downloads them to `~/.lbdb/` (network required once).

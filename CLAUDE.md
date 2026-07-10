@@ -51,6 +51,7 @@ CI (`.github/workflows/ci.yaml`) runs lint + tests on ubuntu-24.04 and macos-15 
 - **Store access** goes through `Arc<dyn Store>`; only `graph db query` and `CypherExecutor` may touch `GraphStore` concretely.
 - Prompts are prompt *surface*: planner-facing field names (`toolName`, `queryToAnswer`) are camelCase via serde and must stay aligned with `graph-core/src/pipeline/prompts.rs`; tool descriptions and exemplars are routing signals, not comments.
 - **Never put link flags in env-wide RUSTFLAGS** — they poison build scripts (segfaulted x86_64 CI). The lbug linker story lives in the two build.rs files and `crates/graph-store/SPIKE.md`; drop it all when lbug > 0.18.0 ships. Cargo quirk to remember: `rustc-link-lib` from a build script reaches downstream binaries but not the emitting package's own tests (those need `rustc-link-arg-tests`).
+- **lbug extensions are vendored, never INSTALLed**: `graph-store/build.rs` fetches the fts/vector binaries (version pinned there — the engine requests v0.18.1 URLs despite the vendored CMake saying 0.18.0) and `src/extensions.rs` embeds them; runtime loads by file path from `<data_dir>/extensions/<ver>/`. `GRAPH_LBUG_EXT_DIR` (build-time env) points at pre-fetched files for offline builds. Tests must never use `INSTALL <ext>` — the CDN flakes.
 
 ## Conventions
 

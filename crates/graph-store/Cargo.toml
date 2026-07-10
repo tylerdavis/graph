@@ -21,3 +21,8 @@ lbug = "0.18"
 
 [dev-dependencies]
 tempfile = "3"
+
+[build-dependencies]
+# Fetches the lbug extension binaries embedded into the crate (build.rs);
+# rustls TLS, so no system OpenSSL is needed at build-script time.
+ureq = "2"
