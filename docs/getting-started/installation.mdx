@@ -1,10 +1,10 @@
 ---
 title: "Installation"
-description: "Build graph from source with mise"
+description: "From source, release binaries, or the container image"
 icon: "download"
 ---
 
-graph is currently built from source. Tooling (Rust, cmake, pkg-config) is managed with [mise](https://mise.jdx.dev); OpenSSL can come from any source (nix, Homebrew, …) as long as `pkg-config` can resolve it.
+Build from source for development; grab a release binary or the container image to just run it. For source builds, tooling (Rust, cmake, pkg-config) is managed with [mise](https://mise.jdx.dev); OpenSSL can come from any source (nix, Homebrew, …) as long as `pkg-config` can resolve it.
 
 <Steps>
   <Step title="Clone and set up the toolchain">
@@ -30,6 +30,26 @@ graph is currently built from source. Tooling (Rust, cmake, pkg-config) is manag
     </Info>
   </Step>
 </Steps>
+
+## Release binaries
+
+Tagged releases publish binaries for macOS (arm64) and Linux (x86_64) with SHA-256 checksums:
+
+```bash
+curl -fsSLO "https://github.com/tylerdavis/graph/releases/download/v0.3.0/graph-v0.3.0-x86_64-unknown-linux-gnu.tar.gz"
+tar xzf graph-v0.3.0-x86_64-unknown-linux-gnu.tar.gz && install -m 0755 graph ~/.local/bin/
+```
+
+## Container image
+
+Each release also publishes `ghcr.io/tylerdavis/graph` (tags `vX.Y.Z`, `X.Y`, `latest`): the Linux binary plus `git`, `jq`, and `gh` — everything the [github tool pack](/tools/user-defined#bundled-packs) shells out to. It doubles as the runtime for [CI jobs](/automation/ci) (no install step) and works standalone:
+
+```bash
+docker run --rm -e ANTHROPIC_API_KEY -e GRAPH_STORAGE=memory \
+  -v "$PWD:/work" -w /work ghcr.io/tylerdavis/graph:latest plan list
+```
+
+While the repository is private the image is too — `docker login ghcr.io` with a token that has `read:packages` first (CI jobs use the workflow's `GITHUB_TOKEN`).
 
 ## Requirements
 

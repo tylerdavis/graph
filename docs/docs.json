@@ -29,6 +29,7 @@
           "plans/inputs",
           "plans/escape-hatch",
           "plans/errors-and-replanning",
+          "plans/ci-cookbook",
           "plans/cookbook"
         ]
       },
