@@ -5,13 +5,17 @@
 //! JSON-blob round-trips (checkpoints), FTS + vector extensions, and
 //! reopening a database from disk.
 
+use graph_store::extensions::{materialize, Extension};
 use lbug::{Connection, Database, SystemConfig, Value};
-use std::sync::Mutex;
 
-/// `INSTALL <extension>` downloads into the shared `~/.lbdb/` cache;
-/// concurrent installs race on fresh machines (seen in CI). Serialize the
-/// extension tests.
-static EXTENSION_INSTALL: Mutex<()> = Mutex::new(());
+/// Load a bundled extension into a raw connection by file path — no
+/// `INSTALL`, no network, no shared `~/.lbdb/` cache to race on (the
+/// download-at-test-time approach flaked whenever the extension CDN did).
+fn load_extension(conn: &Connection, ext: Extension, dir: &std::path::Path) {
+    let path = materialize(ext, dir).expect("materialize extension");
+    conn.query(&format!("LOAD EXTENSION '{}'", path.display()))
+        .expect("load extension");
+}
 
 fn open(dir: &std::path::Path) -> Database {
     Database::new(dir.join("spike.db"), SystemConfig::default()).expect("open database")
@@ -129,16 +133,11 @@ fn json_blob_round_trip_for_checkpoints() {
 
 #[test]
 fn fts_extension_loads_and_searches() {
-    let _serial = EXTENSION_INSTALL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let db = open(dir.path());
     let conn = Connection::new(&db).unwrap();
 
-    conn.query("INSTALL FTS;").expect("install FTS extension");
-    conn.query("LOAD EXTENSION FTS;")
-        .expect("load FTS extension");
+    load_extension(&conn, Extension::Fts, dir.path());
 
     conn.query("CREATE NODE TABLE IF NOT EXISTS Doc(id STRING, body STRING, PRIMARY KEY(id));")
         .unwrap();
@@ -159,17 +158,11 @@ fn fts_extension_loads_and_searches() {
 
 #[test]
 fn vector_extension_loads_and_finds_nearest() {
-    let _serial = EXTENSION_INSTALL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let db = open(dir.path());
     let conn = Connection::new(&db).unwrap();
 
-    conn.query("INSTALL VECTOR;")
-        .expect("install vector extension");
-    conn.query("LOAD EXTENSION VECTOR;")
-        .expect("load vector extension");
+    load_extension(&conn, Extension::Vector, dir.path());
 
     conn.query(
         "CREATE NODE TABLE IF NOT EXISTS Exemplar(id STRING, embedding FLOAT[4], PRIMARY KEY(id));",

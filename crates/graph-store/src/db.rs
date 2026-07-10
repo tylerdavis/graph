@@ -24,6 +24,8 @@ const DDL: &str = "
 
 pub struct GraphStore {
     db: Arc<Database>,
+    /// Database directory; bundled extensions materialize under it.
+    pub(crate) dir: std::path::PathBuf,
 }
 
 impl GraphStore {
@@ -38,7 +40,10 @@ impl GraphStore {
                 dir.display()
             ))
         })?;
-        let store = Self { db: Arc::new(db) };
+        let store = Self {
+            db: Arc::new(db),
+            dir: dir.to_path_buf(),
+        };
         store.exec_blocking(|conn| {
             conn.query(DDL)?;
             Ok(())
@@ -56,7 +61,7 @@ impl GraphStore {
     }
 
     /// Run `f` with a fresh connection on a blocking thread.
-    async fn exec<T, F>(&self, f: F) -> Result<T, StoreError>
+    pub(crate) async fn exec<T, F>(&self, f: F) -> Result<T, StoreError>
     where
         T: Send + 'static,
         F: FnOnce(&Connection) -> Result<T, lbug::Error> + Send + 'static,

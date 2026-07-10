@@ -149,3 +149,39 @@ async fn persists_across_reopen() {
     let loaded = store.load_messages(&thread_id).await.unwrap();
     assert_eq!(loaded.len(), 1);
 }
+
+#[tokio::test]
+async fn bundled_extension_loads_and_works_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(&dir);
+
+    // Loading twice must be harmless (lbug ignores an already-loaded
+    // extension; the materialized file is reused).
+    store
+        .load_extension(graph_store::Extension::Fts)
+        .await
+        .unwrap();
+    store
+        .load_extension(graph_store::Extension::Fts)
+        .await
+        .unwrap();
+
+    store
+        .raw_query("CREATE NODE TABLE IF NOT EXISTS Doc(id STRING, body STRING, PRIMARY KEY(id));")
+        .await
+        .unwrap();
+    store
+        .raw_query("CREATE (:Doc {id: 'd1', body: 'vendored extensions load by path'});")
+        .await
+        .unwrap();
+    store
+        .raw_query("CALL CREATE_FTS_INDEX('Doc', 'doc_fts', ['body']);")
+        .await
+        .unwrap();
+    let rows = store
+        .raw_query("CALL QUERY_FTS_INDEX('Doc', 'doc_fts', 'vendored') RETURN node.id;")
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0], "d1");
+}

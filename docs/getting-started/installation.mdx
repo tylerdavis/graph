@@ -58,6 +58,7 @@ While the repository is private the image is too — `docker login ghcr.io` with
 | Rust 1.94+ | installed by `mise install` |
 | cmake, pkg-config | installed by `mise install` |
 | OpenSSL | from nix, Homebrew, or system — must be visible to `pkg-config` |
+| Network on first build | the build embeds the database's FTS/vector extensions (fetched once, cached in `target/`); for offline builds set `GRAPH_LBUG_EXT_DIR` to pre-fetched files — see [Storage](/architecture/storage#extensions) |
 | An LLM provider key | e.g. `ANTHROPIC_API_KEY` — see [Quickstart](/getting-started/quickstart) |
 
 ## First-run notes
