@@ -1,0 +1,43 @@
+# Specialized PR reviewer: structured findings JSON on stdout (output mode,
+# one LLM call). Side-effect-free — the caller (CI workflow) formats and
+# posts the comment. Input arrives as a document from the workflow:
+#   graph plan run pr_review @review-input.json
+# Both the empty-diff exit and the finish emit the same {pr, summary,
+# findings} shape so callers parse one contract.
+identifier: pr_review
+name: Specialized PR review
+description: >
+  Reviews a pull-request diff against graph-cli's invariants and returns
+  structured findings as JSON on stdout. The caller supplies the diff
+  (pre-truncated) and posts any comment; the plan performs no side effects.
+input_schema:
+  type: object
+  required: [pr_number, title, body, diff]
+  properties:
+    pr_number: { type: integer, description: PR number, echoed into the output }
+    title:     { type: string, description: PR title }
+    body:      { type: string, description: PR description (may be empty) }
+    diff:      { type: string, description: Unified diff, pre-truncated by the caller }
+steps:
+  - id: E0
+    tool_name: exit
+    input:
+      when: { value: "{{input.diff}}", op: empty }
+      status: success
+      message: empty diff — nothing to review
+      output:
+        pr: "{{input.pr_number}}"
+        summary: Empty diff — nothing to review.
+        findings: []
+    reasoning: Nothing to review means a clean, zero-LLM exit.
+  - id: E1
+    tool_name: user__review_graph_pr
+    input:
+      title: "{{input.title}}"
+      body: "{{input.body}}"
+      diff: "{{input.diff}}"
+    reasoning: One rubric'd review call with enforced structured output.
+output:
+  pr: "{{input.pr_number}}"
+  summary: "{{E1.summary}}"
+  findings: "{{E1.findings}}"

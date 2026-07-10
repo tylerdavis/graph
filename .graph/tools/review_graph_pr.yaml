@@ -1,0 +1,81 @@
+# prompt tool: reviews a PR diff against this repo's invariants (CLAUDE.md).
+# The output_schema forces structured findings; an empty findings array is a
+# valid (and common) result.
+name: review_graph_pr
+description: >
+  Reviews a graph-cli pull-request diff against the repo's invariants and
+  returns structured findings. Findings may be empty when the diff is clean.
+kind: prompt
+role: chat
+system: |
+  You review pull requests for graph-cli, a Rust CLI with a plan-based
+  execution engine. Report ONLY violations of the invariants listed in the
+  prompt — do not restyle code, do not comment on code the diff does not
+  touch, and return an empty findings array when the diff is clean. Be
+  concrete: name the file and quote the offending line. The diff may be
+  truncated; never guess about code you cannot see.
+prompt: |
+  Review this pull request against graph-cli's invariants.
+
+  ## Invariants (from the repo's CLAUDE.md)
+  1. streams-contract — stdout carries only the deliverable (answer,
+     output-mode JSON, --json envelopes); all progress/diagnostics go to
+     stderr. Exit codes: 0 ok, 1 failure, 3 needs-input, 4 exit-gate
+     assertion. Flag new println!/print! that isn't deliverable output, or
+     eprintln! that is.
+  2. error-policy — human-authored plans never replan; EmptyData (data ran
+     out) stays distinct from BadPath (plan defect) and never triggers
+     replanning; output/silent plans fail hard on empty data.
+  3. template-dialect — any change under crates/graph-core/src/template/
+     must change both its tests and docs/plans/template-language.mdx; logic
+     belongs in steps, never in templates.
+  4. prompt-surface — planner-facing field names (toolName, queryToAnswer)
+     stay camelCase and aligned with graph-core/src/pipeline/prompts.rs;
+     tool descriptions and exemplars are routing signals.
+  5. store-access — Store access goes through Arc<dyn Store>; only
+     `graph db query` and CypherExecutor may touch GraphStore concretely.
+  6. mcp-shutdown — MCP child processes shut down via McpManager::shutdown()
+     before the tokio runtime drops.
+  7. docs-parity — behavior changes in crates/ ship with matching docs/
+     edits in the same PR.
+  8. test-parity — features land with colocated behavioral tests.
+  9. Never put link flags in env-wide RUSTFLAGS (poisons build scripts).
+
+  ## Pull request
+  Title: {{input.title}}
+  Description: {{input.body}}
+
+  ## Diff (may be truncated)
+  {{input.diff}}
+input_schema:
+  type: object
+  required: [title, body, diff]
+  properties:
+    title: { type: string, description: PR title }
+    body:  { type: string, description: PR description (may be empty) }
+    diff:  { type: string, description: Unified diff, pre-truncated by the caller }
+output_schema:
+  type: object
+  required: [summary, findings]
+  properties:
+    summary:
+      type: string
+      description: One-paragraph overall assessment of the change.
+    findings:
+      type: array
+      items:
+        type: object
+        required: [file, invariant, severity, finding]
+        properties:
+          file: { type: string }
+          line:
+            type: integer
+            description: Line in the new file, when identifiable from hunk headers.
+          invariant:
+            type: string
+            enum: [streams-contract, error-policy, template-dialect,
+                   prompt-surface, store-access, mcp-shutdown, docs-parity,
+                   test-parity, rustflags, other]
+          severity: { type: string, enum: [blocker, warn, nit] }
+          finding: { type: string }
+          suggestion: { type: string }

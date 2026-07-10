@@ -1,0 +1,16 @@
+# Repo-carried graph config, used by CI (.github/workflows/graph-checks.yaml)
+# and local dogfooding. Requires ANTHROPIC_API_KEY in the environment —
+# config load fails loudly without it.
+
+[providers.anthropic]
+type = "anthropic"
+api_key = "${ANTHROPIC_API_KEY}"
+
+[models]
+default = { provider = "anthropic", model = "claude-sonnet-5" }
+# The docs-drift verdict is a single yes/no call — a fast model is plenty.
+judge   = { provider = "anthropic", model = "claude-haiku-4-5" }
+repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
+
+# No [storage] section: CI sets GRAPH_STORAGE=memory; locally the env var
+# and the global config layer as usual.
