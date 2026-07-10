@@ -44,12 +44,21 @@ icon: "rocket"
     ```bash
     graph ask "Which of those touches production?" --thread
     ```
+    Every tool call here also teaches graph what that tool's output looks like (the [shape cache](/tools/shape-cache)) — exploration is never wasted.
   </Step>
   <Step title="Go interactive">
     ```bash
     graph chat
     ```
     A REPL with the same tools and persistent history. `/thread` shows the current thread id, `/quit` exits, and the closing hint tells you how to resume.
+  </Step>
+  <Step title="Freeze it into a plan">
+    Once an answer is worth repeating, capture the workflow as a plan — a YAML file that runs the same steps in the same order for 0–1 LLM calls:
+    ```bash
+    graph plan list
+    graph plan run project_status '{"project":"New Relic"}'
+    ```
+    [Authoring plans](/plans/authoring) walks through building one from scratch.
   </Step>
 </Steps>
 
@@ -66,5 +75,5 @@ icon: "rocket"
 ## Next
 
 - [Author your first plan](/plans/authoring) — freeze a workflow into a repeatable file.
-- [Add your own tools](/tools/user-defined) — wrap a CLI, a query, or a prompt.
+- [Add your own tools](/tools/user-defined) — wrap a CLI, a query, or an inline LLM prompt.
 - [Wire it into CI](/automation/ci) — exit codes, JSON output, ephemeral storage.
