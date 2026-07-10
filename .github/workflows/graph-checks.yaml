@@ -1,9 +1,10 @@
 # Dogfood: graph's own plans gate graph's PRs, one `graph plan run` per job.
-# All logic lives in the repo-carried plans (./.graph/) and the bundled
-# github tool pack; GRAPH_EVENTS=github turns failing gates into run
-# annotations, so no shell wrapping is needed. docs-drift fails the check
-# (exit 4) on undocumented behavior changes; pr-review posts findings as a
-# PR comment, edited in place on each push.
+# Jobs run inside the release container image (graph + git/jq/gh baked in),
+# so there is no install step; all logic lives in the repo-carried plans
+# (./.graph/) and the bundled github tool pack. GRAPH_EVENTS=github turns
+# failing gates into run annotations. docs-drift fails the check (exit 4)
+# on undocumented behavior changes; pr-review posts findings as a PR
+# comment, edited in place on each push.
 name: graph checks
 
 on:
@@ -13,13 +14,13 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  packages: read                   # pull the (private) release image
 
 concurrency:
   group: graph-checks-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:
-  GRAPH_VERSION: v0.3.0            # tool packs + GRAPH_EVENTS=github need ≥ v0.3.0
   GRAPH_STORAGE: memory            # ephemeral: no embedded DB, no lock
   GRAPH_EVENTS: github             # failing plans annotate the run
   GH_TOKEN: ${{ github.token }}
@@ -36,18 +37,15 @@ jobs:
       !github.event.pull_request.draft &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/tylerdavis/graph:v0.3.0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0            # the plan diffs $BASE...$HEAD locally
-
-      - name: Install graph
-        run: |
-          asset="graph-$GRAPH_VERSION-x86_64-unknown-linux-gnu.tar.gz"
-          gh release download "$GRAPH_VERSION" --repo "$GITHUB_REPOSITORY" --pattern "$asset*"
-          shasum -a 256 -c "$asset.sha256"
-          tar xzf "$asset"
-          sudo install -m 0755 graph /usr/local/bin/graph
 
       - name: Docs drift gate
         run: graph plan run docs_drift --input base="$BASE" --input head="$HEAD"
@@ -57,18 +55,15 @@ jobs:
       !github.event.pull_request.draft &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/tylerdavis/graph:v0.3.0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Install graph
-        run: |
-          asset="graph-$GRAPH_VERSION-x86_64-unknown-linux-gnu.tar.gz"
-          gh release download "$GRAPH_VERSION" --repo "$GITHUB_REPOSITORY" --pattern "$asset*"
-          shasum -a 256 -c "$asset.sha256"
-          tar xzf "$asset"
-          sudo install -m 0755 graph /usr/local/bin/graph
 
       - name: Review and comment
         run: graph plan run pr_review --input pr="$PR"
