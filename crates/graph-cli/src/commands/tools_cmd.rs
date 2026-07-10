@@ -27,9 +27,13 @@ async fn dispatch(
                 println!("no tools available — configure [mcp.*] servers");
                 return Ok(());
             }
-            for def in defs {
-                println!("{}", def.name);
-            }
+            print!(
+                "{}",
+                super::listing::render_tool_listing(
+                    &defs,
+                    std::io::IsTerminal::is_terminal(&std::io::stdout())
+                )
+            );
             Ok(())
         }
         ToolsCommand::Show { name } => {
