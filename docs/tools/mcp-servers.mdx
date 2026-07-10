@@ -38,7 +38,21 @@ Servers connect lazily on first use and are cached for the process. stdio childr
 ```bash
 graph mcp list              # configured servers and transports
 graph mcp test linear       # connect + count tools + how many declare output schemas
-graph mcp tools linear      # full tool listing with descriptions
+graph mcp tools [linear]    # tool listing grouped by server — names + descriptions
+```
+
+The tool listing prints one section per server — a header with the tool
+count, then each tool's name (with a `[read-only]` marker when the server
+annotates it) over its one-line description:
+
+```
+linear — 57 tools
+  get_issue [read-only]
+  Retrieve detailed information about an issue by ID, including attachments and git branch name
+
+  save_issue
+  Create or update a Linear issue. If `id` is provided, updates the existing issue; otherwise creates a new one.
+  ...
 ```
 
 ## Filtering and overrides
