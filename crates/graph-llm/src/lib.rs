@@ -3,6 +3,7 @@
 
 mod error;
 mod provider;
+mod retry;
 pub mod providers;
 mod roles;
 mod structured;

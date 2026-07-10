@@ -95,7 +95,7 @@ impl OpenAiCompatProvider {
         Value::Object(body)
     }
 
-    async fn post(&self, body: &Value) -> Result<reqwest::Response, LlmError> {
+    async fn post_once(&self, body: &Value) -> Result<reqwest::Response, LlmError> {
         let mut request = self
             .client
             .post(format!("{}/chat/completions", self.base_url))
@@ -104,15 +104,15 @@ impl OpenAiCompatProvider {
             request = request.bearer_auth(key);
         }
         let response = request.send().await?;
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(LlmError::Api {
-                status: status.as_u16(),
-                body,
-            });
+        if !response.status().is_success() {
+            return Err(crate::retry::api_error(response).await);
         }
         Ok(response)
+    }
+
+    /// POST with transient-failure retries (429/5xx/connect).
+    async fn post(&self, body: &Value) -> Result<reqwest::Response, LlmError> {
+        crate::retry::with_retries(|| self.post_once(body)).await
     }
 
     /// POST with structured-output mode fallback: on a 4xx while in

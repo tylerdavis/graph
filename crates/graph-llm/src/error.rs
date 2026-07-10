@@ -5,7 +5,12 @@ pub enum LlmError {
     #[error("http request failed: {0}")]
     Http(#[from] reqwest::Error),
     #[error("provider returned {status}: {body}")]
-    Api { status: u16, body: String },
+    Api {
+        status: u16,
+        body: String,
+        /// Parsed Retry-After header, when the provider sent one.
+        retry_after: Option<u64>,
+    },
     #[error("failed to parse provider response: {0}")]
     Parse(String),
     #[error("model output did not match the requested schema: {0}")]

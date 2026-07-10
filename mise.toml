@@ -7,7 +7,7 @@
 # pkg-config comes from the system (brew/apt/nix) — newer mise registries
 # dropped it, and every target environment ships it anyway.
 [tools]
-rust = "1.94"
+rust = { version = "1.94", components = "rustfmt,clippy" }
 cmake = "4"
 
 [env]
