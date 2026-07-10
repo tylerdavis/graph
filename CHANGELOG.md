@@ -2,6 +2,17 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
+## v0.3.0 — 2026-07-10
+
+
+### Added
+
+- bundled tool packs and GitHub Actions failure annotations (#2)
+
+### Fixed
+
+- portable version bump in release.sh; align workspace version with v0.2.0
+
 ## v0.2.0 — 2026-07-10
 
 
