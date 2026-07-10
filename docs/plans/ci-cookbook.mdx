@@ -1,0 +1,151 @@
+---
+title: "CI cookbook"
+description: "Two plans that gate this repo's own PRs, annotated"
+icon: "badge-check"
+---
+
+This repo dogfoods graph in its own pull-request checks: a **docs-drift gate** (an inferred exit gate as a merge check) and a **specialized reviewer** (structured findings posted as a PR comment by the plan itself). Every piece ships in this repo — the plans in `./.graph/plans/`, the rubric tool in `./.graph/tools/`, the workflow in `.github/workflows/graph-checks.yaml` — and every PR against graph runs them. The general mechanics (ephemeral storage, repo-carried config, exit-code branching) are in [CI recipes](/automation/ci); this page is the worked example.
+
+The finished shape is the headline. Each CI job is:
+
+```yaml
+jobs:
+  docs-drift:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/tylerdavis/graph:v0.3.0      # graph + git/jq/gh baked in
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }                   # plans diff refs locally
+      - run: graph plan run docs_drift --input base="$BASE" --input head="$HEAD"
+```
+
+No install step (the release workflow publishes the image), no shell logic (plans own it), no output parsing (exit codes and annotations are the contract). The jobs run in seconds.
+
+## `docs_drift` — an inferred gate as a merge check
+
+The repo rule, from its CLAUDE.md: behavior changes in `crates/` must update `docs/` in the same PR. As a plan, the *decision* — "is this diff a behavioral change?" — is one judged yes/no call, and everything around it is deterministic and free:
+
+```yaml
+steps:
+  - id: E0
+    tool_name: user__git_changed_files
+    input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "crates/" }
+  - id: E1
+    tool_name: exit
+    input:
+      when: { value: "{{E0.count}}", op: eq, to: 0 }
+      status: success
+      message: no crate code changed — docs gate not applicable
+      output: { docs_required: false, reason: no_crate_changes }
+  - id: E2
+    tool_name: user__git_changed_files
+    input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "docs/" }
+  - id: E3
+    tool_name: exit
+    input:
+      when: { value: "{{E2.count}}", op: gt, to: 0 }
+      status: success
+      message: docs updated alongside crate changes
+      output: { docs_required: false, reason: docs_touched }
+  - id: E4
+    tool_name: user__git_diff
+    input: { base: "{{input.base}}", head: "{{input.head}}",
+             paths: "crates/", exclude: "", max_bytes: 60000 }
+  - id: E5
+    tool_name: exit
+    input:
+      infer: |
+        Does this diff change user-visible behavior of the graph CLI …
+        Pure refactors, comment-only changes, test-only changes, and
+        internal renames do not count. Answer yes only if the behavior a
+        user or plan author observes would change.
+
+        {{E4.text}}
+      status: error
+      message: >-
+        behavioral change without a docs/ update — CLAUDE.md requires docs
+        land in the same PR as the behavior change
+output:
+  docs_required: false
+  reason: "{{E5.reason}}"
+```
+
+**Lessons:**
+
+- **Short-circuit before you infer.** E1 and E3 are `when` gates over [github pack](/tools/user-defined#bundled-packs) tool output — a docs-only PR exits success in milliseconds with zero LLM calls. The `infer` gate is the last resort, and it sees only the truncated `crates/` diff. Worst case per PR: one judge call on the cheap `judge` role.
+- **The gate is the CI contract.** `status: error` maps to process exit code 4 — distinct from exit 1 (the plan itself broke). The job needs no branching: exit 4 fails the step, and under `GRAPH_EVENTS=github` graph prints the gate's message as a `::error::` annotation itself.
+- **Every exit path emits the same shape.** Both success gates and the fall-through `output` produce `{docs_required, reason}` — callers parse one contract. On a non-fired infer gate, `{{E5.reason}}` carries the judge's reasoning into the output for free (the judge explains *why* no docs are needed).
+- **Ask the judge a falsifiable question.** The prompt defines what does *not* count (refactors, test-only changes). The judge role answers "yes only when the data clearly supports it", so the framing sets the false-positive rate. Live calibration: it flagged a commit adding an env var and a JSON field ("observable by users and plan authors"), and passed a dead-code removal with its reasoning in `reason`.
+
+## `pr_review` — a self-contained reviewer
+
+The plan fetches its own context, reviews, and posts its own comment. The CI step is `graph plan run pr_review --input pr="$PR"` — nothing else:
+
+```yaml
+steps:
+  - id: E0
+    tool_name: user__gh_pr_meta
+    input: { pr: "{{input.pr}}" }
+  - id: E1
+    tool_name: user__git_diff
+    input: { base: "{{E0.base_sha}}", head: "{{E0.head_sha}}",
+             paths: ".", exclude: "Cargo.lock CHANGELOG.md", max_bytes: 120000 }
+  - id: E2
+    tool_name: exit
+    input:
+      when: { value: "{{E1.text}}", op: empty }
+      status: success
+      message: empty diff — nothing to review
+  - id: E3
+    tool_name: user__review_graph_pr      # repo-local prompt tool: the rubric
+    input: { title: "{{E0.title}}", body: "{{E0.body}}", diff: "{{E1.text}}" }
+  - id: E4
+    tool_name: user__gh_pr_comment
+    input:
+      pr: "{{input.pr}}"
+      body: |
+        ### graph PR review
+
+        {{E3.summary}}
+        {{^E3.findings}}
+        _No invariant findings._
+        {{/E3.findings}}
+        {{#E3.findings}}{{#@first}}
+        | Severity | Invariant | File | Finding |
+        |---|---|---|---|
+        {{/@first}}| {{severity}} | `{{invariant}}` | `{{file}}` | {{finding}} {{suggestion}} |
+        {{/E3.findings}}
+```
+
+**Lessons:**
+
+- **The rubric is the product.** `review_graph_pr` is a repo-local [prompt tool](/tools/user-defined#prompt--an-llm-call-as-a-tool) whose prompt enumerates *this repo's* invariants and instructs "empty findings when clean". A focused reviewer beats a generic one precisely because it refuses to comment on everything else. It has caught real bugs in this repo's own PRs — including one in the PR that changed the reviewer itself.
+- **Presentation is a template, not code.** The comment body renders with [sections](/plans/template-language#sections): iteration builds the findings table, `{{#@first}}` emits the header once, the inverted section handles the clean case. Logic stays in steps; the markdown is pure presentation.
+- **Declare the output schema — it's enforced.** `review_graph_pr` declares `{summary, findings[]}` required. Models occasionally omit required fields even under provider-forced structured output; graph validates prompt-tool results against the declared `output_schema` and runs one `repair`-role fix-up, so `{{E3.summary}}` can never be a missing key at render time.
+- **Review the whole diff.** The diff is scoped to nothing (`paths: "."`) minus generated files — an early version reviewed only `crates/` and `docs/`, which blinded it to the highest-leverage changes in an infra PR: workflows, plans, and the exec tools they run.
+- **Repeated runs edit one comment.** `gh_pr_comment` uses `--edit-last --create-if-none`, so each push updates the review in place instead of stacking.
+
+## The workflow
+
+The full file is `.github/workflows/graph-checks.yaml`; the notable choices:
+
+- **The release image is the runtime.** `container: ghcr.io/tylerdavis/graph:vX.Y.Z` carries graph plus `git`, `jq`, and `gh` (pinned from official releases — distro packages lag the JSON fields and flags the pack tools use) and the `safe.directory` git config that Actions' foreign-owned workspace mounts require. The image tag is the version pin; `packages: read` plus `GITHUB_TOKEN` credentials pull it while private.
+- **`GRAPH_EVENTS=github`** makes a failing plan annotate the run itself — the one sanctioned case of graph writing non-deliverable output to stdout, failure-paths only ([details](/reference/environment#stream-conventions)).
+- **Guards are cheap and layered**: drafts skipped, fork PRs skipped (they have no `ANTHROPIC_API_KEY`, and the `${VAR}` reference in the repo config fails loudly as the backstop), one concurrency group per PR with cancel-in-progress.
+- **Cost per PR**: worst case one `judge`-role call (docs-drift) plus one review call; docs-only PRs pay only the review; drafts pay nothing.
+
+## Patterns to reuse
+
+| Pattern | How |
+|---|---|
+| Cheap gates before expensive ones | `when` exits over pack-tool counts ahead of any `infer` |
+| Merge-check semantics | `status: error` → exit 4; the step fails, the annotation explains |
+| One output contract, many exits | give every exit gate the same `output` keys as the plan's `output` |
+| Judge-sized diffs | truncate in the tool (`max_bytes`), not in the template |
+| Comment upsert | `gh_pr_comment` edits the token identity's last comment in place |
+| Rubric'd review | prompt tool + enforced `output_schema` + "empty findings when clean" |
+| Version pinning | the container image tag — no install step to pin |

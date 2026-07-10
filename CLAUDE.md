@@ -19,7 +19,9 @@ mise run install        # release build onto PATH
 mise run release:patch  # cut a release (also :minor / :major) — see RELEASING.md
 ```
 
-CI (`.github/workflows/ci.yaml`) runs lint + tests on ubuntu-24.04 and macos-15 for every push/PR touching non-docs paths. Tags `v*` trigger `release.yaml`: binaries for macOS arm64 + Linux x86_64 with checksums.
+CI (`.github/workflows/ci.yaml`) runs lint + tests on ubuntu-24.04 and macos-15 for every push/PR touching non-docs paths; sccache (incl. `CMAKE_*_COMPILER_LAUNCHER` for lbug's C++) keeps cache-key rotations from recompiling the world. Tags `v*` trigger `release.yaml`: binaries for macOS arm64 + Linux x86_64 with checksums, plus the `ghcr.io/tylerdavis/graph` container image (graph + git/jq/gh; `workflow_dispatch` with a `tag` input re-mints an image for an existing release).
+
+**graph dogfoods itself on every PR** (`.github/workflows/graph-checks.yaml`): the `docs_drift` plan fails the check (exit 4) on undocumented crate behavior changes, and `pr_review` posts rubric'd findings as a PR comment — both run from the repo-carried `./.graph/` inside the release image (needs the `ANTHROPIC_API_KEY` repo secret). `.graph/` is partially tracked: config, plans, and tools are committed; everything else under it stays ignored. Expect the drift gate to hold you to the docs-parity invariant below.
 
 ## Crate map
 
