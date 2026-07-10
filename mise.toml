@@ -4,10 +4,11 @@
 # openssl itself is not managed here — any source works (nix, homebrew, ...)
 # as long as `pkg-config --variable=libdir openssl` resolves.
 
+# pkg-config comes from the system (brew/apt/nix) — newer mise registries
+# dropped it, and every target environment ships it anyway.
 [tools]
 rust = "1.94"
 cmake = "4"
-pkg-config = "latest"
 
 [env]
 # lbug 0.18's prebuilt liblbug.a needs OpenSSL but its build script emits no
