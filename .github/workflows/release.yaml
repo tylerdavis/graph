@@ -3,15 +3,25 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Backfill path: publish a container image for a release that already has
+  # binaries, without rebuilding them (e.g. after changing the Dockerfile).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build the image for (e.g. v0.3.0)"
+        required: true
 
 permissions:
   contents: write
+  packages: write
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
+    # Binaries already exist for a dispatch-backfilled tag.
+    if: github.event_name == 'push'
     strategy:
       fail-fast: false
       matrix:
@@ -51,3 +61,35 @@ jobs:
           gh release upload "${{ github.ref_name }}" --repo "${{ github.repository }}" \
             "target/release/graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" \
             "target/release/graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256" --clobber
+
+  # Container image for CI (and docker run): the linux binary plus git/jq/gh.
+  # Tagged vX.Y.Z, X.Y, and latest. Runs after the binaries on tag pushes,
+  # standalone on workflow_dispatch backfills.
+  image:
+    needs: build
+    if: ${{ !cancelled() && (needs.build.result == 'success' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch release binary
+        run: |
+          asset="graph-$TAG-x86_64-unknown-linux-gnu.tar.gz"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset*"
+          shasum -a 256 -c "$asset.sha256"
+          tar xzf "$asset"
+
+      - name: Log in to ghcr
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push
+        run: |
+          repo="ghcr.io/${{ github.repository }}"
+          minor="${TAG#v}"; minor="${minor%.*}"
+          docker build -t "$repo:$TAG" -t "$repo:$minor" -t "$repo:latest" .
+          docker push "$repo:$TAG"
+          docker push "$repo:$minor"
+          docker push "$repo:latest"
