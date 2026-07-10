@@ -1,7 +1,9 @@
 # Docs-drift gate: fails (exit-gate error → process exit 4) when a PR changes
 # crate behavior without touching docs/ — the CLAUDE.md rule, enforced.
+# Built entirely on the bundled github tool pack; the CI step is one line
+# (GRAPH_EVENTS=github turns the error exit into a run annotation).
 # Short-circuits with zero LLM calls when no crate code changed (E1) or docs
-# were updated alongside (E2); only then does the judge see the diff (E4).
+# were updated alongside (E3); only then does the judge see the diff (E5).
 # Every exit path emits the same {docs_required, reason} shape.
 identifier: docs_drift
 name: Docs drift gate
@@ -18,30 +20,39 @@ input_schema:
     head: { type: string, description: Head ref or sha of the PR }
 steps:
   - id: E0
-    tool_name: user__pr_changed_files
-    input: { base: "{{input.base}}", head: "{{input.head}}" }
-    reasoning: Bucket the changed files into crate source vs docs.
+    tool_name: user__git_changed_files
+    input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "crates/" }
+    reasoning: Which crate source files changed?
   - id: E1
     tool_name: exit
     input:
-      when: { value: "{{E0.crates}}", op: empty }
+      when: { value: "{{E0.count}}", op: eq, to: 0 }
       status: success
       message: no crate code changed — docs gate not applicable
       output: { docs_required: false, reason: no_crate_changes }
     reasoning: Docs-only or CI-only PRs pass immediately, no LLM.
   - id: E2
+    tool_name: user__git_changed_files
+    input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "docs/" }
+    reasoning: Were docs updated alongside?
+  - id: E3
     tool_name: exit
     input:
-      when: { value: "{{E0.docs}}", op: not_empty }
+      when: { value: "{{E2.count}}", op: gt, to: 0 }
       status: success
       message: docs updated alongside crate changes
       output: { docs_required: false, reason: docs_touched }
     reasoning: The rule is satisfied by construction, no LLM.
-  - id: E3
-    tool_name: user__pr_crate_diff
-    input: { base: "{{input.base}}", head: "{{input.head}}" }
-    reasoning: Fetch the crate diff for the judge, truncated to budget.
   - id: E4
+    tool_name: user__git_diff
+    input:
+      base: "{{input.base}}"
+      head: "{{input.head}}"
+      paths: "crates/"
+      exclude: ""
+      max_bytes: 60000
+    reasoning: Fetch the crate diff for the judge, truncated to budget.
+  - id: E5
     tool_name: exit
     input:
       infer: |
@@ -53,7 +64,7 @@ steps:
         renames do not count. Answer yes only if the behavior a user or plan
         author observes would change.
 
-        {{E3.text}}
+        {{E4.text}}
       status: error
       message: >-
         behavioral change without a docs/ update — CLAUDE.md requires docs
@@ -61,4 +72,4 @@ steps:
     reasoning: One judge call decides; error exit fails the CI check.
 output:
   docs_required: false
-  reason: "{{E4.reason}}"
+  reason: "{{E5.reason}}"

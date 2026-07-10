@@ -19,6 +19,26 @@ A CI job wants: no interactive state, no disk residue, explicit inputs, machine-
     graph plan run project_status @ci/inputs.json --json > status.json
 ```
 
+## PR checks in one line
+
+With the [github tool pack](/tools/user-defined#bundled-packs) enabled (`[tools] packs = ["github"]`), a plan can fetch its own PR context, gate on it, and post its own comment — so a merge check is a single step. `GRAPH_EVENTS=github` makes a failing plan annotate the run (`::error::` with the gate's message), and the [exit codes](/reference/environment#exit-codes) do the rest: 4 fails the check with the assertion, 1/3 fail it as a broken gate.
+
+```yaml
+env:
+  GRAPH_STORAGE: memory
+  GRAPH_EVENTS: github
+  GH_TOKEN: ${{ github.token }}
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+steps:
+  - uses: actions/checkout@v4
+    with: { fetch-depth: 0 }        # plans diff refs locally
+  # …install graph…
+  - run: graph plan run docs_drift --input base="$BASE" --input head="$HEAD"
+  - run: graph plan run pr_review --input pr="$PR"
+```
+
+This repo runs exactly this on its own PRs — see `.github/workflows/graph-checks.yaml` and the plans in `./.graph/plans/`.
+
 ## The pieces
 
 **Ephemeral storage.** `GRAPH_STORAGE=memory` (or `[storage] backend = "memory"`) runs with no embedded database at all — nothing to lock, nothing to clean up. Threads don't persist and the [shape cache](/tools/shape-cache) starts cold per job; declared schemas and `tool_overrides` fill the gap for plans (which don't need shapes anyway — you authored the paths).

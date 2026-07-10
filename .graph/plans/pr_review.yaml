@@ -1,43 +1,63 @@
-# Specialized PR reviewer: structured findings JSON on stdout (output mode,
-# one LLM call). Side-effect-free — the caller (CI workflow) formats and
-# posts the comment. Input arrives as a document from the workflow:
-#   graph plan run pr_review @review-input.json
-# Both the empty-diff exit and the finish emit the same {pr, summary,
-# findings} shape so callers parse one contract.
+# Specialized PR reviewer, self-contained: fetches its own context via the
+# bundled github tool pack, reviews the full diff (minus generated files)
+# against the repo rubric, and posts/updates the PR comment itself. Silent
+# finish — the comment is the deliverable. The CI step is one line:
+#   graph plan run pr_review --input pr=$PR
 identifier: pr_review
 name: Specialized PR review
 description: >
-  Reviews a pull-request diff against graph-cli's invariants and returns
-  structured findings as JSON on stdout. The caller supplies the diff
-  (pre-truncated) and posts any comment; the plan performs no side effects.
+  Reviews a pull request against graph-cli's invariants and posts the
+  findings as a PR comment (updated in place on repeated runs). Needs gh
+  auth and a checkout with history.
 input_schema:
   type: object
-  required: [pr_number, title, body, diff]
+  required: [pr]
   properties:
-    pr_number: { type: integer, description: PR number, echoed into the output }
-    title:     { type: string, description: PR title }
-    body:      { type: string, description: PR description (may be empty) }
-    diff:      { type: string, description: Unified diff, pre-truncated by the caller }
+    pr: { type: integer, description: Pull request number }
 steps:
   - id: E0
+    tool_name: user__gh_pr_meta
+    input: { pr: "{{input.pr}}" }
+    reasoning: Title, body, and the base/head shas to diff.
+  - id: E1
+    tool_name: user__git_diff
+    input:
+      base: "{{E0.base_sha}}"
+      head: "{{E0.head_sha}}"
+      paths: "."
+      exclude: "Cargo.lock CHANGELOG.md"
+      max_bytes: 120000
+    reasoning: The full change, minus generated files, within token budget.
+  - id: E2
     tool_name: exit
     input:
-      when: { value: "{{input.diff}}", op: empty }
+      when: { value: "{{E1.text}}", op: empty }
       status: success
       message: empty diff — nothing to review
-      output:
-        pr: "{{input.pr_number}}"
-        summary: Empty diff — nothing to review.
-        findings: []
-    reasoning: Nothing to review means a clean, zero-LLM exit.
-  - id: E1
+    reasoning: Nothing to review means a clean, zero-LLM exit, no comment.
+  - id: E3
     tool_name: user__review_graph_pr
     input:
-      title: "{{input.title}}"
-      body: "{{input.body}}"
-      diff: "{{input.diff}}"
+      title: "{{E0.title}}"
+      body: "{{E0.body}}"
+      diff: "{{E1.text}}"
     reasoning: One rubric'd review call with enforced structured output.
-output:
-  pr: "{{input.pr_number}}"
-  summary: "{{E1.summary}}"
-  findings: "{{E1.findings}}"
+  - id: E4
+    tool_name: user__gh_pr_comment
+    input:
+      pr: "{{input.pr}}"
+      body: |
+        ### graph PR review
+
+        {{E3.summary}}
+        {{^E3.findings}}
+        _No invariant findings._
+        {{/E3.findings}}
+        {{#E3.findings}}{{#@first}}
+        | Severity | Invariant | File | Finding |
+        |---|---|---|---|
+        {{/@first}}| {{severity}} | `{{invariant}}` | `{{file}}` | {{finding}} {{suggestion}} |
+        {{/E3.findings}}
+
+        <sub>Posted by the repo-carried pr_review plan (.graph/plans/pr_review.yaml).</sub>
+    reasoning: Post the findings; repeated runs edit the same comment.
