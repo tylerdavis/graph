@@ -2,6 +2,20 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
+## v0.4.0 — 2026-07-10
+
+
+### Added
+
+- publish a container image with each release (#4)
+- vendor lbug fts/vector extensions into the binary (#9)
+- builtin__ namespace for bundled tool packs, Built-ins docs page (#10)
+
+### Documentation
+
+- CI cookbook — the dogfooded plans and workflow, annotated (#7)
+- cookbook as a section — pages by solution category (#8)
+
 ## v0.3.0 — 2026-07-10
 
 
