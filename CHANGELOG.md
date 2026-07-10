@@ -2,6 +2,13 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
+## v0.5.0 — 2026-07-10
+
+
+### Added
+
+- grouped listing for graph tools list, tighter layout (#14)
+
 ## v0.4.1 — 2026-07-10
 
 
