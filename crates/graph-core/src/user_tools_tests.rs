@@ -286,3 +286,100 @@ command: echo
     // The rest of the pack is still present.
     assert!(docs.iter().any(|d| d.name == "gh_pr_meta"));
 }
+
+// ── Prompt-tool output_schema enforcement ────────────────────────────────
+
+/// Router whose chat role returns `chat_value` and repair role `repair_value`.
+fn schema_router(chat_value: Value, repair_value: Value) -> Arc<ModelRouter> {
+    struct Fixed(Value);
+    #[async_trait]
+    impl ChatProvider for Fixed {
+        async fn chat(&self, _req: ChatRequest) -> Result<ChatResponse, LlmError> {
+            Ok(ChatResponse {
+                content: None,
+                tool_calls: vec![],
+                structured: Some(self.0.clone()),
+                stop_reason: StopReason::EndTurn,
+                usage: Usage::default(),
+            })
+        }
+        async fn chat_stream(&self, _req: ChatRequest) -> Result<EventStream, LlmError> {
+            unimplemented!()
+        }
+    }
+    let mut providers: HashMap<String, Arc<dyn ChatProvider>> = HashMap::new();
+    providers.insert("chat".into(), Arc::new(Fixed(chat_value)));
+    providers.insert("fixer".into(), Arc::new(Fixed(repair_value)));
+    let choice = |provider: &str| ModelChoice {
+        provider: provider.into(),
+        model: "m".into(),
+        temperature: None,
+        dimensions: None,
+    };
+    Arc::new(ModelRouter::with_providers(
+        providers,
+        ModelRoles {
+            default: Some(choice("chat")),
+            repair: Some(choice("fixer")),
+            ..Default::default()
+        },
+    ))
+}
+
+fn strict_prompt_tool() -> UserToolDoc {
+    doc(r#"
+name: strict
+description: prompt tool with a required output field
+kind: prompt
+prompt: "judge {{input.x}}"
+output_schema:
+  type: object
+  required: [category, severity]
+  properties:
+    category: { type: string }
+    severity: { type: string }
+"#)
+}
+
+#[tokio::test]
+async fn prompt_output_missing_field_is_repaired() {
+    let router = schema_router(
+        json!({"category": "bug"}),                    // invalid: no severity
+        json!({"category": "bug", "severity": "low"}), // repair fixes it
+    );
+    let registry = UserToolRegistry::new(vec![strict_prompt_tool()], router, None);
+    let outcome = registry
+        .invoke("user__strict", json!({"x": 1}))
+        .await
+        .unwrap();
+    assert!(!outcome.is_error);
+    assert_eq!(outcome.result["severity"], "low");
+}
+
+#[tokio::test]
+async fn prompt_output_unrepairable_is_an_error() {
+    let router = schema_router(
+        json!({"category": "bug"}), // invalid
+        json!({"category": "bug"}), // repair returns the same invalid doc
+    );
+    let registry = UserToolRegistry::new(vec![strict_prompt_tool()], router, None);
+    let err = registry
+        .invoke("user__strict", json!({"x": 1}))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("after repair"), "{err}");
+}
+
+#[tokio::test]
+async fn prompt_output_valid_passes_untouched() {
+    let router = schema_router(
+        json!({"category": "bug", "severity": "high"}), // already valid
+        json!({"category": "WRONG", "severity": "WRONG"}), // repair must not run
+    );
+    let registry = UserToolRegistry::new(vec![strict_prompt_tool()], router, None);
+    let outcome = registry
+        .invoke("user__strict", json!({"x": 1}))
+        .await
+        .unwrap();
+    assert_eq!(outcome.result["severity"], "high");
+}

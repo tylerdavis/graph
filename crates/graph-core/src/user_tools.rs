@@ -444,10 +444,48 @@ impl UserToolRegistry {
             Some(structured) => structured,
             None => json!({"text": response.content.unwrap_or_default()}),
         };
+        // Provider-native structured output isn't schema-*validated* by the
+        // provider — models can omit required fields. With a declared
+        // output_schema, enforce it here with one repair pass, so plans can
+        // rely on every declared field existing (a missing key is a hard
+        // template error downstream).
+        let result = match &doc.output_schema {
+            Some(schema) => self.enforce_schema(result, schema).await?,
+            None => result,
+        };
         Ok(ToolOutcome {
             result,
             is_error: false,
         })
+    }
+
+    /// Validate `value` against `schema`; on mismatch, run one repair pass
+    /// and re-validate. A value that still doesn't conform is a tool error —
+    /// better a failed step than a silently missing field.
+    async fn enforce_schema(&self, value: Value, schema: &Value) -> Result<Value, ToolError> {
+        let validator = jsonschema::validator_for(schema)
+            .map_err(|e| ToolError::Transport(format!("invalid output_schema: {e}")))?;
+        let problems = |value: &Value| -> Option<String> {
+            let errors: Vec<String> = validator
+                .iter_errors(value)
+                .map(|e| e.to_string())
+                .collect();
+            (!errors.is_empty()).then(|| errors.join("; "))
+        };
+        let Some(error) = problems(&value) else {
+            return Ok(value);
+        };
+        let repaired = self
+            .router
+            .repair_structured(&value, schema, &error)
+            .await
+            .map_err(|e| ToolError::Transport(format!("output repair failed: {e}")))?;
+        match problems(&repaired) {
+            None => Ok(repaired),
+            Some(still) => Err(ToolError::Transport(format!(
+                "output does not match output_schema after repair: {still}"
+            ))),
+        }
     }
 
     async fn run_cypher(&self, query: &str, input: &Value) -> Result<ToolOutcome, ToolError> {
