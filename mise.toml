@@ -17,7 +17,7 @@ cmake = "4"
 # (FTS, VECTOR) need host-exported symbols. Resolve the OpenSSL lib dir via
 # pkg-config so the flags are independent of where openssl is installed.
 # Drop this when lbug > 0.18.0 ships. Details: crates/graph-store/SPIKE.md.
-RUSTFLAGS = "-L{{ exec(command='pkg-config --variable=libdir openssl') }} -lssl -lcrypto -Clink-arg=-Wl,-export_dynamic"
+RUSTFLAGS = "{{ exec(command='sh scripts/rustflags.sh') }}"
 
 [tasks.build]
 description = "Build the whole workspace"

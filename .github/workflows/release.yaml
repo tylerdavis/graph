@@ -20,7 +20,6 @@ jobs:
             target: aarch64-apple-darwin
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            rustflags_override: true
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -32,12 +31,6 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           experimental: true
-
-      - name: Override RUSTFLAGS for GNU ld (Linux)
-        if: matrix.rustflags_override
-        run: |
-          libdir=$(pkg-config --variable=libdir openssl)
-          echo "RUSTFLAGS=-L$libdir -lssl -lcrypto -Clink-arg=-Wl,--export-dynamic" >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2
 
