@@ -1,10 +1,10 @@
 ---
-title: "CI cookbook"
-description: "Two plans that gate this repo's own PRs, annotated"
+title: "CI checks"
+description: "Merge gates and PR review as plans, annotated"
 icon: "badge-check"
 ---
 
-This repo dogfoods graph in its own pull-request checks: a **docs-drift gate** (an inferred exit gate as a merge check) and a **specialized reviewer** (structured findings posted as a PR comment by the plan itself). Every piece ships in this repo — the plans in `./.graph/plans/`, the rubric tool in `./.graph/tools/`, the workflow in `.github/workflows/graph-checks.yaml` — and every PR against graph runs them. The general mechanics (ephemeral storage, repo-carried config, exit-code branching) are in [CI recipes](/automation/ci); this page is the worked example.
+This repo dogfoods graph in its own pull-request checks: a **docs-drift gate** (an inferred exit gate as a merge check) and a **specialized reviewer** (structured findings posted as a PR comment by the plan itself). Every piece ships in this repo — the plans in `./.graph/plans/`, the rubric tool in `./.graph/tools/`, the workflow in `.github/workflows/graph-checks.yaml` — and every PR against graph runs them.
 
 The finished shape is the headline. Each CI job is:
 
@@ -24,6 +24,14 @@ jobs:
 ```
 
 No install step (the release workflow publishes the image), no shell logic (plans own it), no output parsing (exit codes and annotations are the contract). The jobs run in seconds.
+
+## The pieces
+
+**Ephemeral storage.** `GRAPH_STORAGE=memory` runs with no embedded database at all — nothing to lock, nothing to clean up, safe under any job concurrency. Plans don't need the [shape cache](/tools/shape-cache) anyway: you authored the paths.
+
+**Repo-carried setup.** graph layers `./.graph/config.toml` over the global config and loads `./.graph/{plans,tools}/`, so the repo carries everything the checks need — config (secrets as `${ENV}` references that fail loudly when missing), plans, and the rubric tool — all reviewed like any other code.
+
+**The github tool pack.** `[tools] packs = ["github"]` enables the [bundled tools](/tools/user-defined#bundled-packs) the plans build on: `git_changed_files`, `git_diff`, `gh_pr_meta`, `gh_pr_comment`.
 
 ## `docs_drift` — an inferred gate as a merge check
 

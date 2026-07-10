@@ -1,10 +1,10 @@
 ---
-title: "Cookbook"
-description: "Three real plans, annotated"
-icon: "book-open"
+title: "Reporting"
+description: "Status reports and scheduled digests, annotated"
+icon: "newspaper"
 ---
 
-Three plans that ship as working examples — each demonstrates a different finish mode and a different design lesson. For CI-shaped plans (merge gates, PR reviewers), see the [CI cookbook](/plans/ci-cookbook).
+Plans that turn workspace data into prose on a schedule or on demand. Both examples ship as working plans (`~/.config/graph/plans/`) against a Linear workspace; the lessons transfer to any MCP source.
 
 ## `project_status` — solver report, resilient references
 
@@ -52,26 +52,16 @@ Ported from graph's predecessor. Its solver template pins the report *structure*
   ```
 - Aggregation (ticket counts, story points) is done *by the solver from raw data* — no computation in templates, by design.
 
-## `urgent_issues` — output mode, zero LLM
+## Recipe: scheduled report to Slack
 
-```yaml
-steps:
-  - id: E0
-    tool_name: linear__list_issues
-    input: { priority: 1, limit: 50 }
-output:
-  count: "{{E0.issues.length}}"
-  issues: "{{E0.issues}}"
-```
+A solver plan on cron — stdout is the deliverable, so delivery is a pipe:
 
 ```bash
-graph plan run urgent_issues | jq '.count'
+graph plan run project_status '{"project":"New Relic"}' > report.md
+curl -X POST "$SLACK_WEBHOOK" --data-urlencode "payload={\"text\": $(jq -Rs . < report.md)}"
 ```
 
-**Lessons:**
-- No `solver` + an `output` map = structured JSON on stdout, zero inference, sub-second after the tool call.
-- As a plan tool in chat, the agent receives the raw data — it can then reason over actual issue objects rather than a prose summary.
-- The typed splice does the heavy lifting: `"{{E0.issues}}"` is a real JSON array in the output, `"{{E0.issues.length}}"` a real number.
+Run it with `GRAPH_STORAGE=memory` in the cron environment — ephemeral, no lock contention with anything else on the box ([scripting contract](/automation/scripting)).
 
 ## Patterns to reuse
 
@@ -80,5 +70,5 @@ graph plan run urgent_issues | jq '.count'
 | Optional data section | `{{#Ex.field}}…{{/Ex.field}}` around instructions |
 | "Nothing found" handling | `{{^Ex.values}}say so{{/Ex.values}}` (solver mode) |
 | Fan-in for the solver | multiple `data:` keys, one per step result |
+| Strict formats | pin the structure with a grammar in `query_to_answer` |
 | Time windows | ISO-8601 durations in tool params: `updatedAt: "-P14D"` |
-| Repo-local plans | commit to `./.graph/plans/` — loaded automatically in that project |

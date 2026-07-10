@@ -95,7 +95,7 @@ The `github` pack (exec tools; expect `git`, `gh`, and `jq` on PATH, with `GH_TO
 | `git_diff` | Merge-base diff between two refs, path-scoped, with excludes, truncated to a byte budget |
 | `git_changed_files` | Changed files between two refs filtered by prefix, with a count — the cheap input for [exit gates](/plans/escape-hatch) |
 
-A user tool with the same name **shadows** the pack version — copy a pack tool into your tools directory to pin or tweak it. Unknown pack names fail at startup, not at plan time. These are the building blocks for CI plans; see [CI recipes](/automation/ci).
+A user tool with the same name **shadows** the pack version — copy a pack tool into your tools directory to pin or tweak it. Unknown pack names fail at startup, not at plan time. These are the building blocks for CI plans; see [CI checks](/cookbook/ci-checks).
 
 ## Shared behavior
 

@@ -1,0 +1,69 @@
+---
+title: "Scripting & automation"
+description: "Plans as commands: structured output, pipes, and exit codes"
+icon: "gears"
+---
+
+Plans behave like well-mannered CLI commands — clean stdout, meaningful exit codes, explicit inputs — so shell automation composes around them. The [scripting contract](/automation/scripting) defines the guarantees; these are the recipes.
+
+## `urgent_issues` — output mode, zero LLM
+
+```yaml
+steps:
+  - id: E0
+    tool_name: linear__list_issues
+    input: { priority: 1, limit: 50 }
+output:
+  count: "{{E0.issues.length}}"
+  issues: "{{E0.issues}}"
+```
+
+```bash
+graph plan run urgent_issues | jq '.count'
+```
+
+**Lessons:**
+- No `solver` + an `output` map = structured JSON on stdout, zero inference, sub-second after the tool call.
+- As a plan tool in chat, the agent receives the raw data — it can then reason over actual issue objects rather than a prose summary.
+- The typed splice does the heavy lifting: `"{{E0.issues}}"` is a real JSON array in the output, `"{{E0.issues.length}}"` a real number.
+
+## Recipe: fixtures + overrides
+
+Check in the base inputs, override per run — the document is the base, `--input` layers on top:
+
+```bash
+graph plan run release_report @ci/base.json --input version="$TAG"
+```
+
+## Recipe: branch on outcomes
+
+Exit codes separate "the data says act" from "the run broke" ([full table](/automation/scripting#exit-codes)):
+
+```bash
+graph plan run urgent_issues > urgent.json
+count=$(jq '.count' urgent.json)
+if [ "$count" -gt 0 ]; then …page someone…; fi
+
+# exit 3 = inputs missing (caller bug), exit 1 = run failure, 0 = success
+# exit 4 = an exit gate asserted — the plan ran fine and the condition is real
+```
+
+For assertion-style automation, put the condition *in the plan* as an [exit gate](/plans/escape-hatch) and branch on exit 4 — that's how the [CI checks](/cookbook/ci-checks) work.
+
+## Recipe: silent action plan
+
+A plan with [no solver and no output](/plans/finish-modes) performs side effects and exits — e.g. file a Linear issue for every failing canary from an exec tool's output. Zero inference, fully deterministic, reviewable in the PR that adds the plan file.
+
+## Concurrency note
+
+The default embedded database is single-process. Automation should use `GRAPH_STORAGE=memory`; on a shared box, give concurrent long-lived processes separate `data_dir`s.
+
+## Patterns to reuse
+
+| Pattern | How |
+|---|---|
+| Machine-readable output | `output:` map, no solver — pipe to `jq` |
+| Checked-in inputs | `@file` document + `--input key=value` overrides |
+| Assertion automation | exit gates + branch on exit code 4 |
+| Side effects only | silent finish — no solver, no output |
+| Repo-local plans | commit to `./.graph/plans/` — loaded automatically in that project |

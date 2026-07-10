@@ -42,7 +42,7 @@ tar xzf graph-v0.3.0-x86_64-unknown-linux-gnu.tar.gz && install -m 0755 graph ~/
 
 ## Container image
 
-Each release also publishes `ghcr.io/tylerdavis/graph` (tags `vX.Y.Z`, `X.Y`, `latest`): the Linux binary plus `git`, `jq`, and `gh` — everything the [github tool pack](/tools/user-defined#bundled-packs) shells out to. It doubles as the runtime for [CI jobs](/automation/ci) (no install step) and works standalone:
+Each release also publishes `ghcr.io/tylerdavis/graph` (tags `vX.Y.Z`, `X.Y`, `latest`): the Linux binary plus `git`, `jq`, and `gh` — everything the [github tool pack](/tools/user-defined#bundled-packs) shells out to. It doubles as the runtime for [CI jobs](/cookbook/ci-checks) (no install step) and works standalone:
 
 ```bash
 docker run --rm -e ANTHROPIC_API_KEY -e GRAPH_STORAGE=memory \
