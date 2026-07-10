@@ -73,12 +73,16 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
 
     if let Err(problems) = validate_input(&doc, &input) {
         eprintln!("plan '{name}' needs inputs:");
-        for problem in problems {
+        for problem in &problems {
             eprintln!("  - {problem}");
         }
         if let Some(schema) = &doc.input_schema {
             eprintln!("input schema:\n{}", serde_json::to_string_pretty(schema)?);
         }
+        crate::output::annotate_failure(&format!(
+            "plan '{name}' needs inputs: {}",
+            problems.join("; ")
+        ));
         runtime.shutdown().await;
         std::process::exit(EXIT_NEEDS_INPUT);
     }
@@ -95,7 +99,13 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         .await;
     runtime.shutdown().await;
 
-    let outcome = result?;
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            crate::output::annotate_failure(&format!("plan '{name}' failed: {err:#}"));
+            return Err(err.into());
+        }
+    };
     let exited_error = matches!(
         &outcome.exit,
         Some(e) if e.status == graph_core::pipeline::ExitStatus::Error
@@ -134,6 +144,9 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         println!();
     }
     if exited_error {
+        if let Some(exit) = &outcome.exit {
+            crate::output::annotate_failure(&exit.message);
+        }
         std::process::exit(EXIT_PLAN_ASSERTED);
     }
     Ok(())

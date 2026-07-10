@@ -26,15 +26,15 @@ CI (`.github/workflows/ci.yaml`) runs lint + tests on ubuntu-24.04 and macos-15 
 | Crate | Contents |
 |---|---|
 | `graph-cli` | binary: clap tree, REPL, sinks (`TtySink`, `JsonlSink`), input resolution, runtime wiring |
-| `graph-core` | agent loop, plan pipeline (incl. `exit` gates, plan composition), template engine, toolbox, user tools, Store/ToolRegistry traits, prompts, shape inference |
+| `graph-core` | agent loop, plan pipeline (incl. `exit` gates, plan composition), template engine, toolbox, user tools + bundled packs (`src/packs/`), Store/ToolRegistry traits, prompts, shape inference |
 | `graph-llm` | ChatProvider trait + anthropic/openai_compat providers, retries with backoff, structured output + repair, ModelRouter (role → model) |
 | `graph-mcp` | rmcp client manager (stdio + streamable HTTP), `server__tool` namespacing, graceful shutdown |
 | `graph-store` | LadybugDB Store impl, MemoryStore (ephemeral/CI), RecordingRegistry (shape cache), CypherExecutor |
-| `graph-config` | layered TOML config + serde models (providers, model roles incl. `judge`, storage backends, plan/tool paths) |
+| `graph-config` | layered TOML config + serde models (providers, model roles incl. `judge`, storage backends, plan/tool paths, tool packs) |
 
 ## Architecture facts that bite
 
-- **Tool catalog namespacing**: `<server>__` (MCP), `user__` (user tools), `plan__` (plan docs), plus reserved bare names `plan_and_execute` and `exit`. Everything shares one `ToolRegistry` catalog (`CompositeRegistry` merges sources); shape recording wraps the base.
+- **Tool catalog namespacing**: `<server>__` (MCP), `user__` (user tools), `plan__` (plan docs), plus reserved bare names `plan_and_execute` and `exit`. Everything shares one `ToolRegistry` catalog (`CompositeRegistry` merges sources); shape recording wraps the base. Bundled tool packs (`[tools].packs`, YAML embedded in `graph-core/src/packs/`) load into the `user__` catalog; a user tool with the same name shadows the pack version.
 - **Plan invocation lives in the pipeline**, not the toolbox: `Pipeline::call_plan`/`call_planner` (boxed recursive futures). The toolbox is a thin adapter for the agent loop. **Plans compose**: `plan__*` and `plan_and_execute` are valid step tools; the pipeline call stack detects cycles and caps depth at 8.
 - **`exit` gates** are executor-intercepted steps (never dispatched to a registry): `when` (logical value/op/to) or `infer` (yes/no verdict via the `judge` role). Fired gates skip remaining steps *and the solver*; error exits → process exit code 4, `is_error` plan-tool results.
 - **Storage backends** resolve via `[storage].backend` / `GRAPH_STORAGE` env (`ladybug` default, `memory` for CI). Ladybug is single-process (lock errors name the holding PID). The shape cache is read fresh at each planning attempt — never snapshot it at construction.
@@ -44,7 +44,7 @@ CI (`.github/workflows/ci.yaml`) runs lint + tests on ubuntu-24.04 and macos-15 
 
 - **Error policy**: human-authored plans never replan; `EmptyData` (data ran out) is distinct from `BadPath` (plan defect) and never triggers replanning; output/silent plans fail hard on empty data — `exit` gates are the sanctioned way to pre-empt that. See `docs/plans/errors-and-replanning.mdx`.
 - **Template dialect** is strict, typed, and logic-less; its contract lives in `graph-core/src/template/` tests and `docs/plans/template-language.mdx`. Changes to one must change both. Logic belongs in steps (user tools, exit conditions), never in templates.
-- **Streams contract**: stdout carries only the deliverable (answer, output-mode JSON, `--json` envelopes); all progress/diagnostics go to stderr (`GRAPH_EVENTS=jsonl` switches stderr to machine-parseable events). Exit codes: 0 ok, 1 failure, 3 needs-input, 4 exit-gate assertion.
+- **Streams contract**: stdout carries only the deliverable (answer, output-mode JSON, `--json` envelopes); all progress/diagnostics go to stderr (`GRAPH_EVENTS=jsonl` switches stderr to machine-parseable events). Exit codes: 0 ok, 1 failure, 3 needs-input, 4 exit-gate assertion. One sanctioned exception: `GRAPH_EVENTS=github` prints a `::error::` annotation to stdout on *failing* `plan run`s (GitHub parses workflow commands from stdout only) — the choke point is `output::annotate_failure`.
 - **MCP child processes** must be shut down via `McpManager::shutdown()` before the tokio runtime drops (async-Drop cleanup doesn't run during teardown; orphans attach to the user's terminal).
 - **Store access** goes through `Arc<dyn Store>`; only `graph db query` and `CypherExecutor` may touch `GraphStore` concretely.
 - Prompts are prompt *surface*: planner-facing field names (`toolName`, `queryToAnswer`) are camelCase via serde and must stay aligned with `graph-core/src/pipeline/prompts.rs`; tool descriptions and exemplars are routing signals, not comments.

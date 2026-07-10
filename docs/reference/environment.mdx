@@ -9,6 +9,7 @@ icon: "list-check"
 | Variable | Effect |
 |---|---|
 | `GRAPH_STORAGE` | `ladybug` \| `memory` — overrides `[storage].backend`. Invalid values error. |
+| `GRAPH_EVENTS` | `jsonl` — stderr becomes machine-parseable JSONL events (`tool_started`, `tool_finished`, `planning`, …). `github` — a failing `plan run` additionally emits a GitHub Actions `::error::` annotation (see stream conventions below). |
 | `GRAPH_LOG` | [tracing filter](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for diagnostics on stderr (e.g. `GRAPH_LOG=debug`, `GRAPH_LOG=graph_mcp=trace`). Overrides `-v` flags. |
 | anything referenced as `${VAR}` in config | provider keys, MCP auth, tool env — resolved at load, required |
 
@@ -25,6 +26,8 @@ icon: "list-check"
 
 - **stdout**: the deliverable only (answer text, output-mode JSON, `--json` envelopes)
 - **stderr**: tool activity, progress markers (`✎ planning…`, `✎ synthesizing…`, `↻ replanning`), solver streaming during chat, dim hints
+
+One sanctioned exception: under `GRAPH_EVENTS=github`, a *failing* `plan run` prints a `::error::` workflow command to stdout (GitHub Actions only parses annotations from stdout). This happens only on failure paths — the nonzero exit code already tells automation that stdout is not a clean deliverable — so a CI step needs no shell wrapper to surface why a gate fired.
 
 ## Data locations
 
