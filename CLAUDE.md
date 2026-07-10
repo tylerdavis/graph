@@ -41,3 +41,5 @@ mise run install        # release build onto PATH
 - Vitest-style behavioral tests colocated per crate; mock LLM providers via `ModelRouter::with_providers`.
 - Every feature lands with tests and a lint-clean tree; verify real behavior with the live MCP reference server (`npx @modelcontextprotocol/server-everything`) where practical.
 - lbug 0.18 workarounds (OpenSSL link flags, `-export_dynamic`) are documented in `crates/graph-store/SPIKE.md` — drop them when lbug > 0.18.0 ships.
+
+See RELEASING.md for the release process (semver via conventional commits).

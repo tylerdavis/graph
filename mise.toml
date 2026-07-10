@@ -9,6 +9,7 @@
 [tools]
 rust = { version = "1.94", components = "rustfmt,clippy" }
 cmake = "4"
+"ubi:orhun/git-cliff" = "latest"
 
 [env]
 # lbug 0.18's prebuilt liblbug.a needs OpenSSL but its build script emits no
@@ -53,6 +54,18 @@ run = "cargo build --release"
 description = "Built and install a release binary on the system"
 run = "cargo install --path crates/graph-cli"
 depends = ["release"]
+
+[tasks."release:patch"]
+description = "Cut a patch release (bump, changelog, tag, push)"
+run = "scripts/release.sh patch"
+
+[tasks."release:minor"]
+description = "Cut a minor release"
+run = "scripts/release.sh minor"
+
+[tasks."release:major"]
+description = "Cut a major release"
+run = "scripts/release.sh major"
 
 [tasks.explorer]
 description = "Ladybug DB Explorer"
