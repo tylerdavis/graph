@@ -33,8 +33,11 @@ fi
 echo "releasing v$new (was $current)"
 
 if [ "$level" != "current" ]; then
-  # Bump the single workspace version (crates inherit it).
-  sed -i.bak "0,/^version = \"$current\"$/s//version = \"$new\"/" Cargo.toml && rm Cargo.toml.bak
+  # Bump the single workspace version (crates inherit it). The full-line
+  # anchor matches only the workspace field, so plain s/// is safe — and
+  # portable: GNU-only "0,/re/" addressing silently no-ops on BSD sed.
+  sed -i.bak "s/^version = \"$current\"\$/version = \"$new\"/" Cargo.toml && rm Cargo.toml.bak
+  grep -q "^version = \"$new\"\$" Cargo.toml || { echo "version bump failed" >&2; exit 1; }
   # Refresh Cargo.lock's version entries.
   cargo update -q --workspace
 fi
