@@ -9,6 +9,12 @@
 # Node runtime into job containers, which breaks on musl.
 FROM debian:trixie-slim
 
+# Links the ghcr package to this repository (automatic for GITHUB_TOKEN
+# pushes; the label makes it hold for any push path).
+LABEL org.opencontainers.image.source="https://github.com/tylerdavis/graph" \
+      org.opencontainers.image.description="graph CLI with git, jq, and gh — ready for CI plan runs" \
+      org.opencontainers.image.licenses="MIT"
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git jq gh \
     && rm -rf /var/lib/apt/lists/* \
