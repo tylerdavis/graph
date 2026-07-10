@@ -44,9 +44,15 @@ pub fn materialize(ext: Extension, base_dir: &Path) -> std::io::Result<PathBuf> 
     let path = dir.join(format!("lib{}.lbug_extension", ext.name()));
     if !path.exists() {
         std::fs::create_dir_all(&dir)?;
-        // Write-then-rename: a concurrent or aborted writer must never
-        // leave a truncated file at the final path for dlopen to trip on.
-        let tmp = dir.join(format!(".lib{}.lbug_extension.tmp", ext.name()));
+        // Write-then-rename with a per-process tmp name: a concurrent or
+        // aborted writer must never leave a truncated file at the final
+        // path for dlopen to trip on, and two processes racing here each
+        // rename their own complete copy.
+        let tmp = dir.join(format!(
+            ".lib{}.lbug_extension.tmp.{}",
+            ext.name(),
+            std::process::id()
+        ));
         std::fs::write(&tmp, ext.bytes())?;
         std::fs::rename(&tmp, &path)?;
     }

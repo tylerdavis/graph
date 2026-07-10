@@ -50,7 +50,6 @@ fn vendor_extensions() {
     println!("cargo:rerun-if-env-changed=GRAPH_LBUG_EXT_DIR");
     println!("cargo:rustc-env=GRAPH_LBUG_EXT_VERSION={EXTENSION_VERSION}");
 
-    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let platform = match (
         std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
         std::env::var("CARGO_CFG_TARGET_ARCH").as_deref(),
@@ -65,9 +64,23 @@ fn vendor_extensions() {
         ),
     };
 
+    // Downloads live in a location that outlasts `cargo clean` and CI
+    // target-dir eviction (rust-cache drops workspace crates' OUT_DIRs but
+    // preserves $CARGO_HOME) — otherwise every CI run would re-fetch and
+    // the CDN flake this vendoring exists to kill would move to build time.
+    let cache_dir = std::env::var("CARGO_HOME")
+        .map(|home| {
+            Path::new(&home)
+                .join("graph-lbug-extensions")
+                .join(format!("v{EXTENSION_VERSION}-{platform}"))
+        })
+        .unwrap_or_else(|_| PathBuf::from(std::env::var("OUT_DIR").unwrap()));
+    std::fs::create_dir_all(&cache_dir)
+        .unwrap_or_else(|e| panic!("creating {}: {e}", cache_dir.display()));
+
     for ext in EXTENSIONS {
         let file = format!("lib{ext}.lbug_extension");
-        let dest = out_dir.join(&file);
+        let dest = cache_dir.join(&file);
         if let Ok(dir) = std::env::var("GRAPH_LBUG_EXT_DIR") {
             let src = Path::new(&dir).join(&file);
             std::fs::copy(&src, &dest).unwrap_or_else(|e| {
@@ -91,18 +104,32 @@ fn vendor_extensions() {
 }
 
 fn download(url: &str, dest: &Path) {
-    let response = ureq::get(url).call().unwrap_or_else(|e| {
-        panic!(
-            "downloading {url}: {e}\nfor offline builds, set GRAPH_LBUG_EXT_DIR to a \
-             directory of pre-fetched extension files"
-        )
-    });
+    let mut last_err = String::new();
+    for attempt in 1..=3u32 {
+        match try_download(url, dest) {
+            Ok(()) => return,
+            Err(e) => {
+                last_err = e;
+                eprintln!("attempt {attempt} downloading {url}: {last_err}");
+                std::thread::sleep(std::time::Duration::from_secs(2 * u64::from(attempt)));
+            }
+        }
+    }
+    panic!(
+        "downloading {url} failed after 3 attempts: {last_err}\nfor offline builds, set \
+         GRAPH_LBUG_EXT_DIR to a directory of pre-fetched extension files"
+    );
+}
+
+fn try_download(url: &str, dest: &Path) -> Result<(), String> {
+    let response = ureq::get(url).call().map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut response.into_reader(), &mut bytes)
-        .unwrap_or_else(|e| panic!("reading {url}: {e}"));
-    // Write-then-rename so an aborted build can't leave a truncated file
-    // that a later `dest.exists()` check would trust.
-    let tmp = dest.with_extension("tmp");
-    std::fs::write(&tmp, &bytes).unwrap_or_else(|e| panic!("writing {}: {e}", tmp.display()));
-    std::fs::rename(&tmp, dest).unwrap_or_else(|e| panic!("renaming into {}: {e}", dest.display()));
+        .map_err(|e| e.to_string())?;
+    // Write-then-rename with a per-process tmp name: an aborted or
+    // concurrent build must never leave a truncated file at the final path
+    // for a later `dest.exists()` check to trust.
+    let tmp = dest.with_extension(format!("tmp.{}", std::process::id()));
+    std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, dest).map_err(|e| e.to_string())
 }
