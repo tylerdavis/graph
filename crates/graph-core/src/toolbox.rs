@@ -83,7 +83,7 @@ impl AgentToolbox {
                     Some(structured) => structured,
                     None if outcome.answer.is_empty() => json!({
                         "ok": true,
-                        "steps_executed": outcome.state.results.len(),
+                        "steps_executed": outcome.state.steps_executed(),
                     }),
                     None => json!({"answer": outcome.answer}),
                 },
@@ -142,7 +142,7 @@ impl ToolRegistry for AgentToolbox {
                     result: json!({
                         "answer": outcome.answer,
                         "degraded": outcome.degraded,
-                        "steps_executed": outcome.state.results.len(),
+                        "steps_executed": outcome.state.steps_executed(),
                     }),
                     is_error: false,
                 }),

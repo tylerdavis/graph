@@ -105,7 +105,7 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
                 "answer": (!outcome.answer.is_empty()).then_some(&outcome.answer),
                 "output": outcome.structured,
                 "plan": doc.identifier,
-                "steps_executed": outcome.state.results.len(),
+                "steps_executed": outcome.state.steps_executed(),
             }))?
         );
     } else if let Some(structured) = &outcome.structured {
@@ -114,7 +114,7 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         eprintln!(
             "✓ plan '{}' completed ({} steps)",
             doc.identifier,
-            outcome.state.results.len()
+            outcome.state.steps_executed()
         );
     } else {
         // Solver output already streamed; just terminate the line.

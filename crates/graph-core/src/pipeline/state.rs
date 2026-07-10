@@ -62,6 +62,11 @@ impl RunState {
             .find(|step| !self.results.contains_key(&step.id))
     }
 
+    /// Number of executed steps (excludes the `input` root).
+    pub fn steps_executed(&self) -> usize {
+        self.results.keys().filter(|k| *k != "input").count()
+    }
+
     pub fn last_error(&self) -> Option<&BusEntry> {
         self.bus
             .iter()
