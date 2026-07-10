@@ -85,7 +85,10 @@ jobs:
 
       - name: Build review context
         run: |
-          git diff "$BASE...$HEAD" -- crates/ docs/ | head -c 120000 > diff.patch
+          # Full diff minus generated files — the reviewer should see plans,
+          # tools, workflows, and scripts, not just crate and docs changes.
+          git diff "$BASE...$HEAD" -- . ':(exclude)Cargo.lock' ':(exclude)CHANGELOG.md' \
+            | head -c 120000 > diff.patch
           gh pr view "$PR" --json title,body > pr.json
           jq -n --rawfile diff diff.patch --slurpfile pr pr.json \
             '{pr_number: (env.PR | tonumber),
