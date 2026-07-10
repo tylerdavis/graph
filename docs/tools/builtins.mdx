@@ -1,0 +1,79 @@
+---
+title: "Built-ins"
+description: "Tool packs that ship inside the binary"
+icon: "box"
+---
+
+Built-in tools are [user-tool-format](/tools/user-defined) YAML documents compiled into the graph binary and served under the `builtin__` namespace. Same schema, same validation, same catalog — the namespace just says who ships them. They're grouped into **packs**, enabled per pack:
+
+```toml
+[tools]
+packs = ["github"]
+```
+
+Unknown pack names fail at startup, not at plan time. To customize a built-in, copy its YAML into a tools directory and reference your `user__` copy from plans — built-ins themselves never change out from under you except with a graph release.
+
+## Runtime requirements
+
+Built-ins are mostly `exec` tools: they shell out and inherit the process environment. The `github` pack expects `git`, `jq`, and `gh` on PATH, with `GH_TOKEN` (or `gh auth`) for the `gh_*` tools — all present on GitHub Actions runners and baked into the [release container image](/getting-started/installation#container-image).
+
+## The `github` pack
+
+Building blocks for PR-shaped plans — see the [CI checks cookbook](/cookbook/ci-checks) for them in use.
+
+### `builtin__gh_pr_meta`
+
+Metadata for a pull request — the starting point for anything that diffs or reviews a PR. Read-only.
+
+| Input | Type | |
+|---|---|---|
+| `pr` | integer | required — pull request number |
+
+| Output | Type | |
+|---|---|---|
+| `title` | string | PR title |
+| `body` | string | PR description (`""` when empty) |
+| `base_sha` | string | tip of the base branch |
+| `head_sha` | string | tip of the PR branch |
+| `state` | string | `OPEN`, `MERGED`, … |
+| `author` | string | login |
+
+### `builtin__gh_pr_comment`
+
+Post or update a comment on the PR conversation. Updates the token identity's most recent comment when one exists (`--edit-last --create-if-none`), so repeated runs keep a single comment instead of stacking. **Side-effecting** (`read_only: false`).
+
+| Input | Type | |
+|---|---|---|
+| `pr` | integer | required |
+| `body` | string | required — markdown comment body (render it with [template sections](/plans/template-language#sections)) |
+
+Output: `{ "text": "<comment URL>" }`.
+
+### `builtin__git_diff`
+
+Unified diff between two refs (merge-base three-dot diff), path-scoped, truncated to a byte budget — sized for LLM consumption. Read-only. Needs a checkout with enough history to resolve both refs (`fetch-depth: 0` in CI).
+
+| Input | Type | |
+|---|---|---|
+| `base` | string | required — ref or sha |
+| `head` | string | required — ref or sha |
+| `paths` | string | required — space-separated pathspecs; `"."` for everything |
+| `exclude` | string | required — space-separated excluded paths; `""` for none |
+| `max_bytes` | integer | required — truncation budget |
+
+Output: `{ "text": "<diff>" }` — empty string when nothing changed, which pairs with an `empty` [exit gate](/plans/escape-hatch).
+
+### `builtin__git_changed_files`
+
+Files changed between two refs, filtered to a path prefix, with a count — the cheap input for gating before any LLM call. Read-only. Fails loudly on bad refs rather than returning an empty list a gate would misread.
+
+| Input | Type | |
+|---|---|---|
+| `base` | string | required |
+| `head` | string | required |
+| `prefix` | string | required — path prefix filter; `""` matches every file |
+
+| Output | Type | |
+|---|---|---|
+| `files` | array of string | matching paths |
+| `count` | integer | `files.length`, ready for `eq`/`gt` gates |

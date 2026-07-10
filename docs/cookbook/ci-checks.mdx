@@ -31,7 +31,7 @@ No install step (the release workflow publishes the image), no shell logic (plan
 
 **Repo-carried setup.** graph layers `./.graph/config.toml` over the global config and loads `./.graph/{plans,tools}/`, so the repo carries everything the checks need — config (secrets as `${ENV}` references that fail loudly when missing), plans, and the rubric tool — all reviewed like any other code.
 
-**The github tool pack.** `[tools] packs = ["github"]` enables the [bundled tools](/tools/user-defined#bundled-packs) the plans build on: `git_changed_files`, `git_diff`, `gh_pr_meta`, `gh_pr_comment`.
+**The github tool pack.** `[tools] packs = ["github"]` enables the [bundled tools](/tools/builtins) the plans build on: `git_changed_files`, `git_diff`, `gh_pr_meta`, `gh_pr_comment`.
 
 ## `docs_drift` — an inferred gate as a merge check
 
@@ -84,7 +84,7 @@ output:
 
 **Lessons:**
 
-- **Short-circuit before you infer.** E1 and E3 are `when` gates over [github pack](/tools/user-defined#bundled-packs) tool output — a docs-only PR exits success in milliseconds with zero LLM calls. The `infer` gate is the last resort, and it sees only the truncated `crates/` diff. Worst case per PR: one judge call on the cheap `judge` role.
+- **Short-circuit before you infer.** E1 and E3 are `when` gates over [github pack](/tools/builtins) tool output — a docs-only PR exits success in milliseconds with zero LLM calls. The `infer` gate is the last resort, and it sees only the truncated `crates/` diff. Worst case per PR: one judge call on the cheap `judge` role.
 - **The gate is the CI contract.** `status: error` maps to process exit code 4 — distinct from exit 1 (the plan itself broke). The job needs no branching: exit 4 fails the step, and under `GRAPH_EVENTS=github` graph prints the gate's message as a `::error::` annotation itself.
 - **Every exit path emits the same shape.** Both success gates and the fall-through `output` produce `{docs_required, reason}` — callers parse one contract. On a non-fired infer gate, `{{E5.reason}}` carries the judge's reasoning into the output for free (the judge explains *why* no docs are needed).
 - **Ask the judge a falsifiable question.** The prompt defines what does *not* count (refactors, test-only changes). The judge role answers "yes only when the data clearly supports it", so the framing sets the false-positive rate. Live calibration: it flagged a commit adding an env var and a JSON field ("observable by users and plan authors"), and passed a dead-code removal with its reasoning in `reason`.

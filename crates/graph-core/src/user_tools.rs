@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub const USER_TOOL_PREFIX: &str = "user__";
+pub const BUILTIN_TOOL_PREFIX: &str = "builtin__";
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 
 // Note: no deny_unknown_fields — serde can't combine it with #[serde(flatten)].
@@ -122,8 +123,9 @@ pub trait CypherExecutor: Send + Sync {
 // ── Bundled tool packs ───────────────────────────────────────────────────
 
 /// Tool YAML shipped inside the binary, keyed by pack name. Pack tools load
-/// through the same validation and registry as user tools; a user tool with
-/// the same name shadows the pack version.
+/// through the same validation and registry machinery as user tools, but
+/// are exposed under the `builtin__` namespace — copy one into a tools
+/// directory (as a `user__` tool) to customize it.
 const PACKS: &[(&str, &[&str])] = &[(
     "github",
     &[
@@ -159,20 +161,6 @@ pub fn load_pack_tools(packs: &[String]) -> Result<Vec<UserToolDoc>, String> {
             }
             docs.push(doc);
         }
-    }
-    Ok(docs)
-}
-
-/// Pack tools plus user tools from `dirs`; a user tool shadows a pack tool
-/// with the same name (pin or tweak a pack tool by copying it locally).
-pub fn load_tools_with_packs(
-    packs: &[String],
-    dirs: &[PathBuf],
-) -> Result<Vec<UserToolDoc>, String> {
-    let mut docs = load_pack_tools(packs)?;
-    for user_doc in load_user_tools(dirs)? {
-        docs.retain(|d| d.name != user_doc.name);
-        docs.push(user_doc);
     }
     Ok(docs)
 }
@@ -262,10 +250,15 @@ pub fn validate_tool(doc: &UserToolDoc) -> Result<(), String> {
 
 // ── Registry ─────────────────────────────────────────────────────────────
 
+/// Registry over declarative tool documents. Serves user-authored tools
+/// under `user__` and bundled pack tools under `builtin__` — same YAML
+/// format, same validation, different namespace so the catalog says who
+/// ships each tool.
 pub struct UserToolRegistry {
     tools: Vec<UserToolDoc>,
     router: Arc<ModelRouter>,
     cypher: Option<Arc<dyn CypherExecutor>>,
+    prefix: &'static str,
 }
 
 impl UserToolRegistry {
@@ -278,6 +271,21 @@ impl UserToolRegistry {
             tools,
             router,
             cypher,
+            prefix: USER_TOOL_PREFIX,
+        }
+    }
+
+    /// A registry serving bundled pack tools under `builtin__`.
+    pub fn builtins(
+        tools: Vec<UserToolDoc>,
+        router: Arc<ModelRouter>,
+        cypher: Option<Arc<dyn CypherExecutor>>,
+    ) -> Self {
+        Self {
+            tools,
+            router,
+            cypher,
+            prefix: BUILTIN_TOOL_PREFIX,
         }
     }
 
@@ -534,7 +542,7 @@ impl ToolRegistry for UserToolRegistry {
             .tools
             .iter()
             .map(|doc| ToolDef {
-                name: format!("{USER_TOOL_PREFIX}{}", doc.name),
+                name: format!("{}{}", self.prefix, doc.name),
                 description: doc.description.clone(),
                 input_schema: doc
                     .input_schema
@@ -551,7 +559,7 @@ impl ToolRegistry for UserToolRegistry {
     }
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
-        let Some(bare) = name.strip_prefix(USER_TOOL_PREFIX) else {
+        let Some(bare) = name.strip_prefix(self.prefix) else {
             return Err(ToolError::Unknown(name.to_string()));
         };
         let Some(doc) = self.tools.iter().find(|d| d.name == bare) else {
