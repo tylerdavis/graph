@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            rustflags_override: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenSSL dev (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - uses: jdx/mise-action@v2
+        with:
+          experimental: true
+
+      - name: Override RUSTFLAGS for GNU ld (Linux)
+        if: matrix.rustflags_override
+        run: |
+          libdir=$(pkg-config --variable=libdir openssl)
+          echo "RUSTFLAGS=-L$libdir -lssl -lcrypto -Clink-arg=-Wl,--export-dynamic" >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p graph-cli
+
+      - name: Package
+        run: |
+          cd target/release
+          tar czf "graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" graph
+          shasum -a 256 "graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" > "graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" --generate-notes || true
+          gh release upload "${{ github.ref_name }}" --repo "${{ github.repository }}" \
+            "target/release/graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" \
+            "target/release/graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256" --clobber
