@@ -61,21 +61,38 @@ jobs:
           tar czf "graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" graph
           shasum -a 256 "graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" > "graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256"
 
-      - name: Upload to release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: graph-${{ matrix.target }}
+          path: target/release/graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz*
+          if-no-files-found: error
+
+  # Releases are immutable once published (assets can never be added or
+  # changed), so the release is created exactly once, atomically, with
+  # every asset attached — after all platform builds succeed.
+  publish:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Create release with assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" --generate-notes || true
-          gh release upload "${{ github.ref_name }}" --repo "${{ github.repository }}" \
-            "target/release/graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" \
-            "target/release/graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256" --clobber
+          gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" \
+            --generate-notes assets/*
 
   # Container image for CI (and docker run): the linux binary plus git/jq/gh.
-  # Tagged vX.Y.Z, X.Y, and latest. Runs after the binaries on tag pushes,
-  # standalone on workflow_dispatch backfills.
+  # Tagged vX.Y.Z, X.Y, and latest. Runs after the release exists on tag
+  # pushes, standalone on workflow_dispatch backfills.
   image:
-    needs: build
-    if: ${{ !cancelled() && (needs.build.result == 'success' || github.event_name == 'workflow_dispatch') }}
+    needs: publish
+    if: ${{ !cancelled() && (needs.publish.result == 'success' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
