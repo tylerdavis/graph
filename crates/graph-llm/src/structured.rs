@@ -66,6 +66,18 @@ impl ModelRouter {
             .ok_or_else(|| LlmError::SchemaMismatch("model produced no structured output".into()))
     }
 
+    /// One repair pass for a value-level schema (runtime schemas from user
+    /// tool docs, as opposed to `get_structured`'s Rust types). The caller
+    /// validates; this only produces the corrected document.
+    pub async fn repair_structured(
+        &self,
+        broken: &Value,
+        schema: &Value,
+        error: &str,
+    ) -> Result<Value, LlmError> {
+        self.repair(broken, schema, error).await
+    }
+
     async fn repair(&self, broken: &Value, schema: &Value, error: &str) -> Result<Value, LlmError> {
         let system = "You fix JSON documents. Given a JSON document, the JSON Schema it must \
                       conform to, and the validation error, produce a corrected document. \

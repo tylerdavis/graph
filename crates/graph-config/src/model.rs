@@ -213,6 +213,10 @@ impl Default for PlanPaths {
 #[serde(deny_unknown_fields, default)]
 pub struct ToolPaths {
     pub paths: Vec<PathBuf>,
+    /// Bundled tool packs to enable (e.g. "github"). Pack tools ship inside
+    /// the binary and load like user tools; a user tool with the same name
+    /// shadows the pack version.
+    pub packs: Vec<String>,
 }
 
 impl Default for ToolPaths {
@@ -222,6 +226,7 @@ impl Default for ToolPaths {
                 PathBuf::from("~/.config/graph/tools"),
                 PathBuf::from("./.graph/tools"),
             ],
+            packs: Vec::new(),
         }
     }
 }

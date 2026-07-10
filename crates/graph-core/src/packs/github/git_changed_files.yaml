@@ -1,0 +1,37 @@
+# github pack: changed files between two refs, filtered by prefix.
+# pipefail matters: a bad ref must fail the step, not yield an empty list
+# that downstream gates would misread as "nothing changed".
+name: git_changed_files
+description: >
+  Files changed between two git refs (merge-base diff), filtered to a path
+  prefix ("" for all), with a count. Useful for gating on whether an area
+  of the repository was touched.
+kind: exec
+command: bash
+args:
+  - "-ceuo"
+  - "pipefail"
+  - |
+    git diff --name-only "$1...$2" | jq -R -s --arg prefix "$3" '
+      (split("\n") | map(select(length > 0))
+         | map(select(startswith($prefix)))) as $m
+      | {files: $m, count: ($m | length)}'
+  - git_changed_files
+  - "{{input.base}}"
+  - "{{input.head}}"
+  - "{{input.prefix}}"
+output: json
+timeout_secs: 30
+read_only: true
+input_schema:
+  type: object
+  required: [base, head, prefix]
+  properties:
+    base:   { type: string, description: Base ref or commit sha }
+    head:   { type: string, description: Head ref or commit sha }
+    prefix: { type: string, description: Path prefix filter; "" matches every file }
+output_schema:
+  type: object
+  properties:
+    files: { type: array, items: { type: string } }
+    count: { type: integer }

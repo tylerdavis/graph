@@ -1,0 +1,27 @@
+# github pack: upsert a PR comment. Edits the token identity's most recent
+# comment in place (so repeated runs update one comment instead of stacking);
+# falls back to plain create for older gh versions without --create-if-none.
+name: gh_pr_comment
+description: >
+  Post or update a comment on a GitHub pull request. Updates the most recent
+  comment by the same user when one exists, so repeated runs keep a single
+  comment. Side-effecting.
+kind: exec
+command: bash
+args:
+  - "-ceu"
+  - |
+    gh pr comment "$1" --body "$2" --edit-last --create-if-none \
+      || gh pr comment "$1" --body "$2"
+  - gh_pr_comment
+  - "{{input.pr}}"
+  - "{{input.body}}"
+output: text
+timeout_secs: 30
+read_only: false
+input_schema:
+  type: object
+  required: [pr, body]
+  properties:
+    pr:   { type: integer, description: Pull request number }
+    body: { type: string, description: Markdown comment body }

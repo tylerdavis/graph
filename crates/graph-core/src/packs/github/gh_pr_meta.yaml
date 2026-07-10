@@ -1,0 +1,35 @@
+# github pack: PR metadata via the GitHub CLI.
+# Needs `gh` on PATH, GH_TOKEN (or gh auth), and a checkout whose origin
+# points at the repository (gh resolves the repo from the working directory).
+name: gh_pr_meta
+description: >
+  Metadata for a GitHub pull request — title, body, base/head commit shas,
+  state, and author. Use before diffing or reviewing a PR.
+kind: exec
+command: bash
+args:
+  - "-ceuo"
+  - "pipefail"
+  - |
+    gh pr view "$1" --json title,body,baseRefOid,headRefOid,state,author \
+      | jq '{title, body: (.body // ""), base_sha: .baseRefOid,
+             head_sha: .headRefOid, state, author: .author.login}'
+  - gh_pr_meta
+  - "{{input.pr}}"
+output: json
+timeout_secs: 30
+read_only: true
+input_schema:
+  type: object
+  required: [pr]
+  properties:
+    pr: { type: integer, description: Pull request number }
+output_schema:
+  type: object
+  properties:
+    title:    { type: string }
+    body:     { type: string }
+    base_sha: { type: string }
+    head_sha: { type: string }
+    state:    { type: string }
+    author:   { type: string }

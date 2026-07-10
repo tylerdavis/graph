@@ -240,4 +240,21 @@ mod tests {
         assert_eq!(loaded.config.settings.max_agent_iterations, 15);
         assert_eq!(loaded.config.settings.planning_attempts, 2);
     }
+
+    #[test]
+    fn tool_packs_parse_and_default_paths_survive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "config.toml",
+            r#"
+            [tools]
+            packs = ["github"]
+            "#,
+        );
+        let loaded = load_from(&[path]).unwrap();
+        assert_eq!(loaded.config.tools.packs, vec!["github".to_string()]);
+        // Setting packs alone must not wipe the default search paths.
+        assert_eq!(loaded.config.tools.paths.len(), 2);
+    }
 }

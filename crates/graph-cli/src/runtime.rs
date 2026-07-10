@@ -79,7 +79,8 @@ impl Runtime {
         )))
     }
 
-    /// User-defined tools from `[tools].paths`.
+    /// User-defined tools from `[tools].paths`, layered over any enabled
+    /// `[tools].packs` (a user tool shadows a same-named pack tool).
     pub fn user_tools(
         &self,
         cypher: Option<Arc<dyn CypherExecutor>>,
@@ -91,7 +92,8 @@ impl Runtime {
             .iter()
             .map(|p| graph_config::expand_tilde(p))
             .collect();
-        let docs = graph_core::user_tools::load_user_tools(&dirs).map_err(anyhow::Error::msg)?;
+        let docs = graph_core::user_tools::load_tools_with_packs(&self.config.tools.packs, &dirs)
+            .map_err(anyhow::Error::msg)?;
         Ok(Arc::new(UserToolRegistry::new(
             docs,
             self.router.clone(),

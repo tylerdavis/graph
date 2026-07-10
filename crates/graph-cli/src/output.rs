@@ -174,7 +174,9 @@ impl EventSink for JsonlSink {
 }
 
 /// The standard sink choice: JSONL when `GRAPH_EVENTS=jsonl`, else the TTY
-/// sink. `solver_stdout` only applies to the TTY sink (plan run).
+/// sink (including `GRAPH_EVENTS=github`, which only adds failure
+/// annotations — see [`gha_annotations`]). `solver_stdout` only applies to
+/// the TTY sink (plan run).
 pub fn make_sink(quiet_text: bool, solver_stdout: bool) -> std::sync::Arc<dyn EventSink> {
     if std::env::var("GRAPH_EVENTS").as_deref() == Ok("jsonl") {
         std::sync::Arc::new(JsonlSink::new(quiet_text))
@@ -182,5 +184,38 @@ pub fn make_sink(quiet_text: bool, solver_stdout: bool) -> std::sync::Arc<dyn Ev
         std::sync::Arc::new(TtySink::for_plan_run())
     } else {
         std::sync::Arc::new(TtySink::new(quiet_text))
+    }
+}
+
+/// Surface a failure to the CI system, if an annotation mode is active.
+/// Callers report every failure through this unconditionally; whether and
+/// how it renders is this module's concern. `GRAPH_EVENTS=github` emits a
+/// GitHub Actions `::error::` workflow command — those are only parsed from
+/// stdout, the one sanctioned exception to the stdout-is-deliverable
+/// contract, and only ever on failure paths, where a nonzero exit code
+/// already tells automation that stdout is not a clean deliverable.
+pub fn annotate_failure(message: &str) {
+    if std::env::var("GRAPH_EVENTS").as_deref() == Ok("github") {
+        println!("::error::{}", escape_gha_data(message));
+    }
+}
+
+/// Workflow-command data encoding: `%`, `\r`, `\n` must be escaped or the
+/// runner truncates the annotation at the first newline.
+fn escape_gha_data(message: &str) -> String {
+    message
+        .replace('%', "%25")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A")
+}
+
+#[cfg(test)]
+mod gha_tests {
+    #[test]
+    fn escapes_workflow_command_data() {
+        assert_eq!(
+            super::escape_gha_data("50% done\r\nnext"),
+            "50%25 done%0D%0Anext"
+        );
     }
 }

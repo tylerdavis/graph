@@ -119,6 +119,64 @@ pub trait CypherExecutor: Send + Sync {
     ) -> Result<Vec<Map<String, Value>>, ToolError>;
 }
 
+// ── Bundled tool packs ───────────────────────────────────────────────────
+
+/// Tool YAML shipped inside the binary, keyed by pack name. Pack tools load
+/// through the same validation and registry as user tools; a user tool with
+/// the same name shadows the pack version.
+const PACKS: &[(&str, &[&str])] = &[(
+    "github",
+    &[
+        include_str!("packs/github/gh_pr_meta.yaml"),
+        include_str!("packs/github/gh_pr_comment.yaml"),
+        include_str!("packs/github/git_diff.yaml"),
+        include_str!("packs/github/git_changed_files.yaml"),
+    ],
+)];
+
+pub fn available_packs() -> Vec<&'static str> {
+    PACKS.iter().map(|(name, _)| *name).collect()
+}
+
+/// Parse the tools of the named packs. Unknown pack names error, listing
+/// what exists — a typo should fail loudly at startup, not surface as
+/// missing tools at plan time.
+pub fn load_pack_tools(packs: &[String]) -> Result<Vec<UserToolDoc>, String> {
+    let mut docs: Vec<UserToolDoc> = Vec::new();
+    for pack in packs {
+        let Some((_, sources)) = PACKS.iter().find(|(name, _)| name == pack) else {
+            return Err(format!(
+                "unknown tool pack '{pack}' (available: {})",
+                available_packs().join(", ")
+            ));
+        };
+        for raw in *sources {
+            let doc: UserToolDoc =
+                serde_yaml::from_str(raw).map_err(|e| format!("pack '{pack}': {e}"))?;
+            validate_tool(&doc).map_err(|e| format!("pack '{pack}': {e}"))?;
+            if docs.iter().any(|d| d.name == doc.name) {
+                return Err(format!("pack '{pack}': duplicate tool name '{}'", doc.name));
+            }
+            docs.push(doc);
+        }
+    }
+    Ok(docs)
+}
+
+/// Pack tools plus user tools from `dirs`; a user tool shadows a pack tool
+/// with the same name (pin or tweak a pack tool by copying it locally).
+pub fn load_tools_with_packs(
+    packs: &[String],
+    dirs: &[PathBuf],
+) -> Result<Vec<UserToolDoc>, String> {
+    let mut docs = load_pack_tools(packs)?;
+    for user_doc in load_user_tools(dirs)? {
+        docs.retain(|d| d.name != user_doc.name);
+        docs.push(user_doc);
+    }
+    Ok(docs)
+}
+
 // ── Loading & validation ─────────────────────────────────────────────────
 
 pub fn load_user_tools(dirs: &[PathBuf]) -> Result<Vec<UserToolDoc>, String> {
@@ -386,10 +444,48 @@ impl UserToolRegistry {
             Some(structured) => structured,
             None => json!({"text": response.content.unwrap_or_default()}),
         };
+        // Provider-native structured output isn't schema-*validated* by the
+        // provider — models can omit required fields. With a declared
+        // output_schema, enforce it here with one repair pass, so plans can
+        // rely on every declared field existing (a missing key is a hard
+        // template error downstream).
+        let result = match &doc.output_schema {
+            Some(schema) => self.enforce_schema(result, schema).await?,
+            None => result,
+        };
         Ok(ToolOutcome {
             result,
             is_error: false,
         })
+    }
+
+    /// Validate `value` against `schema`; on mismatch, run one repair pass
+    /// and re-validate. A value that still doesn't conform is a tool error —
+    /// better a failed step than a silently missing field.
+    async fn enforce_schema(&self, value: Value, schema: &Value) -> Result<Value, ToolError> {
+        let validator = jsonschema::validator_for(schema)
+            .map_err(|e| ToolError::Transport(format!("invalid output_schema: {e}")))?;
+        let problems = |value: &Value| -> Option<String> {
+            let errors: Vec<String> = validator
+                .iter_errors(value)
+                .map(|e| e.to_string())
+                .collect();
+            (!errors.is_empty()).then(|| errors.join("; "))
+        };
+        let Some(error) = problems(&value) else {
+            return Ok(value);
+        };
+        let repaired = self
+            .router
+            .repair_structured(&value, schema, &error)
+            .await
+            .map_err(|e| ToolError::Transport(format!("output repair failed: {e}")))?;
+        match problems(&repaired) {
+            None => Ok(repaired),
+            Some(still) => Err(ToolError::Transport(format!(
+                "output does not match output_schema after repair: {still}"
+            ))),
+        }
     }
 
     async fn run_cypher(&self, query: &str, input: &Value) -> Result<ToolOutcome, ToolError> {

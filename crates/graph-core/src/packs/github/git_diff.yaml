@@ -1,0 +1,37 @@
+# github pack: unified diff between two refs, scoped and truncated.
+# `paths` and `exclude` are space-separated lists; pass "." and "" when
+# unscoped. Truncation (head) is intentional, so no pipefail here — refs are
+# expected to be validated by an earlier step (e.g. git_changed_files).
+name: git_diff
+description: >
+  Unified diff between two git refs (merge-base three-dot diff), optionally
+  scoped to paths, with excludes, truncated to a byte budget for LLM
+  consumption.
+kind: exec
+command: bash
+args:
+  - "-ceu"
+  - |
+    base=$1 head=$2 paths=$3 exclude=$4 max=$5
+    spec=()
+    for p in $paths; do spec+=("$p"); done
+    for e in $exclude; do spec+=(":(exclude)$e"); done
+    git diff "$base...$head" -- "${spec[@]}" | head -c "$max"
+  - git_diff
+  - "{{input.base}}"
+  - "{{input.head}}"
+  - "{{input.paths}}"
+  - "{{input.exclude}}"
+  - "{{input.max_bytes}}"
+output: text
+timeout_secs: 30
+read_only: true
+input_schema:
+  type: object
+  required: [base, head, paths, exclude, max_bytes]
+  properties:
+    base:      { type: string, description: Base ref or commit sha }
+    head:      { type: string, description: Head ref or commit sha }
+    paths:     { type: string, description: Space-separated pathspecs; "." for everything }
+    exclude:   { type: string, description: Space-separated paths to exclude; "" for none }
+    max_bytes: { type: integer, description: Truncate the diff to this many bytes }

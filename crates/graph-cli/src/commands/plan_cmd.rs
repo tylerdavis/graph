@@ -61,6 +61,14 @@ pub async fn run(command: PlanCommand) -> Result<()> {
 }
 
 async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: bool) -> Result<()> {
+    // `--json` promises machine-parseable stdout, so it suppresses CI
+    // annotations (which are stdout workflow commands) even when a mode
+    // like GRAPH_EVENTS=github is active.
+    let annotate = |message: &str| {
+        if !json {
+            crate::output::annotate_failure(message);
+        }
+    };
     let runtime = Runtime::init()?;
     let docs = runtime.plan_docs()?;
     let Some(doc) = docs.into_iter().find(|d| d.identifier == name) else {
@@ -73,12 +81,16 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
 
     if let Err(problems) = validate_input(&doc, &input) {
         eprintln!("plan '{name}' needs inputs:");
-        for problem in problems {
+        for problem in &problems {
             eprintln!("  - {problem}");
         }
         if let Some(schema) = &doc.input_schema {
             eprintln!("input schema:\n{}", serde_json::to_string_pretty(schema)?);
         }
+        annotate(&format!(
+            "plan '{name}' needs inputs: {}",
+            problems.join("; ")
+        ));
         runtime.shutdown().await;
         std::process::exit(EXIT_NEEDS_INPUT);
     }
@@ -95,7 +107,13 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         .await;
     runtime.shutdown().await;
 
-    let outcome = result?;
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            annotate(&format!("plan '{name}' failed: {err:#}"));
+            return Err(err.into());
+        }
+    };
     let exited_error = matches!(
         &outcome.exit,
         Some(e) if e.status == graph_core::pipeline::ExitStatus::Error
@@ -134,6 +152,9 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         println!();
     }
     if exited_error {
+        if let Some(exit) = &outcome.exit {
+            annotate(&exit.message);
+        }
         std::process::exit(EXIT_PLAN_ASSERTED);
     }
     Ok(())
