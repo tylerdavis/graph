@@ -19,11 +19,7 @@ graph is currently built from source. Tooling (Rust, cmake, pkg-config) is manag
     ```bash
     mise run install
     ```
-    This builds the release binary and installs `graph` onto your PATH (`~/.cargo/bin`).
-
-    <Note>
-    Build from a mise-activated shell inside the repo — the linker flags for the embedded database live in mise's environment. The **installed binary** has no such dependency; only the build does.
-    </Note>
+    This builds the release binary and installs `graph` onto your PATH (`~/.cargo/bin`). Plain `cargo build` works too — the embedded database's linker requirements are handled by build scripts in the workspace.
   </Step>
   <Step title="Verify">
     ```bash

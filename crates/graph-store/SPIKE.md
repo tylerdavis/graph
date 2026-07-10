@@ -19,19 +19,26 @@ storage design; no fallback needed yet.
 ## Gotchas (all handled in-repo)
 
 1. **lbug 0.18.0 ships a prebuilt `liblbug.a` but omits its OpenSSL link
-   directives** (fixed upstream post-0.18.0). Workaround: `RUSTFLAGS` in
-   `mise.toml` `[env]`, with the lib dir resolved via
-   `pkg-config --variable=libdir openssl` so any OpenSSL source works (nix,
-   Homebrew, …). Drop when a newer lbug releases.
-2. **Extensions dlopen against host-exported symbols.** Static linking needs
-   `-Wl,-export_dynamic` (macOS spelling of `-rdynamic`) or `LOAD EXTENSION`
-   fails with `symbol not found in flat namespace`. Also in the mise
-   `RUSTFLAGS`; also emitted by the fixed upstream build script.
-3. `INSTALL X; LOAD X;` as one multi-statement `query()` call does not load the
+   directives** (fixed upstream post-0.18.0). Workaround: build directives
+   in `crates/graph-store/build.rs` (link-search via pkg-config + `-lssl
+   -lcrypto`), NOT env-wide RUSTFLAGS — RUSTFLAGS also links every *build
+   script* against libssl, which segfaulted on x86_64 Linux CI. Note the
+   cargo quirk: `rustc-link-lib` propagates to downstream binaries via rlib
+   metadata but not to the emitting package's own test binaries, which get
+   the libs via `rustc-link-arg-tests` instead. Drop all of it when a newer
+   lbug releases.
+2. **Extensions dlopen against host-exported symbols.** Binaries and test
+   binaries need `-export_dynamic` (ld64) / `--export-dynamic` (GNU ld) or
+   `LOAD EXTENSION` fails with `symbol not found`. Emitted per-target by
+   `crates/graph-store/build.rs` (tests) and `crates/graph-cli/build.rs`
+   (bins).
+3. **`INSTALL <ext>` races**: concurrent installs share `~/.lbdb/`; the
+   spike serializes extension tests with a mutex.
+4. `INSTALL X; LOAD X;` as one multi-statement `query()` call does not load the
    extension — issue `INSTALL FTS` and `LOAD EXTENSION FTS` as separate calls.
-4. `INSTALL` downloads the extension (network) into `~/.lbdb/extension/<ver>/`;
+5. `INSTALL` downloads the extension (network) into `~/.lbdb/extension/<ver>/`;
    plan for offline/first-run UX (install lazily, clear error if offline).
-5. Statement-level "cargo build script directives don't reach the final link"
-   dead end: don't put the OpenSSL fix in a consumer `build.rs`; `rustc-link-lib`
-   from a dependent crate's build script did not propagate to test binaries in
-   this workspace. Use rustflags.
+6. lbug's Linux build compiles a C++ bridge that includes `<format>` —
+   **GCC 13+ (libstdc++ 13) required**; Debian bookworm's GCC 12 fails.
+7. Linking the whole-archive lbug binary needs real memory: GNU ld got
+   OOM-killed in a 2 GiB VM.

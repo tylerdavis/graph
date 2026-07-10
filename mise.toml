@@ -11,14 +11,6 @@ rust = { version = "1.94", components = "rustfmt,clippy" }
 cmake = "4"
 "ubi:orhun/git-cliff" = "latest"
 
-[env]
-# lbug 0.18's prebuilt liblbug.a needs OpenSSL but its build script emits no
-# link directives (fixed upstream post-0.18.0), and its dlopen'd extensions
-# (FTS, VECTOR) need host-exported symbols. Resolve the OpenSSL lib dir via
-# pkg-config so the flags are independent of where openssl is installed.
-# Drop this when lbug > 0.18.0 ships. Details: crates/graph-store/SPIKE.md.
-RUSTFLAGS = "{{ exec(command='sh scripts/rustflags.sh') }}"
-
 [tasks.build]
 description = "Build the whole workspace"
 run = "cargo build"

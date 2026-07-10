@@ -6,6 +6,12 @@
 //! reopening a database from disk.
 
 use lbug::{Connection, Database, SystemConfig, Value};
+use std::sync::Mutex;
+
+/// `INSTALL <extension>` downloads into the shared `~/.lbdb/` cache;
+/// concurrent installs race on fresh machines (seen in CI). Serialize the
+/// extension tests.
+static EXTENSION_INSTALL: Mutex<()> = Mutex::new(());
 
 fn open(dir: &std::path::Path) -> Database {
     Database::new(dir.join("spike.db"), SystemConfig::default()).expect("open database")
@@ -123,6 +129,9 @@ fn json_blob_round_trip_for_checkpoints() {
 
 #[test]
 fn fts_extension_loads_and_searches() {
+    let _serial = EXTENSION_INSTALL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let db = open(dir.path());
     let conn = Connection::new(&db).unwrap();
@@ -150,6 +159,9 @@ fn fts_extension_loads_and_searches() {
 
 #[test]
 fn vector_extension_loads_and_finds_nearest() {
+    let _serial = EXTENSION_INSTALL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let db = open(dir.path());
     let conn = Connection::new(&db).unwrap();

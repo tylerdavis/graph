@@ -6,7 +6,7 @@ A Rust CLI agent with a plan-based execution engine. Cargo workspace, six crates
 
 ## Build & test
 
-Tooling is managed by mise; the linker flags for the embedded database live in mise's env — plain `cargo` fails at link time outside a mise-activated shell.
+Tooling is managed by mise. The embedded database's linker quirks are handled by build scripts (`crates/graph-store/build.rs`, `crates/graph-cli/build.rs`); plain `cargo` works.
 
 ```bash
 mise run build          # cargo build
