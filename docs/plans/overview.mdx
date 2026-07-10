@@ -58,6 +58,25 @@ Write a plan when any of these are true:
 
 Let the agent improvise when the question is genuinely novel or conversational — that's what `ask`/`chat` and `plan_and_execute` are for.
 
+## Composition
+
+Plans call plans: a step whose `tool_name` is `plan__<identifier>` runs that plan and yields its result — a sub-plan's `output` map arrives as structured data your templates can reference:
+
+```yaml
+steps:
+  - id: E0
+    tool_name: plan__urgent_issues      # a whole sub-plan as one step
+    input: {}
+  - id: E1
+    tool_name: exit
+    input:
+      when: { value: "{{E0.count}}", op: eq, to: 0 }
+      status: success
+      message: "Nothing urgent."
+```
+
+Design small, single-purpose plans (fetch-and-shape, in output mode) and compose them from reporting or gating plans. Cycles fail immediately with the chain named (`a → b → a`); nesting is capped at 8.
+
 ## Plan discovery
 
 Plans load from the directories in `[plans].paths` (default: `~/.config/graph/plans` and `./.graph/plans`, so repos can carry their own). A plan whose `requires_servers` lists an unconfigured MCP server is hidden rather than broken.

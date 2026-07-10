@@ -1,11 +1,13 @@
 //! The agent's complete tool catalog: base tools (MCP + built-ins) plus one
 //! tool per plan document plus `plan_and_execute`.
 //!
-//! Plan tools run through [`Pipeline::run_explicit`] (never replans);
-//! `plan_and_execute` runs [`Pipeline::run_planned`] (replans on defects).
-//! Plan steps invoke the *base* registry, so plans cannot call plans.
+//! Plans are composable by design: plan steps may call `plan__*` tools and
+//! `plan_and_execute` — the pipeline detects cycles via its call stack and
+//! bounds nesting depth. Invocation logic lives in
+//! [`Pipeline::call_plan`]/[`Pipeline::call_planner`]; this registry is a
+//! thin adapter for the agent loop.
 
-use crate::pipeline::{doc::PlanDoc, Pipeline, PipelineError};
+use crate::pipeline::{doc::PlanDoc, Pipeline};
 use crate::tools::{ToolDef, ToolError, ToolOutcome, ToolRegistry};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -53,82 +55,6 @@ impl AgentToolbox {
             read_only: None,
         }
     }
-
-    async fn run_plan_tool(&self, doc: &PlanDoc, mut input: Value) -> ToolOutcome {
-        if let Some(schema) = &doc.input_schema {
-            crate::pipeline::doc::apply_schema_defaults(schema, &mut input);
-        }
-        // Validate inputs against the doc's schema; missing/invalid fields
-        // come back as a tool error the agent can act on (ask the user,
-        // re-call with complete args).
-        if let Err(problems) = crate::pipeline::doc::validate_input(doc, &input) {
-            return ToolOutcome {
-                result: json!({
-                    "error": "invalid or missing plan inputs",
-                    "problems": problems,
-                    "inputSchema": doc.tool_input_schema(),
-                }),
-                is_error: true,
-            };
-        }
-
-        let query = format!("Run the '{}' plan", doc.name);
-        match self
-            .pipeline
-            .run_explicit(&query, doc.steps.clone(), doc.finish(), Some(input))
-            .await
-        {
-            Ok(outcome) => {
-                if let Some(exit) = &outcome.exit {
-                    let is_error = exit.status == crate::pipeline::ExitStatus::Error;
-                    let mut result = json!({
-                        "exited": true,
-                        "status": if is_error { "error" } else { "success" },
-                        "message": exit.message,
-                    });
-                    if let Some(output) = &exit.output {
-                        result["output"] = Value::Object(output.clone());
-                    }
-                    if is_error {
-                        result["error"] = json!(exit.message);
-                    }
-                    return ToolOutcome { result, is_error };
-                }
-                ToolOutcome {
-                    result: match outcome.structured {
-                        Some(structured) => structured,
-                        None if outcome.answer.is_empty() => json!({
-                            "ok": true,
-                            "steps_executed": outcome.state.steps_executed(),
-                        }),
-                        None => json!({"answer": outcome.answer}),
-                    },
-                    is_error: false,
-                }
-            }
-            Err(PipelineError::StepFailed {
-                step,
-                tool,
-                message,
-            }) => ToolOutcome {
-                result: json!({
-                    "error": format!("plan '{}' failed at step {step} ({tool}): {message}", doc.identifier),
-                }),
-                is_error: true,
-            },
-            Err(PipelineError::EmptyData { step, message }) => ToolOutcome {
-                result: json!({
-                    "error": format!("plan '{}' had no data at step {step}: {message}", doc.identifier),
-                    "empty_data": true,
-                }),
-                is_error: true,
-            },
-            Err(e) => ToolOutcome {
-                result: json!({"error": e.to_string()}),
-                is_error: true,
-            },
-        }
-    }
 }
 
 #[async_trait::async_trait]
@@ -151,27 +77,19 @@ impl ToolRegistry for AgentToolbox {
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
         if name == PLAN_AND_EXECUTE {
-            let query = input.get("query").and_then(Value::as_str).ok_or_else(|| {
-                ToolError::Transport("plan_and_execute requires a 'query' string".into())
-            })?;
-            return match self.pipeline.run_planned(query).await {
-                Ok(outcome) => Ok(ToolOutcome {
-                    result: json!({
-                        "answer": outcome.answer,
-                        "degraded": outcome.degraded,
-                        "steps_executed": outcome.state.steps_executed(),
-                    }),
-                    is_error: false,
-                }),
-                Err(e) => Ok(ToolOutcome {
-                    result: json!({"error": e.to_string()}),
-                    is_error: true,
-                }),
-            };
+            let call = self.pipeline.call_planner(&input).await;
+            return Ok(ToolOutcome {
+                result: call.result,
+                is_error: call.is_error,
+            });
         }
         if let Some(identifier) = name.strip_prefix(PLAN_TOOL_PREFIX) {
-            if let Some(doc) = self.plans.iter().find(|d| d.identifier == identifier) {
-                return Ok(self.run_plan_tool(doc, input).await);
+            if self.plans.iter().any(|d| d.identifier == identifier) {
+                let call = self.pipeline.call_plan(identifier, input).await;
+                return Ok(ToolOutcome {
+                    result: call.result,
+                    is_error: call.is_error,
+                });
             }
         }
         self.base.invoke(name, input).await
@@ -261,6 +179,8 @@ mod tests {
             router,
             registry: base.clone(),
             events: Arc::new(crate::NullSink),
+            plans: Arc::new(vec![doc.clone()]),
+            call_stack: Vec::new(),
             store: None,
             user_context: String::new(),
             current_date: "2026-07-09".into(),

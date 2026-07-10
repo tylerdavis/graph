@@ -34,10 +34,16 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct Pipeline {
     pub router: Arc<ModelRouter>,
     pub registry: Arc<dyn ToolRegistry>,
     pub events: Arc<dyn EventSink>,
+    /// Plan documents callable as `plan__<id>` steps (and agent tools).
+    pub plans: Arc<Vec<doc::PlanDoc>>,
+    /// Identifiers of plans currently executing in this call chain —
+    /// cycle detection for plan-calls-plan composition.
+    pub call_stack: Vec<String>,
     /// Source of observed output shapes for planner prompts. Read fresh at
     /// each planning attempt so shapes recorded earlier in the same run
     /// (agent tool calls, prior steps) are visible immediately.
@@ -65,6 +71,10 @@ pub enum PipelineError {
     OutputRender(String),
 }
 
+/// Maximum plan-call nesting (cycles are caught by the call stack; this
+/// bounds legitimate-but-deep chains).
+pub const MAX_PLAN_DEPTH: usize = 8;
+
 /// How an explicit plan finishes.
 #[derive(Debug, Clone)]
 pub enum Finish {
@@ -86,6 +96,21 @@ pub struct PipelineOutcome {
     pub degraded: bool,
     /// Set when an `exit` step ended the plan early.
     pub exit: Option<PlanExit>,
+}
+
+/// Result of invoking a plan (or the planner) as a callable.
+pub struct PlanCall {
+    pub result: Value,
+    pub is_error: bool,
+}
+
+impl PlanCall {
+    fn error(message: String) -> Self {
+        Self {
+            result: json!({"error": message}),
+            is_error: true,
+        }
+    }
 }
 
 enum ExecutionEnd {
@@ -211,6 +236,144 @@ impl Pipeline {
         }
     }
 
+    /// A nested pipeline sharing everything but one level deeper on the
+    /// call stack.
+    fn nested(&self, entering: Option<&str>) -> Pipeline {
+        let mut child = self.clone();
+        if let Some(identifier) = entering {
+            child.call_stack.push(identifier.to_string());
+        } else {
+            child.call_stack.push("plan_and_execute".to_string());
+        }
+        child
+    }
+
+    fn depth_guard(&self, entering: &str) -> Option<PlanCall> {
+        if self
+            .call_stack
+            .iter()
+            .any(|frame| frame == entering && entering != "plan_and_execute")
+        {
+            return Some(PlanCall::error(format!(
+                "recursive plan cycle: {} → {entering}",
+                self.call_stack.join(" → "),
+            )));
+        }
+        if self.call_stack.len() >= MAX_PLAN_DEPTH {
+            return Some(PlanCall::error(format!(
+                "plan call depth exceeded ({MAX_PLAN_DEPTH}): {}",
+                self.call_stack.join(" → "),
+            )));
+        }
+        None
+    }
+
+    /// Invoke a plan document by identifier — the shared engine behind
+    /// plan tools in the agent catalog and `plan__*` steps in plans.
+    /// Boxed: plans call plans, so this future is recursive.
+    pub fn call_plan<'a>(
+        &'a self,
+        identifier: &'a str,
+        mut input: Value,
+    ) -> futures::future::BoxFuture<'a, PlanCall> {
+        Box::pin(async move {
+            if let Some(guard) = self.depth_guard(identifier) {
+                return guard;
+            }
+            let Some(plan_doc) = self.plans.iter().find(|d| d.identifier == identifier) else {
+                return PlanCall::error(format!("no plan named '{identifier}'"));
+            };
+            if let Some(schema) = &plan_doc.input_schema {
+                doc::apply_schema_defaults(schema, &mut input);
+            }
+            if let Err(problems) = doc::validate_input(plan_doc, &input) {
+                return PlanCall {
+                    result: json!({
+                        "error": "invalid or missing plan inputs",
+                        "problems": problems,
+                        "inputSchema": plan_doc.tool_input_schema(),
+                    }),
+                    is_error: true,
+                };
+            }
+            let nested = self.nested(Some(identifier));
+            let query = format!("Run the '{}' plan", plan_doc.name);
+            match nested
+                .run_explicit(
+                    &query,
+                    plan_doc.steps.clone(),
+                    plan_doc.finish(),
+                    Some(input),
+                )
+                .await
+            {
+                Ok(outcome) => {
+                    if let Some(exit) = &outcome.exit {
+                        let is_error = exit.status == ExitStatus::Error;
+                        let mut result = json!({
+                            "exited": true,
+                            "status": if is_error { "error" } else { "success" },
+                            "message": exit.message,
+                        });
+                        if let Some(output) = &exit.output {
+                            result["output"] = Value::Object(output.clone());
+                        }
+                        if is_error {
+                            result["error"] = json!(exit.message);
+                        }
+                        return PlanCall { result, is_error };
+                    }
+                    PlanCall {
+                        result: match outcome.structured {
+                            Some(structured) => structured,
+                            None if outcome.answer.is_empty() => json!({
+                                "ok": true,
+                                "steps_executed": outcome.state.steps_executed(),
+                            }),
+                            None => json!({"answer": outcome.answer}),
+                        },
+                        is_error: false,
+                    }
+                }
+                Err(PipelineError::EmptyData { step, message }) => PlanCall {
+                    result: json!({
+                        "error": format!("plan '{identifier}' had no data at step {step}: {message}"),
+                        "empty_data": true,
+                    }),
+                    is_error: true,
+                },
+                Err(e) => PlanCall::error(format!("plan '{identifier}' failed: {e}")),
+            }
+        })
+    }
+
+    /// Invoke the free-form planner — behind `plan_and_execute` in the
+    /// agent catalog and as a plan step. Boxed: recursive via plan steps.
+    pub fn call_planner<'a>(
+        &'a self,
+        input: &'a Value,
+    ) -> futures::future::BoxFuture<'a, PlanCall> {
+        Box::pin(async move {
+            let Some(query) = input.get("query").and_then(Value::as_str) else {
+                return PlanCall::error("plan_and_execute requires a 'query' string".to_string());
+            };
+            if let Some(guard) = self.depth_guard("plan_and_execute") {
+                return guard;
+            }
+            match self.nested(None).run_planned(query).await {
+                Ok(outcome) => PlanCall {
+                    result: json!({
+                        "answer": outcome.answer,
+                        "degraded": outcome.degraded,
+                        "steps_executed": outcome.state.steps_executed(),
+                    }),
+                    is_error: false,
+                },
+                Err(e) => PlanCall::error(e.to_string()),
+            }
+        })
+    }
+
     /// Package a triggered exit: the message is the answer, the step's
     /// output map (already rendered) is the structured output, and the
     /// solver never runs.
@@ -272,6 +435,19 @@ impl Pipeline {
         self.events.planning();
         let mut tools = self.registry.tools().await.unwrap_or_default();
         tools.push(exit::exit_tool_def());
+        for plan_doc in self.plans.iter() {
+            if self.call_stack.iter().any(|f| f == &plan_doc.identifier) {
+                continue; // don't offer plans already on the call stack
+            }
+            tools.push(crate::tools::ToolDef {
+                name: format!("plan__{}", plan_doc.identifier),
+                description: plan_doc.tool_description(),
+                input_schema: plan_doc.tool_input_schema(),
+                output_schema: None,
+                output_example: None,
+                read_only: None,
+            });
+        }
         let shapes: HashMap<String, ToolShape> = match &self.store {
             Some(store) => store
                 .tool_shapes()
@@ -379,6 +555,40 @@ impl Pipeline {
                 }
             };
 
+            if let Some(identifier) = step.tool_name.strip_prefix("plan__") {
+                self.events.tool_started(&step.tool_name, &rendered);
+                let started = std::time::Instant::now();
+                let call = self.call_plan(identifier, rendered).await;
+                self.events
+                    .tool_finished(&step.tool_name, started.elapsed(), call.is_error);
+                if call.is_error {
+                    return ExecutionEnd::Failed {
+                        step: step.id.clone(),
+                        tool: step.tool_name.clone(),
+                        message: truncate(&call.result.to_string(), 2000),
+                    };
+                }
+                state.results.insert(step.id.clone(), call.result);
+                state.push_bus(&step.id, BusKind::Info, "ok");
+                continue;
+            }
+            if step.tool_name == "plan_and_execute" {
+                self.events.tool_started(&step.tool_name, &rendered);
+                let started = std::time::Instant::now();
+                let call = self.call_planner(&rendered).await;
+                self.events
+                    .tool_finished(&step.tool_name, started.elapsed(), call.is_error);
+                if call.is_error {
+                    return ExecutionEnd::Failed {
+                        step: step.id.clone(),
+                        tool: step.tool_name.clone(),
+                        message: truncate(&call.result.to_string(), 2000),
+                    };
+                }
+                state.results.insert(step.id.clone(), call.result);
+                state.push_bus(&step.id, BusKind::Info, "ok");
+                continue;
+            }
             if step.tool_name == EXIT_TOOL {
                 self.events.tool_started(EXIT_TOOL, &rendered);
                 let started = std::time::Instant::now();

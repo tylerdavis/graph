@@ -130,6 +130,8 @@ fn pipeline(
             router,
             registry,
             events: Arc::new(NullSink),
+            plans: Arc::new(Vec::new()),
+            call_stack: Vec::new(),
             store: None,
             user_context: "test user".into(),
             current_date: "2026-07-09".into(),
@@ -608,4 +610,116 @@ async fn planner_gets_the_exit_tool_and_authored_exits_work() {
     // The planner prompt described the exit tool.
     let requests = provider.requests.lock().unwrap();
     assert!(requests[0].system.contains("\"name\":\"exit\""));
+}
+
+fn plan_doc_yaml(yaml: &str) -> crate::pipeline::doc::PlanDoc {
+    let doc: crate::pipeline::doc::PlanDoc = serde_yaml::from_str(yaml).unwrap();
+    crate::pipeline::doc::validate_doc(&doc).unwrap();
+    doc
+}
+
+#[tokio::test]
+async fn plans_call_plans_with_dataflow() {
+    let inner = plan_doc_yaml(
+        r#"
+identifier: inner
+name: Inner
+description: fetch and shape
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: "{{input.q}}" }
+output:
+  found: "{{E0.values}}"
+"#,
+    );
+    let outer = plan_doc_yaml(
+        r#"
+identifier: outer
+name: Outer
+description: composes inner
+steps:
+  - id: E0
+    tool_name: plan__inner
+    input: { q: "hello" }
+output:
+  inner_found: "{{E0.found}}"
+"#,
+    );
+    let registry = search_registry(json!({"values": [{"id": "x"}]}));
+    let (mut pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    pipeline.plans = Arc::new(vec![inner, outer]);
+
+    let call = pipeline.call_plan("outer", json!({})).await;
+    assert!(!call.is_error, "{:?}", call.result);
+    assert_eq!(call.result, json!({"inner_found": [{"id": "x"}]}));
+    // inner's step actually ran against the base registry
+    assert_eq!(
+        registry.invocations.lock().unwrap()[0].1,
+        json!({"query": "hello"})
+    );
+}
+
+#[tokio::test]
+async fn plan_cycles_error_cleanly() {
+    let a = plan_doc_yaml(
+        r#"
+identifier: a
+name: A
+description: calls b
+steps:
+  - { id: E0, tool_name: plan__b, input: {} }
+"#,
+    );
+    let b = plan_doc_yaml(
+        r#"
+identifier: b
+name: B
+description: calls a
+steps:
+  - { id: E0, tool_name: plan__a, input: {} }
+"#,
+    );
+    let registry = search_registry(json!({}));
+    let (mut pipeline, _) = pipeline(vec![], registry, 1);
+    pipeline.plans = Arc::new(vec![a, b]);
+
+    let call = pipeline.call_plan("a", json!({})).await;
+    assert!(call.is_error);
+    let message = call.result.to_string();
+    assert!(message.contains("cycle"), "{message}");
+    assert!(message.contains("a → b"), "{message}");
+}
+
+#[tokio::test]
+async fn exit_inside_nested_plan_surfaces_to_the_caller() {
+    let inner = plan_doc_yaml(
+        r#"
+identifier: inner
+name: Inner
+description: asserts
+steps:
+  - id: E0
+    tool_name: exit
+    input: { status: error, message: "inner assertion" }
+"#,
+    );
+    let outer = plan_doc_yaml(
+        r#"
+identifier: outer
+name: Outer
+description: composes
+steps:
+  - { id: E0, tool_name: plan__inner, input: {} }
+"#,
+    );
+    let registry = search_registry(json!({}));
+    let (mut pipeline, _) = pipeline(vec![], registry, 1);
+    pipeline.plans = Arc::new(vec![inner, outer]);
+
+    // The nested error-exit becomes a failed step in the outer plan —
+    // explicit outer plan → hard failure naming the inner assertion.
+    let call = pipeline.call_plan("outer", json!({})).await;
+    assert!(call.is_error);
+    assert!(call.result.to_string().contains("inner assertion"));
 }

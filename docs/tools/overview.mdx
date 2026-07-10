@@ -25,8 +25,8 @@ graph tools test user__git_log '{"repo":"/path","count":3}'   # direct invocatio
 
 ## Composition rules
 
-- **Plan steps can call MCP and user tools** — and user tools can wrap anything executable, so plans can orchestrate arbitrary local commands alongside API calls.
-- **Plans cannot call plans.** Plan steps execute against the base catalog (MCP + user + built-ins), which keeps execution non-recursive and predictable.
+- **Plan steps can call anything in the catalog** — MCP tools, user tools, **other plans** (`plan__*`), and even `plan_and_execute`. Plans are composable by design: build small focused plans and orchestrate them from larger ones.
+- **Cycles are caught, depth is bounded.** The pipeline tracks the plan call stack — `a → b → a` fails immediately with the cycle named, and nesting is capped at 8 levels.
 - **Everything feeds the [shape cache](/tools/shape-cache)** — every successful call from any surface records the tool's observed output shape.
 
 ## Keeping the catalog sharp

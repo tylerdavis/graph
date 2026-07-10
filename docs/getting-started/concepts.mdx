@@ -37,7 +37,7 @@ Everything a plan step or the agent can do is a **tool**, and every tool lives i
 | `plan__` | One per [plan document](/plans/overview) | `plan__project_status` |
 | — | `plan_and_execute`: on-the-fly planning for novel multi-step tasks | |
 
-This is what makes plans composable: authoring a plan *adds a tool to the catalog*, and a plan's steps draw from the same catalog — MCP tools, wrapped CLIs, saved queries, prompt tools.
+This is what makes plans composable: authoring a plan *adds a tool to the catalog*, and a plan's steps draw from the same catalog — MCP tools, wrapped CLIs, saved queries, prompt tools, **and other plans**. A `plan__*` step invokes a whole sub-plan and receives its output as the step result (cycles are detected; nesting is bounded).
 
 `graph tools list` shows the whole catalog; `graph tools test <name> '{…}'` invokes any tool directly.
 

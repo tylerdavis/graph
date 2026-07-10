@@ -140,6 +140,8 @@ impl Runtime {
             router: self.router.clone(),
             registry: base,
             events,
+            plans: Arc::new(self.plan_docs()?),
+            call_stack: Vec::new(),
             store: Some(handles.store.clone()),
             user_context,
             current_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
@@ -156,11 +158,8 @@ impl Runtime {
     ) -> Result<Arc<AgentToolbox>> {
         let base = self.recording_registry(handles)?;
         let pipeline = self.pipeline(handles, events).await?;
-        Ok(Arc::new(AgentToolbox::new(
-            base,
-            pipeline,
-            self.plan_docs()?,
-        )))
+        let plans = pipeline.plans.as_ref().clone();
+        Ok(Arc::new(AgentToolbox::new(base, pipeline, plans)))
     }
 }
 

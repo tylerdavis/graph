@@ -220,9 +220,11 @@ fn eval_condition(condition: &Condition) -> Result<bool, String> {
         Op::Contains => match (value, to) {
             (Value::String(haystack), Value::String(needle)) => haystack.contains(needle.as_str()),
             (Value::Array(items), needle) => items.contains(needle),
-            _ => return Err(format!(
+            _ => {
+                return Err(format!(
                 "exit condition: contains needs string/string or array/value, got {value} vs {to}"
-            )),
+            ))
+            }
         },
     };
     Ok(result)
