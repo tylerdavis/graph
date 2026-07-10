@@ -14,3 +14,6 @@ repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
 
 # No [storage] section: CI sets GRAPH_STORAGE=memory; locally the env var
 # and the global config layer as usual.
+
+[tools]
+packs = ["github"]      # gh_pr_meta, gh_pr_comment, git_diff, git_changed_files

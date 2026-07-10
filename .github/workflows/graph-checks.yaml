@@ -1,7 +1,9 @@
-# Dogfood: graph's own plans gate graph's PRs. Two independent jobs run in
-# parallel — the docs-drift gate (merge check, exit code 4 = assertion fired)
-# and the specialized reviewer (structured findings posted as a PR comment).
-# Plans, tools, and config are repo-carried in ./.graph/.
+# Dogfood: graph's own plans gate graph's PRs, one `graph plan run` per job.
+# All logic lives in the repo-carried plans (./.graph/) and the bundled
+# github tool pack; GRAPH_EVENTS=github turns failing gates into run
+# annotations, so no shell wrapping is needed. docs-drift fails the check
+# (exit 4) on undocumented behavior changes; pr-review posts findings as a
+# PR comment, edited in place on each push.
 name: graph checks
 
 on:
@@ -17,8 +19,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GRAPH_VERSION: v0.2.0            # exit gates shipped after v0.1.0 — needs ≥ v0.2.0
+  GRAPH_VERSION: v0.3.0            # tool packs + GRAPH_EVENTS=github need ≥ v0.3.0
   GRAPH_STORAGE: memory            # ephemeral: no embedded DB, no lock
+  GRAPH_EVENTS: github             # failing plans annotate the run
   GH_TOKEN: ${{ github.token }}
   ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
   PR: ${{ github.event.pull_request.number }}
@@ -36,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0            # git diff $BASE...$HEAD needs history
+          fetch-depth: 0            # the plan diffs $BASE...$HEAD locally
 
       - name: Install graph
         run: |
@@ -45,24 +48,9 @@ jobs:
           shasum -a 256 -c "$asset.sha256"
           tar xzf "$asset"
           sudo install -m 0755 graph /usr/local/bin/graph
-          graph --version
-        # Fallback until a ≥ v0.2.0 release exists (slow, ~10 min):
-        #   - uses: jdx/mise-action@v2
-        #   - run: sudo apt-get install -y libssl-dev pkg-config
-        #   - run: cargo build --release -p graph-cli && sudo install target/release/graph /usr/local/bin/
 
       - name: Docs drift gate
-        run: |
-          set +e
-          graph plan run docs_drift --input base="$BASE" --input head="$HEAD" > drift.json
-          code=$?
-          set -e
-          cat drift.json
-          if [ "$code" -eq 4 ]; then
-            echo "::error::This PR changes crate behavior without touching docs/. CLAUDE.md requires the docs update in the same PR — the judge's reasoning is in the log above. If the verdict is wrong, add the docs note it's missing or push a docs edit."
-            exit 1
-          fi
-          exit "$code"              # 0 = pass; 1/3 = the gate itself broke, fail loudly
+        run: graph plan run docs_drift --input base="$BASE" --input head="$HEAD"
 
   pr-review:
     if: >-
@@ -81,36 +69,6 @@ jobs:
           shasum -a 256 -c "$asset.sha256"
           tar xzf "$asset"
           sudo install -m 0755 graph /usr/local/bin/graph
-          graph --version
 
-      - name: Build review context
-        run: |
-          # Full diff minus generated files — the reviewer should see plans,
-          # tools, workflows, and scripts, not just crate and docs changes.
-          git diff "$BASE...$HEAD" -- . ':(exclude)Cargo.lock' ':(exclude)CHANGELOG.md' \
-            | head -c 120000 > diff.patch
-          gh pr view "$PR" --json title,body > pr.json
-          jq -n --rawfile diff diff.patch --slurpfile pr pr.json \
-            '{pr_number: (env.PR | tonumber),
-              title: $pr[0].title,
-              body: ($pr[0].body // ""),
-              diff: $diff}' > review-input.json
-
-      - name: Run specialized reviewer
-        run: graph plan run pr_review @review-input.json > findings.json
-
-      - name: Post review comment
-        run: |
-          jq -r '
-            "### graph PR review\n\n" + .summary + "\n" +
-            (if (.findings | length) == 0
-             then "\n_No invariant findings._"
-             else "\n| Severity | Invariant | File | Finding |\n|---|---|---|---|\n" +
-               ([.findings[] |
-                 "| \(.severity) | `\(.invariant)` | `\(.file)\(if .line then ":\(.line)" else "" end)` | \(.finding)\(if .suggestion then " — _\(.suggestion)_" else "" end) |"
-               ] | join("\n"))
-             end) +
-            "\n\n<sub>Posted by the repo-carried pr_review plan (.graph/plans/pr_review.yaml).</sub>"' \
-            findings.json > comment.md
-          gh pr comment "$PR" --body-file comment.md --edit-last --create-if-none \
-            || gh pr comment "$PR" --body-file comment.md
+      - name: Review and comment
+        run: graph plan run pr_review --input pr="$PR"
