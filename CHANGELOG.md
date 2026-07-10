@@ -2,6 +2,21 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
+## v0.4.1 — 2026-07-10
+
+
+### Added
+
+- group graph mcp tools output by server (#11)
+
+### Documentation
+
+- rewrite README, add MIT license (#12)
+
+### Fixed
+
+- create releases atomically — assets can't be added after publish (#13)
+
 ## v0.4.0 — 2026-07-10
 
 
