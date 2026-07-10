@@ -20,7 +20,7 @@ steps:
     input: { team: "{{E0.teams.0.name}}", cycle: current }
 ```
 
-`{{E0.teams.0.name}}` is the [template language](/plans/template-language) — typed dataflow between steps, zero inference. Inference appears only where the plan puts it: a [prompt tool](/tools/user-defined#prompt-an-llm-call-as-a-tool) step for a sub-task, and the [finish](/plans/finish-modes) — a solver report, structured JSON, or nothing.
+`{{E0.teams.0.name}}` is the [template language](/plans/template-language) — typed dataflow between steps, zero inference. Inference appears only where the plan puts it: a [prompt tool](/tools/user-defined) step for a sub-task, and the [finish](/plans/finish-modes) — a solver report, structured JSON, or nothing.
 
 Plans run three ways: directly (`graph plan run`), as a tool anything else can invoke, or authored *by* the LLM planner inside `plan_and_execute`.
 

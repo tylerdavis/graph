@@ -15,7 +15,7 @@ This is AI built for *operations*. An improvising agent gives you a different an
 
 ## Why plans
 
-- **Deterministic core, inference inline.** Steps are pure tool calls — zero LLM, however many there are. Inference enters exactly where you put it: [prompt tools](/tools/user-defined#prompt-an-llm-call-as-a-tool) as steps (classify, extract, summarize mid-plan) and a [finish](/plans/finish-modes) that is an LLM-written report, structured JSON for other tools, or nothing at all.
+- **Deterministic core, inference inline.** Steps are pure tool calls — zero LLM, however many there are. Inference enters exactly where you put it: [prompt tools](/tools/user-defined) as steps (classify, extract, summarize mid-plan) and a [finish](/plans/finish-modes) that is an LLM-written report, structured JSON for other tools, or nothing at all.
 - **Repeatable and reviewable.** A plan is a file you check into a repo, review in a PR, and share with your team. No UI state, no prompt roulette — your Monday status report is the same report every Monday.
 - **Composable.** Every plan joins the tool catalog as `plan__<identifier>`, invocable like any other tool — from the CLI, from scripts, or by name. And a plan's steps compose everything else in the catalog: MCP tools, wrapped CLIs, saved queries, prompt tools.
 - **Generated, validated, tested.** You don't have to write plans by hand. `plan_and_execute` has an LLM planner author a plan on the fly — validated before execution, self-correcting against real errors when a step fails. Hand-written or generated, every plan is validated at load time (`graph plan validate`), and the [shape cache](/tools/shape-cache) teaches the planner what tools *actually* return, so generated plans get better with use.

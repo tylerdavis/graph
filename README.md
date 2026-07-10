@@ -1,16 +1,16 @@
 # graph
 
-A command-line agent with a plan-based execution engine.
+A plan engine for repeatable, AI-augmented workflows.
 
 `graph` is a Rust re-implementation of the Nexus/Graph insight engine as a
 standalone, single-user CLI:
 
-- **ReAct agent front door** — `graph ask` and `graph chat` run a tool-calling
-  agent loop over your configured tools.
 - **Plan-based execution engine** — validated multi-step plans with
-  `{{Ex.path}}` dataflow between steps, replanning on failure, and a solver
-  that synthesizes results. Exposed to the agent as `plan_and_execute` and as
-  one tool per user-authored plan document.
+  `{{Ex.path}}` dataflow between steps and inference only where placed
+  (prompt-tool steps, a solver finish). Deterministic, reviewable, 0–1 LLM
+  calls per run. The LLM planner (`plan_and_execute`) authors validated
+  plans on the fly and replans against real errors; each user-authored plan
+  document is exposed as a tool of its own.
 - **MCP tools** — connect any Model Context Protocol server (stdio or HTTP).
 - **User-defined tools** — YAML definitions for exec/shell, Cypher, and
   prompt tools.
@@ -18,6 +18,9 @@ standalone, single-user CLI:
   threads, run history, tool shape knowledge, and your entity graph.
 - **Bring your own models** — Anthropic, OpenAI, OpenAI-compatible (local),
   and AWS Bedrock, assignable per role (chat, planner, solver, …).
+- **Chat workbench** — `graph ask` and `graph chat` run a tool-calling agent
+  loop for probing tools and prototyping workflows before freezing them into
+  plans.
 
 ## Workspace
 

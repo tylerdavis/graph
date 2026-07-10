@@ -20,14 +20,6 @@
         ]
       },
       {
-        "group": "Using graph",
-        "pages": [
-          "using/chat-and-ask",
-          "using/threads",
-          "using/tool-selection"
-        ]
-      },
-      {
         "group": "Plans",
         "pages": [
           "plans/overview",
@@ -53,6 +45,14 @@
         "pages": [
           "automation/scripting",
           "automation/ci"
+        ]
+      },
+      {
+        "group": "Chat workbench",
+        "pages": [
+          "using/chat-and-ask",
+          "using/threads",
+          "using/tool-selection"
         ]
       },
       {
