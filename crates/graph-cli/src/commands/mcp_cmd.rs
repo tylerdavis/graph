@@ -56,7 +56,8 @@ async fn tools(manager: &McpManager, server: Option<String>) -> Result<()> {
 }
 
 /// Group namespaced defs by server, one section per server: a header with
-/// the tool count, then aligned bare names with one-line descriptions.
+/// the tool count, then one entry per tool — bold indented name, one-line
+/// description underneath — separated by blank lines.
 fn render_tool_listing(defs: &[ToolDef], color: bool) -> String {
     let bold = |s: &str| {
         if color {
@@ -70,17 +71,6 @@ fn render_tool_listing(defs: &[ToolDef], color: bool) -> String {
             format!("\x1b[2m{s}\x1b[0m")
         } else {
             s.to_string()
-        }
-    };
-    // Bare name plus read-only marker — the padded left column.
-    let label = |def: &ToolDef| {
-        let bare = def
-            .name
-            .split_once(NAMESPACE_SEPARATOR)
-            .map_or(def.name.as_str(), |(_, bare)| bare);
-        match def.read_only {
-            Some(true) => format!("{bare} [read-only]"),
-            _ => bare.to_string(),
         }
     };
 
@@ -98,32 +88,33 @@ fn render_tool_listing(defs: &[ToolDef], color: bool) -> String {
     }
 
     let mut out = String::new();
-    for (i, (server, tools)) in groups.iter().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
+    for (server, tools) in &groups {
         let noun = if tools.len() == 1 { "tool" } else { "tools" };
         out.push_str(&format!(
             "{} {}\n",
             bold(server),
             dim(&format!("— {} {noun}", tools.len()))
         ));
-        let width = tools
-            .iter()
-            .map(|def| label(def).chars().count())
-            .max()
-            .unwrap_or(0);
         for def in tools {
+            let bare = def
+                .name
+                .split_once(NAMESPACE_SEPARATOR)
+                .map_or(def.name.as_str(), |(_, bare)| bare);
+            let marker = match def.read_only {
+                Some(true) => format!(" {}", dim("[read-only]")),
+                _ => String::new(),
+            };
+            out.push_str(&format!("  {}{marker}\n", bold(bare)));
             let description = def.description.lines().next().unwrap_or_default().trim();
-            let padded = format!("  {:<width$}", label(def));
-            if description.is_empty() {
-                out.push_str(padded.trim_end());
-            } else {
-                out.push_str(&format!("{padded}  {}", dim(description)));
+            if !description.is_empty() {
+                out.push_str(&format!("  {}\n", dim(description)));
             }
             out.push('\n');
         }
     }
+    // The last entry's separator blank line is section-internal padding, not
+    // trailing output.
+    out.truncate(out.trim_end_matches('\n').len() + 1);
     out
 }
 
@@ -155,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn groups_by_server_and_aligns_names() {
+    fn groups_by_server_with_stacked_entries() {
         let defs = vec![
             def("everything__echo", "Echoes back the input.", None),
             def(
@@ -169,29 +160,35 @@ mod tests {
         assert_eq!(
             rendered,
             "everything — 2 tools\n\
-             \x20 echo                 Echoes back the input.\n\
-             \x20 get-sum [read-only]  Adds two numbers.\n\
+             \x20 echo\n\
+             \x20 Echoes back the input.\n\
+             \n\
+             \x20 get-sum [read-only]\n\
+             \x20 Adds two numbers.\n\
              \n\
              linear — 1 tool\n\
-             \x20 list_issues [read-only]  List issues.\n"
+             \x20 list_issues [read-only]\n\
+             \x20 List issues.\n"
         );
     }
 
     #[test]
-    fn empty_description_leaves_no_trailing_spaces() {
-        let defs = vec![
-            def("s__long_tool_name", "Described.", None),
-            def("s__short", "", None),
-        ];
+    fn empty_description_omits_the_line() {
+        let defs = vec![def("s__bare", "", None), def("s__t", "Desc.", None)];
         let rendered = render_tool_listing(&defs, false);
-        assert!(rendered.contains("\n  short\n"), "{rendered:?}");
+        assert_eq!(rendered, "s — 2 tools\n  bare\n\n  t\n  Desc.\n");
     }
 
     #[test]
-    fn color_mode_bolds_headers_and_dims_descriptions() {
-        let defs = vec![def("s__t", "Desc.", None)];
+    fn color_mode_bolds_names_and_dims_descriptions() {
+        let defs = vec![def("s__t", "Desc.", Some(true))];
         let rendered = render_tool_listing(&defs, true);
         assert!(rendered.contains("\x1b[1ms\x1b[0m"), "{rendered:?}");
+        assert!(rendered.contains("\x1b[1mt\x1b[0m"), "{rendered:?}");
+        assert!(
+            rendered.contains("\x1b[2m[read-only]\x1b[0m"),
+            "{rendered:?}"
+        );
         assert!(rendered.contains("\x1b[2mDesc.\x1b[0m"), "{rendered:?}");
     }
 }
