@@ -3,6 +3,7 @@ pub mod chat_cmd;
 pub mod config_cmd;
 pub mod db_cmd;
 pub mod input;
+pub mod listing;
 pub mod mcp_cmd;
 pub mod plan_cmd;
 pub mod threads_cmd;
