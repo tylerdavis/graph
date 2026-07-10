@@ -1,29 +1,12 @@
 ---
 title: "Core concepts"
-description: "The tool catalog, plans, threads, and the shape cache"
+description: "Plans, the tool catalog, the shape cache, and threads"
 icon: "lightbulb"
 ---
 
 Five ideas explain almost everything graph does.
 
-## 1. One tool catalog
-
-Everything the agent and the planner can do is a **tool**, and every tool lives in one namespaced catalog:
-
-| Prefix | Source | Example |
-|---|---|---|
-| `<server>__` | [MCP servers](/tools/mcp-servers) from `[mcp.*]` config | `linear__list_issues` |
-| `user__` | [User-defined tools](/tools/user-defined) (exec / cypher / prompt YAML) | `user__git_log` |
-| `plan__` | One per [plan document](/plans/overview) | `plan__project_status` |
-| — | `plan_and_execute`: on-the-fly planning for novel multi-step tasks | |
-
-`graph tools list` shows the whole catalog; `graph tools test <name> '{…}'` invokes any tool directly.
-
-## 2. The agent loop
-
-`graph ask` and `graph chat` run a standard tool-calling loop: your message plus the catalog goes to the model, tool calls execute (in parallel within a round), results feed back, and the loop continues until the model answers in text. Plans are just tools here — the agent calls `plan__sprint_analysis` the same way it calls `linear__list_issues`.
-
-## 3. Plans: the execution engine
+## 1. Plans: the execution engine
 
 A **plan** is a YAML document listing steps, each a tool call whose inputs may reference earlier results:
 
@@ -37,11 +20,38 @@ steps:
     input: { team: "{{E0.teams.0.name}}", cycle: current }
 ```
 
-`{{E0.teams.0.name}}` is the [template language](/plans/template-language) — typed dataflow between steps. Plans run three ways: directly (`graph plan run`), as a tool the agent invokes, or authored *by* the LLM planner inside `plan_and_execute`.
+`{{E0.teams.0.name}}` is the [template language](/plans/template-language) — typed dataflow between steps, zero inference. Inference appears only where the plan puts it: a [prompt tool](/tools/user-defined#prompt-an-llm-call-as-a-tool) step for a sub-task, and the [finish](/plans/finish-modes) — a solver report, structured JSON, or nothing.
+
+Plans run three ways: directly (`graph plan run`), as a tool anything else can invoke, or authored *by* the LLM planner inside `plan_and_execute`.
 
 The key behavioral difference: **human-authored plans never replan**. If a step fails, you get a structured error — the plan you wrote is the plan that runs. `plan_and_execute` plans are LLM-authored, so defects there trigger a replan with the error fed back. Details in [Errors & replanning](/plans/errors-and-replanning).
 
-## 4. Threads
+## 2. One tool catalog
+
+Everything a plan step or the agent can do is a **tool**, and every tool lives in one namespaced catalog:
+
+| Prefix | Source | Example |
+|---|---|---|
+| `<server>__` | [MCP servers](/tools/mcp-servers) from `[mcp.*]` config | `linear__list_issues` |
+| `user__` | [User-defined tools](/tools/user-defined) (exec / cypher / prompt YAML) | `user__git_log` |
+| `plan__` | One per [plan document](/plans/overview) | `plan__project_status` |
+| — | `plan_and_execute`: on-the-fly planning for novel multi-step tasks | |
+
+This is what makes plans composable: authoring a plan *adds a tool to the catalog*, and a plan's steps draw from the same catalog — MCP tools, wrapped CLIs, saved queries, prompt tools.
+
+`graph tools list` shows the whole catalog; `graph tools test <name> '{…}'` invokes any tool directly.
+
+## 3. The shape cache
+
+MCP tools rarely declare what their output looks like — but the planner needs to know, or it can't write `{{E0.teams.0.name}}`. So graph **learns**: every successful tool call records an inferred schema and example of that tool's output. The planner reads this cache at planning time, which means every probe and every chat turn makes `plan_and_execute` author better plans. See [The shape cache](/tools/shape-cache).
+
+## 4. The agent loop: the workbench
+
+`graph ask` and `graph chat` run a standard tool-calling loop over the catalog: your message goes to the model, tool calls execute (in parallel within a round), results feed back, and the loop continues until the model answers in text. Plans are just tools here — the agent calls `plan__sprint_analysis` the same way it calls `linear__list_issues`.
+
+Use it as the workbench: probe tools, prototype a workflow conversationally, seed the shape cache — then freeze what works into a plan for anything you'll run twice.
+
+## 5. Threads
 
 Every `ask` and `chat` turn persists to a **thread** in the embedded database — messages, tool calls, and results.
 
@@ -51,16 +61,12 @@ graph ask "and who is assigned?" --thread          # continue the latest
 graph chat --thread 62dac762e251                    # resume a specific one
 ```
 
-## 5. The shape cache
+## What an invocation costs
 
-MCP tools rarely declare what their output looks like — but the planner needs to know, or it can't write `{{E0.teams.0.name}}`. So graph **learns**: every successful tool call records an inferred schema and example of that tool's output. The planner reads this cache at planning time, which means everyday chat usage makes `plan_and_execute` smarter. See [The shape cache](/tools/shape-cache).
-
-## How a turn executes
-
-For a chat turn that invokes a plan tool, exactly three LLM calls happen:
+Running a plan directly (`graph plan run`) is **one** LLM call (the solver) or **zero** (output/silent plans), however many tool calls it makes. A chat turn that invokes a plan tool is exactly three:
 
 1. **Agent** — reads your message, decides to call `plan__project_status`
 2. **Solver** — inside the plan, synthesizes the report from the collected step results (streams dimmed to stderr as progress)
 3. **Agent** — reads the report and writes the final answer (stdout)
 
-The plan's steps themselves are pure tool calls — no LLM. Running the same plan via `graph plan run` is **one** LLM call (the solver only). The full anatomy, including model roles per call, is in [Execution model](/architecture/execution-model).
+The plan's steps themselves are pure tool calls — no LLM. The full anatomy, including model roles per call, is in [Execution model](/architecture/execution-model).

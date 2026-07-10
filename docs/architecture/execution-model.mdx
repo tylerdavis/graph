@@ -4,7 +4,15 @@ description: "Exactly what runs, and what it costs, per invocation"
 icon: "microchip"
 ---
 
-graph has two engines that compose. Knowing which runs when explains every trace and every token bill.
+graph has two engines: the plan pipeline (the core) and an agent loop layered over it. Knowing which runs when explains every trace and every token bill.
+
+## The plan pipeline
+
+Plans execute as: **validate → run steps sequentially → finish**.
+
+- Step inputs render against prior results via the [template language](/plans/template-language) — typed dataflow, zero inference.
+- The finish is a `solver` LLM call, an `output` render (no LLM), or nothing ([finish modes](/plans/finish-modes)).
+- For `plan_and_execute`, a `planner`-role call authors the plan first, and defects loop back as replans (executed steps preserved). Human-authored plans skip planning and never replan.
 
 ## The agent loop
 
@@ -17,14 +25,6 @@ message + tool catalog → model
 ```
 
 Bounded by `max_agent_iterations`. Tool failures return *into* the loop as error results — the agent explains or works around them visibly.
-
-## The plan pipeline
-
-Plans execute as: **validate → run steps sequentially → finish**.
-
-- Step inputs render against prior results via the [template language](/plans/template-language) — typed dataflow, zero inference.
-- The finish is a `solver` LLM call, an `output` render (no LLM), or nothing ([finish modes](/plans/finish-modes)).
-- For `plan_and_execute`, a `planner`-role call authors the plan first, and defects loop back as replans (executed steps preserved). Human-authored plans skip planning and never replan.
 
 ## The anatomy of a chat turn using a plan
 

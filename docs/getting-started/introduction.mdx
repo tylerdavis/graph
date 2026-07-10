@@ -1,40 +1,33 @@
 ---
 title: "Introduction"
-description: "A command-line agent with a plan-based execution engine"
+description: "A plan engine for repeatable, AI-augmented workflows"
 icon: "hand-wave"
 ---
 
-**graph** is a command-line AI agent for engineering workflows. It answers questions by calling tools — Linear, GitHub, or anything that speaks [MCP](https://modelcontextprotocol.io) — and it lets you freeze the workflows that work into **plans**: repeatable, shareable automations that run identically every time.
+**graph** is a command-line plan engine for AI-augmented workflows. A workflow is a **plan**: a small YAML document that chains tool calls — Linear, GitHub, your own scripts, anything that speaks [MCP](https://modelcontextprotocol.io) — with typed dataflow between steps and LLM inference exactly where you place it. graph executes a plan identically every time: same steps, same order, on your laptop, on cron, or in CI.
 
 ```bash
-# ask anything — the agent picks tools and answers from live data
-graph ask "How is the New Relic migration going?"
-
-# or run a saved plan — same steps, same order, every time
+# same steps, same order, every run — 0–1 LLM calls regardless of step count
 graph plan run project_status '{"project":"New Relic to AWS Migration"}'
 ```
 
-## The two layers
+This is AI built for *operations*. An improvising agent gives you a different answer every run; a plan is an artifact — versioned in a repo, reviewed in a PR, validated before it runs, and cheap enough to schedule. That's the difference between a demo and a workflow you can run a thousand times.
 
-graph is built as two cooperating layers:
+## Why plans
 
-<CardGroup cols={2}>
-  <Card title="The agent" icon="comments">
-    A ReAct-style chat loop behind `graph ask` and `graph chat`. It sees every tool you've connected, calls them as needed, and streams answers. Good at novel questions and conversation.
-  </Card>
-  <Card title="The plan engine" icon="diagram-project">
-    A deterministic pipeline that executes **plans** — YAML documents describing a sequence of tool calls with data flowing between steps. Good at repeatability, automation, and CI.
-  </Card>
-</CardGroup>
+- **Deterministic core, inference inline.** Steps are pure tool calls — zero LLM, however many there are. Inference enters exactly where you put it: [prompt tools](/tools/user-defined#prompt-an-llm-call-as-a-tool) as steps (classify, extract, summarize mid-plan) and a [finish](/plans/finish-modes) that is an LLM-written report, structured JSON for other tools, or nothing at all.
+- **Repeatable and reviewable.** A plan is a file you check into a repo, review in a PR, and share with your team. No UI state, no prompt roulette — your Monday status report is the same report every Monday.
+- **Composable.** Every plan joins the tool catalog as `plan__<identifier>`, invocable like any other tool — from the CLI, from scripts, or by name. And a plan's steps compose everything else in the catalog: MCP tools, wrapped CLIs, saved queries, prompt tools.
+- **Generated, validated, tested.** You don't have to write plans by hand. `plan_and_execute` has an LLM planner author a plan on the fly — validated before execution, self-correcting against real errors when a step fails. Hand-written or generated, every plan is validated at load time (`graph plan validate`), and the [shape cache](/tools/shape-cache) teaches the planner what tools *actually* return, so generated plans get better with use.
+- **Bring your own models and storage.** Any MCP server; Anthropic, OpenAI, or OpenAI-compatible/local models, assignable per role (planner, solver, chat). A single binary with an embedded database — or pure in-memory storage for ephemeral CI runs. Your data stays on your machine.
 
-The layers compose: every plan you author becomes a **tool the agent can call**, and for novel multi-step questions the agent can invoke `plan_and_execute` — an LLM planner that authors a validated plan on the fly, executes it, and self-corrects when steps fail.
+## Built for scaled AI Ops
 
-## What makes it different
+The same plan file works in a terminal, a cron job, and a CI pipeline: [finish modes](/plans/finish-modes) for reports, structured JSON, or silent side effects; meaningful exit codes; `${ENV}` secrets that fail loudly; repo-carried config (`./.graph/`); ephemeral storage. See [Automation & CI](/automation/ci).
 
-- **Plans are files.** A plan is a small YAML document you check into a repo, review in a PR, and share with your team. No UI state, no prompt roulette — your Monday status report is the same report every Monday.
-- **Plans finish three ways.** An LLM-written report (`solver`), structured JSON for other tools (`output`), or nothing at all — a silent side-effect job. That makes the same plan format equally at home in a terminal, a cron job, or a CI pipeline.
-- **It learns tool shapes.** Every tool call teaches graph what that tool's output looks like (the [shape cache](/tools/shape-cache)), so the planner writes better data references over time.
-- **Bring your own everything.** Any MCP server, any model (Anthropic, OpenAI, OpenAI-compatible/local), your own [exec/cypher/prompt tools](/tools/user-defined). Single binary; data stays on your machine in an embedded database.
+## The chat surface
+
+`graph ask` and `graph chat` run an agent loop over the same tool catalog. Treat it as the workbench: probe a tool's real output, prototype a workflow conversationally, seed the shape cache — then freeze what works into a plan. Details in [Chat & ask](/using/chat-and-ask).
 
 ## Where to go next
 
@@ -42,11 +35,11 @@ The layers compose: every plan you author becomes a **tool the agent can call**,
   <Card title="Quickstart" icon="rocket" href="/getting-started/quickstart">
     Config to first answer in ten minutes.
   </Card>
-  <Card title="Core concepts" icon="lightbulb" href="/getting-started/concepts">
-    The tool catalog, threads, and how a turn executes.
-  </Card>
   <Card title="Author a plan" icon="pen-to-square" href="/plans/authoring">
     From blank file to running plan, using a real example.
+  </Card>
+  <Card title="Core concepts" icon="lightbulb" href="/getting-started/concepts">
+    Plans, the tool catalog, the shape cache, and what an invocation costs.
   </Card>
   <Card title="Automation & CI" icon="gears" href="/automation/ci">
     Exit codes, JSON envelopes, and ephemeral storage for pipelines.
