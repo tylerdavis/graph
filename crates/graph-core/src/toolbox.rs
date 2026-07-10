@@ -54,7 +54,10 @@ impl AgentToolbox {
         }
     }
 
-    async fn run_plan_tool(&self, doc: &PlanDoc, input: Value) -> ToolOutcome {
+    async fn run_plan_tool(&self, doc: &PlanDoc, mut input: Value) -> ToolOutcome {
+        if let Some(schema) = &doc.input_schema {
+            crate::pipeline::doc::apply_schema_defaults(schema, &mut input);
+        }
         // Validate inputs against the doc's schema; missing/invalid fields
         // come back as a tool error the agent can act on (ask the user,
         // re-call with complete args).

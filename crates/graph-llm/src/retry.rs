@@ -111,7 +111,15 @@ mod tests {
         assert_eq!(delay_for(0, None), Duration::from_secs(1));
         assert_eq!(delay_for(1, None), Duration::from_secs(2));
         assert_eq!(delay_for(0, Some(5)), Duration::from_secs(5));
-        assert_eq!(delay_for(1, Some(1)), Duration::from_secs(2), "backoff wins when larger");
-        assert_eq!(delay_for(0, Some(600)), Duration::from_secs(30), "retry-after capped");
+        assert_eq!(
+            delay_for(1, Some(1)),
+            Duration::from_secs(2),
+            "backoff wins when larger"
+        );
+        assert_eq!(
+            delay_for(0, Some(600)),
+            Duration::from_secs(30),
+            "retry-after capped"
+        );
     }
 }

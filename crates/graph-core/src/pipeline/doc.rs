@@ -180,6 +180,22 @@ fn check_value_templates(value: &Value, available: &[&str], step_id: &str) -> Re
     }
 }
 
+/// Fill in top-level `default` values from a JSON Schema's properties for
+/// any keys absent from the input object.
+pub fn apply_schema_defaults(schema: &Value, input: &mut Value) {
+    let (Some(properties), Some(map)) = (
+        schema.get("properties").and_then(Value::as_object),
+        input.as_object_mut(),
+    ) else {
+        return;
+    };
+    for (key, prop) in properties {
+        if let Some(default) = prop.get("default") {
+            map.entry(key.clone()).or_insert_with(|| default.clone());
+        }
+    }
+}
+
 /// Validate plan inputs against the doc's schema; Err carries one message
 /// per problem (missing required field, wrong type, …).
 pub fn validate_input(doc: &PlanDoc, input: &Value) -> Result<(), Vec<String>> {

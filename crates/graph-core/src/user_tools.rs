@@ -223,7 +223,10 @@ impl UserToolRegistry {
         }
     }
 
-    async fn run(&self, doc: &UserToolDoc, input: Value) -> Result<ToolOutcome, ToolError> {
+    async fn run(&self, doc: &UserToolDoc, mut input: Value) -> Result<ToolOutcome, ToolError> {
+        if let Some(schema) = &doc.input_schema {
+            crate::pipeline::doc::apply_schema_defaults(schema, &mut input);
+        }
         if let Some(schema) = &doc.input_schema {
             if let Ok(validator) = jsonschema::validator_for(schema) {
                 let problems: Vec<String> = validator

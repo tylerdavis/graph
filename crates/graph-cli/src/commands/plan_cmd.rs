@@ -64,7 +64,10 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
     let Some(doc) = docs.into_iter().find(|d| d.identifier == name) else {
         bail!("no plan named '{name}' (see `graph plan list`)");
     };
-    let input = resolve_input(document, inputs)?;
+    let mut input = resolve_input(document, inputs)?;
+    if let Some(schema) = &doc.input_schema {
+        graph_core::pipeline::doc::apply_schema_defaults(schema, &mut input);
+    }
 
     if let Err(problems) = validate_input(&doc, &input) {
         eprintln!("plan '{name}' needs inputs:");
