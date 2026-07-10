@@ -61,6 +61,14 @@ pub async fn run(command: PlanCommand) -> Result<()> {
 }
 
 async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: bool) -> Result<()> {
+    // `--json` promises machine-parseable stdout, so it suppresses CI
+    // annotations (which are stdout workflow commands) even when a mode
+    // like GRAPH_EVENTS=github is active.
+    let annotate = |message: &str| {
+        if !json {
+            crate::output::annotate_failure(message);
+        }
+    };
     let runtime = Runtime::init()?;
     let docs = runtime.plan_docs()?;
     let Some(doc) = docs.into_iter().find(|d| d.identifier == name) else {
@@ -79,7 +87,7 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         if let Some(schema) = &doc.input_schema {
             eprintln!("input schema:\n{}", serde_json::to_string_pretty(schema)?);
         }
-        crate::output::annotate_failure(&format!(
+        annotate(&format!(
             "plan '{name}' needs inputs: {}",
             problems.join("; ")
         ));
@@ -102,7 +110,7 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
     let outcome = match result {
         Ok(outcome) => outcome,
         Err(err) => {
-            crate::output::annotate_failure(&format!("plan '{name}' failed: {err:#}"));
+            annotate(&format!("plan '{name}' failed: {err:#}"));
             return Err(err.into());
         }
     };
@@ -145,7 +153,7 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
     }
     if exited_error {
         if let Some(exit) = &outcome.exit {
-            crate::output::annotate_failure(&exit.message);
+            annotate(&exit.message);
         }
         std::process::exit(EXIT_PLAN_ASSERTED);
     }
