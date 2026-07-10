@@ -2,6 +2,18 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
+## v0.2.0 — 2026-07-10
+
+
+### Added
+
+- exit gates — end a plan early with success or error state
+- plan composability — plans call plans
+
+### Documentation
+
+- bring CLAUDE.md current — composability, exit gates, storage, build story, conventions
+
 ## v0.1.0 — 2026-07-10
 
 
