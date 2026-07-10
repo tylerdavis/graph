@@ -20,7 +20,7 @@ input_schema:
     head: { type: string, description: Head ref or sha of the PR }
 steps:
   - id: E0
-    tool_name: user__git_changed_files
+    tool_name: builtin__git_changed_files
     input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "crates/" }
     reasoning: Which crate source files changed?
   - id: E1
@@ -32,7 +32,7 @@ steps:
       output: { docs_required: false, reason: no_crate_changes }
     reasoning: Docs-only or CI-only PRs pass immediately, no LLM.
   - id: E2
-    tool_name: user__git_changed_files
+    tool_name: builtin__git_changed_files
     input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "docs/" }
     reasoning: Were docs updated alongside?
   - id: E3
@@ -44,7 +44,7 @@ steps:
       output: { docs_required: false, reason: docs_touched }
     reasoning: The rule is satisfied by construction, no LLM.
   - id: E4
-    tool_name: user__git_diff
+    tool_name: builtin__git_diff
     input:
       base: "{{input.base}}"
       head: "{{input.head}}"

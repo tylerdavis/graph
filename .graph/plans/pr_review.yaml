@@ -16,11 +16,11 @@ input_schema:
     pr: { type: integer, description: Pull request number }
 steps:
   - id: E0
-    tool_name: user__gh_pr_meta
+    tool_name: builtin__gh_pr_meta
     input: { pr: "{{input.pr}}" }
     reasoning: Title, body, and the base/head shas to diff.
   - id: E1
-    tool_name: user__git_diff
+    tool_name: builtin__git_diff
     input:
       base: "{{E0.base_sha}}"
       head: "{{E0.head_sha}}"
@@ -43,7 +43,7 @@ steps:
       diff: "{{E1.text}}"
     reasoning: One rubric'd review call with enforced structured output.
   - id: E4
-    tool_name: user__gh_pr_comment
+    tool_name: builtin__gh_pr_comment
     input:
       pr: "{{input.pr}}"
       body: |

@@ -13,7 +13,7 @@ jobs:
   docs-drift:
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/tylerdavis/graph:v0.3.0      # graph + git/jq/gh baked in
+      image: ghcr.io/tylerdavis/graph:v0.4.1      # graph + git/jq/gh baked in
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -40,7 +40,7 @@ The repo rule, from its CLAUDE.md: behavior changes in `crates/` must update `do
 ```yaml
 steps:
   - id: E0
-    tool_name: user__git_changed_files
+    tool_name: builtin__git_changed_files
     input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "crates/" }
   - id: E1
     tool_name: exit
@@ -50,7 +50,7 @@ steps:
       message: no crate code changed — docs gate not applicable
       output: { docs_required: false, reason: no_crate_changes }
   - id: E2
-    tool_name: user__git_changed_files
+    tool_name: builtin__git_changed_files
     input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "docs/" }
   - id: E3
     tool_name: exit
@@ -60,7 +60,7 @@ steps:
       message: docs updated alongside crate changes
       output: { docs_required: false, reason: docs_touched }
   - id: E4
-    tool_name: user__git_diff
+    tool_name: builtin__git_diff
     input: { base: "{{input.base}}", head: "{{input.head}}",
              paths: "crates/", exclude: "", max_bytes: 60000 }
   - id: E5
@@ -96,10 +96,10 @@ The plan fetches its own context, reviews, and posts its own comment. The CI ste
 ```yaml
 steps:
   - id: E0
-    tool_name: user__gh_pr_meta
+    tool_name: builtin__gh_pr_meta
     input: { pr: "{{input.pr}}" }
   - id: E1
-    tool_name: user__git_diff
+    tool_name: builtin__git_diff
     input: { base: "{{E0.base_sha}}", head: "{{E0.head_sha}}",
              paths: ".", exclude: "Cargo.lock CHANGELOG.md", max_bytes: 120000 }
   - id: E2
@@ -112,7 +112,7 @@ steps:
     tool_name: user__review_graph_pr      # repo-local prompt tool: the rubric
     input: { title: "{{E0.title}}", body: "{{E0.body}}", diff: "{{E1.text}}" }
   - id: E4
-    tool_name: user__gh_pr_comment
+    tool_name: builtin__gh_pr_comment
     input:
       pr: "{{input.pr}}"
       body: |
