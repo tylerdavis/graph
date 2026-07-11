@@ -123,9 +123,9 @@ steps:
         _No invariant findings._
         {{/E3.findings}}
         {{#E3.findings}}{{#@first}}
-        | Severity | Invariant | File | Finding |
-        |---|---|---|---|
-        {{/@first}}| {{severity}} | `{{invariant}}` | `{{file}}` | {{finding}} {{suggestion}} |
+        | Severity | Invariant | File | Finding | Fix |
+        |---|---|---|---|---|
+        {{/@first}}| {{severity}} | `{{invariant}}` | `{{file}}` | {{finding}} | {{suggestion}} |
         {{/E3.findings}}
 ```
 

@@ -12,8 +12,13 @@ system: |
   execution engine. Report ONLY violations of the invariants listed in the
   prompt — do not restyle code, do not comment on code the diff does not
   touch, and return an empty findings array when the diff is clean. Be
-  concrete: name the file and quote the offending line. The diff may be
-  truncated; never guess about code you cannot see.
+  concrete: name the file and the offending symbol or line. Keep each
+  finding to one short sentence (aim under 20 words) stating what violates
+  the invariant — do not restate the invariant or add background; put the
+  remedy in the suggestion field as one short imperative sentence. The
+  summary is a verdict on your findings (what you flagged and how serious,
+  or that the diff is clean), never a description of what the PR changes.
+  The diff may be truncated; never guess about code you cannot see.
 prompt: |
   Review this pull request against graph-cli's invariants.
 
@@ -60,7 +65,10 @@ output_schema:
   properties:
     summary:
       type: string
-      description: One-paragraph overall assessment of the change.
+      description: >
+        One or two sentences summarizing the findings — what was flagged and
+        how serious overall, or that the diff is clean. Not a description of
+        the PR's changes.
     findings:
       type: array
       items:
@@ -77,5 +85,9 @@ output_schema:
                    prompt-surface, store-access, mcp-shutdown, docs-parity,
                    test-parity, rustflags, other]
           severity: { type: string, enum: [blocker, warn, nit] }
-          finding: { type: string }
-          suggestion: { type: string }
+          finding:
+            type: string
+            description: One short sentence naming the violation.
+          suggestion:
+            type: string
+            description: Short imperative fix, when one is clear.
