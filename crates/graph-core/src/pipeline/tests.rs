@@ -615,7 +615,7 @@ async fn planner_gets_the_exit_tool_and_authored_exits_work() {
 /// E0 searches, E1 decides on `{{E0.values.length}} gt 0`.
 fn decide_plan(then: Value, else_branch: Option<Value>) -> Plan {
     let mut input = json!({
-        "when": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
+        "if": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
         "then": then,
     });
     if let Some(else_branch) = else_branch {
@@ -855,7 +855,7 @@ async fn branch_failure_fails_the_decide_step_and_replans_in_planned_mode() {
 
     // Planned mode: the failure lands on the bus and triggers a replan.
     let decide_step = json!({"id": "E1", "toolName": "decide", "input": {
-        "when": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
+        "if": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
         "then": {"toolName": "t__issues", "input": {"q": "x"}},
     }});
     let (pipeline_planned, provider) = pipeline(
@@ -896,7 +896,7 @@ async fn empty_data_in_chosen_branch_degrades_normally() {
     let plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
         {"id": "E1", "toolName": "decide", "input": {
-            "when": {"value": "{{E0.values.length}}", "op": "eq", "to": 0},
+            "if": {"value": "{{E0.values.length}}", "op": "eq", "to": 0},
             "then": {"toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}},
         }},
     ]))
@@ -934,16 +934,16 @@ async fn decide_validation_rejections() {
     let call = json!({"toolName": "t__issues", "input": {}});
 
     let message = run(json!({
-        "when": {"value": 1, "op": "eq", "to": 1}, "infer": "both?", "then": call,
+        "if": {"value": 1, "op": "eq", "to": 1}, "infer": "both?", "then": call,
     }))
     .await;
     assert!(message.contains("mutually exclusive"), "{message}");
 
     let message = run(json!({"then": call})).await;
-    assert!(message.contains("`when` or `infer`"), "{message}");
+    assert!(message.contains("`if` or `infer`"), "{message}");
 
     let message = run(json!({
-        "when": {"value": 1, "op": "eq", "to": 1},
+        "if": {"value": 1, "op": "eq", "to": 1},
         "then": {"toolName": "decide", "input": {}},
     }))
     .await;
@@ -951,7 +951,7 @@ async fn decide_validation_rejections() {
 
     // Cross-branch reference: else reads a then-branch id.
     let message = run(json!({
-        "when": {"value": 1, "op": "eq", "to": 1},
+        "if": {"value": 1, "op": "eq", "to": 1},
         "then": [{"id": "E10", "toolName": "t__search", "input": {"query": "x"}}],
         "else": [{"id": "E11", "toolName": "t__issues", "input": {"q": "{{E10.values}}"}}],
     }))
@@ -960,7 +960,7 @@ async fn decide_validation_rejections() {
 
     // Forward reference within a branch.
     let message = run(json!({
-        "when": {"value": 1, "op": "eq", "to": 1},
+        "if": {"value": 1, "op": "eq", "to": 1},
         "then": [
             {"id": "E10", "toolName": "t__search", "input": {"query": "{{E11.values}}"}},
             {"id": "E11", "toolName": "t__issues", "input": {"q": "y"}},
@@ -971,7 +971,7 @@ async fn decide_validation_rejections() {
 
     // Branch step id shadowing a top-level id.
     let message = run(json!({
-        "when": {"value": 1, "op": "eq", "to": 1},
+        "if": {"value": 1, "op": "eq", "to": 1},
         "then": [{"id": "E0", "toolName": "t__search", "input": {"query": "x"}}],
     }))
     .await;
@@ -987,7 +987,7 @@ async fn planner_gets_the_decide_tool_and_authored_decides_work() {
                 "plan": [
                     {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
                     {"id": "E1", "toolName": "decide", "input": {
-                        "when": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
+                        "if": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
                         "then": {"toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}},
                     }},
                 ],
@@ -1019,7 +1019,7 @@ steps:
   - id: E1
     tool_name: decide
     input:
-      when: { value: "{{E0.values.length}}", op: gt, to: 0 }
+      if: { value: "{{E0.values.length}}", op: gt, to: 0 }
       then:
         tool_name: t__issues
         input: { q: "{{E0.values.0.id}}" }
@@ -1055,7 +1055,7 @@ steps:
   - id: E0
     tool_name: decide
     input:
-      when: { value: 1, op: eq, to: 1 }
+      if: { value: 1, op: eq, to: 1 }
       then:
         tool_name: exit
         input: { status: success }

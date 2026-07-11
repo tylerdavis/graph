@@ -44,7 +44,7 @@ The solver's report streams dim to stderr as progress; the agent's answer is the
 |---|---|
 | `plan run` (output / silent) | 0 |
 | `plan run` (solver) | 1 |
-| `exit` / `decide` gate | 0 (`when`) or 1 judge call (`infer`) |
+| `exit` / `decide` gate | 0 (logical gate) or 1 judge call (`infer`) |
 | `ask` → direct tools | 1 + one per tool round |
 | `ask` → plan tool | 3 |
 | `ask` → `plan_and_execute` | 4 + 1 per replan |
