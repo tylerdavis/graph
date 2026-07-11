@@ -2,6 +2,16 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
+## v0.6.0 — 2026-07-11
+
+
+### Added
+
+- decide steps fork plan execution into then/else branches (#15)
+- decide gates read if/then/else — the logical gate keyword is now if (#17)
+- map and reduce steps iterate a body over a list (#18)
+- pr_review anchors findings as inline diff comments (#20)
+
 ## v0.5.0 — 2026-07-10
 
 
