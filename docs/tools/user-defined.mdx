@@ -38,24 +38,6 @@ input_schema:
 Exec tools are **arbitrary code execution, by design** — you author them, graph runs them. Treat the tools directory like you treat your shell profile.
 </Warning>
 
-## `cypher` — saved queries over the embedded database
-
-```yaml
-name: shape_cache
-description: Which tools graph has learned output shapes for.
-kind: cypher
-query: "MATCH (s:ToolShape) RETURN s.tool AS tool, s.seen_count AS seen ORDER BY s.seen_count DESC"
-```
-
-Input fields bind as `$name` parameters; rows return keyed by column name:
-
-```bash
-graph tools test user__shape_cache
-# {"count": 8, "rows": [{"tool": "linear__list_issues", "seen": 11}, …]}
-```
-
-Requires the default `ladybug` storage backend (errors cleanly under `GRAPH_STORAGE=memory`). Read-only by nature — this is also the query surface that the upcoming entity graph will use.
-
 ## `prompt` — an LLM call as a tool
 
 ```yaml

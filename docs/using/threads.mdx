@@ -4,7 +4,7 @@ description: "Persistent conversations across invocations"
 icon: "clock-rotate-left"
 ---
 
-Every successful `ask` and `chat` turn persists to a thread — the full message history including tool calls and their results. Threads live in the embedded database and survive across processes.
+Every successful `ask` and `chat` turn persists to a thread — the full message history including tool calls and their results. Threads live as plain files under the data directory and survive across processes.
 
 ## Managing threads
 
@@ -41,5 +41,5 @@ This is the primary audit surface: when you want to know *whether the agent used
 Thread titles derive from the first message. Only successful turns persist — a turn that errors leaves the thread untouched, so retries don't duplicate messages.
 
 <Note>
-Threads require the default `ladybug` storage backend. With `GRAPH_STORAGE=memory` everything works but nothing survives the process — the right trade for CI. See [Storage](/architecture/storage).
+Threads persist with the default `file` storage backend. With `GRAPH_STORAGE=memory` everything works but nothing survives the process — the right trade for CI. See [Storage](/architecture/storage).
 </Note>

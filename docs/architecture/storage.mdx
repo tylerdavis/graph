@@ -1,10 +1,10 @@
 ---
 title: "Storage"
-description: "Embedded by default, abstracted for scale"
+description: "Plain files by default, abstracted for other backends"
 icon: "database"
 ---
 
-graph ships with — and defaults to — [LadybugDB](https://ladybugdb.com), an embedded graph database. Zero setup: the database appears at `~/.local/share/graph/db/` on first use.
+graph stores its runtime state as plain JSON and JSONL files under the data directory (`~/.local/share/graph/` by default). Zero setup, human-readable, and safe under concurrent `graph` processes.
 
 ## What's stored
 
@@ -12,9 +12,26 @@ graph ships with — and defaults to — [LadybugDB](https://ladybugdb.com), an 
 |---|---|
 | Threads & messages | conversation continuity (`--thread`), audit (`threads show`) |
 | Tool shapes | the [shape cache](/tools/shape-cache) that trains planning |
-| Entity graph | *(roadmap)* your synced domain data, queryable via Cypher |
 
-`graph db query "<cypher>"` gives raw read access; [cypher user tools](/tools/user-defined) give curated access.
+## Layout
+
+```text
+<data_dir>/threads/<id>/meta.json        thread metadata (title, timestamps, message count)
+<data_dir>/threads/<id>/messages.jsonl   one message per line, in order
+<data_dir>/shapes/<tool>.json            one cached shape per tool
+```
+
+Everything is directly inspectable with `cat` and `jq`, and `graph threads` / `graph shapes` render the same data from the CLI. Shape filenames percent-encode characters outside `[A-Za-z0-9_.-]`; the authoritative tool name lives inside the file.
+
+## Concurrency
+
+Multiple graph processes — parallel CI jobs, simultaneous one-shots — can share one `data_dir`:
+
+- Whole files (`meta.json`, shapes) are written to a temp file and atomically renamed into place, so readers never observe a partial write.
+- Message appends go through `O_APPEND` as a single write, serialized per thread by an advisory lock so metadata stays consistent with the log.
+- Shape writes are last-writer-wins. `seen_count` is advisory and may lose increments under contention; schema and example converge regardless.
+
+The advisory locks assume a local filesystem — don't point `data_dir` at NFS.
 
 ## Backends
 
@@ -22,27 +39,13 @@ Storage resolves through a backend abstraction, selected by `[storage].backend` 
 
 | Backend | Character | Use when |
 |---|---|---|
-| `ladybug` (default) | persistent, embedded, **single-process** | daily interactive use |
-| `memory` | ephemeral, lock-free | CI jobs, concurrent one-shots |
+| `file` (default) | persistent, plain files | daily interactive use, CI that should learn across runs |
+| `memory` | ephemeral | CI jobs and tests that should leave no state behind |
 
-The single-process constraint is real: a running `graph chat` holds the database lock, and other invocations against the same `data_dir` fail with a clear error naming the holder. `memory` never touches the directory at all.
-
-## Scaling path
-
-The abstraction exists so centralized backends can slot in without re-architecture — the runtime depends only on a narrow storage trait. The planned trajectory:
-
-- **Centralized state** (e.g. Postgres): threads and — most valuably — a **shared shape cache**, so every CI job inherits every other job's learned tool shapes.
-- **Entity graph**: built-in `graph__cypher_query` / `graph__ingest` tools plus a `graph sync` flow that pipes MCP results into your own queryable graph; separable from state storage so a fleet can centralize one without the other.
-
-Both are roadmap; the seams are already in place.
-
-## Extensions
-
-The engine's FTS and vector extensions ship **inside the graph binary**: the build fetches the matching extension binaries once (pinned to the engine version; set `GRAPH_LBUG_EXT_DIR` to a directory of pre-fetched `lib<ext>.lbug_extension` files for offline/hermetic builds), and at runtime they materialize under `<data_dir>/extensions/<version>/` and load by file path. No network at runtime, no dependency on the extension CDN being up — the runtime `INSTALL <ext>` download path (and its `~/.lbdb/` cache) is not used.
-
-These back the future entity-graph features (full-text and semantic search over synced data); nothing loads them in the current CLI surface.
+The runtime depends only on a narrow storage trait (`Store`), so centralized backends (e.g. Postgres, with a **shared shape cache** every CI job inherits) can slot in without re-architecture.
 
 ## Operational notes
 
-- Back up by copying `data_dir` (it's just files).
-- The [Ladybug Explorer](https://github.com/LadybugDB) container can browse the database — note it takes the same single-process lock while running.
+- Back up by copying `data_dir` — it's just files.
+- Deleting a thread directory by hand is equivalent to `graph threads rm`.
+- Deleting `shapes/` only costs learned planning hints; the cache rebuilds as tools run.

@@ -61,7 +61,7 @@ graph plan run project_status '{"project":"New Relic"}' > report.md
 curl -X POST "$SLACK_WEBHOOK" --data-urlencode "payload={\"text\": $(jq -Rs . < report.md)}"
 ```
 
-Run it with `GRAPH_STORAGE=memory` in the cron environment — ephemeral, no lock contention with anything else on the box ([scripting contract](/automation/scripting)).
+Run it with `GRAPH_STORAGE=memory` in the cron environment when it should leave no state behind ([scripting contract](/automation/scripting)).
 
 ## Patterns to reuse
 

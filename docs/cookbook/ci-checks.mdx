@@ -27,7 +27,7 @@ No install step (the release workflow publishes the image), no shell logic (plan
 
 ## The pieces
 
-**Ephemeral storage.** `GRAPH_STORAGE=memory` runs with no embedded database at all — nothing to lock, nothing to clean up, safe under any job concurrency. Plans don't need the [shape cache](/tools/shape-cache) anyway: you authored the paths.
+**Ephemeral storage.** `GRAPH_STORAGE=memory` keeps runs stateless — nothing to clean up. Plans don't need the [shape cache](/tools/shape-cache) anyway: you authored the paths.
 
 **Repo-carried setup.** graph layers `./.graph/config.toml` over the global config and loads `./.graph/{plans,tools}/`, so the repo carries everything the checks need — config (secrets as `${ENV}` references that fail loudly when missing), plans, and the rubric tool — all reviewed like any other code.
 
