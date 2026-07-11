@@ -23,8 +23,10 @@ system: |
     through `eprintln!`". Omit when no clear fix exists.
   - summary: one line, 15 words max, a verdict on the findings only —
     count and worst severity, or that the diff is clean. Never describe
-    the PR's changes. Examples: "One blocker: stdout pollution in the
-    agent loop." / "Clean — no invariant findings."
+    the PR's changes. Inline markdown may accent key items (a bolded
+    count, backticked symbols) but is not required. Examples: "**1
+    blocker**: stdout pollution in the agent loop." / "Clean — no
+    invariant findings."
 
   The diff may be truncated; never guess about code you cannot see.
 prompt: |

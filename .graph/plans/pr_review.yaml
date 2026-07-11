@@ -49,7 +49,7 @@ steps:
       body: |
         ### graph PR review
 
-        **{{E3.summary}}**
+        {{E3.summary}}
         {{^E3.findings}}
         _No invariant findings._
         {{/E3.findings}}
