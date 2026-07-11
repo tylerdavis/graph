@@ -6,10 +6,10 @@
 //! evaluated, so each branch may safely reference data that only exists
 //! when that branch is the right one to take.
 
+use super::body::{body_schema, parse_branch, validate_body, BodyFail};
 use super::condition::{evaluate_gate, Condition};
-use super::plan::{step_number, Step};
 use super::state::BusKind;
-use super::{ExecutionEnd, Pipeline, RunState};
+use super::{ExecutionEnd, Pipeline, RunState, Step};
 use crate::template::{render_input, render_str, RenderError, Roots};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -36,76 +36,9 @@ pub struct DecideSpec {
     pub else_: Option<Value>,
 }
 
-/// One side of the fork.
-#[derive(Debug)]
-pub enum Branch {
-    /// A single tool call — a `Step` without an id.
-    Call(BranchCall),
-    /// An inline list of steps, run in authored order within a scope
-    /// layered over the plan's results.
-    Steps(Vec<Step>),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BranchCall {
-    #[serde(alias = "tool_name")]
-    pub tool_name: String,
-    pub input: Map<String, Value>,
-    #[serde(default)]
-    pub reasoning: Option<String>,
-}
-
-/// Parse a branch value: an array is an inline step list, an object is a
-/// single call. Explicit rather than serde-untagged so authors get a
-/// pointed error instead of "did not match any variant".
-pub fn parse_branch(name: &str, raw: &Value) -> Result<Branch, String> {
-    match raw {
-        Value::Array(_) => {
-            let steps: Vec<Step> = serde_json::from_value(raw.clone())
-                .map_err(|e| format!("`{name}` branch steps: {e}"))?;
-            if steps.is_empty() {
-                return Err(format!("`{name}` branch has no steps"));
-            }
-            Ok(Branch::Steps(steps))
-        }
-        Value::Object(_) => {
-            let call: BranchCall = serde_json::from_value(raw.clone())
-                .map_err(|e| format!("`{name}` branch call: {e}"))?;
-            Ok(Branch::Call(call))
-        }
-        _ => Err(format!(
-            "`{name}` branch must be a tool call object or a list of steps"
-        )),
-    }
-}
-
 /// The decide step as described to the planner.
 pub fn decide_tool_def() -> crate::tools::ToolDef {
-    let branch_schema = json!({
-        "oneOf": [
-            {
-                "type": "object",
-                "required": ["toolName", "input"],
-                "properties": {
-                    "toolName": {"type": "string", "description": "Exact tool name; may be plan__* for a multi-step branch. Never exit or decide."},
-                    "input": {"type": "object"}
-                }
-            },
-            {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": ["id", "toolName", "input"],
-                    "properties": {
-                        "id": {"type": "string", "description": "E-shaped id unique across the whole plan; visible only inside this branch."},
-                        "toolName": {"type": "string"},
-                        "input": {"type": "object"}
-                    }
-                }
-            }
-        ]
-    });
+    let branch_schema = body_schema();
     crate::tools::ToolDef {
         name: DECIDE_TOOL.to_string(),
         description: "Fork the plan on a condition: run `then` when it holds, otherwise \
@@ -114,10 +47,10 @@ pub fn decide_tool_def() -> crate::tools::ToolDef {
                       vs. create a new one. Gate it with exactly one of `if` (a logical \
                       comparison) or `infer` (a yes/no question judged against prior \
                       results). A branch is a single tool call or a list of steps; \
-                      branches may not contain `exit` or `decide` — call a plan (plan__*) \
-                      for nested control flow. Later steps reference this step's id: \
-                      {{Ex.result}} is the chosen branch's output, {{Ex.branch}} which \
-                      side ran."
+                      branches may not contain `exit`, `decide`, `map`, or `reduce` — \
+                      call a plan (plan__*) for nested control flow. Later steps \
+                      reference this step's id: {{Ex.result}} is the chosen branch's \
+                      output, {{Ex.branch}} which side ran."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -133,7 +66,7 @@ pub fn decide_tool_def() -> crate::tools::ToolDef {
                     }
                 },
                 "infer": {"type": "string", "description": "A yes/no question about prior results; runs `then` on yes."},
-                "then": branch_schema,
+                "then": branch_schema.clone(),
                 "else": branch_schema
             }
         }),
@@ -181,78 +114,9 @@ pub fn validate_decide_input(
     if let Some(infer) = &spec.infer {
         super::check_templates(&Value::String(infer.clone()), seen, step_id, problems);
     }
-    validate_branch("then", &spec.then, seen, all_plan_ids, step_id, problems);
+    validate_body("then", &spec.then, seen, all_plan_ids, step_id, problems);
     if let Some(else_) = &spec.else_ {
-        validate_branch("else", else_, seen, all_plan_ids, step_id, problems);
-    }
-}
-
-fn validate_branch(
-    name: &str,
-    raw: &Value,
-    seen: &[&str],
-    all_plan_ids: &[&str],
-    step_id: &str,
-    problems: &mut Vec<String>,
-) {
-    let branch = match parse_branch(name, raw) {
-        Ok(branch) => branch,
-        Err(message) => {
-            problems.push(format!("step {step_id}: {message}"));
-            return;
-        }
-    };
-    match branch {
-        Branch::Call(call) => {
-            check_branch_tool(name, &call.tool_name, step_id, problems);
-            for value in call.input.values() {
-                super::check_templates(value, seen, step_id, problems);
-            }
-        }
-        Branch::Steps(steps) => {
-            // Branch steps may reference earlier top-level steps and
-            // earlier same-branch steps — never the other branch or
-            // anything later.
-            let mut branch_seen: Vec<&str> = seen.to_vec();
-            for (index, step) in steps.iter().enumerate() {
-                if step_number(&step.id).is_none() {
-                    problems.push(format!(
-                        "step {step_id}: `{name}` branch step id '{}' must look like E0, E1, …",
-                        step.id
-                    ));
-                }
-                if all_plan_ids.contains(&step.id.as_str()) {
-                    problems.push(format!(
-                        "step {step_id}: `{name}` branch step id {} collides with a plan step id",
-                        step.id
-                    ));
-                }
-                if steps[..index].iter().any(|s| s.id == step.id) {
-                    problems.push(format!(
-                        "step {step_id}: `{name}` branch has duplicate step id {}",
-                        step.id
-                    ));
-                }
-                check_branch_tool(name, &step.tool_name, step_id, problems);
-                for value in step.input.values() {
-                    super::check_templates(value, &branch_seen, &step.id, problems);
-                }
-                branch_seen.push(step.id.as_str());
-            }
-        }
-    }
-}
-
-fn check_branch_tool(name: &str, tool: &str, step_id: &str, problems: &mut Vec<String>) {
-    if tool == super::EXIT_TOOL || tool == DECIDE_TOOL {
-        problems.push(format!(
-            "step {step_id}: `{name}` branch uses '{tool}' — control steps cannot nest \
-             inside a branch; call a plan (plan__*) instead"
-        ));
-    } else if !tool.contains("__") && tool != "plan_and_execute" {
-        problems.push(format!(
-            "step {step_id}: `{name}` branch tool '{tool}' is not a namespaced tool name"
-        ));
+        validate_body("else", else_, seen, all_plan_ids, step_id, problems);
     }
 }
 
@@ -336,52 +200,30 @@ impl Pipeline {
             }));
         };
 
-        let result = match parse_branch(branch_name, raw_branch).map_err(failed)? {
-            Branch::Call(call) => {
-                let rendered =
-                    render_input(&Value::Object(call.input), &Roots::new(&state.results))
-                        .map_err(render_end)?;
-                let value = self
-                    .dispatch(&call.tool_name, rendered)
-                    .await
-                    .map_err(|m| {
-                        failed(format!("`{branch_name}` branch ({}): {m}", call.tool_name))
-                    })?;
-                state.branch_steps_executed += 1;
-                value
+        let branch = parse_branch(branch_name, raw_branch).map_err(failed)?;
+        let run = self
+            .run_body(
+                &step.id,
+                branch_name,
+                &format!("`{branch_name}` branch"),
+                &branch,
+                &state.results,
+                &[],
+            )
+            .await;
+        let result = match run {
+            Ok(run) => {
+                state.branch_steps_executed += run.steps_executed;
+                state.bus.extend(run.bus);
+                run.result
             }
-            Branch::Steps(steps) => {
-                // Branch steps run against a scope layered over the plan's
-                // results: they see earlier top-level and same-branch
-                // results, but their ids never enter `state.results` (the
-                // step cursor and replan merge are keyed on it).
-                let mut scope = state.results.clone();
-                let mut last = Value::Null;
-                for branch_step in &steps {
-                    let rendered = render_input(
-                        &Value::Object(branch_step.input.clone()),
-                        &Roots::new(&scope),
-                    )
-                    .map_err(render_end)?;
-                    let value = self
-                        .dispatch(&branch_step.tool_name, rendered)
-                        .await
-                        .map_err(|m| {
-                            failed(format!(
-                                "`{branch_name}` branch step {} ({}): {m}",
-                                branch_step.id, branch_step.tool_name
-                            ))
-                        })?;
-                    state.branch_steps_executed += 1;
-                    state.push_bus(
-                        &format!("{}/{branch_name}/{}", step.id, branch_step.id),
-                        BusKind::Info,
-                        "ok",
-                    );
-                    scope.insert(branch_step.id.clone(), value.clone());
-                    last = value;
-                }
-                last
+            Err(e) => {
+                state.branch_steps_executed += e.steps_executed;
+                state.bus.extend(e.bus);
+                return Err(match e.fail {
+                    BodyFail::Render(e) => render_end(e),
+                    BodyFail::Tool(message) => failed(message),
+                });
             }
         };
         state.push_bus(&step.id, BusKind::Info, format!("decide → {branch_name}"));
@@ -397,19 +239,6 @@ impl Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn branch_parse_errors_are_pointed() {
-        let err = parse_branch("then", &json!("t__search")).unwrap_err();
-        assert!(err.contains("tool call object or a list of steps"), "{err}");
-        let err = parse_branch("else", &json!([])).unwrap_err();
-        assert!(err.contains("no steps"), "{err}");
-        let err = parse_branch("then", &json!({"input": {}})).unwrap_err();
-        assert!(
-            err.contains("toolName") || err.contains("tool_name"),
-            "{err}"
-        );
-    }
 
     #[test]
     fn spec_rejects_unknown_fields() {

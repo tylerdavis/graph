@@ -120,7 +120,14 @@ Classify the request before planning and note it in step reasoning:
 - Use the `decide` tool when the correct next call depends on a prior result: it runs `then` when the gate holds, otherwise `else` (or just continues when `else` is omitted). `decide` chooses between actions; `exit` ends the plan.
 - Gate it with exactly one of `if` or `infer`. A branch is a single tool call ({{"toolName": …, "input": …}}) or a list of steps; branch step ids must not reuse top-level step ids.
 - Later steps reference only the decide step's id — {{{{Ex.result}}}} for the chosen branch's output, {{{{Ex.branch}}}} for which side ran. Branch-internal step ids are invisible outside the branch.
-- Branches must not contain `exit` or `decide`; use a plan__* call inside the branch for nested control flow.
+- Branches must not contain `exit`, `decide`, `map`, or `reduce`; use a plan__* call inside the branch for nested control flow.
+
+### Iteration
+- Use the `map` tool to run the same body once per element of a list, and `reduce` to fold a list into a single value. `over` must resolve to an array — usually a whole-list reference like {{{{E0.issues}}}}.
+- Inside a `map` body, {{{{item}}}} is the current element and {{{{index}}}} its 0-based position. A `reduce` body also gets {{{{accumulator}}}} (the running value, starting at `initial`), and each run's result becomes the next {{{{accumulator}}}}.
+- Later steps reference only the step's id — {{{{Ex.results}}}} for map's per-item outputs (input order) and {{{{Ex.count}}}}, or {{{{Ex.result}}}} for reduce's final accumulator. Body-internal step ids are invisible outside the body.
+- `map` accepts `concurrency` (default 1) to run independent items in parallel. `reduce` is always sequential — for parallel per-item work, map first, then reduce over {{{{Ex.results}}}}.
+- Bodies must not contain `exit`, `decide`, `map`, or `reduce`; use a plan__* call inside the body for nested control flow.
 "#,
         current_date = args.current_date,
         last_error = last_error,

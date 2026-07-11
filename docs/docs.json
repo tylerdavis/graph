@@ -29,6 +29,7 @@
           "plans/inputs",
           "plans/escape-hatch",
           "plans/branching",
+          "plans/iteration",
           "plans/errors-and-replanning"
         ]
       },
