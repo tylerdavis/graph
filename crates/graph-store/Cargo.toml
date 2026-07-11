@@ -17,12 +17,5 @@ tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 chrono.workspace = true
-lbug = "0.18"
-
-[dev-dependencies]
+fs4 = "0.13"
 tempfile = "3"
-
-[build-dependencies]
-# Fetches the lbug extension binaries embedded into the crate (build.rs);
-# rustls TLS, so no system OpenSSL is needed at build-script time.
-ureq = "2"

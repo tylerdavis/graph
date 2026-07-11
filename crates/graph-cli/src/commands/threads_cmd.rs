@@ -8,7 +8,7 @@ use graph_llm::types::ChatMessage;
 
 pub async fn run(command: ThreadsCommand) -> Result<()> {
     let config = graph_config::load()?.config;
-    let store = open_store(&config)?.store;
+    let store = open_store(&config)?;
 
     match command {
         ThreadsCommand::List => {

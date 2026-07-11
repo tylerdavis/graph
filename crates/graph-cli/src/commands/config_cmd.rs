@@ -12,7 +12,7 @@ const STARTER_CONFIG: &str = r#"# graph configuration
 # planning_attempts = 2
 
 # [storage]
-# backend = "ladybug"   # default: embedded, zero-config, single process at a time
+# backend = "file"      # default: plain files under data_dir
 # backend = "memory"    # ephemeral (CI jobs); or set GRAPH_STORAGE=memory
 
 [providers.anthropic]

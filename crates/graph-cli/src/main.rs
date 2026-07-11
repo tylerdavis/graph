@@ -33,11 +33,8 @@ async fn main() -> Result<()> {
         }
         Command::Chat { thread } => commands::chat_cmd::run(thread).await,
         Command::Threads { command } => commands::threads_cmd::run(command).await,
-        Command::Db { command } => commands::db_cmd::run(command).await,
+        Command::Shapes { command } => commands::shapes_cmd::run(command).await,
         Command::Plan { command } => commands::plan_cmd::run(command).await,
-        Command::Sync { .. } => {
-            anyhow::bail!("not implemented yet — this command lands in a later phase")
-        }
     }
 }
 

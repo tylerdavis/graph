@@ -95,11 +95,11 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         std::process::exit(EXIT_NEEDS_INPUT);
     }
 
-    let handles = runtime.store_handles()?;
+    let store = runtime.store()?;
     // Non-JSON runs stream the solver's answer to stdout as it generates;
     // --json buffers and emits the envelope instead.
     let events: Arc<dyn graph_core::EventSink> = crate::output::make_sink(json, !json);
-    let pipeline = runtime.pipeline(&handles, events).await?;
+    let pipeline = runtime.pipeline(&store, events).await?;
     let query = format!("Run the '{}' plan", doc.name);
     let finish = doc.finish();
     let result = pipeline

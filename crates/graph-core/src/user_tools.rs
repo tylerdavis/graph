@@ -2,12 +2,10 @@
 //! registered under the `user__` namespace, visible to the agent, the
 //! planner, and plan steps alike.
 //!
-//! Three kinds:
+//! Two kinds:
 //! - `exec` — run a command; args/env are templated from the input.
 //!   Arbitrary code execution by design; the user authors these.
 //! - `prompt` — a templated LLM call, optionally with structured output.
-//! - `cypher` — a parameterized read-only query against the embedded
-//!   database (requires the ladybug storage backend).
 
 use crate::template::{render_str, Roots};
 use crate::tools::{ToolDef, ToolError, ToolOutcome, ToolRegistry};
@@ -73,10 +71,6 @@ pub enum ToolKind {
         #[serde(default)]
         role: PromptRole,
     },
-    Cypher {
-        /// Query with `$name` parameters bound from the input object.
-        query: String,
-    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,18 +100,6 @@ impl From<PromptRole> for Role {
             PromptRole::Repair => Role::Repair,
         }
     }
-}
-
-/// Read-only Cypher access to the embedded database, implemented by the
-/// ladybug store. `None` on other backends.
-#[async_trait]
-pub trait CypherExecutor: Send + Sync {
-    /// Rows as objects keyed by column name.
-    async fn query(
-        &self,
-        cypher: &str,
-        params: Vec<(String, Value)>,
-    ) -> Result<Vec<Map<String, Value>>, ToolError>;
 }
 
 // ── Bundled tool packs ───────────────────────────────────────────────────
@@ -240,11 +222,6 @@ pub fn validate_tool(doc: &UserToolDoc) -> Result<(), String> {
             }
         }
         ToolKind::Prompt { prompt, .. } => check_template(prompt, "prompt")?,
-        ToolKind::Cypher { query } => {
-            if query.is_empty() {
-                return Err("cypher tool needs a query".to_string());
-            }
-        }
     }
     Ok(())
 }
@@ -258,34 +235,23 @@ pub fn validate_tool(doc: &UserToolDoc) -> Result<(), String> {
 pub struct UserToolRegistry {
     tools: Vec<UserToolDoc>,
     router: Arc<ModelRouter>,
-    cypher: Option<Arc<dyn CypherExecutor>>,
     prefix: &'static str,
 }
 
 impl UserToolRegistry {
-    pub fn new(
-        tools: Vec<UserToolDoc>,
-        router: Arc<ModelRouter>,
-        cypher: Option<Arc<dyn CypherExecutor>>,
-    ) -> Self {
+    pub fn new(tools: Vec<UserToolDoc>, router: Arc<ModelRouter>) -> Self {
         Self {
             tools,
             router,
-            cypher,
             prefix: USER_TOOL_PREFIX,
         }
     }
 
     /// A registry serving bundled pack tools under `builtin__`.
-    pub fn builtins(
-        tools: Vec<UserToolDoc>,
-        router: Arc<ModelRouter>,
-        cypher: Option<Arc<dyn CypherExecutor>>,
-    ) -> Self {
+    pub fn builtins(tools: Vec<UserToolDoc>, router: Arc<ModelRouter>) -> Self {
         Self {
             tools,
             router,
-            cypher,
             prefix: BUILTIN_TOOL_PREFIX,
         }
     }
@@ -308,7 +274,6 @@ impl UserToolRegistry {
                 }
             }
         }
-        let input_value = input.clone();
         let mut roots = Map::new();
         roots.insert("input".to_string(), input);
         let roots = Roots::new(&roots);
@@ -341,7 +306,6 @@ impl UserToolRegistry {
                 self.run_prompt(doc, prompt, system.as_deref(), *role, &roots)
                     .await
             }
-            ToolKind::Cypher { query } => self.run_cypher(query, &input_value).await,
         }
     }
 
@@ -496,25 +460,6 @@ impl UserToolRegistry {
             ))),
         }
     }
-
-    async fn run_cypher(&self, query: &str, input: &Value) -> Result<ToolOutcome, ToolError> {
-        let Some(cypher) = &self.cypher else {
-            return Ok(ToolOutcome {
-                result: json!({"error": "cypher tools require the ladybug storage backend"}),
-                is_error: true,
-            });
-        };
-        // Bind every input field as a $param; extra params are harmless.
-        let params: Vec<(String, Value)> = input
-            .as_object()
-            .map(|map| map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default();
-        let rows = cypher.query(query, params).await?;
-        Ok(ToolOutcome {
-            result: json!({"rows": rows, "count": rows.len()}),
-            is_error: false,
-        })
-    }
 }
 
 fn expand_env(value: &str) -> Result<String, String> {
@@ -552,7 +497,7 @@ impl ToolRegistry for UserToolRegistry {
                 output_schema: doc.output_schema.clone(),
                 output_example: None,
                 read_only: doc.read_only.or(match &doc.kind {
-                    ToolKind::Cypher { .. } | ToolKind::Prompt { .. } => Some(true),
+                    ToolKind::Prompt { .. } => Some(true),
                     ToolKind::Exec { .. } => None,
                 }),
             })

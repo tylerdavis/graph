@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use graph_config::{ModelChoice, ModelRoles};
 use graph_llm::types::{ChatRequest, ChatResponse, EventStream, StopReason, Usage};
 use graph_llm::{ChatProvider, LlmError, ModelRouter};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -59,8 +59,8 @@ fn doc(yaml: &str) -> UserToolDoc {
     doc
 }
 
-fn registry(docs: Vec<UserToolDoc>, cypher: Option<Arc<dyn CypherExecutor>>) -> UserToolRegistry {
-    UserToolRegistry::new(docs, router(), cypher)
+fn registry(docs: Vec<UserToolDoc>) -> UserToolRegistry {
+    UserToolRegistry::new(docs, router())
 }
 
 #[tokio::test]
@@ -77,7 +77,7 @@ input_schema:
   properties:
     word: { type: string }
 "#);
-    let registry = registry(vec![tool], None);
+    let registry = registry(vec![tool]);
     let outcome = registry
         .invoke("user__emit", json!({"word": "hello"}))
         .await
@@ -103,7 +103,7 @@ kind: exec
 command: sh
 args: ["-c", "echo oops >&2; exit 3"]
 "#);
-    let registry = registry(vec![text_tool, failing], None);
+    let registry = registry(vec![text_tool, failing]);
 
     let outcome = registry.invoke("user__say", json!({})).await.unwrap();
     assert_eq!(outcome.result, json!({"text": "plain output"}));
@@ -127,7 +127,7 @@ input_schema:
   properties:
     word: { type: string }
 "#);
-    let registry = registry(vec![tool], None);
+    let registry = registry(vec![tool]);
     let outcome = registry.invoke("user__emit", json!({})).await.unwrap();
     assert!(outcome.is_error);
     assert!(outcome.result["problems"][0]
@@ -148,67 +148,12 @@ output_schema:
   properties:
     category: { type: string }
 "#);
-    let registry = registry(vec![tool], None);
+    let registry = registry(vec![tool]);
     let outcome = registry
         .invoke("user__classify", json!({"text": "login is broken"}))
         .await
         .unwrap();
     assert_eq!(outcome.result, json!({"category": "bug"}));
-}
-
-#[tokio::test]
-async fn cypher_tool_binds_input_params() {
-    type SeenQuery = (String, Vec<(String, Value)>);
-    struct FakeCypher {
-        seen: std::sync::Mutex<Vec<SeenQuery>>,
-    }
-    #[async_trait]
-    impl CypherExecutor for FakeCypher {
-        async fn query(
-            &self,
-            cypher: &str,
-            params: Vec<(String, Value)>,
-        ) -> Result<Vec<Map<String, Value>>, ToolError> {
-            self.seen.lock().unwrap().push((cypher.to_string(), params));
-            let mut row = Map::new();
-            row.insert("n".into(), json!(7));
-            Ok(vec![row])
-        }
-    }
-    let fake = Arc::new(FakeCypher {
-        seen: Default::default(),
-    });
-    let tool = doc(r#"
-name: count_shapes
-description: count tool shapes
-kind: cypher
-query: "MATCH (s:ToolShape) WHERE s.seen_count >= $min RETURN count(s) AS n"
-"#);
-    let registry = registry(vec![tool], Some(fake.clone()));
-    let outcome = registry
-        .invoke("user__count_shapes", json!({"min": 2}))
-        .await
-        .unwrap();
-    assert_eq!(outcome.result, json!({"rows": [{"n": 7}], "count": 1}));
-    let seen = fake.seen.lock().unwrap();
-    assert_eq!(seen[0].1, vec![("min".to_string(), json!(2))]);
-}
-
-#[tokio::test]
-async fn cypher_without_backend_errors_cleanly() {
-    let tool = doc(r#"
-name: q
-description: query
-kind: cypher
-query: "MATCH (n) RETURN n"
-"#);
-    let registry = registry(vec![tool], None);
-    let outcome = registry.invoke("user__q", json!({})).await.unwrap();
-    assert!(outcome.is_error);
-    assert!(outcome.result["error"]
-        .as_str()
-        .unwrap()
-        .contains("ladybug"));
 }
 
 #[test]
@@ -271,7 +216,7 @@ fn unknown_pack_errors_with_available_list() {
 #[tokio::test]
 async fn pack_tools_serve_under_builtin_namespace() {
     let docs = load_pack_tools(&["github".to_string()]).unwrap();
-    let registry = UserToolRegistry::builtins(docs, router(), None);
+    let registry = UserToolRegistry::builtins(docs, router());
 
     let names: Vec<String> = registry
         .tools()
@@ -354,7 +299,7 @@ async fn prompt_output_missing_field_is_repaired() {
         json!({"category": "bug"}),                    // invalid: no severity
         json!({"category": "bug", "severity": "low"}), // repair fixes it
     );
-    let registry = UserToolRegistry::new(vec![strict_prompt_tool()], router, None);
+    let registry = UserToolRegistry::new(vec![strict_prompt_tool()], router);
     let outcome = registry
         .invoke("user__strict", json!({"x": 1}))
         .await
@@ -369,7 +314,7 @@ async fn prompt_output_unrepairable_is_an_error() {
         json!({"category": "bug"}), // invalid
         json!({"category": "bug"}), // repair returns the same invalid doc
     );
-    let registry = UserToolRegistry::new(vec![strict_prompt_tool()], router, None);
+    let registry = UserToolRegistry::new(vec![strict_prompt_tool()], router);
     let err = registry
         .invoke("user__strict", json!({"x": 1}))
         .await
@@ -383,7 +328,7 @@ async fn prompt_output_valid_passes_untouched() {
         json!({"category": "bug", "severity": "high"}), // already valid
         json!({"category": "WRONG", "severity": "WRONG"}), // repair must not run
     );
-    let registry = UserToolRegistry::new(vec![strict_prompt_tool()], router, None);
+    let registry = UserToolRegistry::new(vec![strict_prompt_tool()], router);
     let outcome = registry
         .invoke("user__strict", json!({"x": 1}))
         .await
