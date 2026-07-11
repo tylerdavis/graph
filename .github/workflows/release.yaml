@@ -17,11 +17,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # See ci.yaml: compiler-invocation caching, incl. lbug's C++ via cmake.
+  # See ci.yaml: compiler-invocation caching.
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: sccache
-  CMAKE_C_COMPILER_LAUNCHER: sccache
-  CMAKE_CXX_COMPILER_LAUNCHER: sccache
   CARGO_INCREMENTAL: "0"
 
 jobs:

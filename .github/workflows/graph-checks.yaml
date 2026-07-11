@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GRAPH_STORAGE: memory            # ephemeral: no embedded DB, no lock
+  GRAPH_STORAGE: memory            # ephemeral: leave no state behind in CI
   GRAPH_EVENTS: github             # failing plans annotate the run
   GH_TOKEN: ${{ github.token }}
   ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
