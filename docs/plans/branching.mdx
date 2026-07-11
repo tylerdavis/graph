@@ -36,6 +36,26 @@ steps:
 
 Exactly one of `if` or `infer` is required — unlike `exit`, where omitting both means "unconditionally". The gate grammar is identical to [exit gates](/plans/escape-hatch) — `decide` spells the logical gate `if` where `exit` spells it `when`, because `if … then … else` reads as the fork it is. `if` is a logical comparison (`eq ne gt lt gte lte empty not_empty contains`, with [typed splice](/plans/template-language#typed-splice) keeping numbers numeric); `infer` is a yes/no question judged by the `judge` model role. An `if` gate costs zero inference; an `infer` gate costs one cheap judgment call.
 
+An inferred fork routes on judgment where no single comparison would do — here, whether a status update reads as blocked:
+
+```yaml
+  - id: E2
+    tool_name: decide
+    input:
+      infer: |
+        Does this status update indicate the project is blocked?
+
+        {{E1.statusUpdates.0.body}}
+      then:
+        tool_name: plan__escalate_blocker
+        input: { project: "{{input.project}}", update: "{{E1.statusUpdates.0}}" }
+      else:
+        tool_name: user__log
+        input: { entry: "on track" }
+```
+
+The judgment is a forced-schema call returning `{verdict, reason}`; `then` runs only on a yes, and the model's reasoning is carried in the step result — `{{E2.reason}}` — for downstream steps and the finish to use. Point the `judge` role at a cheap model; it falls back to `default`.
+
 ## Branches
 
 `then` is required; `else` is optional. Each branch is either:
