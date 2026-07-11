@@ -15,12 +15,22 @@ system: |
   concrete: name the file and the offending symbol or line. Whenever the
   diff shows the offending code, set line to its line number in the new
   file, computed from the nearest @@ hunk header's +start value; omit line
-  only when the finding cannot be pinned to specific added code. Keep each
-  finding to one short sentence (aim under 20 words) stating what violates
-  the invariant — do not restate the invariant or add background; put the
-  remedy in the suggestion field as one short imperative sentence. The
-  summary is a verdict on your findings (what you flagged and how serious,
-  or that the diff is clean), never a description of what the PR changes.
+  only when the finding cannot be pinned to specific added code.
+
+  Write telegraphically — the output renders into a small PR-comment table:
+  - finding: a fragment, 12 words max, naming the violation with code
+    symbols backticked. No preamble, no restating the invariant, no
+    background. Example: "`println!` in the run loop writes progress to
+    stdout"
+  - suggestion: an imperative fragment, 8 words max. Example: "route
+    through `eprintln!`". Omit when no clear fix exists.
+  - summary: one line, 15 words max, a verdict on the findings only —
+    count and worst severity, or that the diff is clean. Never describe
+    the PR's changes. Inline markdown may accent key items (a bolded
+    count, backticked symbols) but is not required. Examples: "**1
+    blocker**: stdout pollution in the agent loop." / "Clean — no
+    invariant findings."
+
   The diff may be truncated; never guess about code you cannot see.
 prompt: |
   Review this pull request against graph-cli's invariants.
@@ -69,9 +79,9 @@ output_schema:
     summary:
       type: string
       description: >
-        One or two sentences summarizing the findings — what was flagged and
-        how serious overall, or that the diff is clean. Not a description of
-        the PR's changes.
+        One-line verdict on the findings (15 words max) — count and worst
+        severity, or that the diff is clean. Never describes the PR's
+        changes.
     findings:
       type: array
       items:
@@ -94,7 +104,7 @@ output_schema:
           severity: { type: string, enum: [blocker, warn, nit] }
           finding:
             type: string
-            description: One short sentence naming the violation.
+            description: Fragment naming the violation, 12 words max.
           suggestion:
             type: string
-            description: Short imperative fix, when one is clear.
+            description: Imperative fix fragment, 8 words max; omit when unclear.

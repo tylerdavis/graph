@@ -64,19 +64,18 @@ steps:
     input:
       pr: "{{input.pr}}"
       body: |
-        ### graph PR review
+        Graph PR review — managed by [`pr_review.yaml`](https://github.com/tylerdavis/graph/blob/main/.graph/plans/pr_review.yaml)
 
-        {{E3.summary}}
         {{^E5.comments}}
-        _No invariant findings._
+        No issues found.
         {{/E5.comments}}
         {{#E5.comments}}{{#@first}}
+        {{E3.summary}}
+
         | Severity | Invariant | File | Finding | Fix |
         |---|---|---|---|---|
         {{/@first}}| {{severity}} | `{{invariant}}` | {{#url}}[`{{file}}`]({{url}}){{/url}}{{^url}}`{{file}}`{{/url}} | {{finding}} | {{suggestion}} |
         {{/E5.comments}}
-
-        <sub>Posted by the repo-carried pr_review plan (.graph/plans/pr_review.yaml).</sub>
     reasoning: >
       Summary table over the url-enriched entries — File cells link to the
       inline comments; repeated runs edit the same comment.
