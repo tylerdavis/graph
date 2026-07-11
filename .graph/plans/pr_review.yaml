@@ -47,17 +47,16 @@ steps:
     input:
       pr: "{{input.pr}}"
       body: |
-        ### graph PR review
+        Graph PR review — managed by [`pr_review.yaml`](https://github.com/tylerdavis/graph/blob/main/.graph/plans/pr_review.yaml)
 
-        {{E3.summary}}
         {{^E3.findings}}
-        _No invariant findings._
+        No issues found.
         {{/E3.findings}}
         {{#E3.findings}}{{#@first}}
+        {{E3.summary}}
+
         | Severity | Invariant | File | Finding | Fix |
         |---|---|---|---|---|
         {{/@first}}| {{severity}} | `{{invariant}}` | `{{file}}` | {{finding}} | {{suggestion}} |
         {{/E3.findings}}
-
-        <sub>Posted by the repo-carried pr_review plan (.graph/plans/pr_review.yaml).</sub>
     reasoning: Post the findings; repeated runs edit the same comment.
