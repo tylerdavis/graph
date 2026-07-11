@@ -118,7 +118,7 @@ Classify the request before planning and note it in step reasoning:
 
 ### Branching
 - Use the `decide` tool when the correct next call depends on a prior result: it runs `then` when the gate holds, otherwise `else` (or just continues when `else` is omitted). `decide` chooses between actions; `exit` ends the plan.
-- Gate it with exactly one of `when` or `infer`. A branch is a single tool call ({{"toolName": …, "input": …}}) or a list of steps; branch step ids must not reuse top-level step ids.
+- Gate it with exactly one of `if` or `infer`. A branch is a single tool call ({{"toolName": …, "input": …}}) or a list of steps; branch step ids must not reuse top-level step ids.
 - Later steps reference only the decide step's id — {{{{Ex.result}}}} for the chosen branch's output, {{{{Ex.branch}}}} for which side ran. Branch-internal step ids are invisible outside the branch.
 - Branches must not contain `exit` or `decide`; use a plan__* call inside the branch for nested control flow.
 "#,

@@ -1,6 +1,6 @@
 //! The `decide` fork: a step that routes execution into one of two
 //! branches (`then`/`else`), gated like an `exit` step by a logical
-//! condition (`when`) or an inferred verdict (`infer`). Intercepted by
+//! condition (`if`) or an inferred verdict (`infer`). Intercepted by
 //! the executor — never dispatched to a tool registry. Only the chosen
 //! branch is rendered and run: the other side's templates are never
 //! evaluated, so each branch may safely reference data that only exists
@@ -23,9 +23,9 @@ pub const DECIDE_TOOL: &str = "decide";
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DecideSpec {
-    /// Logical gate. Exactly one of `when`/`infer` is required.
-    #[serde(default)]
-    pub when: Option<Value>,
+    /// Logical gate. Exactly one of `if`/`infer` is required.
+    #[serde(rename = "if", default)]
+    pub if_: Option<Value>,
     /// Inferred gate: a yes/no question answered by the `judge` model role.
     #[serde(default)]
     pub infer: Option<String>,
@@ -111,7 +111,7 @@ pub fn decide_tool_def() -> crate::tools::ToolDef {
         description: "Fork the plan on a condition: run `then` when it holds, otherwise \
                       `else` (or continue if `else` is omitted). Use it when the correct \
                       next call depends on a prior result — e.g. update an existing record \
-                      vs. create a new one. Gate it with exactly one of `when` (a logical \
+                      vs. create a new one. Gate it with exactly one of `if` (a logical \
                       comparison) or `infer` (a yes/no question judged against prior \
                       results). A branch is a single tool call or a list of steps; \
                       branches may not contain `exit` or `decide` — call a plan (plan__*) \
@@ -123,7 +123,7 @@ pub fn decide_tool_def() -> crate::tools::ToolDef {
             "type": "object",
             "required": ["then"],
             "properties": {
-                "when": {
+                "if": {
                     "type": "object",
                     "required": ["value", "op"],
                     "properties": {
@@ -166,17 +166,17 @@ pub fn validate_decide_input(
             return;
         }
     };
-    match (&spec.when, &spec.infer) {
+    match (&spec.if_, &spec.infer) {
         (Some(_), Some(_)) => problems.push(format!(
-            "step {step_id}: `when` and `infer` are mutually exclusive"
+            "step {step_id}: `if` and `infer` are mutually exclusive"
         )),
         (None, None) => problems.push(format!(
-            "step {step_id}: decide needs `when` or `infer` — an unconditional decide is just steps"
+            "step {step_id}: decide needs `if` or `infer` — an unconditional decide is just steps"
         )),
         _ => {}
     }
-    if let Some(when) = &spec.when {
-        super::check_templates(when, seen, step_id, problems);
+    if let Some(condition) = &spec.if_ {
+        super::check_templates(condition, seen, step_id, problems);
     }
     if let Some(infer) = &spec.infer {
         super::check_templates(&Value::String(infer.clone()), seen, step_id, problems);
@@ -289,10 +289,10 @@ impl Pipeline {
         // picked a side.
         let roots = Roots::new(&state.results);
         let mut gate_payload = Map::new();
-        let when = match &spec.when {
+        let condition = match &spec.if_ {
             Some(raw) => {
                 let rendered = render_input(raw, &roots).map_err(render_end)?;
-                gate_payload.insert("when".to_string(), rendered.clone());
+                gate_payload.insert("if".to_string(), rendered.clone());
                 Some(
                     serde_json::from_value::<Condition>(rendered)
                         .map_err(|e| failed(format!("invalid decide condition: {e}")))?,
@@ -312,7 +312,7 @@ impl Pipeline {
         self.events
             .tool_started(DECIDE_TOOL, &Value::Object(gate_payload));
         let started = std::time::Instant::now();
-        let eval = evaluate_gate(when.as_ref(), infer.as_deref(), &self.router).await;
+        let eval = evaluate_gate(condition.as_ref(), infer.as_deref(), &self.router).await;
         self.events
             .tool_finished(DECIDE_TOOL, started.elapsed(), eval.is_err());
         let (triggered, reason) = eval.map_err(|e| failed(format!("decide step: {e}")))?;
@@ -429,7 +429,7 @@ mod tests {
         .unwrap();
         let mut problems = Vec::new();
         validate_decide_input(&input, &["input"], &["E0"], "E0", &mut problems);
-        assert!(problems.iter().any(|p| p.contains("`when` or `infer`")));
+        assert!(problems.iter().any(|p| p.contains("`if` or `infer`")));
         assert!(problems.iter().any(|p| p.contains("cannot nest")));
     }
 }

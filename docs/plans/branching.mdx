@@ -4,7 +4,7 @@ description: "Fork a plan into one of two branches with a decide step"
 icon: "code-branch"
 ---
 
-A `decide` step forks the plan: it evaluates a gate — the same `when`/`infer` gates as an [exit gate](/plans/escape-hatch) — and runs the `then` branch when it holds, the `else` branch otherwise. Execution then rejoins the plan's normal step sequence. Where `exit` answers "should this plan stop?", `decide` answers "which action is correct next?" — update or create, escalate or summarize, notify or stay quiet.
+A `decide` step forks the plan: it evaluates a gate — the same gate grammar as an [exit gate](/plans/escape-hatch), spelled `if`/`infer` — and runs the `then` branch when it holds, the `else` branch otherwise. Execution then rejoins the plan's normal step sequence. Where `exit` answers "should this plan stop?", `decide` answers "which action is correct next?" — update or create, escalate or summarize, notify or stay quiet.
 
 ```yaml
 steps:
@@ -15,7 +15,7 @@ steps:
   - id: E1
     tool_name: decide
     input:
-      when: { value: "{{E0.issues.length}}", op: gt, to: 5 }
+      if: { value: "{{E0.issues.length}}", op: gt, to: 5 }
       then:                                  # single tool call — any tool, incl. plan__*
         tool_name: plan__escalate_triage
         input: { issues: "{{E0.issues}}" }
@@ -34,7 +34,27 @@ steps:
 
 ## Gates
 
-Exactly one of `when` or `infer` is required — unlike `exit`, where omitting both means "unconditionally". The gate grammar is identical to [exit gates](/plans/escape-hatch): `when` is a logical comparison (`eq ne gt lt gte lte empty not_empty contains`, with [typed splice](/plans/template-language#typed-splice) keeping numbers numeric), `infer` is a yes/no question judged by the `judge` model role. A `when` gate costs zero inference; an `infer` gate costs one cheap judgment call.
+Exactly one of `if` or `infer` is required — unlike `exit`, where omitting both means "unconditionally". The gate grammar is identical to [exit gates](/plans/escape-hatch) — `decide` spells the logical gate `if` where `exit` spells it `when`, because `if … then … else` reads as the fork it is. `if` is a logical comparison (`eq ne gt lt gte lte empty not_empty contains`, with [typed splice](/plans/template-language#typed-splice) keeping numbers numeric); `infer` is a yes/no question judged by the `judge` model role. An `if` gate costs zero inference; an `infer` gate costs one cheap judgment call.
+
+An inferred fork routes on judgment where no single comparison would do — here, whether a status update reads as blocked:
+
+```yaml
+  - id: E2
+    tool_name: decide
+    input:
+      infer: |
+        Does this status update indicate the project is blocked?
+
+        {{E1.statusUpdates.0.body}}
+      then:
+        tool_name: plan__escalate_blocker
+        input: { project: "{{input.project}}", update: "{{E1.statusUpdates.0}}" }
+      else:
+        tool_name: user__log
+        input: { entry: "on track" }
+```
+
+The judgment is a forced-schema call returning `{verdict, reason}`; `then` runs only on a yes, and the model's reasoning is carried in the step result — `{{E2.reason}}` — for downstream steps and the finish to use. Point the `judge` role at a cheap model; it falls back to `default`.
 
 ## Branches
 
@@ -65,7 +85,7 @@ The executor renders the gate first, evaluates it, and only then renders the cho
 
 ```yaml
 input:
-  when: { value: "{{E0.issues.length}}", op: gt, to: 0 }
+  if: { value: "{{E0.issues.length}}", op: gt, to: 0 }
   then:
     tool_name: linear__update_issue
     input: { id: "{{E0.issues.0.id}}" }     # only exists when then is taken
@@ -94,6 +114,6 @@ Branch steps count in `steps_executed` — a decide with a two-step branch repor
 | trace events | one `decide` tool event for the gate, then normal tool events for branch calls |
 | `steps_executed` / envelopes | decide counts as 1, plus 1 per branch call or branch step run |
 | branch tool fails | decide step fails: hard error (your plans) or replan (`plan_and_execute`) |
-| cost | `when`: 0 inference; `infer`: 1 judge call — plus whatever the branch calls |
+| cost | `if`: 0 inference; `infer`: 1 judge call — plus whatever the branch calls |
 
 `plan_and_execute`'s planner also has the decide tool, so LLM-authored plans can fork on their own intermediate results.
