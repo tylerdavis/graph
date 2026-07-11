@@ -49,6 +49,28 @@ Post or update a comment on the PR conversation. Updates the token identity's mo
 
 Output: `{ "text": "<comment URL>" }`.
 
+### `builtin__gh_pr_inline_comments`
+
+Post inline review comments anchored to lines of the PR diff. Each entry posts as its own API call, so one bad anchor can't sink the rest; entries without a `line`, or whose anchor the API rejects (the line must be part of the diff), pass through unposted. Every comment embeds the `marker` as a hidden HTML tag, and comments from earlier runs carrying the same marker are deleted before posting — repeated runs refresh in place instead of stacking. **Side-effecting** (`read_only: false`).
+
+| Input | Type |  |
+| --- | --- | --- |
+| `pr` | integer | required |
+| `head_sha` | string | required — commit the comments anchor to (the PR head) |
+| `marker` | string | required — stable identifier for refresh-in-place; use one per plan (e.g. `"graph:pr_review"`) |
+| `comments` | array | required — entries of `{path, line?, side?, body}`; extra keys pass through |
+
+| Entry key | Type |  |
+| --- | --- | --- |
+| `path` | string | required — file path within the diff |
+| `line` | integer | line in the new file; must be part of the diff — omit when unknown |
+| `side` | string | `LEFT` or `RIGHT` (default `RIGHT`) |
+| `body` | string | required — markdown comment body |
+
+Output: `{ "comments": [...] }` — the input entries in order, each with `url` added when its comment posted. Extra entry keys survive the round trip, so a downstream template can render a summary (with links) from this tool's output alone.
+
+Inline comments never block a merge by themselves: they post as plain review comments (not a `REQUEST_CHANGES` review), so they only gate merging on repos with *Require conversation resolution before merging* enabled.
+
 ### `builtin__git_diff`
 
 Unified diff between two refs (merge-base three-dot diff), path-scoped, truncated to a byte budget — sized for LLM consumption. Read-only. Needs a checkout with enough history to resolve both refs (`fetch-depth: 0` in CI).

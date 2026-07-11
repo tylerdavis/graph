@@ -31,7 +31,7 @@ No install step (the release workflow publishes the image), no shell logic (plan
 
 **Repo-carried setup.** graph layers `./.graph/config.toml` over the global config and loads `./.graph/{plans,tools}/`, so the repo carries everything the checks need — config (secrets as `${ENV}` references that fail loudly when missing), plans, and the rubric tool — all reviewed like any other code.
 
-**The github tool pack.** `[tools] packs = ["github"]` enables the [bundled tools](/tools/builtins) the plans build on: `git_changed_files`, `git_diff`, `gh_pr_meta`, `gh_pr_comment`.
+**The github tool pack.** `[tools] packs = ["github"]` enables the [bundled tools](/tools/builtins) the plans build on: `git_changed_files`, `git_diff`, `gh_pr_meta`, `gh_pr_comment`, `gh_pr_inline_comments`.
 
 ## `docs_drift` — an inferred gate as a merge check
 
@@ -91,7 +91,7 @@ output:
 
 ## `pr_review` — a self-contained reviewer
 
-The plan fetches its own context, reviews, and posts its own comment. The CI step is `graph plan run pr_review --input pr="$PR"` — nothing else:
+The plan fetches its own context, reviews, anchors findings as inline diff comments, and posts its own summary comment linking to them. The CI step is `graph plan run pr_review --input pr="$PR"` — nothing else:
 
 ```yaml
 steps:
@@ -112,6 +112,16 @@ steps:
     tool_name: user__review_graph_pr      # repo-local prompt tool: the rubric
     input: { title: "{{E0.title}}", body: "{{E0.body}}", diff: "{{E1.text}}" }
   - id: E4
+    tool_name: user__findings_to_review_comments   # repo-local jq transform
+    input: { findings: "{{E3.findings}}" }
+  - id: E5
+    tool_name: builtin__gh_pr_inline_comments
+    input:
+      pr: "{{input.pr}}"
+      head_sha: "{{E0.head_sha}}"
+      marker: "graph:pr_review"
+      comments: "{{E4.comments}}"
+  - id: E6
     tool_name: builtin__gh_pr_comment
     input:
       pr: "{{input.pr}}"
@@ -119,14 +129,14 @@ steps:
         ### graph PR review
 
         {{E3.summary}}
-        {{^E3.findings}}
+        {{^E5.comments}}
         _No invariant findings._
-        {{/E3.findings}}
-        {{#E3.findings}}{{#@first}}
+        {{/E5.comments}}
+        {{#E5.comments}}{{#@first}}
         | Severity | Invariant | File | Finding | Fix |
         |---|---|---|---|---|
-        {{/@first}}| {{severity}} | `{{invariant}}` | `{{file}}` | {{finding}} | {{suggestion}} |
-        {{/E3.findings}}
+        {{/@first}}| {{severity}} | `{{invariant}}` | {{#url}}[`{{file}}`]({{url}}){{/url}}{{^url}}`{{file}}`{{/url}} | {{finding}} | {{suggestion}} |
+        {{/E5.comments}}
 ```
 
 **Lessons:**
@@ -135,7 +145,9 @@ steps:
 - **Presentation is a template, not code.** The comment body renders with [sections](/plans/template-language#sections): iteration builds the findings table, `{{#@first}}` emits the header once, the inverted section handles the clean case. Logic stays in steps; the markdown is pure presentation.
 - **Declare the output schema — it's enforced.** `review_graph_pr` declares `{summary, findings[]}` required. Models occasionally omit required fields even under provider-forced structured output; graph validates prompt-tool results against the declared `output_schema` and runs one `repair`-role fix-up, so `{{E3.summary}}` can never be a missing key at render time.
 - **Review the whole diff.** The diff is scoped to nothing (`paths: "."`) minus generated files — an early version reviewed only `crates/` and `docs/`, which blinded it to the highest-leverage changes in an infra PR: workflows, plans, and the exec tools they run.
-- **Repeated runs edit one comment.** `gh_pr_comment` uses `--edit-last --create-if-none`, so each push updates the review in place instead of stacking.
+- **Findings flow through the pipeline, enriched at each step.** The jq transform (E4) adds `path`/`body` to each finding without dropping the original fields; `gh_pr_inline_comments` (E5) passes those extras through and adds `url` where a comment posted. So the summary table (E6) renders from one array — severity and finding from the review, the link from the post — with no join logic, which the [template dialect](/plans/template-language) couldn't express anyway. Findings the LLM couldn't pin to a line (or whose line the API rejects) simply come back without `url`, and the inverted section renders them as plain text.
+- **Repeated runs refresh everything in place.** `gh_pr_comment` uses `--edit-last --create-if-none` for the summary; `gh_pr_inline_comments` embeds a hidden marker in each inline comment and deletes the previous marker's comments before posting. Each push updates the review instead of stacking.
+- **Inline comments stay advisory.** They post as plain review comments, not a `REQUEST_CHANGES` review — they only gate merging on repos with *Require conversation resolution before merging* enabled.
 
 ## The workflow
 
@@ -155,5 +167,7 @@ The full file is `.github/workflows/graph-checks.yaml`; the notable choices:
 | One output contract, many exits | give every exit gate the same `output` keys as the plan's `output` |
 | Judge-sized diffs | truncate in the tool (`max_bytes`), not in the template |
 | Comment upsert | `gh_pr_comment` edits the token identity's last comment in place |
+| Inline-comment refresh | `gh_pr_inline_comments` deletes its marker's previous comments before posting |
+| Enrich, don't join | pass one array through the steps, each adding fields; templates never merge two arrays |
 | Rubric'd review | prompt tool + enforced `output_schema` + "empty findings when clean" |
 | Version pinning | the container image tag — no install step to pin |

@@ -248,14 +248,16 @@ fn github_pack_loads_and_validates() {
         [
             "gh_pr_meta",
             "gh_pr_comment",
+            "gh_pr_inline_comments",
             "git_diff",
             "git_changed_files"
         ]
     );
-    // gh_pr_comment posts; everything else is read-only.
+    // The comment tools post; everything else is read-only.
     for doc in &docs {
         let read_only = doc.read_only.unwrap_or(false);
-        assert_eq!(read_only, doc.name != "gh_pr_comment", "{}", doc.name);
+        let posts = matches!(doc.name.as_str(), "gh_pr_comment" | "gh_pr_inline_comments");
+        assert_eq!(read_only, !posts, "{}", doc.name);
     }
 }
 

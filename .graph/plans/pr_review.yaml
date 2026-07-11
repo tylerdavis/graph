@@ -1,14 +1,17 @@
 # Specialized PR reviewer, self-contained: fetches its own context via the
 # bundled github tool pack, reviews the full diff (minus generated files)
-# against the repo rubric, and posts/updates the PR comment itself. Silent
-# finish — the comment is the deliverable. The CI step is one line:
+# against the repo rubric, anchors line-resolvable findings as inline diff
+# comments, and posts/updates the summary comment — each finding's File
+# cell links to its inline comment. Silent finish — the comments are the
+# deliverable. The CI step is one line:
 #   graph plan run pr_review --input pr=$PR
 identifier: pr_review
 name: Specialized PR review
 description: >
-  Reviews a pull request against graph-cli's invariants and posts the
-  findings as a PR comment (updated in place on repeated runs). Needs gh
-  auth and a checkout with history.
+  Reviews a pull request against graph-cli's invariants, anchors findings
+  as inline diff comments, and posts a summary comment linking to them
+  (all refreshed in place on repeated runs). Needs gh auth and a checkout
+  with history.
 input_schema:
   type: object
   required: [pr]
@@ -43,6 +46,20 @@ steps:
       diff: "{{E1.text}}"
     reasoning: One rubric'd review call with enforced structured output.
   - id: E4
+    tool_name: user__findings_to_review_comments
+    input: { findings: "{{E3.findings}}" }
+    reasoning: Deterministic findings → comment entries; fields pass through.
+  - id: E5
+    tool_name: builtin__gh_pr_inline_comments
+    input:
+      pr: "{{input.pr}}"
+      head_sha: "{{E0.head_sha}}"
+      marker: "graph:pr_review"
+      comments: "{{E4.comments}}"
+    reasoning: >
+      Anchor line-resolvable findings on the diff; earlier runs' comments
+      are cleared first, and each posted entry comes back with its url.
+  - id: E6
     tool_name: builtin__gh_pr_comment
     input:
       pr: "{{input.pr}}"
@@ -50,14 +67,16 @@ steps:
         ### graph PR review
 
         {{E3.summary}}
-        {{^E3.findings}}
+        {{^E5.comments}}
         _No invariant findings._
-        {{/E3.findings}}
-        {{#E3.findings}}{{#@first}}
+        {{/E5.comments}}
+        {{#E5.comments}}{{#@first}}
         | Severity | Invariant | File | Finding | Fix |
         |---|---|---|---|---|
-        {{/@first}}| {{severity}} | `{{invariant}}` | `{{file}}` | {{finding}} | {{suggestion}} |
-        {{/E3.findings}}
+        {{/@first}}| {{severity}} | `{{invariant}}` | {{#url}}[`{{file}}`]({{url}}){{/url}}{{^url}}`{{file}}`{{/url}} | {{finding}} | {{suggestion}} |
+        {{/E5.comments}}
 
         <sub>Posted by the repo-carried pr_review plan (.graph/plans/pr_review.yaml).</sub>
-    reasoning: Post the findings; repeated runs edit the same comment.
+    reasoning: >
+      Summary table over the url-enriched entries — File cells link to the
+      inline comments; repeated runs edit the same comment.

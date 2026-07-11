@@ -1,0 +1,90 @@
+# github pack: inline review comments, refreshed in place. Entries with a
+# line post as anchored diff comments (one API call each, so one bad anchor
+# can't sink the rest); entries without a line — or whose anchor the API
+# rejects (422: line not in the diff) — pass through unposted. Every comment
+# carries a hidden marker tag; comments from earlier runs with the same
+# marker are deleted first, so repeated runs refresh instead of stacking.
+# Extra keys on entries pass through untouched, so callers can render
+# summaries from this tool's output alone.
+name: gh_pr_inline_comments
+description: >
+  Post inline review comments on a pull-request diff, one per entry.
+  Entries with a line anchor to the diff and come back with their comment
+  url; entries without one (or whose anchor the API rejects) come back
+  unchanged. Comments from earlier runs with the same marker are deleted
+  first, so repeated runs refresh in place. Extra entry keys pass through.
+  Side-effecting.
+kind: exec
+command: bash
+args:
+  - "-ceu"
+  - |
+    pr="$1"; sha="$2"; marker="$3"; entries="$4"
+    tag="<!-- $marker -->"
+
+    # Refresh in place: drop this marker's comments from earlier runs.
+    gh api "repos/{owner}/{repo}/pulls/$pr/comments" --paginate 2>/dev/null \
+      | jq -r --arg tag "$tag" '.[] | select(.body | contains($tag)) | .id' \
+      | while IFS= read -r id; do
+          gh api -X DELETE "repos/{owner}/{repo}/pulls/comments/$id" \
+            >/dev/null 2>&1 || true
+        done
+
+    jq -c '.[]' <<<"$entries" | while IFS= read -r entry; do
+      url=""
+      if [ "$(jq -r '.line != null' <<<"$entry")" = "true" ]; then
+        url=$(jq --arg sha "$sha" --arg tag "$tag" \
+                '{commit_id: $sha, path, line, side: (.side // "RIGHT"),
+                  body: (.body + "\n\n" + $tag)}' <<<"$entry" \
+          | gh api -X POST "repos/{owner}/{repo}/pulls/$pr/comments" \
+              --input - --jq .html_url 2>/dev/null) || url=""
+      fi
+      jq -c --arg url "$url" \
+        'if $url == "" then . else . + {url: $url} end' <<<"$entry"
+    done | jq -s '{comments: .}'
+  - gh_pr_inline_comments
+  - "{{input.pr}}"
+  - "{{input.head_sha}}"
+  - "{{input.marker}}"
+  - "{{input.comments}}"
+output: json
+timeout_secs: 60
+read_only: false
+input_schema:
+  type: object
+  required: [pr, head_sha, marker, comments]
+  properties:
+    pr:       { type: integer, description: Pull request number }
+    head_sha: { type: string, description: Commit the comments anchor to — the PR head sha }
+    marker:
+      type: string
+      description: >
+        Stable identifier embedded in every comment as a hidden tag; the
+        next run with the same marker deletes those comments before
+        posting. Use one marker per plan, e.g. "graph:pr_review".
+    comments:
+      type: array
+      description: >
+        Comment entries. Keys beyond path/line/side/body are ignored for
+        posting but preserved in the output.
+      items:
+        type: object
+        required: [path, body]
+        properties:
+          path: { type: string, description: File path within the diff }
+          line:
+            type: integer
+            description: >
+              Line in the new file; must be part of the diff. Omit when
+              unknown — the entry passes through unposted.
+          side: { type: string, enum: [LEFT, RIGHT], description: Diff side; defaults to RIGHT }
+          body: { type: string, description: Markdown comment body }
+output_schema:
+  type: object
+  properties:
+    comments:
+      type: array
+      description: >
+        The input entries in order, each with url added when its comment
+        posted; entries without a line, or rejected by the API, come back
+        without one.
