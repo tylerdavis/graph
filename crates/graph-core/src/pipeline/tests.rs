@@ -612,6 +612,460 @@ async fn planner_gets_the_exit_tool_and_authored_exits_work() {
     assert!(requests[0].system.contains("\"name\":\"exit\""));
 }
 
+/// E0 searches, E1 decides on `{{E0.values.length}} gt 0`.
+fn decide_plan(then: Value, else_branch: Option<Value>) -> Plan {
+    let mut input = json!({
+        "when": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
+        "then": then,
+    });
+    if let Some(else_branch) = else_branch {
+        input["else"] = else_branch;
+    }
+    serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "decide", "input": input},
+    ]))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn decide_then_branch_runs_single_call() {
+    let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
+    let (pipeline, provider) = pipeline(vec![], registry.clone(), 1);
+    let plan = decide_plan(
+        json!({"toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}}),
+        Some(json!({"toolName": "t__search", "input": {"query": "fallback"}})),
+    );
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let decision = &outcome.state.results["E1"];
+    assert_eq!(decision["branch"], json!("then"));
+    assert_eq!(decision["verdict"], json!(true));
+    assert_eq!(decision["reason"], json!(null));
+    assert_eq!(
+        decision["result"],
+        json!({"got": {"q": "team-1"}}),
+        "typed dataflow into the branch"
+    );
+
+    let invocations = registry.invocations.lock().unwrap();
+    let searches = invocations.iter().filter(|(n, _)| n == "t__search").count();
+    assert_eq!(searches, 1, "else branch never invoked");
+    assert_eq!(
+        outcome.state.steps_executed(),
+        3,
+        "E0 + decide + 1 branch call"
+    );
+    assert!(provider.requests.lock().unwrap().is_empty(), "no LLM calls");
+}
+
+#[tokio::test]
+async fn decide_else_branch_runs_and_poisoned_then_is_never_rendered() {
+    // E0 finds nothing; `then` indexes into the empty array (EmptyData if
+    // rendered) — the exact case `else` exists to handle.
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    let plan = decide_plan(
+        json!({"toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}}),
+        Some(json!({"toolName": "t__issues", "input": {"q": "none"}})),
+    );
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let decision = &outcome.state.results["E1"];
+    assert_eq!(decision["branch"], json!("else"));
+    assert_eq!(decision["verdict"], json!(false));
+    assert_eq!(decision["result"], json!({"got": {"q": "none"}}));
+}
+
+#[tokio::test]
+async fn decide_poisoned_else_is_never_rendered() {
+    let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan = decide_plan(
+        json!({"toolName": "t__issues", "input": {"q": "safe"}}),
+        Some(json!({"toolName": "t__issues", "input": {"q": "{{E0.nope.deep}}"}})),
+    );
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert_eq!(outcome.state.results["E1"]["branch"], json!("then"));
+}
+
+#[tokio::test]
+async fn decide_without_else_passes_through() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    let mut plan = decide_plan(
+        json!({"toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}}),
+        None,
+    );
+    plan.push(
+        serde_json::from_value(json!(
+            {"id": "E2", "toolName": "t__issues", "input": {"q": "{{E1.verdict}}"}}
+        ))
+        .unwrap(),
+    );
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let decision = &outcome.state.results["E1"];
+    assert_eq!(decision["branch"], json!(null));
+    assert_eq!(decision["verdict"], json!(false));
+    assert_eq!(decision["result"], json!(null));
+    // E2 still ran — the plan continued past the decide.
+    assert_eq!(outcome.state.results["E2"], json!({"got": {"q": false}}));
+}
+
+#[tokio::test]
+async fn inferred_decide_uses_judge_verdict() {
+    let registry = search_registry(json!({"values": [{"id": 1}]}));
+    let (pipeline, provider) = pipeline(
+        vec![structured(json!({"verdict": true, "reason": "urgent"}))],
+        registry,
+        1,
+    );
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "decide", "input": {
+            "infer": "Is this urgent? {{E0.values}}",
+            "then": {"toolName": "t__issues", "input": {"q": "escalate"}},
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let decision = &outcome.state.results["E1"];
+    assert_eq!(decision["branch"], json!("then"));
+    assert_eq!(decision["reason"], json!("urgent"));
+    // The verdict question included the rendered data.
+    let requests = provider.requests.lock().unwrap();
+    assert!(matches!(
+        &requests[0].messages[0],
+        graph_llm::types::ChatMessage::User { content } if content.contains("\"id\"")
+    ));
+}
+
+#[tokio::test]
+async fn inline_branch_steps_flow_data_and_stay_scoped() {
+    let registry = search_registry(json!({"values": [{"id": "x1"}]}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    let plan = decide_plan(
+        json!([
+            {"id": "E10", "toolName": "t__search", "input": {"query": "{{E0.values.0.id}}"}},
+            {"id": "E11", "toolName": "t__issues", "input": {"q": "{{E10.values.0.id}}"}},
+        ]),
+        None,
+    );
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let decision = &outcome.state.results["E1"];
+    assert_eq!(
+        decision["result"],
+        json!({"got": {"q": "x1"}}),
+        "intra-branch dataflow, last step wins"
+    );
+    assert!(
+        !outcome.state.results.contains_key("E10"),
+        "branch ids stay scoped"
+    );
+    assert!(!outcome.state.results.contains_key("E11"));
+    assert_eq!(
+        outcome.state.steps_executed(),
+        4,
+        "E0 + decide + 2 branch steps"
+    );
+    // The branch's inner search received the outer step's data.
+    let invocations = registry.invocations.lock().unwrap();
+    assert_eq!(invocations[1].1, json!({"query": "x1"}));
+}
+
+#[tokio::test]
+async fn decide_branch_calling_plan_surfaces_nested_exit() {
+    let inner = plan_doc_yaml(
+        r#"
+identifier: inner
+name: Inner
+description: asserts
+steps:
+  - id: E0
+    tool_name: exit
+    input: { status: error, message: "inner assertion" }
+"#,
+    );
+    let registry = search_registry(json!({"values": [{"id": 1}]}));
+    let (mut pipeline, _) = pipeline(vec![], registry, 1);
+    pipeline.plans = Arc::new(vec![inner]);
+    let plan = decide_plan(json!({"toolName": "plan__inner", "input": {}}), None);
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    let PipelineError::StepFailed {
+        step,
+        tool,
+        message,
+    } = err
+    else {
+        panic!("expected StepFailed");
+    };
+    assert_eq!(step, "E1");
+    assert_eq!(tool, "decide");
+    assert!(message.contains("inner assertion"), "{message}");
+}
+
+#[tokio::test]
+async fn branch_failure_fails_the_decide_step_and_replans_in_planned_mode() {
+    let registry = Arc::new(MockRegistry {
+        search_result: json!({"values": [{"id": 1}]}),
+        invocations: Mutex::new(Vec::new()),
+        fail_tools: vec!["t__issues".to_string()],
+    });
+    // Explicit plans: hard failure attributed to the decide step.
+    let (pipeline_explicit, _) = pipeline(vec![], registry.clone(), 1);
+    let plan = decide_plan(json!({"toolName": "t__issues", "input": {"q": "x"}}), None);
+    let err = pipeline_explicit
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    let PipelineError::StepFailed {
+        step,
+        tool,
+        message,
+    } = err
+    else {
+        panic!("expected StepFailed");
+    };
+    assert_eq!((step.as_str(), tool.as_str()), ("E1", "decide"));
+    assert!(message.contains("`then` branch"), "{message}");
+
+    // Planned mode: the failure lands on the bus and triggers a replan.
+    let decide_step = json!({"id": "E1", "toolName": "decide", "input": {
+        "when": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
+        "then": {"toolName": "t__issues", "input": {"q": "x"}},
+    }});
+    let (pipeline_planned, provider) = pipeline(
+        vec![
+            structured(json!({
+                "plan": [
+                    {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+                    decide_step,
+                ],
+                "solverData": {"queryToAnswer": "q", "data": {}}
+            })),
+            structured(json!({
+                "plan": [{"id": "E1", "toolName": "t__search", "input": {"query": "retry"}}],
+                "solverData": {"queryToAnswer": "q", "data": {}}
+            })),
+            text("recovered"),
+        ],
+        registry,
+        2,
+    );
+    let outcome = pipeline_planned.run_planned("q").await.unwrap();
+    assert_eq!(outcome.answer, "recovered");
+    assert_eq!(outcome.state.plan_attempts, 2);
+    // The replanning prompt carried the branch failure.
+    let requests = provider.requests.lock().unwrap();
+    assert!(
+        requests[1].system.contains("`then` branch"),
+        "error context reaches the planner"
+    );
+}
+
+#[tokio::test]
+async fn empty_data_in_chosen_branch_degrades_normally() {
+    // E0 returns an empty list and the gate sends us into a branch whose
+    // template needs an element: genuine EmptyData, not a plan defect.
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "decide", "input": {
+            "when": {"value": "{{E0.values.length}}", "op": "eq", "to": 0},
+            "then": {"toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}},
+        }},
+    ]))
+    .unwrap();
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PipelineError::EmptyData { .. }));
+}
+
+#[tokio::test]
+async fn decide_validation_rejections() {
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+
+    let run = |input: Value| {
+        let plan: Plan = serde_json::from_value(json!([
+            {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+            {"id": "E1", "toolName": "decide", "input": input},
+        ]))
+        .unwrap();
+        let pipeline = pipeline.clone();
+        async move {
+            let err = pipeline
+                .run_explicit("q", plan, Finish::Silent, None)
+                .await
+                .unwrap_err();
+            let PipelineError::InvalidPlan(message) = err else {
+                panic!("expected InvalidPlan");
+            };
+            message
+        }
+    };
+    let call = json!({"toolName": "t__issues", "input": {}});
+
+    let message = run(json!({
+        "when": {"value": 1, "op": "eq", "to": 1}, "infer": "both?", "then": call,
+    }))
+    .await;
+    assert!(message.contains("mutually exclusive"), "{message}");
+
+    let message = run(json!({"then": call})).await;
+    assert!(message.contains("`when` or `infer`"), "{message}");
+
+    let message = run(json!({
+        "when": {"value": 1, "op": "eq", "to": 1},
+        "then": {"toolName": "decide", "input": {}},
+    }))
+    .await;
+    assert!(message.contains("cannot nest"), "{message}");
+
+    // Cross-branch reference: else reads a then-branch id.
+    let message = run(json!({
+        "when": {"value": 1, "op": "eq", "to": 1},
+        "then": [{"id": "E10", "toolName": "t__search", "input": {"query": "x"}}],
+        "else": [{"id": "E11", "toolName": "t__issues", "input": {"q": "{{E10.values}}"}}],
+    }))
+    .await;
+    assert!(message.contains("E10"), "{message}");
+
+    // Forward reference within a branch.
+    let message = run(json!({
+        "when": {"value": 1, "op": "eq", "to": 1},
+        "then": [
+            {"id": "E10", "toolName": "t__search", "input": {"query": "{{E11.values}}"}},
+            {"id": "E11", "toolName": "t__issues", "input": {"q": "y"}},
+        ],
+    }))
+    .await;
+    assert!(message.contains("E11"), "{message}");
+
+    // Branch step id shadowing a top-level id.
+    let message = run(json!({
+        "when": {"value": 1, "op": "eq", "to": 1},
+        "then": [{"id": "E0", "toolName": "t__search", "input": {"query": "x"}}],
+    }))
+    .await;
+    assert!(message.contains("collides"), "{message}");
+}
+
+#[tokio::test]
+async fn planner_gets_the_decide_tool_and_authored_decides_work() {
+    let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
+    let (pipeline, provider) = pipeline(
+        vec![
+            structured(json!({
+                "plan": [
+                    {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+                    {"id": "E1", "toolName": "decide", "input": {
+                        "when": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
+                        "then": {"toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}},
+                    }},
+                ],
+                "solverData": {"queryToAnswer": "q", "data": {"taken": "{{E1.branch}}"}}
+            })),
+            text("done"),
+        ],
+        registry,
+        1,
+    );
+    let outcome = pipeline.run_planned("route it").await.unwrap();
+    assert_eq!(outcome.answer, "done");
+    assert_eq!(outcome.state.results["E1"]["branch"], json!("then"));
+    let requests = provider.requests.lock().unwrap();
+    assert!(requests[0].system.contains("\"name\":\"decide\""));
+}
+
+#[tokio::test]
+async fn decide_yaml_doc_round_trips_and_runs() {
+    let fork = plan_doc_yaml(
+        r#"
+identifier: fork
+name: Fork
+description: forks on search results
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: "x" }
+  - id: E1
+    tool_name: decide
+    input:
+      when: { value: "{{E0.values.length}}", op: gt, to: 0 }
+      then:
+        tool_name: t__issues
+        input: { q: "{{E0.values.0.id}}" }
+      else:
+        - id: E10
+          tool_name: t__search
+          input: { query: "fallback" }
+        - id: E11
+          tool_name: t__issues
+          input: { q: "{{E10.values}}" }
+output:
+  taken: "{{E1.branch}}"
+  result: "{{E1.result}}"
+"#,
+    );
+    let registry = search_registry(json!({"values": [{"id": "z9"}]}));
+    let (mut pipeline, _) = pipeline(vec![], registry, 1);
+    pipeline.plans = Arc::new(vec![fork]);
+    let call = pipeline.call_plan("fork", json!({})).await;
+    assert!(!call.is_error, "{:?}", call.result);
+    assert_eq!(call.result["taken"], json!("then"));
+    assert_eq!(call.result["result"], json!({"got": {"q": "z9"}}));
+}
+
+#[test]
+fn decide_doc_rejects_exit_in_branch() {
+    let doc: crate::pipeline::doc::PlanDoc = serde_yaml::from_str(
+        r#"
+identifier: bad
+name: Bad
+description: exit nested in branch
+steps:
+  - id: E0
+    tool_name: decide
+    input:
+      when: { value: 1, op: eq, to: 1 }
+      then:
+        tool_name: exit
+        input: { status: success }
+"#,
+    )
+    .unwrap();
+    let err = crate::pipeline::doc::validate_doc(&doc).unwrap_err();
+    assert!(err.contains("cannot nest"), "{err}");
+}
+
 fn plan_doc_yaml(yaml: &str) -> crate::pipeline::doc::PlanDoc {
     let doc: crate::pipeline::doc::PlanDoc = serde_yaml::from_str(yaml).unwrap();
     crate::pipeline::doc::validate_doc(&doc).unwrap();

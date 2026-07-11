@@ -22,6 +22,8 @@ steps:
 
 `{{E0.teams.0.name}}` is the [template language](/plans/template-language) — typed dataflow between steps, zero inference. Inference appears only where the plan puts it: a [prompt tool](/tools/user-defined) step for a sub-task, and the [finish](/plans/finish-modes) — a solver report, structured JSON, or nothing.
 
+Control flow lives in two executor-intercepted steps: an [`exit` gate](/plans/escape-hatch) ends the plan early with a success or error state, and a [`decide` step](/plans/branching) forks into one of two branches on the same gates. Both are gated logically (`when`) or by a cheap model judgment (`infer`).
+
 Plans run three ways: directly (`graph plan run`), as a tool anything else can invoke, or authored *by* the LLM planner inside `plan_and_execute`.
 
 The key behavioral difference: **human-authored plans never replan**. If a step fails, you get a structured error — the plan you wrote is the plan that runs. `plan_and_execute` plans are LLM-authored, so defects there trigger a replan with the error fed back. Details in [Errors & replanning](/plans/errors-and-replanning).

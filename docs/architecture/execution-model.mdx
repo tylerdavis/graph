@@ -11,6 +11,7 @@ graph has two engines: the plan pipeline (the core) and an agent loop layered ov
 Plans execute as: **validate → run steps sequentially → finish**.
 
 - Step inputs render against prior results via the [template language](/plans/template-language) — typed dataflow, zero inference.
+- Two control steps are intercepted by the executor, never dispatched to a tool: [`exit`](/plans/escape-hatch) ends the plan early, [`decide`](/plans/branching) forks into one of two branches. A `decide` step renders only its gate up front; the chosen branch renders after evaluation, and the non-taken branch never renders. Its gate evaluation and each branch call appear as ordinary flat tool events in traces.
 - The finish is a `solver` LLM call, an `output` render (no LLM), or nothing ([finish modes](/plans/finish-modes)).
 - For `plan_and_execute`, a `planner`-role call authors the plan first, and defects loop back as replans (executed steps preserved). Human-authored plans skip planning and never replan.
 
@@ -43,6 +44,7 @@ The solver's report streams dim to stderr as progress; the agent's answer is the
 |---|---|
 | `plan run` (output / silent) | 0 |
 | `plan run` (solver) | 1 |
+| `exit` / `decide` gate | 0 (`when`) or 1 judge call (`infer`) |
 | `ask` → direct tools | 1 + one per tool round |
 | `ask` → plan tool | 3 |
 | `ask` → `plan_and_execute` | 4 + 1 per replan |

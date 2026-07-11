@@ -1,0 +1,99 @@
+---
+title: "Branching"
+description: "Fork a plan into one of two branches with a decide step"
+icon: "code-branch"
+---
+
+A `decide` step forks the plan: it evaluates a gate — the same `when`/`infer` gates as an [exit gate](/plans/escape-hatch) — and runs the `then` branch when it holds, the `else` branch otherwise. Execution then rejoins the plan's normal step sequence. Where `exit` answers "should this plan stop?", `decide` answers "which action is correct next?" — update or create, escalate or summarize, notify or stay quiet.
+
+```yaml
+steps:
+  - id: E0
+    tool_name: linear__list_issues
+    input: { priority: 1, limit: 50 }
+
+  - id: E1
+    tool_name: decide
+    input:
+      when: { value: "{{E0.issues.length}}", op: gt, to: 5 }
+      then:                                  # single tool call — any tool, incl. plan__*
+        tool_name: plan__escalate_triage
+        input: { issues: "{{E0.issues}}" }
+      else:                                  # inline step list, run in order
+        - id: E10
+          tool_name: user__summarize
+          input: { text: "{{E0.issues}}" }
+        - id: E11
+          tool_name: user__notify
+          input: { message: "{{E10.summary}}" }   # same-branch dataflow
+
+  - id: E2                                   # rejoin — same shape either way
+    tool_name: user__log
+    input: { entry: "took {{E1.branch}}: {{E1.result}}" }
+```
+
+## Gates
+
+Exactly one of `when` or `infer` is required — unlike `exit`, where omitting both means "unconditionally". The gate grammar is identical to [exit gates](/plans/escape-hatch): `when` is a logical comparison (`eq ne gt lt gte lte empty not_empty contains`, with [typed splice](/plans/template-language#typed-splice) keeping numbers numeric), `infer` is a yes/no question judged by the `judge` model role. A `when` gate costs zero inference; an `infer` gate costs one cheap judgment call.
+
+## Branches
+
+`then` is required; `else` is optional. Each branch is either:
+
+- **A single tool call** — `{tool_name, input}`, no id. Any catalog tool works, including `plan__*` and `plan_and_execute`.
+- **An inline step list** — normal steps with ids. They run in authored order, and each may reference plan `input`, any earlier top-level step, and earlier steps *in the same branch*. Branch ids must not reuse top-level ids, and they are invisible outside the branch.
+
+Branches must not contain `exit` or `decide`. For nested control flow, put it in a plan and call `plan__*` from the branch — cycle detection and the depth cap apply as usual, and an error-exit inside that sub-plan surfaces as a failure of the decide step.
+
+## The step result
+
+The decide step's result — stored under its own id — is the only thing later steps see:
+
+```json
+{ "branch": "then", "verdict": true, "reason": null, "result": { … } }
+```
+
+- `branch` — which side ran (`null` when the gate was false and there was no `else`).
+- `verdict` — the gate outcome; `reason` — the judge's explanation, for `infer` gates.
+- `result` — the branch's output: the single call's result, or the **last** branch step's result.
+
+Downstream references go through the decide id (`{{E1.result.…}}`, `{{E1.branch}}`), so the rejoined plan looks the same regardless of which branch ran. With no `else` and a false gate, `result` is `null` and the plan simply continues — like a passed exit gate.
+
+## Only the chosen branch is rendered
+
+The executor renders the gate first, evaluates it, and only then renders the chosen branch — per step, for inline lists. **The non-taken branch's templates are never evaluated.** That's what makes this pattern safe:
+
+```yaml
+input:
+  when: { value: "{{E0.issues.length}}", op: gt, to: 0 }
+  then:
+    tool_name: linear__update_issue
+    input: { id: "{{E0.issues.0.id}}" }     # only exists when then is taken
+  else:
+    tool_name: linear__create_issue
+    input: { title: "{{input.title}}" }
+```
+
+If both branches rendered eagerly, `{{E0.issues.0.id}}` would raise `EmptyData` on an empty list — the exact case `else` handles. Deferred rendering means each branch may assume it is the *right* branch. `EmptyData` raised inside the *chosen* branch still degrades normally ([errors](/plans/errors-and-replanning)).
+
+## Failure and replanning
+
+A failing branch call fails the decide step — attributed as `step E1 (decide)` with the branch and inner tool named in the message. Human-authored plans fail hard as always; planner-authored plans replan with that context.
+
+<Warning>
+Branch step results are scoped to the branch and discarded after the decide step completes. When a planner-authored plan replans past a decide failure, a re-authored decide **re-runs the branch from its first step** — including branch steps that succeeded before the failure. Keep branch steps idempotent (or route side-effecting sequences through a `plan__*` call guarded by its own exit gates) if duplicate execution would be harmful.
+</Warning>
+
+Branch steps count in `steps_executed` — a decide with a two-step branch reports three executed steps (the decide plus two).
+
+## Semantics summary
+
+| Surface | Behavior |
+|---|---|
+| gate false, no `else` | result `{branch: null, verdict: false, result: null}`, plan continues |
+| trace events | one `decide` tool event for the gate, then normal tool events for branch calls |
+| `steps_executed` / envelopes | decide counts as 1, plus 1 per branch call or branch step run |
+| branch tool fails | decide step fails: hard error (your plans) or replan (`plan_and_execute`) |
+| cost | `when`: 0 inference; `infer`: 1 judge call — plus whatever the branch calls |
+
+`plan_and_execute`'s planner also has the decide tool, so LLM-authored plans can fork on their own intermediate results.

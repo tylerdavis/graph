@@ -43,7 +43,7 @@ A single comparison — `value` (usually a template; [typed splice](/plans/templ
 | `empty`, `not_empty` | arrays, strings, objects, null (`to` omitted) |
 | `contains` | substring, or array membership |
 
-Need OR? Use two exit steps. Need more? Use an inferred gate, or compute in a [user tool](/tools/user-defined) step first.
+Need OR? Use two exit steps. Need more? Use an inferred gate, or compute in a [user tool](/tools/user-defined) step first. And when the answer to a gate should be *running different steps* rather than ending the plan, use a [`decide` step](/plans/branching) — same gates, fork instead of stop.
 
 ## Inferred gates: `infer`
 

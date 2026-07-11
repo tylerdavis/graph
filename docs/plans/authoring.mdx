@@ -41,7 +41,7 @@ Missing required inputs are handled for you: `plan run` exits with code 3 and pr
 
 ## 3. Steps
 
-Steps run **sequentially**; each input may reference plan inputs and any earlier step:
+Steps run **sequentially**; each input may reference plan inputs and any earlier step. Tool names are namespaced catalog names, plus three bare reserved ones: `plan_and_execute`, [`exit`](/plans/escape-hatch), and [`decide`](/plans/branching).
 
 ```yaml
 steps:

@@ -119,6 +119,7 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
     if doc.steps.is_empty() {
         return Err("plan has no steps".to_string());
     }
+    let all_ids: Vec<&str> = doc.steps.iter().map(|s| s.id.as_str()).collect();
     let mut seen: Vec<&str> = vec!["input"];
     for step in &doc.steps {
         if step_number(&step.id).is_none() {
@@ -127,14 +128,31 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
         if !step.tool_name.contains("__")
             && step.tool_name != "plan_and_execute"
             && step.tool_name != super::EXIT_TOOL
+            && step.tool_name != super::DECIDE_TOOL
         {
             return Err(format!(
                 "step {} tool '{}' is not a namespaced tool name",
                 step.id, step.tool_name
             ));
         }
-        for value in step.input.values() {
-            check_value_templates(value, &seen, &step.id)?;
+        if step.tool_name == super::DECIDE_TOOL {
+            // Branch-aware: same-branch references are legal, so the
+            // generic template walk would false-flag them.
+            let mut problems = Vec::new();
+            super::decision::validate_decide_input(
+                &step.input,
+                &seen,
+                &all_ids,
+                &step.id,
+                &mut problems,
+            );
+            if let Some(problem) = problems.into_iter().next() {
+                return Err(problem);
+            }
+        } else {
+            for value in step.input.values() {
+                check_value_templates(value, &seen, &step.id)?;
+            }
         }
         seen.push(&step.id);
     }
