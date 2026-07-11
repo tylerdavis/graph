@@ -22,7 +22,7 @@ steps:
 
 `{{E0.teams.0.name}}` is the [template language](/plans/template-language) — typed dataflow between steps, zero inference. Inference appears only where the plan puts it: a [prompt tool](/tools/user-defined) step for a sub-task, and the [finish](/plans/finish-modes) — a solver report, structured JSON, or nothing.
 
-Control flow lives in two executor-intercepted steps: an [`exit` gate](/plans/escape-hatch) ends the plan early with a success or error state, and a [`decide` step](/plans/branching) forks into one of two branches on the same gates. Both are gated logically (`when` on exit, `if` on decide) or by a cheap model judgment (`infer`).
+Control flow lives in four executor-intercepted steps: an [`exit` gate](/plans/escape-hatch) ends the plan early with a success or error state, a [`decide` step](/plans/branching) forks into one of two branches on the same gates — both gated logically (`when` on exit, `if` on decide) or by a cheap model judgment (`infer`) — and [`map`/`reduce` steps](/plans/iteration) run a body once per item of a list, collecting the results or folding them into one value.
 
 Plans run three ways: directly (`graph plan run`), as a tool anything else can invoke, or authored *by* the LLM planner inside `plan_and_execute`.
 

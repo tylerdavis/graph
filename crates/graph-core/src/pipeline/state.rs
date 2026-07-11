@@ -30,10 +30,10 @@ pub struct RunState {
     pub bus: Vec<BusEntry>,
     pub plan_attempts: u32,
     pub solver_data: SolverData,
-    /// Steps executed inside `decide` branches. Their results stay scoped
-    /// to the branch (never entering `results`, which drives the step
-    /// cursor and replan merge), but they are real executed work and count
-    /// in `steps_executed`.
+    /// Steps executed inside `decide` branches and `map`/`reduce` bodies.
+    /// Their results stay scoped to the body (never entering `results`,
+    /// which drives the step cursor and replan merge), but they are real
+    /// executed work and count in `steps_executed`.
     #[serde(default)]
     pub branch_steps_executed: usize,
 }
@@ -69,7 +69,7 @@ impl RunState {
     }
 
     /// Number of executed steps (excludes the `input` root), including
-    /// steps run inside `decide` branches.
+    /// steps run inside `decide` branches and `map`/`reduce` bodies.
     pub fn steps_executed(&self) -> usize {
         self.results.keys().filter(|k| *k != "input").count() + self.branch_steps_executed
     }

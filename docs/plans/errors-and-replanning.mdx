@@ -21,7 +21,7 @@ Error: plan failed at step E2 (linear__list_issues): 'linear' exited with …
 
 Plans authored by the LLM planner are drafts. Defects trigger a **replan**: the error — including, for bad data references, a digest of the keys that actually exist — feeds back to the planner, which revises the plan. Executed steps are preserved and never re-run; only the broken tail is replaced. After the configured attempts (`planning_attempts`, default 2), it degrades to an honest error summary instead of raw failure.
 
-One idempotency caveat: "executed steps are preserved" is keyed on *top-level* step results. Steps inside a [`decide` branch](/plans/branching) are scoped to that branch, so a decide step that fails partway through a branch counts as not executed — a replan that re-authors it re-runs the branch from its first step, duplicating any side effects the successful prefix already had. Keep branch steps idempotent, or move side-effecting sequences into a `plan__*` call the branch invokes.
+One idempotency caveat: "executed steps are preserved" is keyed on *top-level* step results. Steps inside a [`decide` branch](/plans/branching) or a [`map`/`reduce` body](/plans/iteration) are scoped to that step, so a control step that fails partway through counts as not executed — a replan that re-authors it re-runs the branch from its first step (or the map from its first item), duplicating any side effects the successful prefix already had. Keep bodies idempotent, or move side-effecting sequences into a `plan__*` call the body invokes.
 
 ```
 → plan_and_execute {"query":"…"}

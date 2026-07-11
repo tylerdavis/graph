@@ -10,10 +10,12 @@
 //!   In both modes, `EmptyData` (plan fine, data ran out) goes straight to
 //!   the solver.
 
+pub mod body;
 pub mod condition;
 pub mod decision;
 pub mod doc;
 pub mod exit;
+pub mod iterate;
 pub mod plan;
 mod prompts;
 mod state;
@@ -22,6 +24,7 @@ mod tests;
 
 pub use decision::DECIDE_TOOL;
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
+pub use iterate::{MAP_TOOL, REDUCE_TOOL};
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
 pub use state::{BusEntry, BusKind, RunState};
 
@@ -439,6 +442,8 @@ impl Pipeline {
         let mut tools = self.registry.tools().await.unwrap_or_default();
         tools.push(exit::exit_tool_def());
         tools.push(decision::decide_tool_def());
+        tools.push(iterate::map_tool_def());
+        tools.push(iterate::reduce_tool_def());
         for plan_doc in self.plans.iter() {
             if self.call_stack.iter().any(|f| f == &plan_doc.identifier) {
                 continue; // don't offer plans already on the call stack
@@ -525,20 +530,36 @@ impl Pipeline {
         let all_ids: Vec<&str> = state.plan.iter().map(|s| s.id.as_str()).collect();
         let mut seen: Vec<&str> = vec!["input"];
         for step in &state.plan {
-            if step.tool_name == DECIDE_TOOL {
-                // Branch-aware: same-branch references are legal, so the
-                // generic walk below would false-flag them.
-                decision::validate_decide_input(
+            // Control steps are body-aware: body-internal references
+            // (same-body ids, per-item pseudo-roots) are legal, so the
+            // generic walk below would false-flag them.
+            match step.tool_name.as_str() {
+                DECIDE_TOOL => decision::validate_decide_input(
                     &step.input,
                     &seen,
                     &all_ids,
                     &step.id,
                     &mut problems,
-                );
-            } else {
-                // Template parse + reference-ordering check on every string input.
-                for value in step.input.values() {
-                    check_templates(value, &seen, &step.id, &mut problems);
+                ),
+                MAP_TOOL => iterate::validate_map_input(
+                    &step.input,
+                    &seen,
+                    &all_ids,
+                    &step.id,
+                    &mut problems,
+                ),
+                REDUCE_TOOL => iterate::validate_reduce_input(
+                    &step.input,
+                    &seen,
+                    &all_ids,
+                    &step.id,
+                    &mut problems,
+                ),
+                _ => {
+                    // Template parse + reference-ordering check on every string input.
+                    for value in step.input.values() {
+                        check_templates(value, &seen, &step.id, &mut problems);
+                    }
                 }
             }
             seen.push(&step.id);
@@ -554,10 +575,17 @@ impl Pipeline {
 
     async fn execute_all(&self, state: &mut RunState) -> ExecutionEnd {
         while let Some(step) = state.next_pending_step().cloned() {
-            // Decide steps defer rendering: only the condition renders up
-            // front, and only the chosen branch renders at all.
-            if step.tool_name == DECIDE_TOOL {
-                match self.run_decide(&step, state).await {
+            // Control steps defer rendering: only their gate/list renders
+            // up front, and bodies render lazily — per chosen branch
+            // (decide) or per item (map/reduce).
+            let control = match step.tool_name.as_str() {
+                DECIDE_TOOL => Some(self.run_decide(&step, state).await),
+                MAP_TOOL => Some(self.run_map(&step, state).await),
+                REDUCE_TOOL => Some(self.run_reduce(&step, state).await),
+                _ => None,
+            };
+            if let Some(run) = control {
+                match run {
                     Ok(result) => {
                         state.results.insert(step.id.clone(), result);
                         continue;

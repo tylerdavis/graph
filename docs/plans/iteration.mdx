@@ -1,0 +1,95 @@
+---
+title: "Iteration"
+description: "Run a body of steps once per item of a list with map and reduce"
+icon: "repeat"
+---
+
+A `map` step runs the same body once per item of a list; a `reduce` step folds a list into a single value. Both take `over` (anything that renders to an array) and `do` (the same body grammar as a [`decide` branch](/plans/branching#branches): a single tool call or an inline step list). Where `decide` answers "which action is correct next?", `map` and `reduce` answer "do this for each of these" — update every stale issue, summarize each incident, roll a page of results into one report.
+
+```yaml
+steps:
+  - id: E0
+    tool_name: linear__list_issues
+    input: { status: stale, limit: 20 }
+
+  - id: E1
+    tool_name: map
+    input:
+      over: "{{E0.issues}}"                # must render to an array
+      concurrency: 4                       # optional; default 1 (sequential)
+      do:                                  # runs once per element
+        tool_name: linear__update_issue
+        input: { id: "{{item.id}}", status: "triage" }
+
+  - id: E2
+    tool_name: reduce
+    input:
+      over: "{{E1.results}}"
+      initial: { summary: "" }             # starting accumulator; default null
+      do:
+        tool_name: user__summarize
+        input: { accumulator: "{{accumulator.summary}}", item: "{{item}}" }
+
+  - id: E3                                 # rejoin — ordinary references
+    tool_name: user__log
+    input: { entry: "updated {{E1.count}}: {{E2.result}}" }
+```
+
+## The body and its scope
+
+Inside `do`, two pseudo-roots exist per item: `{{item}}` (the element) and `{{index}}` (0-based position). A `reduce` body gets a third, `{{accumulator}}` — the running value, starting at `initial` — and each run's result becomes the next `{{accumulator}}`. The body may also reference plan `input` and any earlier top-level step, exactly like a decide branch.
+
+The body is either a single tool call (`{tool_name, input}`, no id — any catalog tool, including `plan__*` and `plan_and_execute`) or an inline step list with same-iteration dataflow: each step may reference earlier steps *in the same iteration*, and the **last** step's result is the iteration's output. Body step ids must not reuse top-level ids and are invisible outside the body. Iterations are isolated — an item's body never sees another item's results.
+
+Bodies must not contain `exit`, `decide`, `map`, or `reduce`. For nested control flow — including a map inside a map — put it in a plan and call `plan__*` from the body; cycle detection and the depth cap apply as usual, and an error-exit inside that sub-plan fails the map/reduce step.
+
+## The step result
+
+```json
+// map — per-item outputs, in input order
+{ "count": 3, "results": [ …, …, … ] }
+
+// reduce — the final accumulator
+{ "count": 3, "result": … }
+```
+
+An empty `over` array is not an error: `map` yields `{count: 0, results: []}` and `reduce` yields `initial` untouched — the plan continues. Guard with an [`exit` gate](/plans/escape-hatch) when empty input should stop the plan instead. A non-array `over` is a plan defect (hard failure in your plans, replan for the planner).
+
+## Only `over` renders up front
+
+Like a decide step, `map`/`reduce` defer rendering: `over` (and reduce's `initial`) render against prior results first; the body renders per item, only when that item's scope exists. `{{item.id}}` before the first item exists would be meaningless — and validation rejects pseudo-roots in `over`/`initial` for exactly that reason. `EmptyData` raised inside an item's body degrades normally ([errors](/plans/errors-and-replanning)).
+
+## Concurrency
+
+`map` accepts `concurrency` (default 1): the maximum items in flight. At 1 items run strictly in order; above 1, up to that many run at once, and `results` still comes back in input order. Raise it only when the per-item calls are independent — it is a throughput knob, not a semantics knob.
+
+`reduce` has none: every iteration reads the previous accumulator, so a fold is sequential by definition. For concurrent aggregation, map first (concurrently), then reduce over `{{Ex.results}}`.
+
+Two things to know when raising `concurrency`:
+
+- **Same-server MCP calls serialize anyway.** Each MCP server connection handles one call at a time, so concurrency pays off across *different* servers, `plan__*` sub-plans, and LLM-call tools — not for ten calls to one server.
+- **Failures drain, not cancel.** When an item fails, items already in flight run to completion (cancelling mid-call would leave server-side work orphaned and unreported); items not yet started are skipped. The lowest-index failure is the one reported.
+
+## Failure and replanning
+
+A failing item fails the whole step — attributed as `step E1 (map)` with the item index and inner tool named in the message (`` `do` item 3 (linear__update_issue): … ``). Human-authored plans fail hard as always; planner-authored plans replan with that context.
+
+<Warning>
+Item results are scoped to the step and discarded on failure. When a planner-authored plan replans past a map failure, a re-authored map **re-runs from item 0** — including items that succeeded before the failure. Keep bodies idempotent (or route side-effecting sequences through a `plan__*` call guarded by its own exit gates) if duplicate execution would be harmful.
+</Warning>
+
+Body steps count in `steps_executed` — a map over 3 items with a two-step body reports seven executed steps (the map plus six).
+
+## Semantics summary
+
+| Surface | Behavior |
+|---|---|
+| empty `over` | map: `{count: 0, results: []}`; reduce: `initial` — plan continues |
+| non-array `over` | plan defect: hard error (your plans) or replan (`plan_and_execute`) |
+| ordering | `results` is always in input order, whatever `concurrency` |
+| item fails | step fails; in-flight items drain, unstarted items skip |
+| trace events | one `map`/`reduce` event bracketing the run, plus normal tool events per item |
+| `steps_executed` / envelopes | the step counts as 1, plus 1 per body call or body step per item |
+| cost | 0 inference — plus whatever the body calls |
+
+`plan_and_execute`'s planner also has both tools, so LLM-authored plans can fan out over their own intermediate results.

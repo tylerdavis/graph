@@ -1066,6 +1066,485 @@ steps:
     assert!(err.contains("cannot nest"), "{err}");
 }
 
+#[tokio::test]
+async fn map_single_call_runs_per_item_with_ordered_results() {
+    let registry = search_registry(json!({"values": [{"id": "a"}, {"id": "b"}, {"id": "c"}]}));
+    let (pipeline, provider) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": {"toolName": "t__issues", "input": {"q": "{{item.id}}", "n": "{{index}}"}},
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let map = &outcome.state.results["E1"];
+    assert_eq!(map["count"], json!(3));
+    assert_eq!(
+        map["results"],
+        json!([
+            {"got": {"q": "a", "n": 0}},
+            {"got": {"q": "b", "n": 1}},
+            {"got": {"q": "c", "n": 2}},
+        ]),
+        "typed per-item dataflow, input order"
+    );
+    assert_eq!(outcome.state.steps_executed(), 5, "E0 + map + 3 item calls");
+    assert!(provider.requests.lock().unwrap().is_empty(), "no LLM calls");
+}
+
+#[tokio::test]
+async fn map_inline_steps_flow_data_and_stay_scoped() {
+    let registry = search_registry(json!({"values": [{"id": "x1"}]}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": [
+                {"id": "E10", "toolName": "t__search", "input": {"query": "{{item.id}}"}},
+                {"id": "E11", "toolName": "t__issues", "input": {"q": "{{E10.values.0.id}}"}},
+            ],
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let map = &outcome.state.results["E1"];
+    assert_eq!(
+        map["results"],
+        json!([{"got": {"q": "x1"}}]),
+        "intra-body dataflow, last step wins"
+    );
+    assert!(
+        !outcome.state.results.contains_key("E10"),
+        "body ids stay scoped"
+    );
+    assert!(!outcome.state.results.contains_key("E11"));
+    assert_eq!(outcome.state.steps_executed(), 4, "E0 + map + 2 body steps");
+    // The body's inner search received the item's data.
+    let invocations = registry.invocations.lock().unwrap();
+    assert_eq!(invocations[1].1, json!({"query": "x1"}));
+}
+
+#[tokio::test]
+async fn concurrent_map_completes_all_items_in_order() {
+    let values: Vec<Value> = (0..5).map(|n| json!({"id": format!("v{n}")})).collect();
+    let registry = search_registry(json!({"values": values}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "concurrency": 3,
+            "do": {"toolName": "t__issues", "input": {"q": "{{item.id}}"}},
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let map = &outcome.state.results["E1"];
+    assert_eq!(map["count"], json!(5));
+    let expected: Vec<Value> = (0..5)
+        .map(|n| json!({"got": {"q": format!("v{n}")}}))
+        .collect();
+    assert_eq!(
+        map["results"],
+        json!(expected),
+        "input order regardless of concurrency"
+    );
+    let issues = registry
+        .invocations
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(n, _)| n == "t__issues")
+        .count();
+    assert_eq!(issues, 5, "every item ran");
+}
+
+#[tokio::test]
+async fn map_item_failure_fails_the_step_with_index_attribution() {
+    let registry = Arc::new(MockRegistry {
+        search_result: json!({"values": [{"id": "a"}, {"id": "b"}]}),
+        invocations: Mutex::new(Vec::new()),
+        fail_tools: vec!["t__issues".to_string()],
+    });
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": {"toolName": "t__issues", "input": {"q": "{{item.id}}"}},
+        }},
+    ]))
+    .unwrap();
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    let PipelineError::StepFailed {
+        step,
+        tool,
+        message,
+    } = err
+    else {
+        panic!("expected StepFailed");
+    };
+    assert_eq!((step.as_str(), tool.as_str()), ("E1", "map"));
+    assert!(message.contains("`do` item 0 (t__issues)"), "{message}");
+    // The failure halted the iteration — item 1 never started.
+    let issues = registry
+        .invocations
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(n, _)| n == "t__issues")
+        .count();
+    assert_eq!(issues, 1, "remaining items skipped after the failure");
+}
+
+#[tokio::test]
+async fn empty_over_continues_with_zero_count() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": {"toolName": "t__issues", "input": {"q": "{{item.id}}"}},
+        }},
+        {"id": "E2", "toolName": "t__issues", "input": {"q": "{{E1.count}}"}},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.state.results["E1"],
+        json!({"count": 0, "results": []})
+    );
+    // The plan continued past the empty map.
+    assert_eq!(outcome.state.results["E2"], json!({"got": {"q": 0}}));
+}
+
+#[tokio::test]
+async fn non_array_over_is_a_plan_defect() {
+    let registry = search_registry(json!({"values": [{"id": 1}]}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0}}",
+            "do": {"toolName": "t__issues", "input": {"q": "y"}},
+        }},
+    ]))
+    .unwrap();
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    let PipelineError::StepFailed { message, .. } = err else {
+        panic!("expected StepFailed");
+    };
+    assert!(message.contains("must produce an array"), "{message}");
+}
+
+#[tokio::test]
+async fn empty_data_in_item_body_degrades_normally() {
+    // The item exists but its inner list is empty: genuine EmptyData
+    // inside the body, not a plan defect.
+    let registry = search_registry(json!({"values": [{"children": []}]}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": {"toolName": "t__issues", "input": {"q": "{{item.children.0.id}}"}},
+        }},
+    ]))
+    .unwrap();
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PipelineError::EmptyData { .. }));
+}
+
+#[tokio::test]
+async fn map_body_calling_plan_surfaces_nested_exit() {
+    let inner = plan_doc_yaml(
+        r#"
+identifier: inner
+name: Inner
+description: asserts
+steps:
+  - id: E0
+    tool_name: exit
+    input: { status: error, message: "inner assertion" }
+"#,
+    );
+    let registry = search_registry(json!({"values": [{"id": 1}]}));
+    let (mut pipeline, _) = pipeline(vec![], registry, 1);
+    pipeline.plans = Arc::new(vec![inner]);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": {"toolName": "plan__inner", "input": {}},
+        }},
+    ]))
+    .unwrap();
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    let PipelineError::StepFailed {
+        step,
+        tool,
+        message,
+    } = err
+    else {
+        panic!("expected StepFailed");
+    };
+    assert_eq!((step.as_str(), tool.as_str()), ("E1", "map"));
+    assert!(message.contains("inner assertion"), "{message}");
+}
+
+#[tokio::test]
+async fn reduce_folds_left_threading_the_accumulator() {
+    let registry = search_registry(json!({"values": [{"id": "a"}, {"id": "b"}]}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "reduce", "input": {
+            "over": "{{E0.values}}",
+            "initial": {"seen": "none"},
+            "do": {"toolName": "t__issues", "input": {"a": "{{accumulator}}", "i": "{{item.id}}"}},
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let reduce = &outcome.state.results["E1"];
+    assert_eq!(reduce["count"], json!(2));
+    // Second iteration saw the first's result as its accumulator.
+    assert_eq!(reduce["result"]["got"]["i"], json!("b"));
+    assert_eq!(reduce["result"]["got"]["a"]["got"]["i"], json!("a"));
+    assert_eq!(
+        reduce["result"]["got"]["a"]["got"]["a"],
+        json!({"seen": "none"}),
+        "first iteration started from `initial`"
+    );
+    assert_eq!(
+        outcome.state.steps_executed(),
+        4,
+        "E0 + reduce + 2 item calls"
+    );
+}
+
+#[tokio::test]
+async fn reduce_defaults_initial_to_null_and_empty_over_returns_it() {
+    let registry = search_registry(json!({"values": [{"id": "a"}]}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "reduce", "input": {
+            "over": "{{E0.values}}",
+            "do": {"toolName": "t__issues", "input": {"a": "{{accumulator}}"}},
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.state.results["E1"]["result"]["got"]["a"],
+        json!(null),
+        "accumulator starts at null when initial is omitted"
+    );
+
+    // Empty list: the result is the initial value untouched.
+    let empty_registry = search_registry(json!({"values": []}));
+    let (empty_pipeline, _) = super::tests::pipeline(vec![], empty_registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "reduce", "input": {
+            "over": "{{E0.values}}",
+            "initial": {"total": 0},
+            "do": {"toolName": "t__issues", "input": {"a": "{{accumulator}}"}},
+        }},
+    ]))
+    .unwrap();
+    let outcome = empty_pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.state.results["E1"],
+        json!({"count": 0, "result": {"total": 0}})
+    );
+}
+
+#[tokio::test]
+async fn iteration_validation_rejections() {
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+
+    let run = |steps: Value| {
+        let plan: Plan = serde_json::from_value(steps).unwrap();
+        let pipeline = pipeline.clone();
+        async move {
+            let err = pipeline
+                .run_explicit("q", plan, Finish::Silent, None)
+                .await
+                .unwrap_err();
+            let PipelineError::InvalidPlan(message) = err else {
+                panic!("expected InvalidPlan");
+            };
+            message
+        }
+    };
+
+    // Reduce has no concurrency knob — each iteration reads the previous
+    // accumulator.
+    let message = run(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "reduce", "input": {
+            "over": "{{E0.values}}",
+            "concurrency": 2,
+            "do": {"toolName": "t__issues", "input": {"q": "y"}},
+        }},
+    ]))
+    .await;
+    assert!(message.contains("concurrency"), "{message}");
+
+    // Control steps cannot nest: map inside a decide branch…
+    let message = run(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "decide", "input": {
+            "if": {"value": 1, "op": "eq", "to": 1},
+            "then": {"toolName": "map", "input": {}},
+        }},
+    ]))
+    .await;
+    assert!(message.contains("cannot nest"), "{message}");
+
+    // …and decide inside a map body.
+    let message = run(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": {"toolName": "decide", "input": {}},
+        }},
+    ]))
+    .await;
+    assert!(message.contains("cannot nest"), "{message}");
+
+    // Pseudo-roots outside their scope.
+    let message = run(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": {"toolName": "t__issues", "input": {"a": "{{accumulator}}"}},
+        }},
+    ]))
+    .await;
+    assert!(message.contains("reduce body"), "{message}");
+}
+
+#[tokio::test]
+async fn planner_gets_the_iteration_tools_and_authored_maps_work() {
+    let registry = search_registry(json!({"values": [{"id": "a"}, {"id": "b"}]}));
+    let (pipeline, provider) = pipeline(
+        vec![
+            structured(json!({
+                "plan": [
+                    {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+                    {"id": "E1", "toolName": "map", "input": {
+                        "over": "{{E0.values}}",
+                        "do": {"toolName": "t__issues", "input": {"q": "{{item.id}}"}},
+                    }},
+                ],
+                "solverData": {"queryToAnswer": "q", "data": {"mapped": "{{E1.results}}"}}
+            })),
+            text("done"),
+        ],
+        registry,
+        1,
+    );
+    let outcome = pipeline.run_planned("fan out").await.unwrap();
+    assert_eq!(outcome.answer, "done");
+    assert_eq!(outcome.state.results["E1"]["count"], json!(2));
+    let requests = provider.requests.lock().unwrap();
+    assert!(requests[0].system.contains("\"name\":\"map\""));
+    assert!(requests[0].system.contains("\"name\":\"reduce\""));
+}
+
+#[tokio::test]
+async fn iteration_yaml_doc_round_trips_and_runs() {
+    let fanout = plan_doc_yaml(
+        r#"
+identifier: fanout
+name: Fanout
+description: maps then folds
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: "x" }
+  - id: E1
+    tool_name: map
+    input:
+      over: "{{E0.values}}"
+      concurrency: 2
+      do:
+        tool_name: t__issues
+        input: { q: "{{item.id}}" }
+  - id: E2
+    tool_name: reduce
+    input:
+      over: "{{E1.results}}"
+      initial: { first: null }
+      do:
+        tool_name: t__issues
+        input: { accumulator: "{{accumulator}}", item: "{{item}}" }
+output:
+  mapped: "{{E1.results}}"
+  folded: "{{E2.result}}"
+"#,
+    );
+    let registry = search_registry(json!({"values": [{"id": "a"}, {"id": "b"}]}));
+    let (mut pipeline, _) = pipeline(vec![], registry, 1);
+    pipeline.plans = Arc::new(vec![fanout]);
+    let call = pipeline.call_plan("fanout", json!({})).await;
+    assert!(!call.is_error, "{:?}", call.result);
+    assert_eq!(
+        call.result["mapped"],
+        json!([{"got": {"q": "a"}}, {"got": {"q": "b"}}])
+    );
+    assert_eq!(
+        call.result["folded"]["got"]["item"],
+        json!({"got": {"q": "b"}}),
+        "reduce folded the map's results"
+    );
+}
+
 fn plan_doc_yaml(yaml: &str) -> crate::pipeline::doc::PlanDoc {
     let doc: crate::pipeline::doc::PlanDoc = serde_yaml::from_str(yaml).unwrap();
     crate::pipeline::doc::validate_doc(&doc).unwrap();

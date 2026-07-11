@@ -129,30 +129,48 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
             && step.tool_name != "plan_and_execute"
             && step.tool_name != super::EXIT_TOOL
             && step.tool_name != super::DECIDE_TOOL
+            && step.tool_name != super::MAP_TOOL
+            && step.tool_name != super::REDUCE_TOOL
         {
             return Err(format!(
                 "step {} tool '{}' is not a namespaced tool name",
                 step.id, step.tool_name
             ));
         }
-        if step.tool_name == super::DECIDE_TOOL {
-            // Branch-aware: same-branch references are legal, so the
-            // generic template walk would false-flag them.
-            let mut problems = Vec::new();
-            super::decision::validate_decide_input(
+        // Control steps are body-aware: body-internal references
+        // (same-body ids, per-item pseudo-roots) are legal, so the generic
+        // template walk would false-flag them.
+        let mut problems = Vec::new();
+        match step.tool_name.as_str() {
+            name if name == super::DECIDE_TOOL => super::decision::validate_decide_input(
                 &step.input,
                 &seen,
                 &all_ids,
                 &step.id,
                 &mut problems,
-            );
-            if let Some(problem) = problems.into_iter().next() {
-                return Err(problem);
+            ),
+            name if name == super::MAP_TOOL => super::iterate::validate_map_input(
+                &step.input,
+                &seen,
+                &all_ids,
+                &step.id,
+                &mut problems,
+            ),
+            name if name == super::REDUCE_TOOL => super::iterate::validate_reduce_input(
+                &step.input,
+                &seen,
+                &all_ids,
+                &step.id,
+                &mut problems,
+            ),
+            _ => {
+                for value in step.input.values() {
+                    check_value_templates(value, &seen, &step.id)?;
+                }
             }
-        } else {
-            for value in step.input.values() {
-                check_value_templates(value, &seen, &step.id)?;
-            }
+        }
+        if let Some(problem) = problems.into_iter().next() {
+            return Err(problem);
         }
         seen.push(&step.id);
     }
