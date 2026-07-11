@@ -16,4 +16,4 @@ repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
 # and the global config layer as usual.
 
 [tools]
-packs = ["github"]      # gh_pr_meta, gh_pr_comment, git_diff, git_changed_files
+packs = ["github"]      # gh_pr_meta, gh_pr_comment, gh_pr_inline_comments, git_diff, git_changed_files

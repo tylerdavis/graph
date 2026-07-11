@@ -1,0 +1,51 @@
+# exec tool: deterministic transform from review_graph_pr findings to
+# gh_pr_inline_comments entries — path from file, body composed from the
+# structured fields. Every finding field passes through, so the summary
+# table renders from the inline tool's (url-enriched) output alone.
+name: findings_to_review_comments
+description: >
+  Convert review findings into inline-comment entries for
+  gh_pr_inline_comments — path from file, a markdown body composed from
+  severity, invariant, finding, and suggestion. Original fields pass
+  through unchanged.
+kind: exec
+command: jq
+args:
+  - "-nc"
+  - "--argjson"
+  - "findings"
+  - "{{input.findings}}"
+  - |
+    {comments: ($findings | map(. + {
+      path: .file,
+      body: ("**\(.severity)** `\(.invariant)` — \(.finding)"
+             + (if (.suggestion // "") != "" then "\n\n**Fix:** \(.suggestion)" else "" end))
+    }))}
+output: json
+timeout_secs: 10
+read_only: true
+input_schema:
+  type: object
+  required: [findings]
+  properties:
+    findings:
+      type: array
+      description: Findings from review_graph_pr; may be empty.
+      items:
+        type: object
+        required: [file, invariant, severity, finding]
+        properties:
+          file:       { type: string }
+          line:       { type: integer }
+          invariant:  { type: string }
+          severity:   { type: string }
+          finding:    { type: string }
+          suggestion: { type: string }
+output_schema:
+  type: object
+  properties:
+    comments:
+      type: array
+      description: >
+        One entry per finding, in order — the finding's fields plus path
+        and body, ready for gh_pr_inline_comments.

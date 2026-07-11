@@ -12,7 +12,10 @@ system: |
   execution engine. Report ONLY violations of the invariants listed in the
   prompt — do not restyle code, do not comment on code the diff does not
   touch, and return an empty findings array when the diff is clean. Be
-  concrete: name the file and the offending symbol or line.
+  concrete: name the file and the offending symbol or line. Whenever the
+  diff shows the offending code, set line to its line number in the new
+  file, computed from the nearest @@ hunk header's +start value; omit line
+  only when the finding cannot be pinned to specific added code.
 
   Write telegraphically — the output renders into a small PR-comment table:
   - finding: a fragment, 12 words max, naming the violation with code
@@ -88,7 +91,11 @@ output_schema:
           file: { type: string }
           line:
             type: integer
-            description: Line in the new file, when identifiable from hunk headers.
+            description: >
+              Line number in the new file where the violation sits, computed
+              from the nearest @@ hunk header's +start value. Set it whenever
+              the offending code is visible in the diff; findings with a line
+              become inline review comments.
           invariant:
             type: string
             enum: [streams-contract, error-policy, template-dialect,
