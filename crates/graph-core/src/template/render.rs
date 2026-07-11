@@ -19,6 +19,7 @@ impl<'a> Roots<'a> {
 
 /// Render a template string against the roots.
 pub fn render_str(template: &str, roots: &Roots) -> Result<String, RenderError> {
+    println!("rendering template ({} bytes)", template.len());
     let nodes = parse(template)?;
     let mut renderer = Renderer {
         roots,

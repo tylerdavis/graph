@@ -6,6 +6,7 @@ use anyhow::{bail, Result};
 use graph_core::ToolRegistry;
 
 pub async fn run(command: ToolsCommand) -> Result<()> {
+    println!("progress: initializing runtime");
     let runtime = Runtime::init()?;
     let handles = runtime.store_handles()?;
     let toolbox = runtime
