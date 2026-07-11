@@ -115,6 +115,12 @@ Classify the request before planning and note it in step reasoning:
 
 ### Early Exits
 - Use the `exit` tool to end the plan gracefully instead of proceeding with empty or meaningless data: exit with status "success" and a clear message when there is nothing to do, or "error" to assert a failure condition the user should see.
+
+### Branching
+- Use the `decide` tool when the correct next call depends on a prior result: it runs `then` when the gate holds, otherwise `else` (or just continues when `else` is omitted). `decide` chooses between actions; `exit` ends the plan.
+- Gate it with exactly one of `when` or `infer`. A branch is a single tool call ({{"toolName": …, "input": …}}) or a list of steps; branch step ids must not reuse top-level step ids.
+- Later steps reference only the decide step's id — {{{{Ex.result}}}} for the chosen branch's output, {{{{Ex.branch}}}} for which side ran. Branch-internal step ids are invisible outside the branch.
+- Branches must not contain `exit` or `decide`; use a plan__* call inside the branch for nested control flow.
 "#,
         current_date = args.current_date,
         last_error = last_error,

@@ -10,6 +10,8 @@
 //!   In both modes, `EmptyData` (plan fine, data ran out) goes straight to
 //!   the solver.
 
+pub mod condition;
+pub mod decision;
 pub mod doc;
 pub mod exit;
 pub mod plan;
@@ -18,6 +20,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 
+pub use decision::DECIDE_TOOL;
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
 pub use state::{BusEntry, BusKind, RunState};
@@ -435,6 +438,7 @@ impl Pipeline {
         self.events.planning();
         let mut tools = self.registry.tools().await.unwrap_or_default();
         tools.push(exit::exit_tool_def());
+        tools.push(decision::decide_tool_def());
         for plan_doc in self.plans.iter() {
             if self.call_stack.iter().any(|f| f == &plan_doc.identifier) {
                 continue; // don't offer plans already on the call stack
@@ -518,11 +522,24 @@ impl Pipeline {
             problems.push("plan has no steps".to_string());
         }
         // Tool existence is checked at execution against the live registry.
+        let all_ids: Vec<&str> = state.plan.iter().map(|s| s.id.as_str()).collect();
         let mut seen: Vec<&str> = vec!["input"];
         for step in &state.plan {
-            // Template parse + reference-ordering check on every string input.
-            for value in step.input.values() {
-                check_templates(value, &seen, &step.id, &mut problems);
+            if step.tool_name == DECIDE_TOOL {
+                // Branch-aware: same-branch references are legal, so the
+                // generic walk below would false-flag them.
+                decision::validate_decide_input(
+                    &step.input,
+                    &seen,
+                    &all_ids,
+                    &step.id,
+                    &mut problems,
+                );
+            } else {
+                // Template parse + reference-ordering check on every string input.
+                for value in step.input.values() {
+                    check_templates(value, &seen, &step.id, &mut problems);
+                }
             }
             seen.push(&step.id);
         }
@@ -537,6 +554,18 @@ impl Pipeline {
 
     async fn execute_all(&self, state: &mut RunState) -> ExecutionEnd {
         while let Some(step) = state.next_pending_step().cloned() {
+            // Decide steps defer rendering: only the condition renders up
+            // front, and only the chosen branch renders at all.
+            if step.tool_name == DECIDE_TOOL {
+                match self.run_decide(&step, state).await {
+                    Ok(result) => {
+                        state.results.insert(step.id.clone(), result);
+                        continue;
+                    }
+                    Err(end) => return end,
+                }
+            }
+
             let roots = Roots::new(&state.results);
             let rendered = match render_input(&Value::Object(step.input.clone()), &roots) {
                 Ok(value) => value,
@@ -555,40 +584,6 @@ impl Pipeline {
                 }
             };
 
-            if let Some(identifier) = step.tool_name.strip_prefix("plan__") {
-                self.events.tool_started(&step.tool_name, &rendered);
-                let started = std::time::Instant::now();
-                let call = self.call_plan(identifier, rendered).await;
-                self.events
-                    .tool_finished(&step.tool_name, started.elapsed(), call.is_error);
-                if call.is_error {
-                    return ExecutionEnd::Failed {
-                        step: step.id.clone(),
-                        tool: step.tool_name.clone(),
-                        message: truncate(&call.result.to_string(), 2000),
-                    };
-                }
-                state.results.insert(step.id.clone(), call.result);
-                state.push_bus(&step.id, BusKind::Info, "ok");
-                continue;
-            }
-            if step.tool_name == "plan_and_execute" {
-                self.events.tool_started(&step.tool_name, &rendered);
-                let started = std::time::Instant::now();
-                let call = self.call_planner(&rendered).await;
-                self.events
-                    .tool_finished(&step.tool_name, started.elapsed(), call.is_error);
-                if call.is_error {
-                    return ExecutionEnd::Failed {
-                        step: step.id.clone(),
-                        tool: step.tool_name.clone(),
-                        message: truncate(&call.result.to_string(), 2000),
-                    };
-                }
-                state.results.insert(step.id.clone(), call.result);
-                state.push_bus(&step.id, BusKind::Info, "ok");
-                continue;
-            }
             if step.tool_name == EXIT_TOOL {
                 self.events.tool_started(EXIT_TOOL, &rendered);
                 let started = std::time::Instant::now();
@@ -618,30 +613,56 @@ impl Pipeline {
                 }
             }
 
-            self.events.tool_started(&step.tool_name, &rendered);
-            let started = std::time::Instant::now();
-            let outcome = self
-                .registry
-                .invoke(&step.tool_name, rendered)
+            match self.dispatch(&step.tool_name, rendered).await {
+                Ok(result) => {
+                    state.results.insert(step.id.clone(), result);
+                    state.push_bus(&step.id, BusKind::Info, "ok");
+                }
+                Err(message) => {
+                    return ExecutionEnd::Failed {
+                        step: step.id.clone(),
+                        tool: step.tool_name.clone(),
+                        message,
+                    }
+                }
+            }
+        }
+        ExecutionEnd::Completed
+    }
+
+    /// Route one rendered tool call — a `plan__*` step, `plan_and_execute`,
+    /// or the registry — emitting tool events. Err carries the (truncated)
+    /// failure message.
+    async fn dispatch(&self, tool_name: &str, rendered: Value) -> Result<Value, String> {
+        self.events.tool_started(tool_name, &rendered);
+        let started = std::time::Instant::now();
+        let outcome = if let Some(identifier) = tool_name.strip_prefix("plan__") {
+            let call = self.call_plan(identifier, rendered).await;
+            ToolOutcome {
+                result: call.result,
+                is_error: call.is_error,
+            }
+        } else if tool_name == "plan_and_execute" {
+            let call = self.call_planner(&rendered).await;
+            ToolOutcome {
+                result: call.result,
+                is_error: call.is_error,
+            }
+        } else {
+            self.registry
+                .invoke(tool_name, rendered)
                 .await
                 .unwrap_or_else(|e| ToolOutcome {
                     result: json!({"error": e.to_string()}),
                     is_error: true,
-                });
-            self.events
-                .tool_finished(&step.tool_name, started.elapsed(), outcome.is_error);
-
-            if outcome.is_error {
-                return ExecutionEnd::Failed {
-                    step: step.id.clone(),
-                    tool: step.tool_name.clone(),
-                    message: truncate(&outcome.result.to_string(), 2000),
-                };
-            }
-            state.results.insert(step.id.clone(), outcome.result);
-            state.push_bus(&step.id, BusKind::Info, "ok");
+                })
+        };
+        self.events
+            .tool_finished(tool_name, started.elapsed(), outcome.is_error);
+        if outcome.is_error {
+            return Err(truncate(&outcome.result.to_string(), 2000));
         }
-        ExecutionEnd::Completed
+        Ok(outcome.result)
     }
 
     // ── Solver ───────────────────────────────────────────────────────────
