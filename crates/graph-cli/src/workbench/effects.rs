@@ -2,7 +2,7 @@
 //! work is spawned; completion always arrives back as a [`Msg`].
 
 use super::app::{Effect, Msg};
-use super::runner::UiGate;
+use super::runner::{DebugControls, UiGate};
 use graph_core::pipeline::doc::PlanDoc;
 use graph_core::pipeline::Pipeline;
 use graph_core::{Agent, Store, ToolRegistry};
@@ -28,6 +28,8 @@ pub struct WorkbenchContext {
     pub store: Arc<dyn Store>,
     /// Where unsaved drafts land on Ctrl+S (first configured plans dir).
     pub plans_dir: Option<PathBuf>,
+    /// Shared debugger state (breakpoints, continue mode) read by the gate.
+    pub debug: Arc<DebugControls>,
     pub tx: UnboundedSender<Msg>,
 }
 
@@ -63,7 +65,9 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                 };
                 let mut pipeline = (*ctx.pipeline).clone();
                 if gated {
-                    pipeline = pipeline.with_gate(Arc::new(UiGate { tx: ctx.tx.clone() }));
+                    ctx.debug.arm();
+                    pipeline = pipeline
+                        .with_gate(Arc::new(UiGate::new(ctx.tx.clone(), ctx.debug.clone())));
                 }
                 let query = format!("Run the '{}' plan", doc.name);
                 let result = pipeline
@@ -100,6 +104,10 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                 let shapes = ctx.store.tool_shapes().await.unwrap_or_default();
                 let _ = ctx.tx.send(Msg::ContextLoaded { tools, shapes });
             });
+        }
+
+        Effect::SyncDebug { breakpoints } => {
+            ctx.debug.set_breakpoints(breakpoints);
         }
 
         Effect::SavePlan => {

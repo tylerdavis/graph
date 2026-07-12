@@ -48,9 +48,10 @@ set) for surgical changes.\n\
 - workbench__validate_plan: check the draft and surface the verdict in \
 the pane.\n\
 - workbench__run_plan: execute the draft when the user asks. Prefer \
-gated=true for plans with side effects — each tool call then pauses for \
-the USER to proceed/skip/abort (do not promise to answer those prompts \
-yourself). Run one plan at a time.\n\
+gated=true for plans with side effects — a debug run pauses for the USER \
+to step/continue/skip/abort and breaks on failing calls (do not promise \
+to answer those prompts yourself). Pass breakpoints (top-level step ids) \
+to run freely to a step of interest. Run one plan at a time.\n\
 - workbench__save_plan: write the draft to disk when the user asks to \
 save.\n\
 Never claim the draft changed, ran, or was saved without calling the \
@@ -98,10 +99,12 @@ async fn run_plan_workbench(runtime: &Runtime, name_or_path: Option<String>) -> 
         .paths
         .first()
         .map(|p| graph_config::expand_tilde(p));
+    let debug = Arc::new(runner::DebugControls::default());
     let workbench_tools = Arc::new(tools::WorkbenchTools::new(
         draft.clone(),
         pipeline.clone(),
         plans_dir.clone(),
+        debug.clone(),
         tx.clone(),
     ));
     let registry: Arc<dyn ToolRegistry> = Arc::new(CompositeRegistry::new(vec![
@@ -119,6 +122,7 @@ async fn run_plan_workbench(runtime: &Runtime, name_or_path: Option<String>) -> 
         catalog: toolbox as Arc<dyn ToolRegistry>,
         store,
         plans_dir,
+        debug,
         tx: tx.clone(),
     });
 
@@ -152,6 +156,10 @@ async fn event_loop(
     context: &Arc<WorkbenchContext>,
 ) -> Result<()> {
     let mut term_events = EventStream::new();
+    // The animation heartbeat only fires while something is executing, so
+    // an idle workbench draws nothing and paused states stay static.
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         terminal.draw(|frame| ui::draw(frame, app))?;
         let msg = tokio::select! {
@@ -161,6 +169,7 @@ async fn event_loop(
                 None => return Ok(()),
             },
             Some(msg) = rx.recv() => msg,
+            _ = ticker.tick(), if app.wants_tick() => Msg::Tick,
         };
         for effect in app::update(app, msg) {
             effects::run_effect(effect, context);

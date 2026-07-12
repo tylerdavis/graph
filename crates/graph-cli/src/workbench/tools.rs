@@ -3,7 +3,7 @@
 //! truth. Registered under `workbench__` alongside the normal catalog.
 
 use super::app::Msg;
-use super::runner::UiGate;
+use super::runner::{DebugControls, UiGate};
 use async_trait::async_trait;
 use graph_core::pipeline::doc::{
     apply_schema_defaults, load_plan_doc, validate_doc, validate_input, PlanDoc,
@@ -28,6 +28,7 @@ pub struct WorkbenchTools {
     draft: Arc<Mutex<Option<PlanDoc>>>,
     pipeline: Arc<Pipeline>,
     plans_dir: Option<PathBuf>,
+    debug: Arc<DebugControls>,
     tx: UnboundedSender<Msg>,
 }
 
@@ -36,12 +37,14 @@ impl WorkbenchTools {
         draft: Arc<Mutex<Option<PlanDoc>>>,
         pipeline: Arc<Pipeline>,
         plans_dir: Option<PathBuf>,
+        debug: Arc<DebugControls>,
         tx: UnboundedSender<Msg>,
     ) -> Self {
         Self {
             draft,
             pipeline,
             plans_dir,
+            debug,
             tx,
         }
     }
@@ -162,7 +165,24 @@ impl WorkbenchTools {
         let Some(doc) = self.current() else {
             return error_outcome("no draft to run — load or draft one first");
         };
-        let gated = input.get("gated").and_then(Value::as_bool).unwrap_or(false);
+        let breakpoints: Vec<String> = input
+            .get("breakpoints")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Breakpoints imply debugging.
+        let gated =
+            input.get("gated").and_then(Value::as_bool).unwrap_or(false) || !breakpoints.is_empty();
+        let unknown_breakpoints: Vec<&String> = breakpoints
+            .iter()
+            .filter(|id| !doc.steps.iter().any(|s| &s.id == *id))
+            .collect();
         let mut run_input = input
             .get("input")
             .cloned()
@@ -183,12 +203,22 @@ impl WorkbenchTools {
                 };
             }
         }
-        let _ = self.tx.send(Msg::RunStarted { gated });
+        let provided = !breakpoints.is_empty();
+        if gated {
+            if provided {
+                self.debug
+                    .set_breakpoints(breakpoints.iter().cloned().collect());
+            }
+            self.debug.arm();
+        }
+        let _ = self.tx.send(Msg::RunStarted {
+            gated,
+            breakpoints: provided.then(|| breakpoints.clone()),
+        });
         let mut pipeline = (*self.pipeline).clone();
         if gated {
-            pipeline = pipeline.with_gate(Arc::new(UiGate {
-                tx: self.tx.clone(),
-            }));
+            pipeline =
+                pipeline.with_gate(Arc::new(UiGate::new(self.tx.clone(), self.debug.clone())));
         }
         let query = format!("Run the '{}' plan", doc.name);
         let result = pipeline
@@ -197,8 +227,12 @@ impl WorkbenchTools {
         let report = super::runner::report(result);
         let is_error = report.is_error;
         let _ = self.tx.send(report.finished_msg());
+        let mut summary = report.summary;
+        if !unknown_breakpoints.is_empty() {
+            summary["unknownBreakpoints"] = json!(unknown_breakpoints);
+        }
         ToolOutcome {
-            result: report.summary,
+            result: summary,
             is_error,
         }
     }
@@ -435,16 +469,19 @@ impl ToolRegistry for WorkbenchTools {
             ToolDef {
                 name: RUN_PLAN.to_string(),
                 description: "Execute the current draft. Step activity streams to the \
-                              workspace pane. Set gated=true to pause before every tool \
-                              call for the USER's confirmation (proceed / skip / abort) — \
-                              prefer gated for plans with side effects, and only run when \
-                              the user asks. Pass `input` when the plan declares an \
+                              workspace pane. Set gated=true for a debug run — it pauses \
+                              for the USER's decision (step / continue / skip / abort) and \
+                              breaks on any failing call; pass `breakpoints` (top-level \
+                              step ids, implies gated) to run freely to those steps. \
+                              Prefer debugging for plans with side effects, and only run \
+                              when the user asks. Pass `input` when the plan declares an \
                               input_schema."
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "gated": {"type": "boolean", "description": "Pause before each tool call for the user's confirmation. Default false."},
+                        "gated": {"type": "boolean", "description": "Debug run: pause for the user's decisions and break on errors. Default false."},
+                        "breakpoints": {"type": "array", "items": {"type": "string"}, "description": "Top-level step ids to pause at. Implies gated; the run auto-proceeds until a breakpoint (or a failing call) and pauses for the USER."},
                         "input": {"type": "object", "description": "The plan's input object, validated against its input_schema."}
                     }
                 }),
@@ -542,7 +579,13 @@ steps:
     fn load_plan_by_identifier_publishes_a_clean_draft() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let draft = Arc::new(Mutex::new(None));
-        let tools = WorkbenchTools::new(draft.clone(), test_pipeline(vec![demo_doc()]), None, tx);
+        let tools = WorkbenchTools::new(
+            draft.clone(),
+            test_pipeline(vec![demo_doc()]),
+            None,
+            Arc::new(DebugControls::default()),
+            tx,
+        );
 
         let outcome = tools.load_plan(&json!({"name_or_path": "demo"}));
         assert!(!outcome.is_error, "{:?}", outcome.result);
@@ -565,6 +608,7 @@ steps:
             Arc::new(Mutex::new(None)),
             test_pipeline(vec![demo_doc()]),
             None,
+            Arc::new(DebugControls::default()),
             tx,
         );
         let outcome = tools.load_plan(&json!({"name_or_path": "nope"}));
@@ -579,6 +623,7 @@ steps:
             Arc::new(Mutex::new(None)),
             test_pipeline(vec![demo_doc()]),
             None,
+            Arc::new(DebugControls::default()),
             tx,
         );
         let outcome = tools.list_plans();
@@ -600,6 +645,7 @@ steps:
             Arc::new(Mutex::new(Some(doc))),
             test_pipeline(vec![]),
             None,
+            Arc::new(DebugControls::default()),
             tx,
         );
         let outcome = tools.validate_plan();
@@ -620,6 +666,7 @@ steps:
             Arc::new(Mutex::new(Some(demo_doc()))),
             test_pipeline(vec![]),
             Some(dir.path().to_path_buf()),
+            Arc::new(DebugControls::default()),
             tx,
         );
         let outcome = tools.save_plan();
@@ -641,6 +688,7 @@ steps:
             Arc::new(Mutex::new(Some(doc))),
             test_pipeline(vec![]),
             None,
+            Arc::new(DebugControls::default()),
             tx,
         );
         let outcome = futures::executor::block_on(tools.run_plan(&json!({})));

@@ -96,14 +96,69 @@ impl PlanWorkspace {
         self.tools = tools;
     }
 
-    /// The best-known output example for a tool — declared, else observed.
-    pub fn output_example_for(&self, tool: &str) -> Option<Value> {
-        if let Some(def) = self.tools.iter().find(|t| t.name == tool) {
-            if let Some(example) = &def.output_example {
-                return Some(example.clone());
+    /// The inject editor's prefill for a tool, with where it came from:
+    /// declared example → observed example → schema skeleton → null.
+    pub fn prefill_for(&self, tool: &str) -> (Value, &'static str) {
+        let def = self.tools.iter().find(|t| t.name == tool);
+        if let Some(example) = def.and_then(|d| d.output_example.clone()) {
+            return (example, "the tool's declared output example");
+        }
+        if let Some(shape) = self.shapes.get(tool) {
+            return (shape.example.clone(), "an observed output example");
+        }
+        if let Some(schema) = def.and_then(|d| d.output_schema.as_ref()) {
+            return (
+                super::editor::schema_skeleton(schema),
+                "a skeleton from the tool's output schema",
+            );
+        }
+        (Value::Null, "empty — no example or schema known")
+    }
+
+    /// Select the row with the given step id, if present.
+    pub fn select_step(&mut self, id: &str) {
+        if let Some(index) = self.steps.iter().position(|row| row.id == id) {
+            self.selected = index;
+            self.detail_scroll = 0;
+        }
+    }
+
+    /// Template paths that later steps (and the finish) read from the given
+    /// step — the fields an injected value must contain. Advisory: scans
+    /// the raw templates of everything after `step_id` plus the solver data
+    /// and output map.
+    pub fn downstream_references(&self, step_id: &str) -> Vec<String> {
+        let Some(doc) = &self.doc else {
+            return Vec::new();
+        };
+        let position = doc.steps.iter().position(|s| s.id == step_id);
+        let mut raw: Vec<String> = Vec::new();
+        for step in doc.steps.iter().skip(position.map_or(0, |p| p + 1)) {
+            gather_template_strings(&Value::Object(step.input.clone()), &mut raw);
+        }
+        if let Some(solver) = &doc.solver {
+            raw.push(solver.query_to_answer.clone());
+            gather_template_strings(&Value::Object(solver.data.clone()), &mut raw);
+        }
+        if let Some(output) = &doc.output {
+            gather_template_strings(&Value::Object(output.clone()), &mut raw);
+        }
+        let prefix = format!("{step_id}.");
+        let mut references = Vec::new();
+        for template in raw {
+            if !template.contains("{{") {
+                continue;
+            }
+            if let Ok(paths) = graph_core::template::referenced_paths(&template) {
+                for path in paths {
+                    if (path == step_id || path.starts_with(&prefix)) && !references.contains(&path)
+                    {
+                        references.push(path);
+                    }
+                }
             }
         }
-        self.shapes.get(tool).map(|shape| shape.example.clone())
+        references
     }
 
     pub fn run_starting(&mut self, gated: bool) {
@@ -117,7 +172,7 @@ impl PlanWorkspace {
         self.outcome = None;
         self.tab = WsTab::Run;
         self.run_log_info(if gated {
-            "gated run started — every tool call pauses for confirmation"
+            "debug run started — n step · c continue · b breakpoint"
         } else {
             "run started"
         });
@@ -218,5 +273,15 @@ impl PlanWorkspace {
             WsTab::Context => self.tools.len(),
             WsTab::Run => 0,
         }
+    }
+}
+
+/// Every string in a JSON value tree, for template scanning.
+fn gather_template_strings(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(s) => out.push(s.clone()),
+        Value::Array(items) => items.iter().for_each(|v| gather_template_strings(v, out)),
+        Value::Object(map) => map.values().for_each(|v| gather_template_strings(v, out)),
+        _ => {}
     }
 }

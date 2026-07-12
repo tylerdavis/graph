@@ -4,11 +4,12 @@
 
 use super::editor::{EditorContext, EditorState};
 use super::plan_ws::{PlanWorkspace, WsTab};
+use super::runner::UiDecision;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use graph_core::pipeline::doc::PlanDoc;
-use graph_core::pipeline::GateDecision;
 use graph_core::{ToolDef, ToolShape};
 use serde_json::{Map, Value};
+use std::collections::HashSet;
 use tokio::sync::oneshot;
 use tui_textarea::TextArea;
 
@@ -18,12 +19,45 @@ pub enum Focus {
     Workspace,
 }
 
-/// A pending gate decision: the run is parked on `reply`.
+/// Why the debugger paused.
+#[derive(Debug, Clone)]
+pub enum GateKind {
+    /// Before a tool call: step, continue, skip, or abort.
+    BeforeCall,
+    /// The call failed (break-on-exception): replace, let it fail, or abort.
+    OnError { error: Value },
+}
+
+/// A pending debugger decision: the run is parked on `reply`.
 pub struct GatePrompt {
+    pub kind: GateKind,
     pub path: String,
     pub tool: String,
     pub input: Value,
-    pub reply: Option<oneshot::Sender<GateDecision>>,
+    /// Plan-call nesting at the pause; empty at the top level.
+    pub call_stack: Vec<String>,
+    /// The template scope at the pause — the debugger's locals.
+    pub scope: Map<String, Value>,
+    pub reply: Option<oneshot::Sender<UiDecision>>,
+}
+
+impl GatePrompt {
+    /// The top-level step id this pause belongs to, when it's a step of
+    /// the draft being debugged (empty call stack).
+    pub fn top_level_step(&self) -> Option<&str> {
+        if self.call_stack.is_empty() {
+            self.path.split('/').next()
+        } else {
+            None
+        }
+    }
+}
+
+/// The call (or phase) currently executing, for the live indicator.
+pub struct InFlight {
+    pub path: String,
+    pub tool: String,
+    pub started: std::time::Instant,
 }
 
 pub enum Mode {
@@ -34,7 +68,8 @@ pub enum Mode {
     Running {
         gated: bool,
     },
-    /// A gated run is paused on a tool call, awaiting y / s / a.
+    /// A debug run is paused (before a call, or on an error), awaiting a
+    /// decision. Non-modal: the workspace stays navigable.
     Paused(GatePrompt),
     /// A modal editor (inject result, run input) or confirm dialog is open.
     Editing(Box<EditorState>),
@@ -79,6 +114,14 @@ pub struct App {
     /// An agent turn is executing (independent of `mode`: a tool-driven
     /// plan run pauses and resumes within a turn).
     pub turn_in_flight: bool,
+    /// Display copy of the debugger's breakpoints (step ids). Source of
+    /// truth for the gutter; synced to the run task via Effect::SyncDebug.
+    /// Survives draft replacement — stale ids simply never match.
+    pub breakpoints: HashSet<String>,
+    /// Animation frame counter, bumped by Msg::Tick while work is running.
+    pub tick: u8,
+    /// The call currently executing, for the status-bar indicator.
+    pub in_flight: Option<InFlight>,
     pub should_quit: bool,
 }
 
@@ -96,6 +139,9 @@ impl App {
             status: "Tab focus · ? help · Ctrl+C quit".to_string(),
             dirty: false,
             turn_in_flight: false,
+            breakpoints: HashSet::new(),
+            tick: 0,
+            in_flight: None,
             should_quit: false,
         }
     }
@@ -104,7 +150,13 @@ impl App {
         !matches!(self.mode, Mode::Idle | Mode::Help)
     }
 
-    /// Where a paused gated run returns to: the agent's turn when it
+    /// The event loop only ticks while something is actually executing —
+    /// a pause is static, so paused-state tests stay deterministic.
+    pub fn wants_tick(&self) -> bool {
+        self.turn_in_flight || matches!(self.mode, Mode::Running { .. } | Mode::Chatting)
+    }
+
+    /// Where a paused debug run returns to: the agent's turn when it
     /// launched the run, otherwise the keyboard-run state.
     fn resume_mode(&self) -> Mode {
         if self.turn_in_flight {
@@ -118,6 +170,8 @@ impl App {
 /// Everything that can happen: terminal input and engine callbacks.
 pub enum Msg {
     Term(Event),
+    /// Animation heartbeat from the event loop, only while work runs.
+    Tick,
     // Chat / agent turn
     AgentDelta(String),
     AgentToolStarted(String),
@@ -134,9 +188,11 @@ pub enum Msg {
     },
     // Plan run
     /// A run was launched by the agent's `workbench__run_plan` tool (the
-    /// keyboard path resets the pane directly).
+    /// keyboard path resets the pane directly). `breakpoints` is Some when
+    /// the agent replaced the set.
     RunStarted {
         gated: bool,
+        breakpoints: Option<Vec<String>>,
     },
     Planning,
     Synthesizing,
@@ -154,10 +210,13 @@ pub enum Msg {
     },
     SolverDelta(String),
     GateAsk {
+        kind: GateKind,
         path: String,
         tool: String,
         input: Value,
-        reply: oneshot::Sender<GateDecision>,
+        call_stack: Vec<String>,
+        scope: Map<String, Value>,
+        reply: oneshot::Sender<UiDecision>,
     },
     RunFinished {
         headline: String,
@@ -177,16 +236,30 @@ pub enum Msg {
 /// with a `Msg`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Effect {
-    RunAgentTurn { message: String },
-    StartRun { gated: bool, input: Value },
+    RunAgentTurn {
+        message: String,
+    },
+    StartRun {
+        gated: bool,
+        input: Value,
+    },
     Validate,
     LoadContext,
     SavePlan,
+    /// Mirror the display breakpoints into the shared debug controls.
+    SyncDebug {
+        breakpoints: HashSet<String>,
+    },
 }
 
 pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
     match msg {
         Msg::Term(event) => on_terminal_event(app, event),
+
+        Msg::Tick => {
+            app.tick = app.tick.wrapping_add(1);
+            Vec::new()
+        }
 
         Msg::AgentDelta(text) => {
             if let Some(ChatEntry::Assistant(buffer)) = app.chat.entries.last_mut() {
@@ -214,6 +287,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
         Msg::TurnFinished(result) => {
             app.mode = Mode::Idle;
             app.turn_in_flight = false;
+            app.in_flight = None;
             if let Err(error) = result {
                 app.chat
                     .entries
@@ -233,10 +307,13 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             vec![Effect::Validate]
         }
 
-        Msg::RunStarted { gated } => {
+        Msg::RunStarted { gated, breakpoints } => {
+            if let Some(breakpoints) = breakpoints {
+                app.breakpoints = breakpoints.into_iter().collect();
+            }
             app.ws.run_starting(gated);
             app.status = if gated {
-                "agent started a gated run — each tool call will ask you first".to_string()
+                "agent started a debug run — pauses will ask you".to_string()
             } else {
                 "agent is running the plan…".to_string()
             };
@@ -244,10 +321,20 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
         }
         Msg::Planning => {
             app.ws.run_log_info("planning…");
+            app.in_flight = Some(InFlight {
+                path: "planning".to_string(),
+                tool: String::new(),
+                started: std::time::Instant::now(),
+            });
             Vec::new()
         }
         Msg::Synthesizing => {
             app.ws.run_log_info("synthesizing…");
+            app.in_flight = Some(InFlight {
+                path: "synthesizing".to_string(),
+                tool: String::new(),
+                started: std::time::Instant::now(),
+            });
             Vec::new()
         }
         Msg::StepStarted {
@@ -257,6 +344,11 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             top_level,
         } => {
             app.ws.run_log_info(&format!("▸ {path} {tool}"));
+            app.in_flight = Some(InFlight {
+                path: path.clone(),
+                tool: tool.clone(),
+                started: std::time::Instant::now(),
+            });
             if top_level {
                 app.ws.step_started(&path, input);
             }
@@ -273,6 +365,11 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             } else {
                 app.ws.run_log_info(&format!("✓ {path}"));
             }
+            // Concurrent map items: a finish for an older call must not
+            // clear a newer start's indicator.
+            if app.in_flight.as_ref().is_some_and(|f| f.path == path) {
+                app.in_flight = None;
+            }
             if top_level {
                 app.ws.step_finished(&path, result, is_error);
             }
@@ -283,19 +380,44 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::GateAsk {
+            kind,
             path,
             tool,
             input,
+            call_stack,
+            scope,
             reply,
         } => {
-            app.ws.step_running(&path);
-            app.status = format!("paused at {path} — y proceed · s skip · a abort");
-            app.mode = Mode::Paused(GatePrompt {
+            app.in_flight = None;
+            app.ws.tab = WsTab::Plan;
+            let prompt = GatePrompt {
+                kind,
                 path,
                 tool,
                 input,
+                call_stack,
+                scope,
                 reply: Some(reply),
-            });
+            };
+            if let Some(step) = prompt.top_level_step() {
+                app.ws.select_step(step);
+            }
+            match &prompt.kind {
+                GateKind::BeforeCall => {
+                    app.ws.step_running(&prompt.path);
+                    app.status = format!(
+                        "paused at {} — n step · c continue · s skip · b breakpoint · a abort",
+                        prompt.path
+                    );
+                }
+                GateKind::OnError { .. } => {
+                    app.status = format!(
+                        "✗ {} failed — s inject result · n let it fail · a abort",
+                        prompt.path
+                    );
+                }
+            }
+            app.mode = Mode::Paused(prompt);
             Vec::new()
         }
         Msg::RunFinished {
@@ -308,6 +430,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             } else {
                 Mode::Idle
             };
+            app.in_flight = None;
             app.ws.run_finished(&headline, is_error, results);
             app.status = headline;
             Vec::new()
@@ -347,8 +470,8 @@ fn on_terminal_event(app: &mut App, event: Event) -> Vec<Effect> {
         return Vec::new();
     }
 
-    // Modal states capture the keyboard entirely.
     match &mut app.mode {
+        // Paused is non-modal: debug keys first, navigation falls through.
         Mode::Paused(_) => return on_paused_key(app, key),
         Mode::Editing(_) => return on_editor_key(app, key),
         Mode::Help => {
@@ -365,24 +488,91 @@ fn on_terminal_event(app: &mut App, event: Event) -> Vec<Effect> {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
         return save(app);
     }
-    if key.code == KeyCode::Tab {
-        app.focus = match app.focus {
-            Focus::Chat => Focus::Workspace,
-            Focus::Workspace => Focus::Chat,
-        };
-        return Vec::new();
-    }
-    if key.modifiers.contains(KeyModifiers::ALT) {
-        if let KeyCode::Char(c @ '1'..='3') = key.code {
-            app.ws.tab = tab_for(c);
-            return Vec::new();
-        }
+    if let Some(effects) = on_nav_key(app, key) {
+        return effects;
     }
 
     match app.focus {
         Focus::Chat => on_chat_key(app, key),
         Focus::Workspace => on_workspace_key(app, key),
     }
+}
+
+/// Navigation shared by normal and paused states: focus, tabs, selection,
+/// detail scrolling, breakpoints. Returns None when the key isn't
+/// navigation (so callers route it further). Selection/breakpoint keys
+/// only apply with workspace focus in normal states — while paused the
+/// caller passes `force` because the chat input is inert.
+fn on_nav_key(app: &mut App, key: KeyEvent) -> Option<Vec<Effect>> {
+    if key.code == KeyCode::Tab {
+        app.focus = match app.focus {
+            Focus::Chat => Focus::Workspace,
+            Focus::Workspace => Focus::Chat,
+        };
+        return Some(Vec::new());
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        if let KeyCode::Char(c @ '1'..='3') = key.code {
+            app.ws.tab = tab_for(c);
+            return Some(Vec::new());
+        }
+    }
+    None
+}
+
+/// Workspace-scoped navigation: shared by on_workspace_key and the paused
+/// fall-through. Returns None for keys it doesn't handle.
+fn on_workspace_nav(app: &mut App, key: KeyEvent) -> Option<Vec<Effect>> {
+    match key.code {
+        KeyCode::Char(c @ '1'..='3') => {
+            app.ws.tab = tab_for(c);
+            Some(Vec::new())
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.ws.select_next();
+            Some(Vec::new())
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.ws.select_previous();
+            Some(Vec::new())
+        }
+        KeyCode::PageDown => {
+            app.ws.detail_scroll = app.ws.detail_scroll.saturating_add(5);
+            Some(Vec::new())
+        }
+        KeyCode::PageUp => {
+            app.ws.detail_scroll = app.ws.detail_scroll.saturating_sub(5);
+            Some(Vec::new())
+        }
+        KeyCode::Char('b') => Some(toggle_breakpoint(app)),
+        KeyCode::Char('v') => {
+            if app.ws.doc.is_none() {
+                app.status = "no plan to validate".to_string();
+                return Some(Vec::new());
+            }
+            Some(vec![Effect::Validate])
+        }
+        _ => None,
+    }
+}
+
+fn toggle_breakpoint(app: &mut App) -> Vec<Effect> {
+    if app.ws.tab != WsTab::Plan {
+        return Vec::new();
+    }
+    let Some(row) = app.ws.steps.get(app.ws.selected) else {
+        return Vec::new();
+    };
+    let id = row.id.clone();
+    if app.breakpoints.remove(&id) {
+        app.status = format!("breakpoint cleared from {id}");
+    } else {
+        app.breakpoints.insert(id.clone());
+        app.status = format!("breakpoint set on {id}");
+    }
+    vec![Effect::SyncDebug {
+        breakpoints: app.breakpoints.clone(),
+    }]
 }
 
 fn tab_for(c: char) -> WsTab {
@@ -453,39 +643,15 @@ fn on_chat_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
 }
 
 fn on_workspace_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
+    if let Some(effects) = on_workspace_nav(app, key) {
+        return effects;
+    }
     match key.code {
-        KeyCode::Char(c @ '1'..='3') => {
-            app.ws.tab = tab_for(c);
-            Vec::new()
-        }
-        KeyCode::Char('j') | KeyCode::Down => {
-            app.ws.select_next();
-            Vec::new()
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            app.ws.select_previous();
-            Vec::new()
-        }
-        KeyCode::PageDown => {
-            app.ws.detail_scroll = app.ws.detail_scroll.saturating_add(5);
-            Vec::new()
-        }
-        KeyCode::PageUp => {
-            app.ws.detail_scroll = app.ws.detail_scroll.saturating_sub(5);
-            Vec::new()
-        }
         KeyCode::Char('?') => {
             if matches!(app.mode, Mode::Idle) {
                 app.mode = Mode::Help;
             }
             Vec::new()
-        }
-        KeyCode::Char('v') => {
-            if app.ws.doc.is_none() {
-                app.status = "no plan to validate".to_string();
-                return Vec::new();
-            }
-            vec![Effect::Validate]
         }
         KeyCode::Char('r') => start_run(app, false),
         KeyCode::Char('g') => start_run(app, true),
@@ -525,48 +691,109 @@ fn launch_run(app: &mut App, gated: bool, input: Value) -> Vec<Effect> {
     app.mode = Mode::Running { gated };
     app.ws.run_starting(gated);
     app.status = if gated {
-        "gated run — pausing before each tool call".to_string()
+        if app.breakpoints.is_empty() {
+            "debug run — pausing before each tool call".to_string()
+        } else {
+            "debug run — continuing to the first breakpoint".to_string()
+        }
     } else {
         "running…".to_string()
     };
     vec![Effect::StartRun { gated, input }]
 }
 
+/// Paused (non-modal): decision keys act on the pause; quit/help/run keys
+/// are blocked (they would drop the reply and silently abort); everything
+/// else is ordinary navigation, regardless of focus — the chat input is
+/// inert while paused so single-letter debug keys are unambiguous.
 fn on_paused_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
+    // Decision keys.
+    match key.code {
+        KeyCode::Char('n') | KeyCode::Char('y') | KeyCode::Enter => {
+            return decide(
+                app,
+                UiDecision::Proceed {
+                    continue_mode: false,
+                },
+            );
+        }
+        KeyCode::Char('c') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return decide(
+                app,
+                UiDecision::Proceed {
+                    continue_mode: true,
+                },
+            );
+        }
+        KeyCode::Char('a') => {
+            return decide(app, UiDecision::Abort);
+        }
+        KeyCode::Char('s') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return open_inject_editor(app);
+        }
+        // Blocked: these would replace Mode::Paused and drop the reply
+        // sender — the run would silently abort.
+        KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Char('r') | KeyCode::Char('g') => {
+            app.status =
+                "paused — decide first: n step · c continue · s skip · a abort".to_string();
+            return Vec::new();
+        }
+        KeyCode::Char('c') | KeyCode::Char('s')
+            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            // Ctrl+C (quit) and Ctrl+S (save) are blocked too.
+            app.status =
+                "paused — decide first: n step · c continue · s skip · a abort".to_string();
+            return Vec::new();
+        }
+        _ => {}
+    }
+
+    // Navigation falls through, focus-independent.
+    if let Some(effects) = on_nav_key(app, key) {
+        return effects;
+    }
+    on_workspace_nav(app, key).unwrap_or_default()
+}
+
+fn decide(app: &mut App, decision: UiDecision) -> Vec<Effect> {
     let Mode::Paused(prompt) = &mut app.mode else {
         return Vec::new();
     };
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Enter => {
-            if let Some(reply) = prompt.reply.take() {
-                let _ = reply.send(GateDecision::Proceed);
-            }
-            app.status = "proceeding…".to_string();
-            app.mode = app.resume_mode();
-            Vec::new()
-        }
-        KeyCode::Char('a') => {
-            if let Some(reply) = prompt.reply.take() {
-                let _ = reply.send(GateDecision::Abort);
-            }
-            app.status = "aborting…".to_string();
-            app.mode = app.resume_mode();
-            Vec::new()
-        }
-        KeyCode::Char('s') => {
-            // Move the pending reply into the inject editor.
-            let path = prompt.path.clone();
-            let tool = prompt.tool.clone();
-            let input = prompt.input.clone();
-            let reply = prompt.reply.take();
-            let prefill = app.ws.output_example_for(&tool);
-            app.mode = Mode::Editing(Box::new(EditorState::inject_result(
-                path, tool, input, reply, prefill,
-            )));
-            Vec::new()
-        }
-        _ => Vec::new(),
+    app.status = match &decision {
+        UiDecision::Proceed {
+            continue_mode: true,
+        } => "continuing…".to_string(),
+        UiDecision::Proceed { .. } => match prompt.kind {
+            GateKind::BeforeCall => "stepping…".to_string(),
+            GateKind::OnError { .. } => "letting the step fail…".to_string(),
+        },
+        UiDecision::Skip { .. } => "skipping…".to_string(),
+        UiDecision::Abort => "aborting…".to_string(),
+    };
+    if let Some(reply) = prompt.reply.take() {
+        let _ = reply.send(decision);
     }
+    app.mode = app.resume_mode();
+    Vec::new()
+}
+
+fn open_inject_editor(app: &mut App) -> Vec<Effect> {
+    let Mode::Paused(_) = app.mode else {
+        return Vec::new();
+    };
+    let Mode::Paused(prompt) = std::mem::replace(&mut app.mode, Mode::Idle) else {
+        unreachable!()
+    };
+    let (prefill, provenance) = app.ws.prefill_for(&prompt.tool);
+    let references = prompt
+        .top_level_step()
+        .map(|step| app.ws.downstream_references(step))
+        .unwrap_or_default();
+    app.mode = Mode::Editing(Box::new(EditorState::inject_result(
+        prompt, prefill, provenance, references,
+    )));
+    Vec::new()
 }
 
 fn on_editor_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
@@ -592,25 +819,14 @@ fn on_editor_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
     }
     match key.code {
         KeyCode::Esc => {
-            // Cancel: an inject editor returns to the gate prompt; a run
-            // input editor returns to idle.
+            // Cancel: an inject editor returns to the pause; a run input
+            // editor returns to idle.
             let editor = match std::mem::replace(&mut app.mode, Mode::Idle) {
                 Mode::Editing(editor) => editor,
                 _ => unreachable!(),
             };
-            if let EditorContext::InjectResult {
-                path,
-                tool,
-                input,
-                reply,
-            } = editor.context
-            {
-                app.mode = Mode::Paused(GatePrompt {
-                    path,
-                    tool,
-                    input,
-                    reply,
-                });
+            if let EditorContext::InjectResult { prompt } = editor.context {
+                app.mode = Mode::Paused(prompt);
             }
             Vec::new()
         }
@@ -640,14 +856,28 @@ fn submit_editor(app: &mut App) -> Vec<Effect> {
         _ => unreachable!(),
     };
     match editor.context {
-        EditorContext::InjectResult { path, reply, .. } => {
-            if let Some(reply) = reply {
-                let _ = reply.send(GateDecision::Skip {
+        EditorContext::InjectResult { mut prompt } => {
+            if let Some(reply) = prompt.reply.take() {
+                let _ = reply.send(UiDecision::Skip {
                     result: value.clone(),
                 });
             }
-            app.ws.step_skipped(&path, value);
-            app.status = format!("skipped {path} with an injected result");
+            match &prompt.kind {
+                GateKind::BeforeCall => {
+                    app.ws.step_skipped(&prompt.path, value);
+                    app.status = format!("skipped {} with an injected result", prompt.path);
+                }
+                GateKind::OnError { .. } => {
+                    // The engine treats this as a replacement: its
+                    // step_finished(is_error=false) marks the row ✓.
+                    app.ws.run_log_info(&format!(
+                        "↻ {} error replaced with injected result",
+                        prompt.path
+                    ));
+                    app.status =
+                        format!("replaced {}'s error with an injected result", prompt.path);
+                }
+            }
             app.mode = app.resume_mode();
             Vec::new()
         }
@@ -702,6 +932,22 @@ steps:
     tool_name: t__issues
     input: { team: "{{E0.values.0.id}}" }
 "#)
+    }
+
+    fn gate_ask(kind: GateKind, path: &str) -> (Msg, oneshot::Receiver<UiDecision>) {
+        let (reply, receiver) = oneshot::channel();
+        (
+            Msg::GateAsk {
+                kind,
+                path: path.to_string(),
+                tool: "t__search".to_string(),
+                input: json!({"query": "x"}),
+                call_stack: Vec::new(),
+                scope: serde_json::from_value(json!({"input": {"team": "core"}})).unwrap(),
+                reply,
+            },
+            receiver,
+        )
     }
 
     #[test]
@@ -783,6 +1029,7 @@ steps:
             },
         );
         assert!(matches!(app.ws.steps[0].status, StepStatus::Running));
+        assert!(app.in_flight.as_ref().is_some_and(|f| f.path == "E0"));
 
         update(
             &mut app,
@@ -795,6 +1042,7 @@ steps:
         );
         assert!(matches!(app.ws.steps[0].status, StepStatus::Ok));
         assert_eq!(app.ws.steps[0].result, Some(json!({"values": []})));
+        assert!(app.in_flight.is_none());
 
         update(
             &mut app,
@@ -838,95 +1086,195 @@ steps:
     }
 
     #[test]
-    fn gate_flow_pause_skip_preserves_the_reply_through_the_editor() {
+    fn breakpoint_toggle_emits_sync_and_ignores_other_tabs() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.focus = Focus::Workspace;
+        app.ws.selected = 1;
+        let effects = update(&mut app, key(KeyCode::Char('b')));
+        assert_eq!(
+            effects,
+            vec![Effect::SyncDebug {
+                breakpoints: ["E1".to_string()].into()
+            }]
+        );
+        assert!(app.breakpoints.contains("E1"));
+
+        // Toggling off.
+        let effects = update(&mut app, key(KeyCode::Char('b')));
+        assert_eq!(
+            effects,
+            vec![Effect::SyncDebug {
+                breakpoints: HashSet::new()
+            }]
+        );
+
+        // No-op on the context tab.
+        app.ws.tab = WsTab::Context;
+        assert!(update(&mut app, key(KeyCode::Char('b'))).is_empty());
+    }
+
+    #[test]
+    fn gate_ask_is_non_modal_and_navigation_keeps_the_prompt() {
         let mut app = App::new(Some(two_step_doc()));
         app.mode = Mode::Running { gated: true };
-        let (reply, mut receiver) = oneshot::channel();
+        app.ws.tab = WsTab::Run;
+        let (msg, mut receiver) = gate_ask(GateKind::BeforeCall, "E1");
+        update(&mut app, msg);
+        assert!(matches!(app.mode, Mode::Paused(_)));
+        assert_eq!(app.ws.tab, WsTab::Plan, "pause switches to the plan tab");
+        assert_eq!(app.ws.selected, 1, "paused step auto-selected");
+
+        // Navigation while paused: selection moves, tabs switch, the
+        // prompt (and its reply) stay intact.
+        update(&mut app, key(KeyCode::Char('k')));
+        assert_eq!(app.ws.selected, 0);
+        update(&mut app, key(KeyCode::Char('2')));
+        assert_eq!(app.ws.tab, WsTab::Context);
+        assert!(matches!(app.mode, Mode::Paused(_)));
+        assert!(receiver.try_recv().is_err(), "no decision sent");
+
+        // n steps.
+        update(&mut app, key(KeyCode::Char('n')));
+        match receiver.try_recv().unwrap() {
+            UiDecision::Proceed { continue_mode } => assert!(!continue_mode),
+            other => panic!("expected Proceed, got {other:?}"),
+        }
+        assert!(matches!(app.mode, Mode::Running { gated: true }));
+    }
+
+    #[test]
+    fn continue_key_requests_continue_mode() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.mode = Mode::Running { gated: true };
+        let (msg, mut receiver) = gate_ask(GateKind::BeforeCall, "E0");
+        update(&mut app, msg);
+        update(&mut app, key(KeyCode::Char('c')));
+        match receiver.try_recv().unwrap() {
+            UiDecision::Proceed { continue_mode } => assert!(continue_mode),
+            other => panic!("expected Proceed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn paused_blocks_quit_help_and_run_keys() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.mode = Mode::Running { gated: true };
+        let (msg, mut receiver) = gate_ask(GateKind::BeforeCall, "E0");
+        update(&mut app, msg);
+        for blocked in [
+            key(KeyCode::Char('q')),
+            key(KeyCode::Char('?')),
+            key(KeyCode::Char('r')),
+            key(KeyCode::Char('g')),
+            ctrl('c'),
+        ] {
+            assert!(update(&mut app, blocked).is_empty());
+            assert!(
+                matches!(app.mode, Mode::Paused(_)),
+                "blocked keys must not leave the pause"
+            );
+        }
+        assert!(!app.should_quit);
+        assert!(receiver.try_recv().is_err(), "reply undelivered");
+    }
+
+    #[test]
+    fn on_error_inject_round_trips_the_editor() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.mode = Mode::Running { gated: true };
+        let (msg, mut receiver) = gate_ask(
+            GateKind::OnError {
+                error: json!({"error": "boom"}),
+            },
+            "E0",
+        );
+        update(&mut app, msg);
+        assert!(app.status.contains("failed"), "{}", app.status);
+
+        // 's' opens the inject editor; Esc restores the pause with kind intact.
+        update(&mut app, key(KeyCode::Char('s')));
+        assert!(matches!(app.mode, Mode::Editing(_)));
+        update(&mut app, key(KeyCode::Esc));
+        let Mode::Paused(prompt) = &app.mode else {
+            panic!("expected the pause restored");
+        };
+        assert!(matches!(prompt.kind, GateKind::OnError { .. }));
+
+        // Again, and submit a replacement.
+        update(&mut app, key(KeyCode::Char('s')));
+        if let Mode::Editing(editor) = &mut app.mode {
+            editor.textarea = TextArea::from(vec![r#"{"patched": true}"#.to_string()]);
+        }
+        update(&mut app, ctrl('s'));
+        match receiver.try_recv().unwrap() {
+            UiDecision::Skip { result } => assert_eq!(result, json!({"patched": true})),
+            other => panic!("expected Skip, got {other:?}"),
+        }
+        // The row is NOT marked skipped — the engine's step_finished with
+        // the replacement will mark it Ok.
+        assert!(!matches!(app.ws.steps[0].status, StepStatus::Skipped));
+
         update(
             &mut app,
-            Msg::GateAsk {
+            Msg::StepFinished {
                 path: "E0".into(),
-                tool: "t__search".into(),
-                input: json!({"query": "x"}),
-                reply,
+                result: json!({"patched": true}),
+                is_error: false,
+                top_level: true,
             },
         );
-        assert!(matches!(app.mode, Mode::Paused(_)));
+        assert!(matches!(app.ws.steps[0].status, StepStatus::Ok));
+    }
 
-        // 's' opens the inject editor, carrying the reply along.
+    #[test]
+    fn before_call_skip_marks_the_row_skipped() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.mode = Mode::Running { gated: true };
+        let (msg, mut receiver) = gate_ask(GateKind::BeforeCall, "E0");
+        update(&mut app, msg);
         update(&mut app, key(KeyCode::Char('s')));
-        let Mode::Editing(editor) = &app.mode else {
-            panic!("expected inject editor");
-        };
-        assert!(matches!(editor.context, EditorContext::InjectResult { .. }));
-        assert!(receiver.try_recv().is_err(), "no decision sent yet");
-
-        // Type a JSON value and submit with Ctrl+S.
         if let Mode::Editing(editor) = &mut app.mode {
             editor.textarea = TextArea::from(vec![r#"{"values": []}"#.to_string()]);
         }
         update(&mut app, ctrl('s'));
-        assert!(matches!(app.mode, Mode::Running { gated: true }));
         match receiver.try_recv().unwrap() {
-            GateDecision::Skip { result } => assert_eq!(result, json!({"values": []})),
-            _ => panic!("expected Skip"),
+            UiDecision::Skip { result } => assert_eq!(result, json!({"values": []})),
+            other => panic!("expected Skip, got {other:?}"),
         }
         assert!(matches!(app.ws.steps[0].status, StepStatus::Skipped));
     }
 
     #[test]
-    fn gate_abort_sends_the_decision() {
-        let mut app = App::new(Some(two_step_doc()));
-        app.mode = Mode::Running { gated: true };
-        let (reply, mut receiver) = oneshot::channel();
-        update(
-            &mut app,
-            Msg::GateAsk {
-                path: "E0".into(),
-                tool: "t__search".into(),
-                input: json!({}),
-                reply,
-            },
-        );
-        update(&mut app, key(KeyCode::Char('a')));
-        assert!(matches!(receiver.try_recv().unwrap(), GateDecision::Abort));
-    }
-
-    #[test]
     fn agent_driven_run_pauses_and_resumes_within_the_turn() {
         let mut app = App::new(Some(two_step_doc()));
-        // The user sends a message; the agent's run_plan tool fires mid-turn.
         app.chat.input.insert_str("run it gated please");
         update(&mut app, key(KeyCode::Enter));
         assert!(app.turn_in_flight);
 
-        update(&mut app, Msg::RunStarted { gated: true });
+        update(
+            &mut app,
+            Msg::RunStarted {
+                gated: true,
+                breakpoints: Some(vec!["E1".to_string()]),
+            },
+        );
+        assert!(matches!(app.mode, Mode::Chatting));
         assert!(
-            matches!(app.mode, Mode::Chatting),
-            "mode stays with the turn"
+            app.breakpoints.contains("E1"),
+            "agent breakpoints displayed"
         );
         assert_eq!(app.ws.tab, WsTab::Run);
 
-        // Gate pause → proceed resumes to the turn, not to a keyboard run.
-        let (reply, mut receiver) = oneshot::channel();
-        update(
-            &mut app,
-            Msg::GateAsk {
-                path: "E0".into(),
-                tool: "t__search".into(),
-                input: json!({}),
-                reply,
-            },
-        );
+        let (msg, mut receiver) = gate_ask(GateKind::BeforeCall, "E1");
+        update(&mut app, msg);
         assert!(matches!(app.mode, Mode::Paused(_)));
-        update(&mut app, key(KeyCode::Char('y')));
+        update(&mut app, key(KeyCode::Char('n')));
         assert!(matches!(
             receiver.try_recv().unwrap(),
-            GateDecision::Proceed
+            UiDecision::Proceed { .. }
         ));
-        assert!(matches!(app.mode, Mode::Chatting));
+        assert!(matches!(app.mode, Mode::Chatting), "resumes to the turn");
 
-        // The run finishing mid-turn leaves the turn in charge…
         update(
             &mut app,
             Msg::RunFinished {
@@ -936,10 +1284,47 @@ steps:
             },
         );
         assert!(matches!(app.mode, Mode::Chatting));
-        // …and the turn finishing returns to idle.
         update(&mut app, Msg::TurnFinished(Ok(())));
         assert!(matches!(app.mode, Mode::Idle));
-        assert!(!app.turn_in_flight);
+    }
+
+    #[test]
+    fn tick_and_in_flight_lifecycle() {
+        let mut app = App::new(Some(two_step_doc()));
+        assert!(!app.wants_tick(), "idle does not tick");
+        app.mode = Mode::Running { gated: false };
+        assert!(app.wants_tick());
+
+        update(
+            &mut app,
+            Msg::StepStarted {
+                path: "E0".into(),
+                tool: "t__search".into(),
+                input: json!({}),
+                top_level: true,
+            },
+        );
+        // A finish for a different path must not clear the indicator.
+        update(
+            &mut app,
+            Msg::StepFinished {
+                path: "E9".into(),
+                result: json!(null),
+                is_error: false,
+                top_level: false,
+            },
+        );
+        assert!(app.in_flight.is_some());
+
+        let before = app.tick;
+        assert!(update(&mut app, Msg::Tick).is_empty());
+        assert_eq!(app.tick, before.wrapping_add(1));
+
+        // A pause is static: no tick, no in-flight.
+        let (msg, _receiver) = gate_ask(GateKind::BeforeCall, "E1");
+        update(&mut app, msg);
+        assert!(app.in_flight.is_none());
+        assert!(!app.wants_tick());
     }
 
     #[test]

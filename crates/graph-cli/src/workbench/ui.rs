@@ -1,7 +1,7 @@
 //! Rendering: the generic dual-pane shell (chat · workspace · status bar ·
 //! modals) with the plan workspace as the right-pane body.
 
-use super::app::{App, ChatEntry, Focus, Mode};
+use super::app::{App, ChatEntry, Focus, GateKind, GatePrompt, Mode};
 use super::editor::EditorContext;
 use super::plan_ws::{PlanWorkspace, RunLine, StepStatus, WsTab};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -32,7 +32,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_status_bar(frame, app, status);
 
     match &app.mode {
-        Mode::Paused(prompt) => draw_gate_prompt(frame, prompt),
+        // Paused is non-modal: the plan tab renders the debug panel.
         Mode::Editing(editor) => draw_editor(frame, editor),
         Mode::Help => draw_help(frame),
         _ => {}
@@ -132,13 +132,29 @@ fn draw_workspace(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(tabs, tabs_area);
 
     match app.ws.tab {
-        WsTab::Plan => draw_plan_tab(frame, &app.ws, app.dirty, body),
+        WsTab::Plan => draw_plan_tab(frame, app, body),
         WsTab::Context => draw_context_tab(frame, &app.ws, body),
         WsTab::Run => draw_run_tab(frame, &app.ws, body),
     }
 }
 
-fn draw_plan_tab(frame: &mut Frame, ws: &PlanWorkspace, dirty: bool, area: Rect) {
+const SPINNER: [&str; 4] = ["◐", "◓", "◑", "◒"];
+
+fn spinner_frame(tick: u8) -> &'static str {
+    SPINNER[tick as usize % SPINNER.len()]
+}
+
+/// The prompt behind the current pause, if any.
+fn paused_prompt(app: &App) -> Option<&GatePrompt> {
+    match &app.mode {
+        Mode::Paused(prompt) => Some(prompt),
+        _ => None,
+    }
+}
+
+fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
+    let ws = &app.ws;
+    let dirty = app.dirty;
     let Some(doc) = &ws.doc else {
         let empty = Paragraph::new(
             "no plan loaded\n\nask the chat agent to draft one:\n  \"draft a plan that …\"",
@@ -191,7 +207,9 @@ fn draw_plan_tab(frame: &mut Frame, ws: &PlanWorkspace, dirty: bool, area: Rect)
         header,
     );
 
-    // Step list.
+    // Step list: breakpoint gutter · status glyph · id · tool. The paused
+    // step's id renders yellow-bold; running rows animate.
+    let paused_step = paused_prompt(app).and_then(|p| p.top_level_step().map(str::to_string));
     let items: Vec<ListItem> = ws
         .steps
         .iter()
@@ -203,12 +221,27 @@ fn draw_plan_tab(frame: &mut Frame, ws: &PlanWorkspace, dirty: bool, area: Rect)
                 StepStatus::Err => ERROR,
                 StepStatus::Skipped => Style::new().fg(Color::Magenta),
             };
+            let glyph = if matches!(row.status, StepStatus::Running)
+                && !matches!(app.mode, Mode::Paused(_))
+            {
+                spinner_frame(app.tick)
+            } else {
+                row.status.glyph()
+            };
+            let gutter = if app.breakpoints.contains(&row.id) {
+                Span::styled("●", ERROR)
+            } else {
+                Span::raw(" ")
+            };
+            let id_style = if paused_step.as_deref() == Some(row.id.as_str()) {
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().add_modifier(Modifier::BOLD)
+            };
             ListItem::new(Line::from(vec![
-                Span::styled(format!("{} ", row.status.glyph()), style),
-                Span::styled(
-                    format!("{:4} ", row.id),
-                    Style::new().add_modifier(Modifier::BOLD),
-                ),
+                gutter,
+                Span::styled(format!("{glyph} "), style),
+                Span::styled(format!("{:4} ", row.id), id_style),
                 Span::raw(row.tool.clone()),
             ]))
         })
@@ -217,11 +250,23 @@ fn draw_plan_tab(frame: &mut Frame, ws: &PlanWorkspace, dirty: bool, area: Rect)
         .block(
             Block::bordered()
                 .border_style(DIM)
-                .title(" steps ─ j/k select · v validate · r run · g gated run "),
+                .title(" steps ─ j/k select · b breakpoint · v validate · r run · g debug "),
         )
         .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
     let mut state = ListState::default().with_selected(Some(ws.selected));
     frame.render_stateful_widget(list, steps_area, &mut state);
+
+    // While paused on the selected step (or any nested/body pause), the
+    // detail pane becomes the debug panel.
+    let show_debug = paused_prompt(app).is_some_and(|p| match p.top_level_step() {
+        Some(step) => ws.steps.get(ws.selected).is_some_and(|row| row.id == step),
+        None => true,
+    });
+    if show_debug {
+        let prompt = paused_prompt(app).expect("checked above");
+        draw_debug_panel(frame, prompt, detail, ws.detail_scroll);
+        return;
+    }
 
     // Detail: diagnostics, then the selected step's I/O.
     let mut lines: Vec<Line> = Vec::new();
@@ -354,17 +399,35 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Idle => "idle",
         Mode::Chatting => "agent…",
         Mode::Running { gated: false } => "running",
-        Mode::Running { gated: true } => "running (gated)",
-        Mode::Paused(_) => "paused",
+        Mode::Running { gated: true } => "debugging",
+        Mode::Paused(prompt) => match prompt.kind {
+            GateKind::BeforeCall => "paused",
+            GateKind::OnError { .. } => "paused (error)",
+        },
         Mode::Editing(_) => "editing",
         Mode::Help => "help",
     };
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(format!(" {mode} "), ACCENT.add_modifier(Modifier::REVERSED)),
         Span::raw(" "),
-        Span::styled(app.status.clone(), DIM),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    ];
+    // The live indicator: what's executing right now, with elapsed time.
+    if app.wants_tick() {
+        if let Some(in_flight) = &app.in_flight {
+            spans.push(Span::styled(
+                format!(
+                    "{} {} {} {:.1}s ",
+                    spinner_frame(app.tick),
+                    in_flight.path,
+                    in_flight.tool,
+                    in_flight.started.elapsed().as_secs_f32()
+                ),
+                Style::new().fg(Color::Yellow),
+            ));
+        }
+    }
+    spans.push(Span::styled(app.status.clone(), DIM));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn centered(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
@@ -390,31 +453,87 @@ fn centered(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     horizontal
 }
 
-fn draw_gate_prompt(frame: &mut Frame, prompt: &super::app::GatePrompt) {
-    let area = centered(frame.area(), 70, 60);
-    frame.render_widget(Clear, area);
-    let mut lines = vec![
-        Line::from(vec![
+/// The debugger's view at a pause: position, call stack, error (when
+/// paused on one), the rendered input, and the scope — everything a
+/// template could read at this point.
+fn draw_debug_panel(frame: &mut Frame, prompt: &GatePrompt, area: Rect, scroll: u16) {
+    let width = area.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    match &prompt.kind {
+        GateKind::BeforeCall => lines.push(Line::from(vec![
+            Span::styled("⏸ paused before ", Style::new().fg(Color::Yellow)),
             Span::styled(&prompt.path, ACCENT.add_modifier(Modifier::BOLD)),
             Span::raw(" → "),
             Span::styled(&prompt.tool, Style::new().add_modifier(Modifier::BOLD)),
-        ]),
-        Line::default(),
-    ];
-    push_json_section(&mut lines, "rendered input", &prompt.input);
+        ])),
+        GateKind::OnError { .. } => lines.push(Line::from(vec![
+            Span::styled("✗ ", ERROR),
+            Span::styled(&prompt.path, ACCENT.add_modifier(Modifier::BOLD)),
+            Span::raw(" → "),
+            Span::styled(&prompt.tool, Style::new().add_modifier(Modifier::BOLD)),
+            Span::styled(" failed", ERROR.add_modifier(Modifier::BOLD)),
+        ])),
+    }
+    if !prompt.call_stack.is_empty() {
+        lines.push(Line::styled(
+            format!("call stack: {}", prompt.call_stack.join(" → ")),
+            DIM,
+        ));
+    }
     lines.push(Line::default());
-    lines.push(Line::styled(
-        "y proceed · s skip (inject a result) · a abort",
-        ACCENT,
-    ));
+    if let GateKind::OnError { error } = &prompt.kind {
+        push_json_section(&mut lines, "error", error);
+    }
+    push_json_section(&mut lines, "rendered input", &prompt.input);
+
+    // Scope: one compact line per root — input first, step ids by number,
+    // then the body pseudo-roots. Full values: select the step's row.
+    lines.push(Line::styled("scope:", DIM));
+    let mut roots: Vec<&String> = prompt.scope.keys().collect();
+    roots.sort_by_key(|name| scope_order(name));
+    for name in roots {
+        let compact = serde_json::to_string(&prompt.scope[name.as_str()]).unwrap_or_default();
+        let budget = width.saturating_sub(16).max(8);
+        let preview: String = if compact.chars().count() > budget {
+            format!("{}…", compact.chars().take(budget).collect::<String>())
+        } else {
+            compact
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{name:>12}  "), ACCENT),
+            Span::raw(preview),
+        ]));
+    }
+
+    let title = match &prompt.kind {
+        GateKind::BeforeCall => " debug ─ n step · c continue · s skip · a abort ",
+        GateKind::OnError { .. } => " debug ─ s inject result · n let it fail · a abort ",
+    };
     let widget = Paragraph::new(lines)
         .block(
             Block::bordered()
                 .border_style(Style::new().fg(Color::Yellow))
-                .title(" tool call paused "),
+                .title(title),
         )
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
     frame.render_widget(widget, area);
+}
+
+/// Scope display order: input, step ids ascending, pseudo-roots, rest.
+fn scope_order(name: &str) -> (u8, u32) {
+    if name == "input" {
+        return (0, 0);
+    }
+    if let Some(number) = graph_core::pipeline::plan::step_number(name) {
+        return (1, number);
+    }
+    match name {
+        "item" => (2, 0),
+        "index" => (2, 1),
+        "accumulator" => (2, 2),
+        _ => (3, 0),
+    }
 }
 
 fn draw_editor(frame: &mut Frame, editor: &super::editor::EditorState) {
@@ -428,12 +547,26 @@ fn draw_editor(frame: &mut Frame, editor: &super::editor::EditorState) {
         return;
     }
 
-    let area = centered(frame.area(), 70, 60);
+    let area = centered(frame.area(), 74, 70);
     frame.render_widget(Clear, area);
-    let [body, footer] = *Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(area)
-    else {
+    let header_height = editor.header.len().min(4) as u16;
+    let [header_area, body, footer] = *Layout::vertical([
+        Constraint::Length(header_height),
+        Constraint::Min(3),
+        Constraint::Length(2),
+    ])
+    .split(area) else {
         return;
     };
+    let header_lines: Vec<Line> = editor
+        .header
+        .iter()
+        .map(|line| Line::styled(line.clone(), ACCENT))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(header_lines).wrap(Wrap { trim: false }),
+        header_area,
+    );
     let mut textarea = editor.textarea.clone();
     textarea.set_block(
         Block::bordered()
@@ -441,11 +574,12 @@ fn draw_editor(frame: &mut Frame, editor: &super::editor::EditorState) {
             .title(format!(" {} ", editor.title)),
     );
     frame.render_widget(&textarea, body);
-    let hint = match &editor.error {
-        Some(error) => Line::styled(format!(" {error}"), ERROR),
-        None => Line::styled(" Ctrl+S submit · Esc cancel", DIM),
-    };
-    frame.render_widget(Paragraph::new(hint), footer);
+    // The key hints never disappear — the error renders alongside them.
+    let mut footer_lines = vec![Line::styled(" Ctrl+S submit · Esc cancel", DIM)];
+    if let Some(error) = &editor.error {
+        footer_lines.insert(0, Line::styled(format!(" {error}"), ERROR));
+    }
+    frame.render_widget(Paragraph::new(footer_lines), footer);
 }
 
 fn draw_help(frame: &mut Frame) {
@@ -457,14 +591,24 @@ fn draw_help(frame: &mut Frame) {
         ("Enter", "send chat message (Alt+Enter for newline)"),
         ("Ctrl+↑ / Ctrl+↓", "scroll chat"),
         ("j / k", "select step or tool"),
-        ("PgUp / PgDn", "scroll detail"),
+        ("PgUp / PgDn", "scroll detail / debug panel"),
+        ("b", "toggle breakpoint on the selected step"),
         ("v", "validate the plan"),
         ("r", "run the plan"),
-        ("g", "gated run — pause before every tool call"),
         (
-            "y / s / a",
-            "paused: proceed / skip with injected result / abort",
+            "g",
+            "debug run — to the first breakpoint, or pause at every call",
         ),
+        (
+            "n / Enter",
+            "paused: step — proceed this call, pause at the next",
+        ),
+        ("c", "paused: continue to the next breakpoint (or error)"),
+        (
+            "s",
+            "paused: skip / inject (on error: replace the failed result)",
+        ),
+        ("a", "paused: abort the run"),
         ("Ctrl+S", "save the draft to the plans directory"),
         ("Ctrl+C, q", "quit"),
     ];
