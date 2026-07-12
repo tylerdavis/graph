@@ -172,7 +172,7 @@ impl PlanWorkspace {
         self.outcome = None;
         self.tab = WsTab::Run;
         self.run_log_info(if gated {
-            "debug run started — n step · c continue · b breakpoint"
+            "debug run started — n next step · c continue · b breakpoint"
         } else {
             "run started"
         });

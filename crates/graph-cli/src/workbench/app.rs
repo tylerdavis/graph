@@ -406,7 +406,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
                 GateKind::BeforeCall => {
                     app.ws.step_running(&prompt.path);
                     app.status = format!(
-                        "paused at {} — n step · c continue · s skip · b breakpoint · a abort",
+                        "paused at {} — n next step · c continue · s skip · b breakpoint · a abort",
                         prompt.path
                     );
                 }
@@ -735,7 +735,7 @@ fn on_paused_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
         // sender — the run would silently abort.
         KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Char('r') | KeyCode::Char('g') => {
             app.status =
-                "paused — decide first: n step · c continue · s skip · a abort".to_string();
+                "paused — decide first: n next step · c continue · s skip · a abort".to_string();
             return Vec::new();
         }
         KeyCode::Char('c') | KeyCode::Char('s')
@@ -743,7 +743,7 @@ fn on_paused_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
         {
             // Ctrl+C (quit) and Ctrl+S (save) are blocked too.
             app.status =
-                "paused — decide first: n step · c continue · s skip · a abort".to_string();
+                "paused — decide first: n next step · c continue · s skip · a abort".to_string();
             return Vec::new();
         }
         _ => {}

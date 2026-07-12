@@ -506,7 +506,7 @@ fn draw_debug_panel(frame: &mut Frame, prompt: &GatePrompt, area: Rect, scroll: 
     }
 
     let title = match &prompt.kind {
-        GateKind::BeforeCall => " debug ─ n step · c continue · s skip · a abort ",
+        GateKind::BeforeCall => " debug ─ n next step · c continue · s skip · a abort ",
         GateKind::OnError { .. } => " debug ─ s inject result · n let it fail · a abort ",
     };
     let widget = Paragraph::new(lines)
