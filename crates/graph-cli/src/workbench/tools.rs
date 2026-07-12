@@ -3,11 +3,15 @@
 //! truth. Registered under `workbench__` alongside the normal catalog.
 
 use super::app::Msg;
+use super::runner::UiGate;
 use async_trait::async_trait;
-use graph_core::pipeline::doc::{load_plan_doc, validate_doc, PlanDoc};
+use graph_core::pipeline::doc::{
+    apply_schema_defaults, load_plan_doc, validate_doc, validate_input, PlanDoc,
+};
 use graph_core::pipeline::{Pipeline, PlannerOutput};
 use graph_core::{ToolDef, ToolError, ToolOutcome, ToolRegistry};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -15,10 +19,15 @@ pub const DRAFT_PLAN: &str = "workbench__draft_plan";
 pub const GET_PLAN: &str = "workbench__get_plan";
 pub const SET_PLAN: &str = "workbench__set_plan";
 pub const LOAD_PLAN: &str = "workbench__load_plan";
+pub const LIST_PLANS: &str = "workbench__list_plans";
+pub const VALIDATE_PLAN: &str = "workbench__validate_plan";
+pub const RUN_PLAN: &str = "workbench__run_plan";
+pub const SAVE_PLAN: &str = "workbench__save_plan";
 
 pub struct WorkbenchTools {
     draft: Arc<Mutex<Option<PlanDoc>>>,
     pipeline: Arc<Pipeline>,
+    plans_dir: Option<PathBuf>,
     tx: UnboundedSender<Msg>,
 }
 
@@ -26,11 +35,13 @@ impl WorkbenchTools {
     pub fn new(
         draft: Arc<Mutex<Option<PlanDoc>>>,
         pipeline: Arc<Pipeline>,
+        plans_dir: Option<PathBuf>,
         tx: UnboundedSender<Msg>,
     ) -> Self {
         Self {
             draft,
             pipeline,
+            plans_dir,
             tx,
         }
     }
@@ -99,6 +110,109 @@ impl WorkbenchTools {
         ToolOutcome {
             result: summary,
             is_error: false,
+        }
+    }
+
+    /// The plan catalog, as the workspace context tab sees it.
+    fn list_plans(&self) -> ToolOutcome {
+        let plans: Vec<Value> = self
+            .pipeline
+            .plans
+            .iter()
+            .map(|doc| {
+                json!({
+                    "identifier": doc.identifier,
+                    "name": doc.name,
+                    "description": doc.description,
+                    "steps": doc.steps.len(),
+                })
+            })
+            .collect();
+        ToolOutcome {
+            result: json!({"count": plans.len(), "plans": plans}),
+            is_error: false,
+        }
+    }
+
+    /// Validate the draft and surface the verdict in the plan pane.
+    fn validate_plan(&self) -> ToolOutcome {
+        let Some(doc) = self.current() else {
+            return error_outcome("no draft to validate");
+        };
+        let mut problems = self
+            .pipeline
+            .validate_plan(&doc.steps)
+            .err()
+            .unwrap_or_default();
+        if let Err(problem) = validate_doc(&doc) {
+            if !problems.contains(&problem) {
+                problems.push(problem);
+            }
+        }
+        let _ = self.tx.send(Msg::Validated(problems.clone()));
+        ToolOutcome {
+            result: json!({"valid": problems.is_empty(), "problems": problems}),
+            is_error: false,
+        }
+    }
+
+    /// Run the draft inside this agent turn. Step events stream to the
+    /// workspace pane; gated runs pause on the USER's y/s/a decisions.
+    async fn run_plan(&self, input: &Value) -> ToolOutcome {
+        let Some(doc) = self.current() else {
+            return error_outcome("no draft to run — load or draft one first");
+        };
+        let gated = input.get("gated").and_then(Value::as_bool).unwrap_or(false);
+        let mut run_input = input
+            .get("input")
+            .cloned()
+            .unwrap_or(Value::Object(Map::new()));
+        if !run_input.is_object() {
+            return error_outcome("'input' must be a JSON object of plan inputs");
+        }
+        if let Some(schema) = &doc.input_schema {
+            apply_schema_defaults(schema, &mut run_input);
+            if let Err(problems) = validate_input(&doc, &run_input) {
+                return ToolOutcome {
+                    result: json!({
+                        "error": "invalid or missing plan inputs",
+                        "problems": problems,
+                        "inputSchema": schema,
+                    }),
+                    is_error: true,
+                };
+            }
+        }
+        let _ = self.tx.send(Msg::RunStarted { gated });
+        let mut pipeline = (*self.pipeline).clone();
+        if gated {
+            pipeline = pipeline.with_gate(Arc::new(UiGate {
+                tx: self.tx.clone(),
+            }));
+        }
+        let query = format!("Run the '{}' plan", doc.name);
+        let result = pipeline
+            .run_explicit(&query, doc.steps.clone(), doc.finish(), Some(run_input))
+            .await;
+        let report = super::runner::report(result);
+        let is_error = report.is_error;
+        let _ = self.tx.send(report.finished_msg());
+        ToolOutcome {
+            result: report.summary,
+            is_error,
+        }
+    }
+
+    /// Save the draft to disk and surface the result in the status bar.
+    fn save_plan(&self) -> ToolOutcome {
+        let result = super::effects::save_draft(&self.draft, self.plans_dir.as_deref());
+        let _ = self.tx.send(Msg::Saved(result.clone()));
+        match result {
+            Ok(path) => ToolOutcome {
+                result: json!({"savedTo": path}),
+                is_error: false,
+            },
+            Err(error) => error_outcome(&error),
         }
     }
 
@@ -293,6 +407,66 @@ impl ToolRegistry for WorkbenchTools {
                 read_only: Some(true),
             },
             ToolDef {
+                name: LIST_PLANS.to_string(),
+                description: "List the plans available in the catalog: identifier, name, \
+                              description, and step count. Use this when the user asks what \
+                              plans exist or which one to load."
+                    .to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                output_schema: None,
+                output_example: Some(
+                    json!({"count": 1, "plans": [{"identifier": "sprint_analysis", "name": "Sprint analysis", "description": "…", "steps": 4}]}),
+                ),
+                read_only: Some(true),
+            },
+            ToolDef {
+                name: VALIDATE_PLAN.to_string(),
+                description: "Validate the current draft (templates, reference ordering, \
+                              control-step bodies, document structure). Returns every \
+                              problem and updates the plan pane's verdict."
+                    .to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                output_schema: None,
+                output_example: Some(
+                    json!({"valid": false, "problems": ["step E1 references E5, which is not an earlier step"]}),
+                ),
+                read_only: Some(true),
+            },
+            ToolDef {
+                name: RUN_PLAN.to_string(),
+                description: "Execute the current draft. Step activity streams to the \
+                              workspace pane. Set gated=true to pause before every tool \
+                              call for the USER's confirmation (proceed / skip / abort) — \
+                              prefer gated for plans with side effects, and only run when \
+                              the user asks. Pass `input` when the plan declares an \
+                              input_schema."
+                    .to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "gated": {"type": "boolean", "description": "Pause before each tool call for the user's confirmation. Default false."},
+                        "input": {"type": "object", "description": "The plan's input object, validated against its input_schema."}
+                    }
+                }),
+                output_schema: None,
+                output_example: Some(
+                    json!({"status": "completed", "stepsExecuted": 3, "output": {"…": "…"}}),
+                ),
+                read_only: None,
+            },
+            ToolDef {
+                name: SAVE_PLAN.to_string(),
+                description: "Save the current draft to disk as YAML — back to the file it \
+                              was loaded from, or into the plans directory for new drafts."
+                    .to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                output_schema: None,
+                output_example: Some(
+                    json!({"savedTo": "~/.config/graph/plans/sprint_report.yaml"}),
+                ),
+                read_only: None,
+            },
+            ToolDef {
                 name: SET_PLAN.to_string(),
                 description: "Replace the draft plan with a complete YAML plan document \
                               (identifier, name, description, steps, and solver/output). \
@@ -318,6 +492,10 @@ impl ToolRegistry for WorkbenchTools {
             GET_PLAN => Ok(self.get_plan()),
             SET_PLAN => Ok(self.set_plan(&input)),
             LOAD_PLAN => Ok(self.load_plan(&input)),
+            LIST_PLANS => Ok(self.list_plans()),
+            VALIDATE_PLAN => Ok(self.validate_plan()),
+            RUN_PLAN => Ok(self.run_plan(&input).await),
+            SAVE_PLAN => Ok(self.save_plan()),
             other => Err(ToolError::Unknown(other.to_string())),
         }
     }
@@ -364,7 +542,7 @@ steps:
     fn load_plan_by_identifier_publishes_a_clean_draft() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let draft = Arc::new(Mutex::new(None));
-        let tools = WorkbenchTools::new(draft.clone(), test_pipeline(vec![demo_doc()]), tx);
+        let tools = WorkbenchTools::new(draft.clone(), test_pipeline(vec![demo_doc()]), None, tx);
 
         let outcome = tools.load_plan(&json!({"name_or_path": "demo"}));
         assert!(!outcome.is_error, "{:?}", outcome.result);
@@ -386,11 +564,89 @@ steps:
         let tools = WorkbenchTools::new(
             Arc::new(Mutex::new(None)),
             test_pipeline(vec![demo_doc()]),
+            None,
             tx,
         );
         let outcome = tools.load_plan(&json!({"name_or_path": "nope"}));
         assert!(outcome.is_error);
         assert_eq!(outcome.result["availablePlans"], json!(["demo"]));
+    }
+
+    #[test]
+    fn list_plans_enumerates_the_catalog() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let tools = WorkbenchTools::new(
+            Arc::new(Mutex::new(None)),
+            test_pipeline(vec![demo_doc()]),
+            None,
+            tx,
+        );
+        let outcome = tools.list_plans();
+        assert!(!outcome.is_error);
+        assert_eq!(outcome.result["count"], json!(1));
+        assert_eq!(outcome.result["plans"][0]["identifier"], json!("demo"));
+        assert_eq!(outcome.result["plans"][0]["steps"], json!(1));
+    }
+
+    #[test]
+    fn validate_plan_reports_problems_and_updates_the_pane() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut doc = demo_doc();
+        doc.steps[0].input.insert(
+            "bad".to_string(),
+            Value::String("{{E5.values}}".to_string()),
+        );
+        let tools = WorkbenchTools::new(
+            Arc::new(Mutex::new(Some(doc))),
+            test_pipeline(vec![]),
+            None,
+            tx,
+        );
+        let outcome = tools.validate_plan();
+        assert!(!outcome.is_error);
+        assert_eq!(outcome.result["valid"], json!(false));
+        assert!(outcome.result["problems"][0]
+            .as_str()
+            .unwrap()
+            .contains("E5"));
+        assert!(matches!(rx.try_recv().unwrap(), Msg::Validated(p) if p.len() == 1));
+    }
+
+    #[test]
+    fn save_plan_writes_yaml_and_notifies() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let tools = WorkbenchTools::new(
+            Arc::new(Mutex::new(Some(demo_doc()))),
+            test_pipeline(vec![]),
+            Some(dir.path().to_path_buf()),
+            tx,
+        );
+        let outcome = tools.save_plan();
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert!(dir.path().join("demo.yaml").exists());
+        assert!(matches!(rx.try_recv().unwrap(), Msg::Saved(Ok(_))));
+    }
+
+    #[test]
+    fn run_plan_missing_required_input_errors_with_schema() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut doc = demo_doc();
+        doc.input_schema = Some(json!({
+            "type": "object",
+            "required": ["team"],
+            "properties": {"team": {"type": "string"}}
+        }));
+        let tools = WorkbenchTools::new(
+            Arc::new(Mutex::new(Some(doc))),
+            test_pipeline(vec![]),
+            None,
+            tx,
+        );
+        let outcome = futures::executor::block_on(tools.run_plan(&json!({})));
+        assert!(outcome.is_error);
+        assert!(outcome.result["inputSchema"].is_object());
+        assert!(rx.try_recv().is_err(), "no run should have started");
     }
 
     #[test]

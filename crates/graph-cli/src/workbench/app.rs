@@ -76,6 +76,9 @@ pub struct App {
     /// One-line status shown in the bottom bar.
     pub status: String,
     pub dirty: bool,
+    /// An agent turn is executing (independent of `mode`: a tool-driven
+    /// plan run pauses and resumes within a turn).
+    pub turn_in_flight: bool,
     pub should_quit: bool,
 }
 
@@ -92,12 +95,23 @@ impl App {
             ws,
             status: "Tab focus · ? help · Ctrl+C quit".to_string(),
             dirty: false,
+            turn_in_flight: false,
             should_quit: false,
         }
     }
 
     fn busy(&self) -> bool {
         !matches!(self.mode, Mode::Idle | Mode::Help)
+    }
+
+    /// Where a paused gated run returns to: the agent's turn when it
+    /// launched the run, otherwise the keyboard-run state.
+    fn resume_mode(&self) -> Mode {
+        if self.turn_in_flight {
+            Mode::Chatting
+        } else {
+            Mode::Running { gated: true }
+        }
     }
 }
 
@@ -119,6 +133,11 @@ pub enum Msg {
         dirty: bool,
     },
     // Plan run
+    /// A run was launched by the agent's `workbench__run_plan` tool (the
+    /// keyboard path resets the pane directly).
+    RunStarted {
+        gated: bool,
+    },
     Planning,
     Synthesizing,
     StepStarted {
@@ -194,6 +213,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
         }
         Msg::TurnFinished(result) => {
             app.mode = Mode::Idle;
+            app.turn_in_flight = false;
             if let Err(error) = result {
                 app.chat
                     .entries
@@ -213,6 +233,15 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             vec![Effect::Validate]
         }
 
+        Msg::RunStarted { gated } => {
+            app.ws.run_starting(gated);
+            app.status = if gated {
+                "agent started a gated run — each tool call will ask you first".to_string()
+            } else {
+                "agent is running the plan…".to_string()
+            };
+            Vec::new()
+        }
         Msg::Planning => {
             app.ws.run_log_info("planning…");
             Vec::new()
@@ -274,7 +303,11 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             is_error,
             results,
         } => {
-            app.mode = Mode::Idle;
+            app.mode = if app.turn_in_flight {
+                Mode::Chatting
+            } else {
+                Mode::Idle
+            };
             app.ws.run_finished(&headline, is_error, results);
             app.status = headline;
             Vec::new()
@@ -401,6 +434,7 @@ fn on_chat_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
             app.chat.entries.push(ChatEntry::User(message.clone()));
             app.chat.scroll = 0;
             app.mode = Mode::Chatting;
+            app.turn_in_flight = true;
             vec![Effect::RunAgentTurn { message }]
         }
         KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -507,9 +541,8 @@ fn on_paused_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
             if let Some(reply) = prompt.reply.take() {
                 let _ = reply.send(GateDecision::Proceed);
             }
-            let gated = true;
             app.status = "proceeding…".to_string();
-            app.mode = Mode::Running { gated };
+            app.mode = app.resume_mode();
             Vec::new()
         }
         KeyCode::Char('a') => {
@@ -517,7 +550,7 @@ fn on_paused_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
                 let _ = reply.send(GateDecision::Abort);
             }
             app.status = "aborting…".to_string();
-            app.mode = Mode::Running { gated: true };
+            app.mode = app.resume_mode();
             Vec::new()
         }
         KeyCode::Char('s') => {
@@ -615,7 +648,7 @@ fn submit_editor(app: &mut App) -> Vec<Effect> {
             }
             app.ws.step_skipped(&path, value);
             app.status = format!("skipped {path} with an injected result");
-            app.mode = Mode::Running { gated: true };
+            app.mode = app.resume_mode();
             Vec::new()
         }
         EditorContext::RunInput { gated } => {
@@ -857,6 +890,56 @@ steps:
         );
         update(&mut app, key(KeyCode::Char('a')));
         assert!(matches!(receiver.try_recv().unwrap(), GateDecision::Abort));
+    }
+
+    #[test]
+    fn agent_driven_run_pauses_and_resumes_within_the_turn() {
+        let mut app = App::new(Some(two_step_doc()));
+        // The user sends a message; the agent's run_plan tool fires mid-turn.
+        app.chat.input.insert_str("run it gated please");
+        update(&mut app, key(KeyCode::Enter));
+        assert!(app.turn_in_flight);
+
+        update(&mut app, Msg::RunStarted { gated: true });
+        assert!(
+            matches!(app.mode, Mode::Chatting),
+            "mode stays with the turn"
+        );
+        assert_eq!(app.ws.tab, WsTab::Run);
+
+        // Gate pause → proceed resumes to the turn, not to a keyboard run.
+        let (reply, mut receiver) = oneshot::channel();
+        update(
+            &mut app,
+            Msg::GateAsk {
+                path: "E0".into(),
+                tool: "t__search".into(),
+                input: json!({}),
+                reply,
+            },
+        );
+        assert!(matches!(app.mode, Mode::Paused(_)));
+        update(&mut app, key(KeyCode::Char('y')));
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            GateDecision::Proceed
+        ));
+        assert!(matches!(app.mode, Mode::Chatting));
+
+        // The run finishing mid-turn leaves the turn in charge…
+        update(
+            &mut app,
+            Msg::RunFinished {
+                headline: "done".into(),
+                is_error: false,
+                results: Map::new(),
+            },
+        );
+        assert!(matches!(app.mode, Mode::Chatting));
+        // …and the turn finishing returns to idle.
+        update(&mut app, Msg::TurnFinished(Ok(())));
+        assert!(matches!(app.mode, Mode::Idle));
+        assert!(!app.turn_in_flight);
     }
 
     #[test]

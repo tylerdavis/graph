@@ -16,11 +16,14 @@ The workbench needs an interactive terminal (it refuses to start otherwise); for
 
 ## The two panes
 
-**Chat (left)** is the same agent as `graph chat`, with four extra tools that operate on the draft in the side pane:
+**Chat (left)** is the same agent as `graph chat`, with workbench tools covering every action — the whole workbench is drivable conversationally:
 
-- `workbench__load_plan` — load an existing plan by identifier or YAML path ("load the sprint_analysis plan"); loading replaces the draft, so the agent confirms first when you have unsaved changes.
+- `workbench__list_plans` / `workbench__load_plan` — enumerate the catalog and load a plan by identifier or YAML path ("load the sprint_analysis plan"); loading replaces the draft, so the agent confirms first when you have unsaved changes.
 - `workbench__draft_plan` — create or revise the draft from a goal (the planner sees the full tool catalog, observed shapes, and the current draft).
 - `workbench__get_plan` / `workbench__set_plan` — read the draft as YAML and replace it, for surgical edits.
+- `workbench__validate_plan` — check the draft and update the plan pane's verdict ("is this valid?").
+- `workbench__run_plan` — execute the draft on request ("run it", "do a gated run"). Step activity streams to the workspace either way, and **gated runs still pause for *your* y/s/a decision on every tool call** — the agent starts the run but cannot approve its side effects.
+- `workbench__save_plan` — write the draft to disk ("save that").
 
 Every draft change shows up in the plan pane immediately and is validated automatically. Workbench chats are scratch sessions — they are not persisted as threads.
 
@@ -33,6 +36,8 @@ Every draft change shows up in the plan pane immediately and is validated automa
 | `3` run | the live transcript: step events, the streamed solver answer, and the final outcome |
 
 ## Running plans
+
+Every run mode is available from the keyboard or by asking the agent (`workbench__run_plan`):
 
 - `v` — validate: full template/reference/control-step checking, with every problem listed in the plan tab.
 - `r` — full run, exactly like `graph plan run`.

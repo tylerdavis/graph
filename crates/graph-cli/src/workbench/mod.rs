@@ -32,20 +32,31 @@ use tokio::sync::mpsc;
 /// Appended to the chat agent's system prompt inside the workbench.
 const WORKBENCH_SYSTEM_PROMPT: &str = "\n\n# Plan workbench\n\
 You are running inside the graph plan workbench: a side pane shows the user \
-the current draft plan, live. Build and edit that draft with the workbench \
+the current draft plan, live. Operate on that draft with the workbench \
 tools:\n\
+- workbench__list_plans: enumerate the plan catalog when the user asks \
+what exists.\n\
 - workbench__load_plan: load an existing plan (identifier or YAML path) \
-into the pane when the user asks to open/load one; it replaces the draft, \
-so confirm first if there are unsaved changes.\n\
+into the pane; it replaces the draft, so confirm first if there are \
+unsaved changes.\n\
 - workbench__draft_plan: create or revise the draft from a goal. Pass the \
 user's request as a self-contained goal; pass feedback when revising after \
 validation problems or user corrections.\n\
 - workbench__get_plan: read the current draft YAML before targeted edits.\n\
 - workbench__set_plan: replace the draft with complete YAML (get, modify, \
 set) for surgical changes.\n\
-Never claim the draft changed without calling one of these tools. The user \
-validates, runs, and saves the plan with keybindings — do not run it for \
-them unless they explicitly ask you to execute something.";
+- workbench__validate_plan: check the draft and surface the verdict in \
+the pane.\n\
+- workbench__run_plan: execute the draft when the user asks. Prefer \
+gated=true for plans with side effects — each tool call then pauses for \
+the USER to proceed/skip/abort (do not promise to answer those prompts \
+yourself). Run one plan at a time.\n\
+- workbench__save_plan: write the draft to disk when the user asks to \
+save.\n\
+Never claim the draft changed, ran, or was saved without calling the \
+matching tool. The user can also drive everything with keybindings \
+(v validate, r run, g gated run, Ctrl+S save) — never run a plan with \
+side effects unprompted.";
 
 pub async fn run(command: WorkbenchCommand) -> Result<()> {
     let WorkbenchCommand::Plan { name_or_path } = command;
@@ -81,9 +92,16 @@ async fn run_plan_workbench(runtime: &Runtime, name_or_path: Option<String>) -> 
     // The chat agent: normal catalog + the workbench draft tools.
     let agent_sink: Arc<dyn EventSink> = Arc::new(chat::ChannelSink::agent(tx.clone()));
     let toolbox = runtime.toolbox(&store, agent_sink.clone()).await?;
+    let plans_dir = runtime
+        .config
+        .plans
+        .paths
+        .first()
+        .map(|p| graph_config::expand_tilde(p));
     let workbench_tools = Arc::new(tools::WorkbenchTools::new(
         draft.clone(),
         pipeline.clone(),
+        plans_dir.clone(),
         tx.clone(),
     ));
     let registry: Arc<dyn ToolRegistry> = Arc::new(CompositeRegistry::new(vec![
@@ -92,13 +110,6 @@ async fn run_plan_workbench(runtime: &Runtime, name_or_path: Option<String>) -> 
     ]));
     let mut agent = runtime.agent(agent_sink, registry)?;
     agent.system_prompt.push_str(WORKBENCH_SYSTEM_PROMPT);
-
-    let plans_dir = runtime
-        .config
-        .plans
-        .paths
-        .first()
-        .map(|p| graph_config::expand_tilde(p));
 
     let context = Arc::new(WorkbenchContext {
         agent,

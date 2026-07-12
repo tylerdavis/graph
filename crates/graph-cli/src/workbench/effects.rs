@@ -4,7 +4,7 @@
 use super::app::{Effect, Msg};
 use super::runner::UiGate;
 use graph_core::pipeline::doc::PlanDoc;
-use graph_core::pipeline::{Pipeline, PipelineError};
+use graph_core::pipeline::Pipeline;
 use graph_core::{Agent, Store, ToolRegistry};
 use graph_llm::types::ChatMessage;
 use serde_json::Map;
@@ -69,46 +69,7 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                 let result = pipeline
                     .run_explicit(&query, doc.steps.clone(), doc.finish(), Some(input))
                     .await;
-                let msg = match result {
-                    Ok(outcome) => {
-                        let exited_error = matches!(
-                            &outcome.exit,
-                            Some(e) if e.status == graph_core::pipeline::ExitStatus::Error
-                        );
-                        let headline = if let Some(exit) = &outcome.exit {
-                            format!(
-                                "{} {}",
-                                if exited_error {
-                                    "✗ exited:"
-                                } else {
-                                    "✓ exited:"
-                                },
-                                exit.message
-                            )
-                        } else if let Some(structured) = &outcome.structured {
-                            format!("✓ output: {}", truncate(&structured.to_string(), 120))
-                        } else if outcome.answer.is_empty() {
-                            format!("✓ completed ({} steps)", outcome.state.steps_executed())
-                        } else {
-                            "✓ completed — answer in the run tab".to_string()
-                        };
-                        Msg::RunFinished {
-                            headline,
-                            is_error: exited_error,
-                            results: outcome.state.results,
-                        }
-                    }
-                    Err(PipelineError::Aborted { step, state }) => Msg::RunFinished {
-                        headline: format!("⊘ aborted at {step}"),
-                        is_error: true,
-                        results: state.results,
-                    },
-                    Err(error) => Msg::RunFinished {
-                        headline: format!("✗ {error}"),
-                        is_error: true,
-                        results: Map::new(),
-                    },
-                };
+                let msg = super::runner::report(result).finished_msg();
                 let _ = ctx.tx.send(msg);
             });
         }
@@ -142,23 +103,27 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
         }
 
         Effect::SavePlan => {
-            let result = save_draft(&ctx);
+            let result = save_draft(&ctx.draft, ctx.plans_dir.as_deref());
             let _ = ctx.tx.send(Msg::Saved(result));
         }
     }
 }
 
-fn save_draft(ctx: &WorkbenchContext) -> Result<String, String> {
-    let mut guard = ctx.draft.lock().unwrap();
+/// Write the draft to disk: back to its source file, or into the plans
+/// directory for new drafts. Shared by Ctrl+S and `workbench__save_plan`.
+pub fn save_draft(
+    draft: &std::sync::Mutex<Option<PlanDoc>>,
+    plans_dir: Option<&std::path::Path>,
+) -> Result<String, String> {
+    let mut guard = draft.lock().unwrap();
     let Some(doc) = guard.as_mut() else {
         return Err("no draft".to_string());
     };
     let path = match &doc.path {
         Some(path) => path.clone(),
         None => {
-            let dir = ctx
-                .plans_dir
-                .clone()
+            let dir = plans_dir
+                .map(|p| p.to_path_buf())
                 .ok_or_else(|| "no plans directory configured ([plans].paths)".to_string())?;
             let candidate = dir.join(format!("{}.yaml", doc.identifier));
             if candidate.exists() {
@@ -177,12 +142,4 @@ fn save_draft(ctx: &WorkbenchContext) -> Result<String, String> {
     std::fs::write(&path, yaml).map_err(|e| e.to_string())?;
     doc.path = Some(path.clone());
     Ok(path.display().to_string())
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        text.to_string()
-    } else {
-        format!("{}…", text.chars().take(max).collect::<String>())
-    }
 }
