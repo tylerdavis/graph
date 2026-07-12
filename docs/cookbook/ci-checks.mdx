@@ -35,7 +35,7 @@ No install step (the release workflow publishes the image), no shell logic (plan
 
 ## `docs_drift` — an inferred gate as a merge check
 
-The repo rule, from its CLAUDE.md: behavior changes in `crates/` must update `docs/` in the same PR. As a plan, the *decision* — "is this diff a behavioral change?" — is one judged yes/no call, and everything around it is deterministic and free:
+The repo rule, from its CLAUDE.md: behavior changes in `crates/` must update `docs/` in the same PR. As a plan, the _decision_ — "is this diff a behavioral change?" — is one judged yes/no call, and everything around it is deterministic and free:
 
 ```yaml
 steps:
@@ -86,8 +86,8 @@ output:
 
 - **Short-circuit before you infer.** E1 and E3 are `when` gates over [github pack](/tools/builtins) tool output — a docs-only PR exits success in milliseconds with zero LLM calls. The `infer` gate is the last resort, and it sees only the truncated `crates/` diff. Worst case per PR: one judge call on the cheap `judge` role.
 - **The gate is the CI contract.** `status: error` maps to process exit code 4 — distinct from exit 1 (the plan itself broke). The job needs no branching: exit 4 fails the step, and under `GRAPH_EVENTS=github` graph prints the gate's message as a `::error::` annotation itself.
-- **Every exit path emits the same shape.** Both success gates and the fall-through `output` produce `{docs_required, reason}` — callers parse one contract. On a non-fired infer gate, `{{E5.reason}}` carries the judge's reasoning into the output for free (the judge explains *why* no docs are needed).
-- **Ask the judge a falsifiable question.** The prompt defines what does *not* count (refactors, test-only changes). The judge role answers "yes only when the data clearly supports it", so the framing sets the false-positive rate. Live calibration: it flagged a commit adding an env var and a JSON field ("observable by users and plan authors"), and passed a dead-code removal with its reasoning in `reason`.
+- **Every exit path emits the same shape.** Both success gates and the fall-through `output` produce `{docs_required, reason}` — callers parse one contract. On a non-fired infer gate, `{{E5.reason}}` carries the judge's reasoning into the output for free (the judge explains _why_ no docs are needed).
+- **Ask the judge a falsifiable question.** The prompt defines what does _not_ count (refactors, test-only changes). The judge role answers "yes only when the data clearly supports it", so the framing sets the false-positive rate. Live calibration: it flagged a commit adding an env var and a JSON field ("observable by users and plan authors"), and passed a dead-code removal with its reasoning in `reason`.
 
 ## `pr_review` — a self-contained reviewer
 
@@ -142,13 +142,13 @@ steps:
 
 **Lessons:**
 
-- **The rubric is the product.** `review_graph_pr` is a repo-local [prompt tool](/tools/user-defined#prompt--an-llm-call-as-a-tool) whose prompt enumerates *this repo's* invariants and instructs "empty findings when clean". A focused reviewer beats a generic one precisely because it refuses to comment on everything else. It has caught real bugs in this repo's own PRs — including one in the PR that changed the reviewer itself.
+- **The rubric is the product.** `review_graph_pr` is a repo-local [prompt tool](/tools/user-defined#prompt--an-llm-call-as-a-tool) whose prompt enumerates _this repo's_ invariants and instructs "empty findings when clean". A focused reviewer beats a generic one precisely because it refuses to comment on everything else. It has caught real bugs in this repo's own PRs — including one in the PR that changed the reviewer itself.
 - **Presentation is a template, not code.** The comment body renders with [sections](/plans/template-language#sections): iteration builds the findings table, `{{#@first}}` emits the header once, the inverted section handles the clean case. Logic stays in steps; the markdown is pure presentation.
 - **Declare the output schema — it's enforced.** `review_graph_pr` declares `{summary, findings[]}` required. Models occasionally omit required fields even under provider-forced structured output; graph validates prompt-tool results against the declared `output_schema` and runs one `repair`-role fix-up, so `{{E3.summary}}` can never be a missing key at render time.
 - **Review the whole diff.** The diff is scoped to nothing (`paths: "."`) minus generated files — an early version reviewed only `crates/` and `docs/`, which blinded it to the highest-leverage changes in an infra PR: workflows, plans, and the exec tools they run.
 - **Findings flow through the pipeline, enriched at each step.** The jq transform (E4) adds `path`/`body` to each finding without dropping the original fields; `gh_pr_inline_comments` (E5) passes those extras through and adds `url` where a comment posted. So the summary table (E6) renders from one array — severity and finding from the review, the link from the post — with no join logic, which the [template dialect](/plans/template-language) couldn't express anyway. Findings the LLM couldn't pin to a line (or whose line the API rejects) simply come back without `url`, and the inverted section renders them as plain text.
 - **Repeated runs refresh everything in place.** `gh_pr_comment` uses `--edit-last --create-if-none` for the summary; `gh_pr_inline_comments` embeds a hidden marker in each inline comment and deletes the previous marker's comments before posting. Each push updates the review instead of stacking.
-- **Inline comments stay advisory.** They post as plain review comments, not a `REQUEST_CHANGES` review — they only gate merging on repos with *Require conversation resolution before merging* enabled.
+- **Inline comments stay advisory.** They post as plain review comments, not a `REQUEST_CHANGES` review — they only gate merging on repos with _Require conversation resolution before merging_ enabled.
 
 ## The workflow
 
@@ -159,16 +159,33 @@ The full file is `.github/workflows/graph-checks.yaml`; the notable choices:
 - **Guards are cheap and layered**: drafts skipped, fork PRs skipped (they have no `ANTHROPIC_API_KEY`, and the `${VAR}` reference in the repo config fails loudly as the backstop), one concurrency group per PR with cancel-in-progress.
 - **Cost per PR**: worst case one `judge`-role call (docs-drift) plus one review call; docs-only PRs pay only the review; drafts pay nothing.
 
-## Patterns to reuse
+## A custom bot identity
 
-| Pattern | How |
-|---|---|
-| Cheap gates before expensive ones | `when` exits over pack-tool counts ahead of any `infer` |
-| Merge-check semantics | `status: error` → exit 4; the step fails, the annotation explains |
-| One output contract, many exits | give every exit gate the same `output` keys as the plan's `output` |
-| Judge-sized diffs | truncate in the tool (`max_bytes`), not in the template |
-| Comment upsert | `gh_pr_comment` edits the token identity's last comment in place |
-| Inline-comment refresh | `gh_pr_inline_comments` deletes its marker's previous comments before posting |
-| Enrich, don't join | pass one array through the steps, each adding fields; templates never merge two arrays |
-| Rubric'd review | prompt tool + enforced `output_schema` + "empty findings when clean" |
-| Version pinning | the container image tag — no install step to pin |
+By default, comments post as **github-actions\[bot\]**. That identity comes from the workflow's `github.token`, not from graph. The pack tools shell out to `gh`, which acts as whatever `GH_TOKEN` is set in the environment — and exec tools pass the process env through untouched. So giving the reviewer its own name and avatar is just a token swap: mint a GitHub App installation token and hand it to the review step.
+
+**Create the app.** GitHub Settings → Developer settings → GitHub Apps → New GitHub App. The app's name becomes the comment author (as `<name>[bot]`) and its avatar shows on every comment. Disable webhooks. One permission: **Pull requests: Read and write**. Install it on the repository, then collect two values: the **App ID** (on the app's About page) and a **private key** (generate one; it downloads a `.pem`). Store them as repository secrets — say `REVIEW_APP_ID` and `REVIEW_APP_KEY`.
+
+**Mint the token in the job.** The official [`actions/create-github-app-token`](https://github.com/actions/create-github-app-token) action exchanges the app credentials for a short-lived installation token scoped to the repo:
+
+```yaml
+  pr-review:
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/create-github-app-token@v2
+        id: bot
+        with:
+          app-id: ${{ secrets.REVIEW_APP_ID }}
+          private-key: ${{ secrets.REVIEW_APP_KEY }}
+
+      - name: Review and comment
+        run: graph plan run pr_review --input pr="$PR"
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+```
+
+The step-level `env` overrides the workflow-level `GH_TOKEN` for the plan run only — checkout and everything else keep the default token, and jobs that never post (like the docs-drift gate) need no changes.
+
+**What to expect on the switch.** Comment identity is per-token, so the upsert mechanics keep working but don't cross identities: `gh_pr_comment --edit-last` edits the _app's_ most recent comment, and on PRs the old identity already reviewed, its stale summary comment sits until deleted by hand. `gh_pr_inline_comments` deletes by hidden marker rather than author, so it clears the old identity's inline comments too — provided the app's Pull requests write permission lets it moderate them; where it can't, the delete pass skips them silently. Both are one-time transition effects on already-open PRs.
