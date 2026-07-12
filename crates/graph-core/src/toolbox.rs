@@ -182,6 +182,7 @@ mod tests {
             plans: Arc::new(vec![doc.clone()]),
             call_stack: Vec::new(),
             store: None,
+            gate: None,
             user_context: String::new(),
             current_date: "2026-07-09".into(),
             max_attempts: 2,

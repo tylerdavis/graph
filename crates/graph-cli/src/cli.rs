@@ -72,6 +72,22 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Interactive workbench: a dual-pane TUI for building and testing plans
+    #[command(visible_alias = "wb")]
+    Workbench {
+        #[command(subcommand)]
+        command: WorkbenchCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum WorkbenchCommand {
+    /// Open the plan workbench: draft plans with the chat agent, inspect
+    /// steps, and run them — fully, or gated with per-tool-call confirmation
+    Plan {
+        /// A plan identifier or YAML file path to open; omit for a blank draft
+        name_or_path: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

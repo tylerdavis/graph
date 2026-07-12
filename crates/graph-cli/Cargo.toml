@@ -24,6 +24,13 @@ toml.workspace = true
 reedline = "0.36"
 chrono.workspace = true
 serde_yaml.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+# TUI stack for `graph workbench` — crossterm pinned to reedline's 0.28 so
+# the lockfile carries exactly one copy.
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+tui-textarea = "0.7"
 
 [dev-dependencies]
 tempfile = "3"

@@ -61,6 +61,7 @@
         "group": "Chat workbench",
         "pages": [
           "using/chat-and-ask",
+          "using/plan-workbench",
           "using/threads",
           "using/tool-selection"
         ]

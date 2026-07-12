@@ -98,3 +98,5 @@ graph plan run project_status '{"project":"New Relic"}'
 ```
 
 Validation catches structural problems at load time: template syntax errors, references to steps that haven't run yet (`E2` referencing `E5`), bad ids, unknown fields. What it *can't* catch — a path that doesn't exist in a tool's real output — surfaces at run time as a typed error with the available keys listed. See [Errors & replanning](/plans/errors-and-replanning).
+
+For interactive authoring, the [plan workbench](/using/plan-workbench) wraps this whole loop in a TUI: the chat agent drafts into a side pane, validation runs on every change, and a gated run pauses before each tool call so you can test a plan before its writes are trustworthy.

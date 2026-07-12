@@ -1,0 +1,94 @@
+---
+title: "Plan workbench"
+description: "A dual-pane TUI for drafting, inspecting, and test-running plans"
+icon: "table-columns"
+---
+
+`graph workbench plan` (alias: `graph wb plan`) opens a full-screen IDE for plans: the chat agent on the left, the plan workspace on the right. Describe what you want in chat and the agent drafts the plan into the side pane; inspect its steps and context; then validate it, run it, or step through it with per-tool-call confirmation — all without leaving the terminal.
+
+```bash
+graph workbench plan                    # blank draft — build it via chat
+graph workbench plan sprint_analysis    # open a known plan by identifier
+graph wb plan ./drafts/report.yaml      # open a YAML file directly
+```
+
+The workbench needs an interactive terminal (it refuses to start otherwise); for scripting, use [`graph plan run`](/reference/cli#graph-plan).
+
+## The two panes
+
+**Chat (left)** is the same agent as `graph chat`, with workbench tools covering every action — the whole workbench is drivable conversationally:
+
+- `workbench__list_plans` / `workbench__load_plan` — enumerate the catalog and load a plan by identifier or YAML path ("load the sprint_analysis plan"); loading replaces the draft, so the agent confirms first when you have unsaved changes.
+- `workbench__draft_plan` — create or revise the draft from a goal (the planner sees the full tool catalog, observed shapes, and the current draft).
+- `workbench__get_plan` / `workbench__set_plan` — re-read the draft as YAML and replace it, for surgical edits. The agent always sees the current draft in its context, so "debug this plan" or "what does E2 do?" needs no read-back call.
+- `workbench__validate_plan` — check the draft and update the plan pane's verdict ("is this valid?").
+- `workbench__run_plan` — execute the draft on request ("run it", "do a gated run"). Step activity streams to the workspace either way, and **gated runs still pause for *your* y/s/a decision on every tool call** — the agent starts the run but cannot approve its side effects.
+- `workbench__save_plan` — write the draft to disk ("save that").
+
+Every draft change shows up in the plan pane immediately and is validated automatically. Workbench chats are scratch sessions — they are not persisted as threads.
+
+**Workspace (right)** has three tabs:
+
+| Tab | Contents |
+|---|---|
+| `1` plan | header (identifier, finish mode, validation state), the step list with live status glyphs (`○` pending · `◐` running · `✓` ok · `✗` error · `⊘` skipped), and a detail pane showing the selected step's reasoning, input template, and — after a run — its rendered input and result JSON |
+| `2` context | the tool catalog and observed output shapes, exactly what the planner sees when drafting |
+| `3` run | the live transcript: step events, the streamed solver answer, and the final outcome |
+
+## Running plans
+
+Every run mode is available from the keyboard or by asking the agent (`workbench__run_plan`):
+
+- `v` — validate: full template/reference/control-step checking, with every problem listed in the plan tab.
+- `r` — full run, exactly like `graph plan run`.
+- `g` — **debug run**: the debugger described below.
+
+Plans with a required `input_schema` open a prefilled JSON editor before the run starts, and while anything executes the status bar shows a live indicator with the in-flight call and elapsed time — inference steps no longer look like dead air.
+
+## Debugging plans
+
+A debug run (`g`) works like a debugger over plan execution. Pauses are **non-modal**: the workspace stays fully navigable — switch tabs, browse steps and their results with `j`/`k` — while the run waits.
+
+**Breakpoints.** `b` toggles a breakpoint on the selected step (a red `●` in the gutter), any time, including mid-run. With breakpoints set, `g` runs freely until one is hit; with none, it pauses before the first call. A breakpoint on a `map`/`decide` step also pauses each of its body calls (like a breakpoint on a loop line); nested plans have their own step namespace — breakpoint the `plan__*` step to pause before entering, then step through its calls.
+
+**The debug panel.** At a pause, the plan tab auto-selects the paused step and the detail pane shows the debugger's view: the paused position and call stack, the fully rendered input about to be sent, and the **scope** — everything a template can read at this point: `input`, every prior step result, and inside `map`/`reduce`/`decide` bodies the `item`/`index`/`accumulator` pseudo-roots. One compact line per root; select any step row for its full JSON.
+
+**Decisions** (shown in the panel title):
+
+- `n` / `Enter` — next step: make this call, pause at the next
+- `c` — continue: run to the next breakpoint (or failing call)
+- `s` — skip: a JSON editor opens and the value you submit becomes the step's result, exactly as if the tool had returned it — downstream templates consume it
+- `a` — abort; steps already executed keep their results in the plan tab
+
+**Break on exception.** A failing tool call pauses the run — even mid-continue — showing the error in the debug panel. `s` injects a replacement result and the run continues as if the call had succeeded; `n` lets the error propagate (the run fails as it would have); `a` aborts.
+
+**The inject editor** explains itself: a header says what the JSON becomes, where the prefill came from (the tool's declared output example → an observed example → a skeleton synthesized from its `output_schema` → empty), and — the part that matters — **which paths downstream templates read** from this step, so you know exactly what fields the value must contain. `Ctrl+S` submits; `Esc` returns to the pause; the hints stay visible alongside any parse error.
+
+Control-step *evaluation* is never gated — `exit`/`decide` gates (including `infer` judge calls) and `map`/`reduce` orchestration are read-only engine computation; their side effects are the body calls, which are. While paused, the exit controls (`q`, `Ctrl+C`) abort the run — press again once it stops to quit; run keys are blocked until the pause is decided, and the chat input is inert. `?` still opens help, and the workspace scrolls and navigates normally.
+
+The agent can drive all of this too: `workbench__run_plan` accepts `breakpoints` (top-level step ids, implies a debug run) — every pause still asks *you*.
+
+## Saving
+
+`Ctrl+S` writes the draft as YAML — back to the file it was loaded from, or to `<first [plans].paths dir>/<identifier>.yaml` for new drafts (it refuses to overwrite a file it didn't load). The status bar shows an `[unsaved]` marker while the draft is dirty, and quitting with unsaved changes asks first.
+
+## Keys
+
+| Key | Where | Action |
+|---|---|---|
+| `Tab` | anywhere | toggle focus chat ↔ workspace |
+| `1` / `2` / `3` | workspace | switch tab (`Alt+1/2/3` from anywhere, even mid-typing) |
+| `Enter` | chat | send (`Alt+Enter` inserts a newline) |
+| `Ctrl+↑` / `Ctrl+↓` | chat | scroll the conversation |
+| `j` / `k` | workspace | select a step or tool (run tab: scroll the transcript) |
+| `J` / `K`, `PgUp` / `PgDn` | workspace | scroll the detail / debug / run pane (a scrollbar appears when content overflows) |
+| `v` / `r` / `g` | workspace | validate / run / debug run |
+| `b` | plan tab | toggle breakpoint on the selected step |
+| `n` / `Enter` | paused | next step — proceed this call, pause at the next |
+| `c` | paused | continue to the next breakpoint or failing call |
+| `s` | paused | skip / inject (on error: replace the failed result) |
+| `a` | paused | abort the run |
+| `Ctrl+S` | anywhere | save the draft (in an editor: submit) |
+| `Esc` | editor | cancel (returns to the pause when injecting) |
+| `?` | workspace | help overlay (works while paused too; any key closes it) |
+| `q`, `Ctrl+C` | — | quit (confirms when running or unsaved; while paused: abort the run) |

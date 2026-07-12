@@ -38,10 +38,22 @@ pub struct PlannerPromptArgs<'a> {
     pub user_context: &'a str,
     pub existing_plan: &'a str,
     pub step_schema: &'a str,
+    /// A draft plan under revision (workbench). Unlike `existing_plan`,
+    /// nothing in it has executed: every step is mutable.
+    pub draft: Option<&'a str>,
 }
 
 pub fn planner_prompt(args: &PlannerPromptArgs) -> String {
     let last_error = args.last_error.unwrap_or("none");
+    let draft_section = match args.draft {
+        Some(draft) => format!(
+            "### Draft Under Revision\nThe following draft plan has NOT been executed. \
+             Revise it according to the user's request — you may modify, reorder, \
+             remove, or replace any step. Output the COMPLETE revised plan, not a diff.\n\
+             <draft_plan>\n{draft}\n</draft_plan>\n\n"
+        ),
+        None => String::new(),
+    };
     format!(
         r#"# Tool-Based Task Execution Framework
 
@@ -65,7 +77,7 @@ You are tasked with creating a step-by-step plan to solve problems using the too
 </current_user_context>
 
 ## Plan Structure
-### Existing Plan
+{draft_section}### Existing Plan
 Steps that have already executed. Never repeat or modify them — continue from them.
 <existing_plan>
 {existing_plan}
@@ -135,6 +147,7 @@ Classify the request before planning and note it in step reasoning:
         tools = args.tools,
         templating_rules = TEMPLATING_RULES,
         user_context = args.user_context,
+        draft_section = draft_section,
         existing_plan = args.existing_plan,
         step_schema = args.step_schema,
     )

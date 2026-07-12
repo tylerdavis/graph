@@ -223,6 +223,9 @@ impl Pipeline {
                 return Err(match e.fail {
                     BodyFail::Render(e) => render_end(e),
                     BodyFail::Tool(message) => failed(message),
+                    BodyFail::Aborted => ExecutionEnd::Aborted {
+                        step: step.id.clone(),
+                    },
                 });
             }
         };

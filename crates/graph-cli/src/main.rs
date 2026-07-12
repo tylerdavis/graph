@@ -2,6 +2,7 @@ mod cli;
 mod commands;
 mod output;
 mod runtime;
+mod workbench;
 
 use anyhow::Result;
 use clap::Parser;
@@ -35,6 +36,7 @@ async fn main() -> Result<()> {
         Command::Threads { command } => commands::threads_cmd::run(command).await,
         Command::Shapes { command } => commands::shapes_cmd::run(command).await,
         Command::Plan { command } => commands::plan_cmd::run(command).await,
+        Command::Workbench { command } => workbench::run(command).await,
     }
 }
 
