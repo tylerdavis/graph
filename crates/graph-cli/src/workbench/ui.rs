@@ -521,7 +521,6 @@ fn draw_debug_panel(
     area: Rect,
     scroll: &std::cell::Cell<u16>,
 ) {
-    let width = area.width.saturating_sub(2) as usize;
     let mut lines: Vec<Line> = Vec::new();
     match &prompt.kind {
         GateKind::BeforeCall => lines.push(Line::from(vec![
@@ -550,23 +549,22 @@ fn draw_debug_panel(
     }
     push_json_section(&mut lines, "rendered input", &prompt.input);
 
-    // Scope: one compact line per root — input first, step ids by number,
-    // then the body pseudo-roots. Full values: select the step's row.
+    // Scope: every root in full, pretty-printed — input first, step ids by
+    // number, then the body pseudo-roots. The panel scrolls (J/K).
     lines.push(Line::styled("scope:", DIM));
+    lines.push(Line::default());
     let mut roots: Vec<&String> = prompt.scope.keys().collect();
     roots.sort_by_key(|name| scope_order(name));
     for name in roots {
-        let compact = serde_json::to_string(&prompt.scope[name.as_str()]).unwrap_or_default();
-        let budget = width.saturating_sub(16).max(8);
-        let preview: String = if compact.chars().count() > budget {
-            format!("{}…", compact.chars().take(budget).collect::<String>())
-        } else {
-            compact
-        };
-        lines.push(Line::from(vec![
-            Span::styled(format!("{name:>12}  "), ACCENT),
-            Span::raw(preview),
-        ]));
+        lines.push(Line::styled(
+            name.clone(),
+            ACCENT.add_modifier(Modifier::BOLD),
+        ));
+        let pretty = serde_json::to_string_pretty(&prompt.scope[name.as_str()]).unwrap_or_default();
+        for raw in pretty.lines() {
+            lines.push(Line::from(raw.to_string()));
+        }
+        lines.push(Line::default());
     }
 
     let title = match &prompt.kind {
@@ -698,7 +696,7 @@ fn draw_help(frame: &mut Frame) {
 fn push_json_section(lines: &mut Vec<Line>, title: &str, value: &serde_json::Value) {
     lines.push(Line::styled(format!("{title}:"), DIM));
     let pretty = serde_json::to_string_pretty(value).unwrap_or_default();
-    for raw in pretty.lines().take(200) {
+    for raw in pretty.lines() {
         lines.push(Line::from(raw.to_string()));
     }
     lines.push(Line::default());
