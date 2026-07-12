@@ -62,3 +62,7 @@ How each is handled depends on who authored the plan — see [Errors & replannin
 ## Not supported, on purpose
 
 No conditionals, functions, partials, comments, or inheritance. The language is deliberately logic-less: anything requiring computation belongs in a step (a [user-defined tool](/tools/user-defined) is a fine place for it) or in the solver's instructions. Unsupported syntax is a parse error at load time, not a silent no-op.
+
+## Introspection
+
+Tooling can ask a template what it reads without rendering it: `template::referenced_paths` returns every full dotted path a template references (`E0.values.0.id`, `input.team`), marking section-item reads with `*` (`{{#E1.values}}{{id}}{{/E1.values}}` → `E1.values.*.id`). The workbench's inject editor uses this to tell you which fields an injected value must contain.

@@ -41,14 +41,32 @@ Every run mode is available from the keyboard or by asking the agent (`workbench
 
 - `v` — validate: full template/reference/control-step checking, with every problem listed in the plan tab.
 - `r` — full run, exactly like `graph plan run`.
-- `g` — **gated run**: execution pauses before *every* tool call — including calls inside `decide` branches, `map`/`reduce` bodies, and nested plans — showing the fully rendered input it is about to send. Then:
-  - `y` / `Enter` — proceed with the call
-  - `s` — skip it: a JSON editor opens (prefilled with the tool's known output example when there is one) and the value you submit becomes the step's result, exactly as if the tool had returned it — downstream templates consume it
-  - `a` — abort the run; steps already executed keep their results in the plan tab
+- `g` — **debug run**: the debugger described below.
 
-A gated run is both the dry-run and the step-through: reads you approve run for real, writes you're not ready for get skipped with a plausible injected result, and one keypress per step walks the plan at your pace. Note that control-step *evaluation* is not gated — `exit`/`decide` gates (including `infer` judge calls) and `map`/`reduce` orchestration are read-only engine computation; their side effects are the body calls, which are gated.
+Plans with a required `input_schema` open a prefilled JSON editor before the run starts, and while anything executes the status bar shows a live indicator with the in-flight call and elapsed time — inference steps no longer look like dead air.
 
-Plans with a required `input_schema` open a prefilled JSON editor before the run starts.
+## Debugging plans
+
+A debug run (`g`) works like a debugger over plan execution. Pauses are **non-modal**: the workspace stays fully navigable — switch tabs, browse steps and their results with `j`/`k` — while the run waits.
+
+**Breakpoints.** `b` toggles a breakpoint on the selected step (a red `●` in the gutter), any time, including mid-run. With breakpoints set, `g` runs freely until one is hit; with none, it pauses before the first call. A breakpoint on a `map`/`decide` step also pauses each of its body calls (like a breakpoint on a loop line); nested plans have their own step namespace — breakpoint the `plan__*` step to pause before entering, then step through its calls.
+
+**The debug panel.** At a pause, the plan tab auto-selects the paused step and the detail pane shows the debugger's view: the paused position and call stack, the fully rendered input about to be sent, and the **scope** — everything a template can read at this point: `input`, every prior step result, and inside `map`/`reduce`/`decide` bodies the `item`/`index`/`accumulator` pseudo-roots. One compact line per root; select any step row for its full JSON.
+
+**Decisions** (shown in the panel title):
+
+- `n` / `Enter` — step: make this call, pause at the next
+- `c` — continue: run to the next breakpoint (or failing call)
+- `s` — skip: a JSON editor opens and the value you submit becomes the step's result, exactly as if the tool had returned it — downstream templates consume it
+- `a` — abort; steps already executed keep their results in the plan tab
+
+**Break on exception.** A failing tool call pauses the run — even mid-continue — showing the error in the debug panel. `s` injects a replacement result and the run continues as if the call had succeeded; `n` lets the error propagate (the run fails as it would have); `a` aborts.
+
+**The inject editor** explains itself: a header says what the JSON becomes, where the prefill came from (the tool's declared output example → an observed example → a skeleton synthesized from its `output_schema` → empty), and — the part that matters — **which paths downstream templates read** from this step, so you know exactly what fields the value must contain. `Ctrl+S` submits; `Esc` returns to the pause; the hints stay visible alongside any parse error.
+
+Control-step *evaluation* is never gated — `exit`/`decide` gates (including `infer` judge calls) and `map`/`reduce` orchestration are read-only engine computation; their side effects are the body calls, which are. While paused, quit/help/run keys are blocked (a pending decision must be answered) and the chat input is inert.
+
+The agent can drive all of this too: `workbench__run_plan` accepts `breakpoints` (top-level step ids, implies a debug run) — every pause still asks *you*.
 
 ## Saving
 
@@ -64,9 +82,13 @@ Plans with a required `input_schema` open a prefilled JSON editor before the run
 | `Ctrl+↑` / `Ctrl+↓` | chat | scroll the conversation |
 | `j` / `k` | workspace | select a step or tool |
 | `PgUp` / `PgDn` | workspace | scroll the detail pane |
-| `v` / `r` / `g` | workspace | validate / run / gated run |
-| `y` / `s` / `a` | paused | proceed / skip with injected result / abort |
+| `v` / `r` / `g` | workspace | validate / run / debug run |
+| `b` | plan tab | toggle breakpoint on the selected step |
+| `n` / `Enter` | paused | step — proceed this call, pause at the next |
+| `c` | paused | continue to the next breakpoint or failing call |
+| `s` | paused | skip / inject (on error: replace the failed result) |
+| `a` | paused | abort the run |
 | `Ctrl+S` | anywhere | save the draft (in an editor: submit) |
-| `Esc` | editor | cancel (returns to the gate prompt when skipping) |
+| `Esc` | editor | cancel (returns to the pause when injecting) |
 | `?` | workspace | help overlay |
 | `q`, `Ctrl+C` | — | quit (confirms when running or unsaved) |
