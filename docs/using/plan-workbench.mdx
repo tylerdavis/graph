@@ -55,7 +55,7 @@ A debug run (`g`) works like a debugger over plan execution. Pauses are **non-mo
 
 **Decisions** (shown in the panel title):
 
-- `n` / `Enter` — step: make this call, pause at the next
+- `n` / `Enter` — next step: make this call, pause at the next
 - `c` — continue: run to the next breakpoint (or failing call)
 - `s` — skip: a JSON editor opens and the value you submit becomes the step's result, exactly as if the tool had returned it — downstream templates consume it
 - `a` — abort; steps already executed keep their results in the plan tab
@@ -84,7 +84,7 @@ The agent can drive all of this too: `workbench__run_plan` accepts `breakpoints`
 | `PgUp` / `PgDn` | workspace | scroll the detail pane |
 | `v` / `r` / `g` | workspace | validate / run / debug run |
 | `b` | plan tab | toggle breakpoint on the selected step |
-| `n` / `Enter` | paused | step — proceed this call, pause at the next |
+| `n` / `Enter` | paused | next step — proceed this call, pause at the next |
 | `c` | paused | continue to the next breakpoint or failing call |
 | `s` | paused | skip / inject (on error: replace the failed result) |
 | `a` | paused | abort the run |

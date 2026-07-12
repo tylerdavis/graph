@@ -601,7 +601,7 @@ fn draw_help(frame: &mut Frame) {
         ),
         (
             "n / Enter",
-            "paused: step — proceed this call, pause at the next",
+            "paused: next step — proceed this call, pause at the next",
         ),
         ("c", "paused: continue to the next breakpoint (or error)"),
         (
