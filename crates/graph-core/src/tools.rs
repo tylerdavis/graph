@@ -9,7 +9,7 @@ use serde_json::Value;
 /// A tool as seen by the model: namespaced name, description, and schemas.
 #[derive(Debug, Clone)]
 pub struct ToolDef {
-    /// Namespaced: `github__search_issues`, `graph__cypher_query`, …
+    /// Namespaced: `github__search_issues`, `user__git_log`, …
     pub name: String,
     pub description: String,
     /// JSON Schema for the input.

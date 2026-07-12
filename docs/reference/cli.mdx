@@ -65,13 +65,14 @@ graph mcp tools [server]    # discovered tools
 graph mcp test <server>     # connect, count tools and declared output schemas
 ```
 
-## `graph db`
+## `graph shapes`
 
 ```
-graph db query "<cypher>" [--json]
+graph shapes list [--json]
+graph shapes show <tool>
 ```
 
-Raw read access to the embedded database (ladybug backend only).
+Inspect the [observed-shape cache](/tools/shape-cache): `list` prints tool names and seen-counts, `show` prints one tool's cached schema and example. The same data lives as plain files under `<data_dir>/shapes/`.
 
 ## `graph config`
 
@@ -80,7 +81,3 @@ graph config show    # merged effective config
 graph config init    # write a commented starter (global)
 graph config path    # config file locations and which exist
 ```
-
-## `graph sync`
-
-Reserved for the entity-graph sync flow (roadmap).

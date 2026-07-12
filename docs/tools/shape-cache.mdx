@@ -21,12 +21,13 @@ The cache is read fresh at each planning attempt — a shape observed earlier in
 
 - **Everyday usage trains the planner.** After you've used `linear__list_issues` once, `plan_and_execute` writes correct field references against it forever after.
 - **Cold caches degrade, not break.** With no shape, the planner is instructed to use whole-result references (`{{E0}}`) or stop and continue planning after real results exist; a wrong deep path fails with a digest of the keys that *do* exist, and one replan fixes it.
-- **You can inspect it.** It's just data in the embedded database:
+- **You can inspect it.** It's just files:
   ```bash
-  graph db query "MATCH (s:ToolShape) RETURN s.tool, s.seen_count"
+  graph shapes list            # tool names and seen-counts
+  graph shapes show <tool>     # one tool's schema and example
+  cat ~/.local/share/graph/shapes/*.json | jq .tool
   ```
-  (Or wrap that as a [cypher tool](/tools/user-defined) — the shipped `shape_cache` example does exactly this.)
 
 ## Backend caveat
 
-The cache lives in the storage backend. With the default `ladybug` backend it accumulates across runs; with `GRAPH_STORAGE=memory` (CI mode) each process starts cold and learns only within its own run — one reason a future centralized backend is attractive for CI fleets. See [Storage](/architecture/storage).
+The cache lives in the storage backend. With the default `file` backend it accumulates across runs; with `GRAPH_STORAGE=memory` (CI mode) each process starts cold and learns only within its own run — one reason a future centralized backend is attractive for CI fleets. See [Storage](/architecture/storage).

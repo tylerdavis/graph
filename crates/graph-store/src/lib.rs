@@ -1,12 +1,11 @@
-//! LadybugDB-backed storage: threads, messages, runs, checkpoints, the
-//! observed-shape cache, and the user entity graph.
+//! Storage backends for runtime state: threads, messages, and the
+//! observed-shape cache. `FileStore` (plain files, the default) and
+//! `MemoryStore` (ephemeral, for CI) both implement `graph_core::Store`.
 
-mod db;
-pub mod extensions;
+mod file;
 mod memory;
 mod recording;
 
-pub use db::GraphStore;
-pub use extensions::Extension;
+pub use file::FileStore;
 pub use memory::MemoryStore;
 pub use recording::RecordingRegistry;

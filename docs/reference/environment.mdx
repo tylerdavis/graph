@@ -8,7 +8,7 @@ icon: "list-check"
 
 | Variable | Effect |
 |---|---|
-| `GRAPH_STORAGE` | `ladybug` \| `memory` — overrides `[storage].backend`. Invalid values error. |
+| `GRAPH_STORAGE` | `file` \| `memory` — overrides `[storage].backend`. Invalid values error. |
 | `GRAPH_EVENTS` | `jsonl` — stderr becomes machine-parseable JSONL events (`tool_started`, `tool_finished`, `planning`, …). `github` — a failing `plan run` additionally emits a GitHub Actions `::error::` annotation (see stream conventions below). |
 | `GRAPH_LOG` | [tracing filter](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for diagnostics on stderr (e.g. `GRAPH_LOG=debug`, `GRAPH_LOG=graph_mcp=trace`). Overrides `-v` flags. |
 | anything referenced as `${VAR}` in config | provider keys, MCP auth, tool env — resolved at load, required |
@@ -36,8 +36,8 @@ One sanctioned exception: under `GRAPH_EVENTS=github`, a *failing* `plan run` pr
 | `~/.config/graph/config.toml` | global config |
 | `~/.config/graph/plans/`, `~/.config/graph/tools/` | global plans and user tools |
 | `./.graph/` | project-level config/plans/tools, layered over global |
-| `~/.local/share/graph/db/` | embedded database (threads, shape cache) — `[settings].data_dir` |
+| `~/.local/share/graph/` | threads and shape cache as plain files — `[settings].data_dir` |
 
 ## Concurrency
 
-The embedded database is single-process: a running `graph chat` blocks other graph invocations against the same `data_dir` (you'll get a clear lock error naming the holding PID). Options: exit the other process, use `GRAPH_STORAGE=memory`, or point a project config at a different `data_dir`.
+Concurrent graph processes can share one `data_dir`: file writes are atomic and message appends are serialized per thread. See [Storage](/architecture/storage) for the exact guarantees.

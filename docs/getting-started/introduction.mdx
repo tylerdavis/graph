@@ -19,7 +19,7 @@ This is AI built for _operations_. An improvising agent gives you a different an
 - **Repeatable and reviewable.** A plan is a file you check into a repo, review in a PR, and share with your team. No UI state, no prompt roulette — your Monday status report is the same report every Monday.
 - **Composable.** Every plan joins the tool catalog as `plan__<identifier>`, invocable like any other tool — from the CLI, from scripts, or by name. And a plan's steps compose everything else in the catalog: MCP tools, wrapped CLIs, saved queries, prompt tools.
 - **Generated, validated, tested.** You don't have to write plans by hand. `plan_and_execute` has an LLM planner author a plan on the fly — validated before execution, self-correcting against real errors when a step fails. Hand-written or generated, every plan is validated at load time (`graph plan validate`), and the [shape cache](/tools/shape-cache) teaches the planner what tools _actually_ return, so generated plans get better with use.
-- **Bring your own models and storage.** Any MCP server; Anthropic, OpenAI, or OpenAI-compatible/local models, assignable per role (planner, solver, chat). A single binary with an embedded database — or pure in-memory storage for ephemeral CI runs. Your data stays on your machine.
+- **Bring your own models and storage.** Any MCP server; Anthropic, OpenAI, or OpenAI-compatible/local models, assignable per role (planner, solver, chat). A single binary with plain-file storage — or pure in-memory storage for ephemeral CI runs. Your data stays on your machine.
 
 ## Built for scaled AI Ops
 

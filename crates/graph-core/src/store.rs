@@ -1,6 +1,6 @@
 //! Persistence abstraction: threads, messages, and the observed-shape cache.
-//! Implemented by graph-store over LadybugDB; behind a trait so the backend
-//! can be swapped.
+//! Implemented by graph-store; behind a trait so backends (file, memory,
+//! future remote stores) can be swapped.
 
 use async_trait::async_trait;
 use graph_llm::types::ChatMessage;
@@ -38,7 +38,6 @@ pub trait Store: Send + Sync {
     /// Newest first.
     async fn list_threads(&self) -> Result<Vec<ThreadMeta>, StoreError>;
     async fn delete_thread(&self, id: &str) -> Result<bool, StoreError>;
-    async fn set_title(&self, id: &str, title: &str) -> Result<(), StoreError>;
 
     /// Append messages to a thread and bump its updated_at.
     async fn append_messages(

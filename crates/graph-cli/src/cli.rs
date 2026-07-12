@@ -62,16 +62,10 @@ pub enum Command {
         #[command(subcommand)]
         command: McpCommand,
     },
-    /// Run the configured sync plan to populate the entity graph
-    Sync {
-        /// Sync plan identifier (defaults to [graph].sync_plan)
-        #[arg(long)]
-        plan: Option<String>,
-    },
-    /// Query the embedded database directly
-    Db {
+    /// Inspect the observed-shape cache
+    Shapes {
         #[command(subcommand)]
-        command: DbCommand,
+        command: ShapesCommand,
     },
     /// Show or initialize configuration
     Config {
@@ -148,13 +142,14 @@ pub enum McpCommand {
 }
 
 #[derive(Subcommand)]
-pub enum DbCommand {
-    /// Run a Cypher query against the embedded database
-    Query {
-        cypher: String,
+pub enum ShapesCommand {
+    /// List cached tool shapes
+    List {
         #[arg(long)]
         json: bool,
     },
+    /// Show one tool's cached schema and example
+    Show { tool: String },
 }
 
 #[derive(Subcommand)]

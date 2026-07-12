@@ -23,17 +23,15 @@ pub struct Config {
     #[serde(default)]
     pub tools: ToolPaths,
     #[serde(default)]
-    pub graph: GraphConfig,
-    #[serde(default)]
     pub storage: StorageConfig,
     #[serde(default)]
     pub user: UserConfig,
 }
 
-/// Runtime-state storage. Ships with (and defaults to) the embedded
-/// LadybugDB so a fresh install needs zero configuration; `memory` runs
-/// ephemeral (CI jobs, or dodging the embedded single-process lock).
-/// Centralized backends (postgres/remote) slot in behind the same trait.
+/// Runtime-state storage. Defaults to plain files under `data_dir`, so a
+/// fresh install needs zero configuration; `memory` runs ephemeral (CI
+/// jobs, tests). Centralized backends (postgres/remote) slot in behind the
+/// same trait.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct StorageConfig {
@@ -44,7 +42,7 @@ pub struct StorageConfig {
 #[serde(rename_all = "snake_case")]
 pub enum StorageBackend {
     #[default]
-    Ladybug,
+    File,
     Memory,
 }
 
@@ -229,15 +227,6 @@ impl Default for ToolPaths {
             packs: Vec::new(),
         }
     }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct GraphConfig {
-    /// Cypher DDL file defining the user's entity graph schema.
-    pub schema: Option<PathBuf>,
-    /// Plan identifier run by `graph sync`.
-    pub sync_plan: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
