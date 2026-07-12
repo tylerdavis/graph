@@ -33,15 +33,55 @@ pub struct WorkbenchContext {
     pub tx: UnboundedSender<Msg>,
 }
 
+/// The system prompt for one turn: the base prompt plus the CURRENT draft,
+/// so the agent always sees what the plan pane shows — no read-back call
+/// needed when the user says "debug this plan".
+fn turn_system_prompt(base: &str, draft: &Option<PlanDoc>) -> String {
+    let mut prompt = base.to_string();
+    prompt.push_str("\n\n## Current draft\n");
+    match draft {
+        Some(doc) => {
+            prompt.push_str(&format!(
+                "The plan pane currently shows '{}' — this YAML is current as \
+                 of this turn, so do NOT call workbench__get_plan just to read \
+                 it (only to re-check after your own edits within this turn):\n",
+                doc.identifier
+            ));
+            match serde_yaml::to_string(doc) {
+                Ok(yaml) => prompt.push_str(&yaml),
+                Err(_) => prompt.push_str("(unserializable draft — use workbench__get_plan)"),
+            }
+        }
+        None => prompt.push_str(
+            "(none yet — the pane is empty; draft one with workbench__draft_plan \
+             or load one with workbench__load_plan when asked)",
+        ),
+    }
+    prompt
+}
+
 pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
     let ctx = context.clone();
     match effect {
         Effect::RunAgentTurn { message } => {
             tokio::spawn(async move {
+                // Rebuild the agent with the draft baked into the system
+                // prompt (fields are Arcs and small strings — cheap).
+                let agent = Agent {
+                    provider: ctx.agent.provider.clone(),
+                    registry: ctx.agent.registry.clone(),
+                    events: ctx.agent.events.clone(),
+                    model: ctx.agent.model.clone(),
+                    temperature: ctx.agent.temperature,
+                    system_prompt: turn_system_prompt(&ctx.agent.system_prompt, &{
+                        ctx.draft.lock().unwrap().clone()
+                    }),
+                    max_iterations: ctx.agent.max_iterations,
+                };
                 let mut history = ctx.history.lock().await;
                 let pre_len = history.len();
                 history.push(ChatMessage::User { content: message });
-                let result = ctx.agent.run_turn(&mut history).await;
+                let result = agent.run_turn(&mut history).await;
                 if result.is_err() {
                     // Drop the failed turn's messages so a retry starts clean.
                     history.truncate(pre_len);
@@ -150,4 +190,32 @@ pub fn save_draft(
     std::fs::write(&path, yaml).map_err(|e| e.to_string())?;
     doc.path = Some(path.clone());
     Ok(path.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn turn_prompt_carries_the_current_draft() {
+        let doc: PlanDoc = serde_yaml::from_str(
+            r#"
+identifier: demo
+name: Demo
+description: demo plan
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: x }
+"#,
+        )
+        .unwrap();
+        let prompt = turn_system_prompt("BASE", &Some(doc));
+        assert!(prompt.starts_with("BASE"));
+        assert!(prompt.contains("identifier: demo"));
+        assert!(prompt.contains("do NOT call workbench__get_plan"));
+
+        let empty = turn_system_prompt("BASE", &None);
+        assert!(empty.contains("none yet"));
+    }
 }

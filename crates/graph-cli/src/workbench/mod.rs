@@ -42,7 +42,9 @@ unsaved changes.\n\
 - workbench__draft_plan: create or revise the draft from a goal. Pass the \
 user's request as a self-contained goal; pass feedback when revising after \
 validation problems or user corrections.\n\
-- workbench__get_plan: read the current draft YAML before targeted edits.\n\
+- workbench__get_plan: re-read the draft YAML. The current draft is \
+already included below in this prompt each turn — call this only to \
+re-check after your own edits within the same turn.\n\
 - workbench__set_plan: replace the draft with complete YAML (get, modify, \
 set) for surgical changes.\n\
 - workbench__validate_plan: check the draft and surface the verdict in \
