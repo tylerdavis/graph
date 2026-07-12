@@ -52,6 +52,71 @@ pub fn referenced_roots(template: &str) -> Result<Vec<String>, RenderError> {
     Ok(roots)
 }
 
+/// Parse a template and return every full data path it references, dotted
+/// (`E0.values.0.id`, `input.team`). Section paths are included; paths
+/// referenced *inside* a section body relative to its items are emitted
+/// with a `*` item marker (`{{#E1.values}}{{id}}{{/}}` → `E1.values.*.id`)
+/// so callers can tell users which fields a value must contain. Loop
+/// pseudo-vars (`@index` …) are omitted.
+pub fn referenced_paths(template: &str) -> Result<Vec<String>, RenderError> {
+    fn seg_text(seg: &parser::Seg) -> String {
+        match seg {
+            parser::Seg::Key(key) => key.clone(),
+            parser::Seg::Index(index) => index.to_string(),
+            parser::Seg::Length => "length".to_string(),
+        }
+    }
+
+    fn path_text(segs: &[parser::Seg]) -> String {
+        segs.iter().map(seg_text).collect::<Vec<_>>().join(".")
+    }
+
+    fn push(paths: &mut Vec<String>, path: String) {
+        if !path.is_empty() && !path.starts_with('@') && !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+
+    fn collect(nodes: &[parser::Node], prefix: &str, paths: &mut Vec<String>) {
+        for node in nodes {
+            match node {
+                parser::Node::Var(parser::Path::Data(segs)) => {
+                    let text = path_text(segs);
+                    // Multi-segment paths are root-anchored; bare keys
+                    // inside a section read the current item.
+                    if segs.len() > 1 || prefix.is_empty() {
+                        push(paths, text);
+                    } else {
+                        push(paths, format!("{prefix}.*.{text}"));
+                    }
+                }
+                parser::Node::Section {
+                    path: parser::Path::Data(segs),
+                    body,
+                    ..
+                } => {
+                    let text = path_text(segs);
+                    let anchored = segs.len() > 1 || prefix.is_empty();
+                    let section_path = if anchored {
+                        text.clone()
+                    } else {
+                        format!("{prefix}.*.{text}")
+                    };
+                    push(paths, section_path.clone());
+                    collect(body, &section_path, paths);
+                }
+                parser::Node::Section { body, .. } => collect(body, prefix, paths),
+                _ => {}
+            }
+        }
+    }
+
+    let nodes = parser::parse(template)?;
+    let mut paths = Vec::new();
+    collect(&nodes, "", &mut paths);
+    Ok(paths)
+}
+
 /// Why a template failed to render. The caller decides policy:
 /// `MissingStep`/`BadPath` are plan defects (replan in `plan_and_execute`,
 /// hard failure for explicit plans); `EmptyData` means the plan was fine
@@ -290,6 +355,33 @@ mod tests {
                 "{template} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn referenced_paths_collects_full_dotted_paths() {
+        let paths = referenced_paths("{{E0.values.0.id}} and {{input.team}}").unwrap();
+        assert_eq!(paths, vec!["E0.values.0.id", "input.team"]);
+
+        // Sections emit the section path plus item-relative paths with a
+        // `*` marker; loop pseudo-vars are omitted.
+        let paths = referenced_paths(
+            "{{#E1.values}}{{id}}: {{state}} {{@index}}{{/E1.values}} total {{E1.values.length}}",
+        )
+        .unwrap();
+        assert_eq!(
+            paths,
+            vec![
+                "E1.values",
+                "E1.values.*.id",
+                "E1.values.*.state",
+                "E1.values.length",
+            ]
+        );
+
+        // Duplicates collapse; parse errors propagate.
+        let paths = referenced_paths("{{E0.id}} {{E0.id}}").unwrap();
+        assert_eq!(paths, vec!["E0.id"]);
+        assert!(referenced_paths("{{> partial}}").is_err());
     }
 
     #[test]

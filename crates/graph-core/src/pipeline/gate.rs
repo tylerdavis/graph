@@ -10,7 +10,7 @@
 //! their side effects are the body calls, which are gated.
 
 use async_trait::async_trait;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::fmt;
 
 /// Where a tool call sits in the plan. Displays with the bus-source
@@ -66,6 +66,12 @@ pub struct GateContext<'a> {
     /// Plan-call nesting; empty at the top level. Frames are plan
     /// identifiers or "plan_and_execute".
     pub call_stack: &'a [String],
+    /// The template scope the input was rendered against — the debugger's
+    /// "locals". At the top level: the run's results map (`input` plus
+    /// prior step results). Inside decide/map/reduce bodies: the layered
+    /// body scope, including the `item`/`index`/`accumulator` pseudo-roots
+    /// and earlier same-body step ids.
+    pub scope: &'a Map<String, Value>,
 }
 
 pub enum GateDecision {
@@ -79,10 +85,30 @@ pub enum GateDecision {
     Abort,
 }
 
+/// How a gate resolves a failed tool call.
+pub enum ErrorDecision {
+    /// The step fails exactly as without a gate: `StepFailed` on explicit
+    /// runs, replan-eligible on planned runs.
+    Fail,
+    /// Substitute `result` and continue exactly as if the tool had
+    /// returned it. The replacement never enters the replan loop.
+    Replace { result: Value },
+    /// End the run now (same semantics as [`GateDecision::Abort`]).
+    Abort,
+}
+
 /// Consulted before every real tool dispatch (see module docs for scope).
 /// May be called concurrently when `map` runs with `concurrency` above 1 —
 /// implementations that prompt a user should serialize internally.
 #[async_trait]
 pub trait ExecutionGate: Send + Sync {
     async fn before_tool(&self, ctx: GateContext<'_>) -> GateDecision;
+
+    /// Consulted after a dispatched call returns an error, before the
+    /// error propagates — the debugger's break-on-exception. The default
+    /// preserves ungated behavior. Not consulted when a nested run was
+    /// aborted (aborts stay hard) and never for control-step evaluation.
+    async fn on_tool_error(&self, _ctx: GateContext<'_>, _error: &Value) -> ErrorDecision {
+        ErrorDecision::Fail
+    }
 }

@@ -25,7 +25,7 @@ mod tests;
 
 pub use decision::DECIDE_TOOL;
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
-pub use gate::{ExecutionGate, GateContext, GateDecision, StepPath};
+pub use gate::{ErrorDecision, ExecutionGate, GateContext, GateDecision, StepPath};
 pub use iterate::{MAP_TOOL, REDUCE_TOOL};
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
 pub use state::{BusEntry, BusKind, RunState};
@@ -837,7 +837,10 @@ impl Pipeline {
             }
 
             let path = StepPath::top(&step.id);
-            match self.dispatch(&path, &step.tool_name, rendered).await {
+            match self
+                .dispatch(&path, &step.tool_name, rendered, &state.results)
+                .await
+            {
                 Ok(result) => {
                     state.results.insert(step.id.clone(), result);
                     state.push_bus(&step.id, BusKind::Info, "ok");
@@ -862,13 +865,19 @@ impl Pipeline {
     /// Route one rendered tool call — a `plan__*` step, `plan_and_execute`,
     /// or the registry — consulting the gate and emitting tool and step
     /// events. Every real tool call at any depth funnels through here.
+    /// `scope` is the map the input rendered against, handed to the gate
+    /// as the debugger's locals.
     async fn dispatch(
         &self,
         path: &StepPath,
         tool_name: &str,
         rendered: Value,
+        scope: &Map<String, Value>,
     ) -> Result<Value, DispatchError> {
         let path_text = path.to_string();
+        // The input is moved into the invocation; keep a copy for the
+        // error-consult context (gated runs only).
+        let rendered_snapshot = self.gate.as_ref().map(|_| rendered.clone());
         if let Some(gate) = &self.gate {
             let decision = gate
                 .before_tool(GateContext {
@@ -876,6 +885,7 @@ impl Pipeline {
                     tool_name,
                     rendered_input: &rendered,
                     call_stack: &self.call_stack,
+                    scope,
                 })
                 .await;
             match decision {
@@ -904,6 +914,7 @@ impl Pipeline {
         let outcome = if let Some(identifier) = tool_name.strip_prefix("plan__") {
             let call = self.call_plan(identifier, rendered).await;
             if call.aborted {
+                // A nested abort is already a gate decision — never re-ask.
                 return Err(DispatchError::Aborted);
             }
             ToolOutcome {
@@ -928,22 +939,72 @@ impl Pipeline {
                     is_error: true,
                 })
         };
+        // tool_finished always describes the real call; when a gate
+        // replaces an error below, step_finished carries the resolution.
         self.events
             .tool_finished(tool_name, started.elapsed(), outcome.is_error);
-        self.events.step_finished(
-            &self.call_stack,
-            &path_text,
-            tool_name,
-            &outcome.result,
-            outcome.is_error,
-            started.elapsed(),
-        );
+
         if outcome.is_error {
+            if let (Some(gate), Some(snapshot)) = (&self.gate, &rendered_snapshot) {
+                let decision = gate
+                    .on_tool_error(
+                        GateContext {
+                            path,
+                            tool_name,
+                            rendered_input: snapshot,
+                            call_stack: &self.call_stack,
+                            scope,
+                        },
+                        &outcome.result,
+                    )
+                    .await;
+                match decision {
+                    ErrorDecision::Fail => {}
+                    ErrorDecision::Replace { result } => {
+                        self.events.step_finished(
+                            &self.call_stack,
+                            &path_text,
+                            tool_name,
+                            &result,
+                            false,
+                            started.elapsed(),
+                        );
+                        return Ok(result);
+                    }
+                    ErrorDecision::Abort => {
+                        self.events.step_finished(
+                            &self.call_stack,
+                            &path_text,
+                            tool_name,
+                            &outcome.result,
+                            true,
+                            started.elapsed(),
+                        );
+                        return Err(DispatchError::Aborted);
+                    }
+                }
+            }
+            self.events.step_finished(
+                &self.call_stack,
+                &path_text,
+                tool_name,
+                &outcome.result,
+                true,
+                started.elapsed(),
+            );
             return Err(DispatchError::Failed(truncate(
                 &outcome.result.to_string(),
                 2000,
             )));
         }
+        self.events.step_finished(
+            &self.call_stack,
+            &path_text,
+            tool_name,
+            &outcome.result,
+            false,
+            started.elapsed(),
+        );
         Ok(outcome.result)
     }
 

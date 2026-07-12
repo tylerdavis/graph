@@ -232,7 +232,7 @@ impl Pipeline {
                         .map_err(|e| BodyError::fail(BodyFail::Render(e), 0, Vec::new()))?;
                 let path = super::StepPath::in_body(step_id, bus_path, None);
                 let value = self
-                    .dispatch(&path, &call.tool_name, rendered)
+                    .dispatch(&path, &call.tool_name, rendered, &scope)
                     .await
                     .map_err(|e| {
                         let fail = match e {
@@ -261,7 +261,7 @@ impl Pipeline {
                             })?;
                     let path = super::StepPath::in_body(step_id, bus_path, Some(&body_step.id));
                     let value = self
-                        .dispatch(&path, &body_step.tool_name, rendered)
+                        .dispatch(&path, &body_step.tool_name, rendered, &scope)
                         .await
                         .map_err(|e| {
                             let fail = match e {
