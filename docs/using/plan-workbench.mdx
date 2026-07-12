@@ -1,0 +1,66 @@
+---
+title: "Plan workbench"
+description: "A dual-pane TUI for drafting, inspecting, and test-running plans"
+icon: "table-columns"
+---
+
+`graph workbench plan` (alias: `graph wb plan`) opens a full-screen IDE for plans: the chat agent on the left, the plan workspace on the right. Describe what you want in chat and the agent drafts the plan into the side pane; inspect its steps and context; then validate it, run it, or step through it with per-tool-call confirmation — all without leaving the terminal.
+
+```bash
+graph workbench plan                    # blank draft — build it via chat
+graph workbench plan sprint_analysis    # open a known plan by identifier
+graph wb plan ./drafts/report.yaml      # open a YAML file directly
+```
+
+The workbench needs an interactive terminal (it refuses to start otherwise); for scripting, use [`graph plan run`](/reference/cli#graph-plan).
+
+## The two panes
+
+**Chat (left)** is the same agent as `graph chat`, with three extra tools that operate on the draft in the side pane:
+
+- `workbench__draft_plan` — create or revise the draft from a goal (the planner sees the full tool catalog, observed shapes, and the current draft).
+- `workbench__get_plan` / `workbench__set_plan` — read the draft as YAML and replace it, for surgical edits.
+
+Every draft change shows up in the plan pane immediately and is validated automatically. Workbench chats are scratch sessions — they are not persisted as threads.
+
+**Workspace (right)** has three tabs:
+
+| Tab | Contents |
+|---|---|
+| `1` plan | header (identifier, finish mode, validation state), the step list with live status glyphs (`○` pending · `◐` running · `✓` ok · `✗` error · `⊘` skipped), and a detail pane showing the selected step's reasoning, input template, and — after a run — its rendered input and result JSON |
+| `2` context | the tool catalog and observed output shapes, exactly what the planner sees when drafting |
+| `3` run | the live transcript: step events, the streamed solver answer, and the final outcome |
+
+## Running plans
+
+- `v` — validate: full template/reference/control-step checking, with every problem listed in the plan tab.
+- `r` — full run, exactly like `graph plan run`.
+- `g` — **gated run**: execution pauses before *every* tool call — including calls inside `decide` branches, `map`/`reduce` bodies, and nested plans — showing the fully rendered input it is about to send. Then:
+  - `y` / `Enter` — proceed with the call
+  - `s` — skip it: a JSON editor opens (prefilled with the tool's known output example when there is one) and the value you submit becomes the step's result, exactly as if the tool had returned it — downstream templates consume it
+  - `a` — abort the run; steps already executed keep their results in the plan tab
+
+A gated run is both the dry-run and the step-through: reads you approve run for real, writes you're not ready for get skipped with a plausible injected result, and one keypress per step walks the plan at your pace. Note that control-step *evaluation* is not gated — `exit`/`decide` gates (including `infer` judge calls) and `map`/`reduce` orchestration are read-only engine computation; their side effects are the body calls, which are gated.
+
+Plans with a required `input_schema` open a prefilled JSON editor before the run starts.
+
+## Saving
+
+`Ctrl+S` writes the draft as YAML — back to the file it was loaded from, or to `<first [plans].paths dir>/<identifier>.yaml` for new drafts (it refuses to overwrite a file it didn't load). The status bar shows an `[unsaved]` marker while the draft is dirty, and quitting with unsaved changes asks first.
+
+## Keys
+
+| Key | Where | Action |
+|---|---|---|
+| `Tab` | anywhere | toggle focus chat ↔ workspace |
+| `1` / `2` / `3` | workspace | switch tab (`Alt+1/2/3` from anywhere, even mid-typing) |
+| `Enter` | chat | send (`Alt+Enter` inserts a newline) |
+| `Ctrl+↑` / `Ctrl+↓` | chat | scroll the conversation |
+| `j` / `k` | workspace | select a step or tool |
+| `PgUp` / `PgDn` | workspace | scroll the detail pane |
+| `v` / `r` / `g` | workspace | validate / run / gated run |
+| `y` / `s` / `a` | paused | proceed / skip with injected result / abort |
+| `Ctrl+S` | anywhere | save the draft (in an editor: submit) |
+| `Esc` | editor | cancel (returns to the gate prompt when skipping) |
+| `?` | workspace | help overlay |
+| `q`, `Ctrl+C` | — | quit (confirms when running or unsaved) |
