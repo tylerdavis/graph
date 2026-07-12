@@ -1751,7 +1751,10 @@ async fn draft_plan_returns_output_without_executing() {
         .unwrap();
     assert_eq!(output.plan.len(), 2);
     assert_eq!(output.plan[0].id, "E0");
-    assert_eq!(output.solver_data.query_to_answer, "how is the sprint going");
+    assert_eq!(
+        output.solver_data.query_to_answer,
+        "how is the sprint going"
+    );
     assert!(
         registry.invocations.lock().unwrap().is_empty(),
         "draft must not execute"
@@ -1769,8 +1772,7 @@ async fn draft_plan_revision_carries_draft_and_error() {
         registry,
         1,
     );
-    let existing: PlannerOutput =
-        serde_json::from_value(two_step_plan("E0.values.0.id")).unwrap();
+    let existing: PlannerOutput = serde_json::from_value(two_step_plan("E0.values.0.id")).unwrap();
     pipeline
         .draft_plan(
             "also fetch comments",
@@ -1794,7 +1796,10 @@ async fn draft_plan_revision_carries_draft_and_error() {
 async fn gate_proceed_is_transparent() {
     let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
     let (pipeline, _) = pipeline(
-        vec![structured(two_step_plan("E0.values.0.id")), text("all good")],
+        vec![
+            structured(two_step_plan("E0.values.0.id")),
+            text("all good"),
+        ],
         registry,
         2,
     );
@@ -1909,8 +1914,7 @@ async fn gate_fires_inside_decide_branch_and_map_body() {
 
 #[tokio::test]
 async fn gate_abort_in_map_skips_remaining_items() {
-    let registry =
-        search_registry(json!({"values": [{"id": "a"}, {"id": "b"}, {"id": "c"}]}));
+    let registry = search_registry(json!({"values": [{"id": "a"}, {"id": "b"}, {"id": "c"}]}));
     let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
     let gate = ScriptedGate::new(vec![GateDecision::Proceed, GateDecision::Abort]);
     let plan: Plan = serde_json::from_value(json!([

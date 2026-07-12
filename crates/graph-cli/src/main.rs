@@ -2,6 +2,7 @@ mod cli;
 mod commands;
 mod output;
 mod runtime;
+mod workbench;
 
 use anyhow::Result;
 use clap::Parser;
@@ -38,6 +39,7 @@ async fn main() -> Result<()> {
         Command::Sync { .. } => {
             anyhow::bail!("not implemented yet — this command lands in a later phase")
         }
+        Command::Workbench { command } => workbench::run(command).await,
     }
 }
 

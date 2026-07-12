@@ -515,8 +515,7 @@ impl Pipeline {
         last_error: Option<&str>,
     ) -> Result<PlannerOutput, PipelineError> {
         self.events.planning();
-        let draft =
-            existing.map(|output| serde_json::to_string_pretty(output).unwrap_or_default());
+        let draft = existing.map(|output| serde_json::to_string_pretty(output).unwrap_or_default());
         let system = self
             .planner_system("(none)", "E0", last_error, draft.as_deref())
             .await;
@@ -536,11 +535,11 @@ impl Pipeline {
         Ok(output)
     }
 
-    /// The planner's system prompt: tool catalog (registry + control steps
-    /// + callable plans), observed shapes, and templating contract.
+    /// The planner's system prompt: tool catalog (registry, control steps,
+    /// callable plans), observed shapes, and templating contract.
     /// `existing_plan` is executed-and-immutable steps (replan
-    /// continuation); `draft` is an unexecuted plan under revision
-    /// (workbench). They are different prompt sections.
+    /// continuation), while `draft` is an unexecuted plan under revision
+    /// (workbench) — they are different prompt sections.
     async fn planner_system(
         &self,
         existing_plan: &str,
