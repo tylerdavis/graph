@@ -15,6 +15,7 @@ pub mod condition;
 pub mod decision;
 pub mod doc;
 pub mod exit;
+pub mod gate;
 pub mod iterate;
 pub mod plan;
 mod prompts;
@@ -24,6 +25,7 @@ mod tests;
 
 pub use decision::DECIDE_TOOL;
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
+pub use gate::{ExecutionGate, GateContext, GateDecision, StepPath};
 pub use iterate::{MAP_TOOL, REDUCE_TOOL};
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
 pub use state::{BusEntry, BusKind, RunState};
@@ -54,6 +56,10 @@ pub struct Pipeline {
     /// each planning attempt so shapes recorded earlier in the same run
     /// (agent tool calls, prior steps) are visible immediately.
     pub store: Option<Arc<dyn Store>>,
+    /// Optional interactive hook consulted before every real tool dispatch
+    /// (see [`gate`] module docs for scope). Propagates into nested plan
+    /// calls via [`Pipeline::nested`].
+    pub gate: Option<Arc<dyn ExecutionGate>>,
     pub user_context: String,
     pub current_date: String,
     pub max_attempts: u32,
@@ -75,6 +81,11 @@ pub enum PipelineError {
     EmptyData { step: String, message: String },
     #[error("failed to render plan output: {0}")]
     OutputRender(String),
+    /// An [`ExecutionGate`] ended the run. Carries the partial run state —
+    /// results collected before the abort — so interactive callers can
+    /// render what happened. Never replans, never degrades.
+    #[error("run aborted at step {step}")]
+    Aborted { step: String, state: Box<RunState> },
 }
 
 /// Maximum plan-call nesting (cycles are caught by the call stack; this
@@ -108,6 +119,10 @@ pub struct PipelineOutcome {
 pub struct PlanCall {
     pub result: Value,
     pub is_error: bool,
+    /// True when an [`ExecutionGate`] aborted the nested run — propagated
+    /// so the abort stays hard instead of degrading into a replannable
+    /// tool error.
+    pub aborted: bool,
 }
 
 impl PlanCall {
@@ -115,6 +130,7 @@ impl PlanCall {
         Self {
             result: json!({"error": message}),
             is_error: true,
+            aborted: false,
         }
     }
 }
@@ -134,9 +150,28 @@ enum ExecutionEnd {
         step: String,
         message: String,
     },
+    /// An [`ExecutionGate`] ended the run — hard stop, never replans.
+    Aborted {
+        step: String,
+    },
+}
+
+/// How a dispatched tool call failed.
+enum DispatchError {
+    /// Tool failure — the (truncated) failure message.
+    Failed(String),
+    /// The gate aborted the run.
+    Aborted,
 }
 
 impl Pipeline {
+    /// Install an [`ExecutionGate`], consulted before every real tool
+    /// dispatch in this pipeline and any plans it calls.
+    pub fn with_gate(mut self, gate: Arc<dyn ExecutionGate>) -> Self {
+        self.gate = Some(gate);
+        self
+    }
+
     /// Planner-authored flow: plan, validate, execute, replan on defects,
     /// solve. Never returns Err for plan/tool problems — degrades to an
     /// error-summary answer (the caller always gets something to show).
@@ -173,6 +208,12 @@ impl Pipeline {
                 ExecutionEnd::Empty { step, message } => {
                     state.push_bus(&step, BusKind::EmptyData, message);
                     return self.solve(state).await;
+                }
+                ExecutionEnd::Aborted { step } => {
+                    return Err(PipelineError::Aborted {
+                        step,
+                        state: Box::new(state),
+                    })
                 }
                 ExecutionEnd::Failed {
                     step,
@@ -230,6 +271,10 @@ impl Pipeline {
                     Err(PipelineError::EmptyData { step, message })
                 }
             },
+            ExecutionEnd::Aborted { step } => Err(PipelineError::Aborted {
+                step,
+                state: Box::new(state),
+            }),
             ExecutionEnd::Failed {
                 step,
                 tool,
@@ -300,6 +345,7 @@ impl Pipeline {
                         "inputSchema": plan_doc.tool_input_schema(),
                     }),
                     is_error: true,
+                    aborted: false,
                 };
             }
             let nested = self.nested(Some(identifier));
@@ -327,7 +373,11 @@ impl Pipeline {
                         if is_error {
                             result["error"] = json!(exit.message);
                         }
-                        return PlanCall { result, is_error };
+                        return PlanCall {
+                            result,
+                            is_error,
+                            aborted: false,
+                        };
                     }
                     PlanCall {
                         result: match outcome.structured {
@@ -339,6 +389,7 @@ impl Pipeline {
                             None => json!({"answer": outcome.answer}),
                         },
                         is_error: false,
+                        aborted: false,
                     }
                 }
                 Err(PipelineError::EmptyData { step, message }) => PlanCall {
@@ -347,6 +398,14 @@ impl Pipeline {
                         "empty_data": true,
                     }),
                     is_error: true,
+                    aborted: false,
+                },
+                Err(PipelineError::Aborted { step, .. }) => PlanCall {
+                    result: json!({
+                        "error": format!("plan '{identifier}' aborted at step {step}"),
+                    }),
+                    is_error: true,
+                    aborted: true,
                 },
                 Err(e) => PlanCall::error(format!("plan '{identifier}' failed: {e}")),
             }
@@ -374,6 +433,14 @@ impl Pipeline {
                         "steps_executed": outcome.state.steps_executed(),
                     }),
                     is_error: false,
+                    aborted: false,
+                },
+                Err(PipelineError::Aborted { step, .. }) => PlanCall {
+                    result: json!({
+                        "error": format!("planned run aborted at step {step}"),
+                    }),
+                    is_error: true,
+                    aborted: true,
                 },
                 Err(e) => PlanCall::error(e.to_string()),
             }
@@ -437,8 +504,50 @@ impl Pipeline {
 
     // ── Planner ──────────────────────────────────────────────────────────
 
-    async fn plan_node(&self, state: &mut RunState) -> Result<(), PipelineError> {
+    /// Ask the planner for a draft — catalog, prompt, one structured LLM
+    /// call. Nothing validates and nothing executes; the caller owns both
+    /// (see [`Pipeline::validate_plan`]). `existing` is a prior draft to
+    /// revise; `last_error` is validation or execution feedback to fix.
+    pub async fn draft_plan(
+        &self,
+        query: &str,
+        existing: Option<&PlannerOutput>,
+        last_error: Option<&str>,
+    ) -> Result<PlannerOutput, PipelineError> {
         self.events.planning();
+        let draft =
+            existing.map(|output| serde_json::to_string_pretty(output).unwrap_or_default());
+        let system = self
+            .planner_system("(none)", "E0", last_error, draft.as_deref())
+            .await;
+        let mut output: PlannerOutput = self
+            .router
+            .get_structured(
+                Role::Planner,
+                system,
+                vec![ChatMessage::User {
+                    content: query.to_string(),
+                }],
+                "plan",
+            )
+            .await?;
+        plan::sort_plan(&mut output.plan);
+        plan::default_solver_data(&output.plan, &mut output.solver_data.data);
+        Ok(output)
+    }
+
+    /// The planner's system prompt: tool catalog (registry + control steps
+    /// + callable plans), observed shapes, and templating contract.
+    /// `existing_plan` is executed-and-immutable steps (replan
+    /// continuation); `draft` is an unexecuted plan under revision
+    /// (workbench). They are different prompt sections.
+    async fn planner_system(
+        &self,
+        existing_plan: &str,
+        next_step_id: &str,
+        last_error: Option<&str>,
+        draft: Option<&str>,
+    ) -> String {
         let mut tools = self.registry.tools().await.unwrap_or_default();
         tools.push(exit::exit_tool_def());
         tools.push(decision::decide_tool_def());
@@ -468,27 +577,40 @@ impl Pipeline {
             None => HashMap::new(),
         };
         let tools_text = prompts::describe_tools(&tools, &shapes);
+        let step_schema = serde_json::to_string_pretty(
+            &serde_json::to_value(schemars::schema_for!(Step)).unwrap_or_default(),
+        )
+        .unwrap_or_default();
+
+        prompts::planner_prompt(&prompts::PlannerPromptArgs {
+            current_date: &self.current_date,
+            last_error,
+            next_step_id,
+            tools: &tools_text,
+            user_context: &self.user_context,
+            existing_plan,
+            step_schema: &step_schema,
+            draft,
+        })
+    }
+
+    async fn plan_node(&self, state: &mut RunState) -> Result<(), PipelineError> {
+        self.events.planning();
         let executed = state.executed_steps();
         let existing_plan = if executed.is_empty() {
             "(none)".to_string()
         } else {
             serde_json::to_string_pretty(&executed).unwrap_or_default()
         };
-        let step_schema = serde_json::to_string_pretty(
-            &serde_json::to_value(schemars::schema_for!(Step)).unwrap_or_default(),
-        )
-        .unwrap_or_default();
         let last_error = state.last_error().map(|e| e.content.clone());
-
-        let system = prompts::planner_prompt(&prompts::PlannerPromptArgs {
-            current_date: &self.current_date,
-            last_error: last_error.as_deref(),
-            next_step_id: &state.next_step_id(),
-            tools: &tools_text,
-            user_context: &self.user_context,
-            existing_plan: &existing_plan,
-            step_schema: &step_schema,
-        });
+        let system = self
+            .planner_system(
+                &existing_plan,
+                &state.next_step_id(),
+                last_error.as_deref(),
+                None,
+            )
+            .await;
 
         let output: PlannerOutput = self
             .router
@@ -522,14 +644,22 @@ impl Pipeline {
     // ── Validation (static, no LLM) ──────────────────────────────────────
 
     fn validate(&self, state: &RunState) -> Result<(), Vec<String>> {
+        self.validate_plan(&state.plan)
+    }
+
+    /// Static validation of a plan: template parse, reference ordering,
+    /// control-step gates and bodies. No LLM, no registry — tool existence
+    /// is checked at execution. Returns every problem found, not just the
+    /// first.
+    pub fn validate_plan(&self, plan: &Plan) -> Result<(), Vec<String>> {
         let mut problems = Vec::new();
-        if state.plan.is_empty() {
+        if plan.is_empty() {
             problems.push("plan has no steps".to_string());
         }
         // Tool existence is checked at execution against the live registry.
-        let all_ids: Vec<&str> = state.plan.iter().map(|s| s.id.as_str()).collect();
+        let all_ids: Vec<&str> = plan.iter().map(|s| s.id.as_str()).collect();
         let mut seen: Vec<&str> = vec!["input"];
-        for step in &state.plan {
+        for step in plan {
             // Control steps are body-aware: body-internal references
             // (same-body ids, per-item pseudo-roots) are legal, so the
             // generic walk below would false-flag them.
@@ -577,11 +707,51 @@ impl Pipeline {
         while let Some(step) = state.next_pending_step().cloned() {
             // Control steps defer rendering: only their gate/list renders
             // up front, and bodies render lazily — per chosen branch
-            // (decide) or per item (map/reduce).
+            // (decide) or per item (map/reduce). Their step events carry
+            // the raw input for the same reason.
             let control = match step.tool_name.as_str() {
-                DECIDE_TOOL => Some(self.run_decide(&step, state).await),
-                MAP_TOOL => Some(self.run_map(&step, state).await),
-                REDUCE_TOOL => Some(self.run_reduce(&step, state).await),
+                DECIDE_TOOL | MAP_TOOL | REDUCE_TOOL => {
+                    self.events.step_started(
+                        &self.call_stack,
+                        &step.id,
+                        &step.tool_name,
+                        &Value::Object(step.input.clone()),
+                    );
+                    let started = std::time::Instant::now();
+                    let run = match step.tool_name.as_str() {
+                        DECIDE_TOOL => self.run_decide(&step, state).await,
+                        MAP_TOOL => self.run_map(&step, state).await,
+                        _ => self.run_reduce(&step, state).await,
+                    };
+                    match &run {
+                        Ok(result) => self.events.step_finished(
+                            &self.call_stack,
+                            &step.id,
+                            &step.tool_name,
+                            result,
+                            false,
+                            started.elapsed(),
+                        ),
+                        Err(ExecutionEnd::Failed { message, .. }) => self.events.step_finished(
+                            &self.call_stack,
+                            &step.id,
+                            &step.tool_name,
+                            &json!({"error": message}),
+                            true,
+                            started.elapsed(),
+                        ),
+                        Err(ExecutionEnd::Empty { message, .. }) => self.events.step_finished(
+                            &self.call_stack,
+                            &step.id,
+                            &step.tool_name,
+                            &json!({"error": message, "emptyData": true}),
+                            true,
+                            started.elapsed(),
+                        ),
+                        Err(_) => {}
+                    }
+                    Some(run)
+                }
                 _ => None,
             };
             if let Some(run) = control {
@@ -613,6 +783,8 @@ impl Pipeline {
             };
 
             if step.tool_name == EXIT_TOOL {
+                self.events
+                    .step_started(&self.call_stack, &step.id, EXIT_TOOL, &rendered);
                 self.events.tool_started(EXIT_TOOL, &rendered);
                 let started = std::time::Instant::now();
                 let eval = exit::evaluate(&step.id, &rendered, &self.router).await;
@@ -620,6 +792,14 @@ impl Pipeline {
                     Ok(exit::ExitEval::Passed(result)) => {
                         self.events
                             .tool_finished(EXIT_TOOL, started.elapsed(), false);
+                        self.events.step_finished(
+                            &self.call_stack,
+                            &step.id,
+                            EXIT_TOOL,
+                            &result,
+                            false,
+                            started.elapsed(),
+                        );
                         state.results.insert(step.id.clone(), result);
                         state.push_bus(&step.id, BusKind::Info, "gate passed");
                         continue;
@@ -627,11 +807,27 @@ impl Pipeline {
                     Ok(exit::ExitEval::Exited(exit)) => {
                         self.events
                             .tool_finished(EXIT_TOOL, started.elapsed(), false);
+                        self.events.step_finished(
+                            &self.call_stack,
+                            &step.id,
+                            EXIT_TOOL,
+                            &serde_json::to_value(&exit).unwrap_or_default(),
+                            false,
+                            started.elapsed(),
+                        );
                         return ExecutionEnd::Exited(exit);
                     }
                     Err(message) => {
                         self.events
                             .tool_finished(EXIT_TOOL, started.elapsed(), true);
+                        self.events.step_finished(
+                            &self.call_stack,
+                            &step.id,
+                            EXIT_TOOL,
+                            &json!({"error": message}),
+                            true,
+                            started.elapsed(),
+                        );
                         return ExecutionEnd::Failed {
                             step: step.id.clone(),
                             tool: EXIT_TOOL.to_string(),
@@ -641,12 +837,18 @@ impl Pipeline {
                 }
             }
 
-            match self.dispatch(&step.tool_name, rendered).await {
+            let path = StepPath::top(&step.id);
+            match self.dispatch(&path, &step.tool_name, rendered).await {
                 Ok(result) => {
                     state.results.insert(step.id.clone(), result);
                     state.push_bus(&step.id, BusKind::Info, "ok");
                 }
-                Err(message) => {
+                Err(DispatchError::Aborted) => {
+                    return ExecutionEnd::Aborted {
+                        step: step.id.clone(),
+                    }
+                }
+                Err(DispatchError::Failed(message)) => {
                     return ExecutionEnd::Failed {
                         step: step.id.clone(),
                         tool: step.tool_name.clone(),
@@ -659,19 +861,61 @@ impl Pipeline {
     }
 
     /// Route one rendered tool call — a `plan__*` step, `plan_and_execute`,
-    /// or the registry — emitting tool events. Err carries the (truncated)
-    /// failure message.
-    async fn dispatch(&self, tool_name: &str, rendered: Value) -> Result<Value, String> {
+    /// or the registry — consulting the gate and emitting tool and step
+    /// events. Every real tool call at any depth funnels through here.
+    async fn dispatch(
+        &self,
+        path: &StepPath,
+        tool_name: &str,
+        rendered: Value,
+    ) -> Result<Value, DispatchError> {
+        let path_text = path.to_string();
+        if let Some(gate) = &self.gate {
+            let decision = gate
+                .before_tool(GateContext {
+                    path,
+                    tool_name,
+                    rendered_input: &rendered,
+                    call_stack: &self.call_stack,
+                })
+                .await;
+            match decision {
+                GateDecision::Proceed => {}
+                GateDecision::Skip { result } => {
+                    // No tool ran — no tool events — but the step has a
+                    // value, so sinks still see it finish.
+                    self.events.step_finished(
+                        &self.call_stack,
+                        &path_text,
+                        tool_name,
+                        &result,
+                        false,
+                        std::time::Duration::ZERO,
+                    );
+                    return Ok(result);
+                }
+                GateDecision::Abort => return Err(DispatchError::Aborted),
+            }
+        }
+
+        self.events
+            .step_started(&self.call_stack, &path_text, tool_name, &rendered);
         self.events.tool_started(tool_name, &rendered);
         let started = std::time::Instant::now();
         let outcome = if let Some(identifier) = tool_name.strip_prefix("plan__") {
             let call = self.call_plan(identifier, rendered).await;
+            if call.aborted {
+                return Err(DispatchError::Aborted);
+            }
             ToolOutcome {
                 result: call.result,
                 is_error: call.is_error,
             }
         } else if tool_name == "plan_and_execute" {
             let call = self.call_planner(&rendered).await;
+            if call.aborted {
+                return Err(DispatchError::Aborted);
+            }
             ToolOutcome {
                 result: call.result,
                 is_error: call.is_error,
@@ -687,8 +931,19 @@ impl Pipeline {
         };
         self.events
             .tool_finished(tool_name, started.elapsed(), outcome.is_error);
+        self.events.step_finished(
+            &self.call_stack,
+            &path_text,
+            tool_name,
+            &outcome.result,
+            outcome.is_error,
+            started.elapsed(),
+        );
         if outcome.is_error {
-            return Err(truncate(&outcome.result.to_string(), 2000));
+            return Err(DispatchError::Failed(truncate(
+                &outcome.result.to_string(),
+                2000,
+            )));
         }
         Ok(outcome.result)
     }

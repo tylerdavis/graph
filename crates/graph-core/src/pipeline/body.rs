@@ -190,6 +190,8 @@ pub(super) enum BodyFail {
     Render(RenderError),
     /// Pre-formatted message naming the body, inner step, and tool.
     Tool(String),
+    /// The execution gate aborted the run — hard stop, never replans.
+    Aborted,
 }
 
 impl BodyError {
@@ -228,15 +230,18 @@ impl Pipeline {
                 let rendered =
                     render_input(&Value::Object(call.input.clone()), &Roots::new(&scope))
                         .map_err(|e| BodyError::fail(BodyFail::Render(e), 0, Vec::new()))?;
+                let path = super::StepPath::in_body(step_id, bus_path, None);
                 let value = self
-                    .dispatch(&call.tool_name, rendered)
+                    .dispatch(&path, &call.tool_name, rendered)
                     .await
-                    .map_err(|m| {
-                        BodyError::fail(
-                            BodyFail::Tool(format!("{label} ({}): {m}", call.tool_name)),
-                            0,
-                            Vec::new(),
-                        )
+                    .map_err(|e| {
+                        let fail = match e {
+                            super::DispatchError::Aborted => BodyFail::Aborted,
+                            super::DispatchError::Failed(m) => {
+                                BodyFail::Tool(format!("{label} ({}): {m}", call.tool_name))
+                            }
+                        };
+                        BodyError::fail(fail, 0, Vec::new())
                     })?;
                 Ok(BodyRun {
                     result: value,
@@ -254,18 +259,19 @@ impl Pipeline {
                             .map_err(|e| {
                                 BodyError::fail(BodyFail::Render(e), steps_executed, bus.clone())
                             })?;
+                    let path = super::StepPath::in_body(step_id, bus_path, Some(&body_step.id));
                     let value = self
-                        .dispatch(&body_step.tool_name, rendered)
+                        .dispatch(&path, &body_step.tool_name, rendered)
                         .await
-                        .map_err(|m| {
-                            BodyError::fail(
-                                BodyFail::Tool(format!(
+                        .map_err(|e| {
+                            let fail = match e {
+                                super::DispatchError::Aborted => BodyFail::Aborted,
+                                super::DispatchError::Failed(m) => BodyFail::Tool(format!(
                                     "{label} step {} ({}): {m}",
                                     body_step.id, body_step.tool_name
                                 )),
-                                steps_executed,
-                                bus.clone(),
-                            )
+                            };
+                            BodyError::fail(fail, steps_executed, bus.clone())
                         })?;
                     steps_executed += 1;
                     bus.push(BusEntry {

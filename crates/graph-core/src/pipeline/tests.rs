@@ -133,6 +133,7 @@ fn pipeline(
             plans: Arc::new(Vec::new()),
             call_stack: Vec::new(),
             store: None,
+            gate: None,
             user_context: "test user".into(),
             current_date: "2026-07-09".into(),
             max_attempts,
@@ -1655,4 +1656,372 @@ steps:
     let call = pipeline.call_plan("outer", json!({})).await;
     assert!(call.is_error);
     assert!(call.result.to_string().contains("inner assertion"));
+}
+
+// ── Execution gate, draft planning, step events ──────────────────────────
+
+/// Gate that consumes scripted decisions in order (exhausted = Proceed)
+/// and records every consultation.
+struct ScriptedGate {
+    decisions: Mutex<Vec<GateDecision>>,
+    /// (call_stack, path, tool) per consultation, in order.
+    seen: Mutex<Vec<(Vec<String>, String, String)>>,
+}
+
+impl ScriptedGate {
+    fn new(decisions: Vec<GateDecision>) -> Arc<Self> {
+        Arc::new(Self {
+            decisions: Mutex::new(decisions),
+            seen: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn paths(&self) -> Vec<String> {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, path, _)| path.clone())
+            .collect()
+    }
+
+    fn tools(&self) -> Vec<String> {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, _, tool)| tool.clone())
+            .collect()
+    }
+}
+
+#[async_trait]
+impl ExecutionGate for ScriptedGate {
+    async fn before_tool(&self, ctx: GateContext<'_>) -> GateDecision {
+        self.seen.lock().unwrap().push((
+            ctx.call_stack.to_vec(),
+            ctx.path.to_string(),
+            ctx.tool_name.to_string(),
+        ));
+        let mut decisions = self.decisions.lock().unwrap();
+        if decisions.is_empty() {
+            GateDecision::Proceed
+        } else {
+            decisions.remove(0)
+        }
+    }
+}
+
+/// Sink capturing step_finished events: (path, tool, result, is_error).
+#[derive(Default)]
+struct RecordingSink {
+    finished: Mutex<Vec<(String, String, Value, bool)>>,
+}
+
+impl crate::EventSink for RecordingSink {
+    fn step_finished(
+        &self,
+        _call_stack: &[String],
+        path: &str,
+        tool: &str,
+        result: &Value,
+        is_error: bool,
+        _elapsed: std::time::Duration,
+    ) {
+        self.finished.lock().unwrap().push((
+            path.to_string(),
+            tool.to_string(),
+            result.clone(),
+            is_error,
+        ));
+    }
+}
+
+#[tokio::test]
+async fn draft_plan_returns_output_without_executing() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = pipeline(
+        vec![structured(two_step_plan("E0.values.0.id"))],
+        registry.clone(),
+        1,
+    );
+    let output = pipeline
+        .draft_plan("sprint status", None, None)
+        .await
+        .unwrap();
+    assert_eq!(output.plan.len(), 2);
+    assert_eq!(output.plan[0].id, "E0");
+    assert_eq!(output.solver_data.query_to_answer, "how is the sprint going");
+    assert!(
+        registry.invocations.lock().unwrap().is_empty(),
+        "draft must not execute"
+    );
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1, "one planner call, no solver");
+    assert!(!requests[0].system.contains("Draft Under Revision"));
+}
+
+#[tokio::test]
+async fn draft_plan_revision_carries_draft_and_error() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = pipeline(
+        vec![structured(two_step_plan("E0.values.0.id"))],
+        registry,
+        1,
+    );
+    let existing: PlannerOutput =
+        serde_json::from_value(two_step_plan("E0.values.0.id")).unwrap();
+    pipeline
+        .draft_plan(
+            "also fetch comments",
+            Some(&existing),
+            Some("E1 references E9, which is not an earlier step"),
+        )
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    let system = &requests[0].system;
+    assert!(system.contains("Draft Under Revision"), "revision section");
+    assert!(system.contains("t__search"), "serialized draft in prompt");
+    assert!(system.contains("E1 references E9"), "last error in prompt");
+    assert!(
+        system.contains("<existing_plan>\n(none)\n</existing_plan>"),
+        "the draft must not occupy the executed-steps slot"
+    );
+}
+
+#[tokio::test]
+async fn gate_proceed_is_transparent() {
+    let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
+    let (pipeline, _) = pipeline(
+        vec![structured(two_step_plan("E0.values.0.id")), text("all good")],
+        registry,
+        2,
+    );
+    let gate = ScriptedGate::new(vec![]);
+    let outcome = pipeline
+        .with_gate(gate.clone())
+        .run_planned("sprint status")
+        .await
+        .unwrap();
+    assert_eq!(outcome.answer, "all good");
+    assert_eq!(gate.paths(), vec!["E0", "E1"]);
+}
+
+#[tokio::test]
+async fn gate_skip_injects_result_downstream() {
+    let registry = search_registry(json!({"values": [{"id": "real"}]}));
+    let (mut pipeline, _) = pipeline(
+        vec![structured(two_step_plan("E0.values.0.id")), text("done")],
+        registry.clone(),
+        2,
+    );
+    let sink = Arc::new(RecordingSink::default());
+    pipeline.events = sink.clone();
+    let injected = json!({"values": [{"id": "fake"}]});
+    let gate = ScriptedGate::new(vec![GateDecision::Skip {
+        result: injected.clone(),
+    }]);
+    let outcome = pipeline
+        .with_gate(gate)
+        .run_planned("sprint status")
+        .await
+        .unwrap();
+    assert_eq!(outcome.state.results["E0"], injected);
+
+    let invocations = registry.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 1, "t__search was skipped");
+    assert_eq!(invocations[0].0, "t__issues");
+    assert_eq!(
+        invocations[0].1,
+        json!({"teamId": "fake"}),
+        "downstream template consumed the injected value"
+    );
+
+    let finished = sink.finished.lock().unwrap();
+    let e0 = finished.iter().find(|(path, ..)| path == "E0").unwrap();
+    assert_eq!(e0.2, injected, "skip still emits a step_finished");
+    assert!(!e0.3);
+}
+
+#[tokio::test]
+async fn gate_abort_is_hard_and_never_replans() {
+    let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
+    let (pipeline, provider) = pipeline(
+        vec![
+            structured(two_step_plan("E0.values.0.id")),
+            structured(two_step_plan("E0.values.0.id")),
+            text("never"),
+        ],
+        registry.clone(),
+        2,
+    );
+    let gate = ScriptedGate::new(vec![GateDecision::Abort]);
+    let err = pipeline
+        .with_gate(gate)
+        .run_planned("sprint status")
+        .await
+        .unwrap_err();
+    let PipelineError::Aborted { step, state } = err else {
+        panic!("expected Aborted, got {err}");
+    };
+    assert_eq!(step, "E0");
+    assert_eq!(state.plan.len(), 2, "partial state carries the plan");
+    assert!(registry.invocations.lock().unwrap().is_empty());
+    assert_eq!(
+        provider.requests.lock().unwrap().len(),
+        1,
+        "planner only — no replan, no error summary"
+    );
+}
+
+#[tokio::test]
+async fn gate_fires_inside_decide_branch_and_map_body() {
+    let registry = search_registry(json!({"values": [{"id": "a"}, {"id": "b"}]}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let gate = ScriptedGate::new(vec![]);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "decide", "input": {
+            "if": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
+            "then": {"toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}},
+        }},
+        {"id": "E2", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": [{"id": "E10", "toolName": "t__issues", "input": {"q": "{{item.id}}"}}],
+        }},
+    ]))
+    .unwrap();
+    pipeline
+        .with_gate(gate.clone())
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        gate.paths(),
+        vec!["E0", "E1/then", "E2/do.0/E10", "E2/do.1/E10"]
+    );
+    assert!(
+        gate.tools().iter().all(|t| t != "decide" && t != "map"),
+        "control steps are never gated"
+    );
+}
+
+#[tokio::test]
+async fn gate_abort_in_map_skips_remaining_items() {
+    let registry =
+        search_registry(json!({"values": [{"id": "a"}, {"id": "b"}, {"id": "c"}]}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    let gate = ScriptedGate::new(vec![GateDecision::Proceed, GateDecision::Abort]);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": {"toolName": "t__issues", "input": {"q": "{{item.id}}"}},
+        }},
+    ]))
+    .unwrap();
+    let err = pipeline
+        .with_gate(gate)
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    let PipelineError::Aborted { step, .. } = err else {
+        panic!("expected Aborted, got {err}");
+    };
+    assert_eq!(step, "E1");
+    let invocations = registry.invocations.lock().unwrap();
+    assert!(
+        invocations.iter().all(|(name, _)| name != "t__issues"),
+        "aborted item never ran; remaining items were skipped"
+    );
+}
+
+#[tokio::test]
+async fn gate_abort_inside_nested_plan_propagates() {
+    let inner = plan_doc_yaml(
+        r#"
+identifier: inner
+name: Inner
+description: inner plan
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: inner }
+"#,
+    );
+    let registry = search_registry(json!({"values": [{"id": 1}]}));
+    let (mut pipeline, _) = pipeline(vec![], registry, 1);
+    pipeline.plans = Arc::new(vec![inner]);
+    let gate = ScriptedGate::new(vec![GateDecision::Proceed, GateDecision::Abort]);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "plan__inner", "input": {}},
+    ]))
+    .unwrap();
+    let err = pipeline
+        .with_gate(gate.clone())
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    let PipelineError::Aborted { step, .. } = err else {
+        panic!("expected Aborted (not a replannable tool error), got {err}");
+    };
+    assert_eq!(step, "E0");
+    let seen = gate.seen.lock().unwrap();
+    assert!(seen[0].0.is_empty(), "outer call has an empty call stack");
+    assert_eq!(
+        seen[1].0,
+        vec!["inner".to_string()],
+        "inner call carries the plan frame"
+    );
+}
+
+#[tokio::test]
+async fn step_events_attribute_body_and_control_results() {
+    let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
+    let (mut pipeline, _) = pipeline(vec![], registry, 1);
+    let sink = Arc::new(RecordingSink::default());
+    pipeline.events = sink.clone();
+    let plan = decide_plan(
+        json!([
+            {"id": "E10", "toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}},
+        ]),
+        None,
+    );
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert!(
+        !outcome.state.results.contains_key("E10"),
+        "body results stay scoped"
+    );
+    let finished = sink.finished.lock().unwrap();
+    let body = finished
+        .iter()
+        .find(|(path, ..)| path == "E1/then/E10")
+        .expect("body step event with a scoped path");
+    assert_eq!(body.2, json!({"got": {"q": "team-1"}}));
+    let decide = finished
+        .iter()
+        .find(|(path, tool, ..)| path == "E1" && tool == "decide")
+        .expect("decide aggregate event");
+    assert_eq!(decide.2["branch"], json!("then"));
+}
+
+#[tokio::test]
+async fn validate_plan_reports_all_problems() {
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "{{E5.values}}"}},
+        {"id": "E1", "toolName": "decide", "input": {"then": {"toolName": "t__issues", "input": {}}}},
+    ]))
+    .unwrap();
+    let problems = pipeline.validate_plan(&plan).unwrap_err();
+    assert!(problems.iter().any(|p| p.contains("E5")), "{problems:?}");
+    assert!(
+        problems.iter().any(|p| p.contains("`if` or `infer`")),
+        "{problems:?}"
+    );
 }

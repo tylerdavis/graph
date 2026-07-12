@@ -159,6 +159,7 @@ impl Runtime {
             plans: Arc::new(self.plan_docs()?),
             call_stack: Vec::new(),
             store: Some(handles.store.clone()),
+            gate: None,
             user_context,
             current_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
             max_attempts: self.config.settings.planning_attempts.max(1),
