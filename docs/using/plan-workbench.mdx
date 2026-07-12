@@ -16,8 +16,9 @@ The workbench needs an interactive terminal (it refuses to start otherwise); for
 
 ## The two panes
 
-**Chat (left)** is the same agent as `graph chat`, with three extra tools that operate on the draft in the side pane:
+**Chat (left)** is the same agent as `graph chat`, with four extra tools that operate on the draft in the side pane:
 
+- `workbench__load_plan` — load an existing plan by identifier or YAML path ("load the sprint_analysis plan"); loading replaces the draft, so the agent confirms first when you have unsaved changes.
 - `workbench__draft_plan` — create or revise the draft from a goal (the planner sees the full tool catalog, observed shapes, and the current draft).
 - `workbench__get_plan` / `workbench__set_plan` — read the draft as YAML and replace it, for surgical edits.
 

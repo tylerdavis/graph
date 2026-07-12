@@ -34,6 +34,9 @@ const WORKBENCH_SYSTEM_PROMPT: &str = "\n\n# Plan workbench\n\
 You are running inside the graph plan workbench: a side pane shows the user \
 the current draft plan, live. Build and edit that draft with the workbench \
 tools:\n\
+- workbench__load_plan: load an existing plan (identifier or YAML path) \
+into the pane when the user asks to open/load one; it replaces the draft, \
+so confirm first if there are unsaved changes.\n\
 - workbench__draft_plan: create or revise the draft from a goal. Pass the \
 user's request as a self-contained goal; pass feedback when revising after \
 validation problems or user corrections.\n\

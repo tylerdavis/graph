@@ -4,7 +4,7 @@
 
 use super::app::Msg;
 use async_trait::async_trait;
-use graph_core::pipeline::doc::{validate_doc, PlanDoc};
+use graph_core::pipeline::doc::{load_plan_doc, validate_doc, PlanDoc};
 use graph_core::pipeline::{Pipeline, PlannerOutput};
 use graph_core::{ToolDef, ToolError, ToolOutcome, ToolRegistry};
 use serde_json::{json, Value};
@@ -14,6 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 pub const DRAFT_PLAN: &str = "workbench__draft_plan";
 pub const GET_PLAN: &str = "workbench__get_plan";
 pub const SET_PLAN: &str = "workbench__set_plan";
+pub const LOAD_PLAN: &str = "workbench__load_plan";
 
 pub struct WorkbenchTools {
     draft: Arc<Mutex<Option<PlanDoc>>>,
@@ -38,9 +39,67 @@ impl WorkbenchTools {
         self.draft.lock().unwrap().clone()
     }
 
-    fn publish(&self, doc: PlanDoc) {
+    fn publish(&self, doc: PlanDoc, dirty: bool) {
         *self.draft.lock().unwrap() = Some(doc.clone());
-        let _ = self.tx.send(Msg::DraftReplaced(Box::new(doc)));
+        let _ = self.tx.send(Msg::DraftReplaced {
+            doc: Box::new(doc),
+            dirty,
+        });
+    }
+
+    /// Load an existing plan into the workbench: an identifier from the
+    /// configured plan catalog, or a YAML file path.
+    fn load_plan(&self, input: &Value) -> ToolOutcome {
+        let Some(name_or_path) = input.get("name_or_path").and_then(Value::as_str) else {
+            return error_outcome("load_plan requires a 'name_or_path' string");
+        };
+        let doc = if let Some(doc) = self
+            .pipeline
+            .plans
+            .iter()
+            .find(|d| d.identifier == name_or_path)
+        {
+            doc.clone()
+        } else {
+            let path = std::path::Path::new(name_or_path);
+            if !path.exists() {
+                let available: Vec<&str> = self
+                    .pipeline
+                    .plans
+                    .iter()
+                    .map(|d| d.identifier.as_str())
+                    .collect();
+                return ToolOutcome {
+                    result: json!({
+                        "error": format!(
+                            "'{name_or_path}' is neither a known plan identifier nor a file"
+                        ),
+                        "availablePlans": available,
+                    }),
+                    is_error: true,
+                };
+            }
+            match load_plan_doc(path) {
+                Ok(doc) => doc,
+                Err(error) => return error_outcome(&format!("failed to load plan: {error}")),
+            }
+        };
+        let problems = self
+            .pipeline
+            .validate_plan(&doc.steps)
+            .err()
+            .unwrap_or_default();
+        let summary = json!({
+            "identifier": doc.identifier,
+            "name": doc.name,
+            "steps": doc.steps.len(),
+            "validation": if problems.is_empty() { json!("ok") } else { json!(problems) },
+        });
+        self.publish(doc, false);
+        ToolOutcome {
+            result: summary,
+            is_error: false,
+        }
     }
 
     async fn draft_plan(&self, input: &Value) -> ToolOutcome {
@@ -94,7 +153,7 @@ impl WorkbenchTools {
             "steps": doc.steps.len(),
             "validation": if problems.is_empty() { json!("ok") } else { json!(problems) },
         });
-        self.publish(doc);
+        self.publish(doc, true);
         ToolOutcome {
             result: summary,
             is_error: false,
@@ -136,7 +195,7 @@ impl WorkbenchTools {
         // Keep the on-disk identity of the draft being edited.
         doc.path = self.current().and_then(|prior| prior.path);
         let summary = json!({"ok": true, "identifier": doc.identifier, "steps": doc.steps.len()});
-        self.publish(doc);
+        self.publish(doc, true);
         ToolOutcome {
             result: summary,
             is_error: false,
@@ -204,6 +263,26 @@ impl ToolRegistry for WorkbenchTools {
                 read_only: None,
             },
             ToolDef {
+                name: LOAD_PLAN.to_string(),
+                description: "Load an existing plan into the workbench as the draft — by \
+                              identifier from the plan catalog, or by YAML file path. \
+                              Replaces the current draft: if there are unsaved changes, \
+                              confirm with the user before loading over them."
+                    .to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "required": ["name_or_path"],
+                    "properties": {
+                        "name_or_path": {"type": "string", "description": "A plan identifier (e.g. sprint_analysis) or a path to a plan YAML file."}
+                    }
+                }),
+                output_schema: None,
+                output_example: Some(
+                    json!({"identifier": "sprint_analysis", "name": "Sprint analysis", "steps": 4, "validation": "ok"}),
+                ),
+                read_only: Some(true),
+            },
+            ToolDef {
                 name: GET_PLAN.to_string(),
                 description: "Read the current draft plan as YAML. Call this before making \
                               targeted edits with workbench__set_plan."
@@ -238,6 +317,7 @@ impl ToolRegistry for WorkbenchTools {
             DRAFT_PLAN => Ok(self.draft_plan(&input).await),
             GET_PLAN => Ok(self.get_plan()),
             SET_PLAN => Ok(self.set_plan(&input)),
+            LOAD_PLAN => Ok(self.load_plan(&input)),
             other => Err(ToolError::Unknown(other.to_string())),
         }
     }
@@ -246,6 +326,72 @@ impl ToolRegistry for WorkbenchTools {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_pipeline(plans: Vec<PlanDoc>) -> Arc<Pipeline> {
+        Arc::new(Pipeline {
+            router: Arc::new(graph_llm::ModelRouter::with_providers(
+                Default::default(),
+                Default::default(),
+            )),
+            registry: Arc::new(graph_core::CompositeRegistry::new(vec![])),
+            events: Arc::new(graph_core::NullSink),
+            plans: Arc::new(plans),
+            call_stack: Vec::new(),
+            store: None,
+            gate: None,
+            user_context: String::new(),
+            current_date: String::new(),
+            max_attempts: 1,
+        })
+    }
+
+    fn demo_doc() -> PlanDoc {
+        serde_yaml::from_str(
+            r#"
+identifier: demo
+name: Demo
+description: demo plan
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: x }
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn load_plan_by_identifier_publishes_a_clean_draft() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let draft = Arc::new(Mutex::new(None));
+        let tools = WorkbenchTools::new(draft.clone(), test_pipeline(vec![demo_doc()]), tx);
+
+        let outcome = tools.load_plan(&json!({"name_or_path": "demo"}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert_eq!(outcome.result["identifier"], json!("demo"));
+        assert_eq!(outcome.result["validation"], json!("ok"));
+        assert!(draft.lock().unwrap().is_some());
+        match rx.try_recv().unwrap() {
+            Msg::DraftReplaced { doc, dirty } => {
+                assert_eq!(doc.identifier, "demo");
+                assert!(!dirty, "a load is not an unsaved edit");
+            }
+            _ => panic!("expected DraftReplaced"),
+        }
+    }
+
+    #[test]
+    fn load_plan_unknown_name_lists_available_plans() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let tools = WorkbenchTools::new(
+            Arc::new(Mutex::new(None)),
+            test_pipeline(vec![demo_doc()]),
+            tx,
+        );
+        let outcome = tools.load_plan(&json!({"name_or_path": "nope"}));
+        assert!(outcome.is_error);
+        assert_eq!(outcome.result["availablePlans"], json!(["demo"]));
+    }
 
     #[test]
     fn identifiers_are_tool_name_safe() {

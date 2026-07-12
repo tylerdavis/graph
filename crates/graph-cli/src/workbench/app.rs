@@ -112,8 +112,12 @@ pub enum Msg {
         is_error: bool,
     },
     TurnFinished(Result<(), String>),
-    // Draft changes published by the workbench tools
-    DraftReplaced(Box<PlanDoc>),
+    // Draft changes published by the workbench tools; `dirty` is false
+    // when the draft came straight from disk (load), true for edits.
+    DraftReplaced {
+        doc: Box<PlanDoc>,
+        dirty: bool,
+    },
     // Plan run
     Planning,
     Synthesizing,
@@ -198,10 +202,14 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
 
-        Msg::DraftReplaced(doc) => {
+        Msg::DraftReplaced { doc, dirty } => {
+            app.status = if dirty {
+                "draft updated".to_string()
+            } else {
+                format!("loaded plan '{}'", doc.identifier)
+            };
             app.ws.set_doc(*doc);
-            app.dirty = true;
-            app.status = "draft updated".to_string();
+            app.dirty = dirty;
             vec![Effect::Validate]
         }
 
@@ -689,11 +697,32 @@ steps:
     #[test]
     fn draft_replacement_resets_steps_and_marks_dirty() {
         let mut app = App::new(None);
-        let effects = update(&mut app, Msg::DraftReplaced(Box::new(two_step_doc())));
+        let effects = update(
+            &mut app,
+            Msg::DraftReplaced {
+                doc: Box::new(two_step_doc()),
+                dirty: true,
+            },
+        );
         assert_eq!(effects, vec![Effect::Validate]);
         assert!(app.dirty);
         assert_eq!(app.ws.steps.len(), 2);
         assert!(matches!(app.ws.steps[0].status, StepStatus::Pending));
+    }
+
+    #[test]
+    fn loading_a_plan_from_chat_is_not_dirty() {
+        let mut app = App::new(None);
+        update(
+            &mut app,
+            Msg::DraftReplaced {
+                doc: Box::new(two_step_doc()),
+                dirty: false,
+            },
+        );
+        assert!(!app.dirty, "a freshly loaded plan has no unsaved changes");
+        assert_eq!(app.ws.steps.len(), 2);
+        assert!(app.status.contains("loaded plan 'demo'"), "{}", app.status);
     }
 
     #[test]
