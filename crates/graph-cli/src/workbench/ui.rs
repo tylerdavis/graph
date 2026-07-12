@@ -7,7 +7,10 @@ use super::plan_ws::{PlanWorkspace, RunLine, StepStatus, WsTab};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
+use ratatui::widgets::{
+    Block, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Tabs, Wrap,
+};
 use ratatui::Frame;
 
 const DIM: Style = Style::new().fg(Color::DarkGray);
@@ -31,11 +34,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_workspace(frame, app, workspace);
     draw_status_bar(frame, app, status);
 
-    match &app.mode {
-        // Paused is non-modal: the plan tab renders the debug panel.
-        Mode::Editing(editor) => draw_editor(frame, editor),
-        Mode::Help => draw_help(frame),
-        _ => {}
+    // Paused is non-modal — the plan tab renders the debug panel — so the
+    // only modal overlay is the editor, plus help on top of anything.
+    if let Mode::Editing(editor) = &app.mode {
+        draw_editor(frame, editor);
+    }
+    if app.show_help {
+        draw_help(frame);
     }
 }
 
@@ -135,6 +140,38 @@ fn draw_workspace(frame: &mut Frame, app: &App, area: Rect) {
         WsTab::Plan => draw_plan_tab(frame, app, body),
         WsTab::Context => draw_context_tab(frame, &app.ws, body),
         WsTab::Run => draw_run_tab(frame, &app.ws, body),
+    }
+}
+
+/// Clamp a scroll cell to the content, render the paragraph, and draw a
+/// scrollbar when the content overflows the pane.
+fn render_scrolled(
+    frame: &mut Frame,
+    lines: Vec<Line>,
+    block: Block,
+    area: Rect,
+    scroll: &std::cell::Cell<u16>,
+) {
+    let viewport = area.height.saturating_sub(2) as usize;
+    let total = lines.len();
+    let max_scroll = total.saturating_sub(viewport) as u16;
+    scroll.set(scroll.get().min(max_scroll));
+    let offset = scroll.get();
+    let widget = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .scroll((offset, 0));
+    frame.render_widget(widget, area);
+    if total > viewport {
+        let mut state = ScrollbarState::new(max_scroll as usize).position(offset as usize);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            area.inner(ratatui::layout::Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut state,
+        );
     }
 }
 
@@ -264,7 +301,7 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
     });
     if show_debug {
         let prompt = paused_prompt(app).expect("checked above");
-        draw_debug_panel(frame, prompt, detail, ws.detail_scroll);
+        draw_debug_panel(frame, prompt, detail, &ws.detail_scroll);
         return;
     }
 
@@ -294,15 +331,15 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
             push_json_section(&mut lines, "result", result);
         }
     }
-    let detail_widget = Paragraph::new(lines)
-        .block(
-            Block::bordered()
-                .border_style(DIM)
-                .title(" detail ─ PgUp/PgDn scroll "),
-        )
-        .wrap(Wrap { trim: false })
-        .scroll((ws.detail_scroll, 0));
-    frame.render_widget(detail_widget, detail);
+    render_scrolled(
+        frame,
+        lines,
+        Block::bordered()
+            .border_style(DIM)
+            .title(" detail ─ J/K scroll "),
+        detail,
+        &ws.detail_scroll,
+    );
 }
 
 fn draw_context_tab(frame: &mut Frame, ws: &PlanWorkspace, area: Rect) {
@@ -355,11 +392,15 @@ fn draw_context_tab(frame: &mut Frame, ws: &PlanWorkspace, area: Rect) {
             push_json_section(&mut lines, "output example", example);
         }
     }
-    let detail_widget = Paragraph::new(lines)
-        .block(Block::bordered().border_style(DIM).title(" detail "))
-        .wrap(Wrap { trim: false })
-        .scroll((ws.detail_scroll, 0));
-    frame.render_widget(detail_widget, detail);
+    render_scrolled(
+        frame,
+        lines,
+        Block::bordered()
+            .border_style(DIM)
+            .title(" detail ─ J/K scroll "),
+        detail,
+        &ws.detail_scroll,
+    );
 }
 
 fn draw_run_tab(frame: &mut Frame, ws: &PlanWorkspace, area: Rect) {
@@ -384,12 +425,31 @@ fn draw_run_tab(frame: &mut Frame, ws: &PlanWorkspace, area: Rect) {
             if *is_error { ERROR } else { OK }.add_modifier(Modifier::BOLD),
         ));
     }
-    let height = area.height.saturating_sub(2) as usize;
-    let offset = lines.len().saturating_sub(height) as u16;
+    // Follow the bottom, minus the user's scroll-back (clamped).
+    let viewport = area.height.saturating_sub(2) as usize;
+    let total = lines.len();
+    let bottom = total.saturating_sub(viewport) as u16;
+    ws.run_scroll.set(ws.run_scroll.get().min(bottom));
+    let offset = bottom.saturating_sub(ws.run_scroll.get());
     let widget = Paragraph::new(lines)
-        .block(Block::bordered().border_style(DIM).title(" run "))
+        .block(
+            Block::bordered()
+                .border_style(DIM)
+                .title(" run ─ j/k scroll "),
+        )
         .scroll((offset, 0));
     frame.render_widget(widget, area);
+    if total > viewport {
+        let mut state = ScrollbarState::new(bottom as usize).position(offset as usize);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            area.inner(ratatui::layout::Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut state,
+        );
+    }
 }
 
 // ── Status bar and modals ────────────────────────────────────────────────
@@ -405,7 +465,6 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             GateKind::OnError { .. } => "paused (error)",
         },
         Mode::Editing(_) => "editing",
-        Mode::Help => "help",
     };
     let mut spans = vec![
         Span::styled(format!(" {mode} "), ACCENT.add_modifier(Modifier::REVERSED)),
@@ -456,7 +515,12 @@ fn centered(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
 /// The debugger's view at a pause: position, call stack, error (when
 /// paused on one), the rendered input, and the scope — everything a
 /// template could read at this point.
-fn draw_debug_panel(frame: &mut Frame, prompt: &GatePrompt, area: Rect, scroll: u16) {
+fn draw_debug_panel(
+    frame: &mut Frame,
+    prompt: &GatePrompt,
+    area: Rect,
+    scroll: &std::cell::Cell<u16>,
+) {
     let width = area.width.saturating_sub(2) as usize;
     let mut lines: Vec<Line> = Vec::new();
     match &prompt.kind {
@@ -509,15 +573,15 @@ fn draw_debug_panel(frame: &mut Frame, prompt: &GatePrompt, area: Rect, scroll: 
         GateKind::BeforeCall => " debug ─ n next step · c continue · s skip · a abort ",
         GateKind::OnError { .. } => " debug ─ s inject result · n let it fail · a abort ",
     };
-    let widget = Paragraph::new(lines)
-        .block(
-            Block::bordered()
-                .border_style(Style::new().fg(Color::Yellow))
-                .title(title),
-        )
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
-    frame.render_widget(widget, area);
+    render_scrolled(
+        frame,
+        lines,
+        Block::bordered()
+            .border_style(Style::new().fg(Color::Yellow))
+            .title(title),
+        area,
+        scroll,
+    );
 }
 
 /// Scope display order: input, step ids ascending, pseudo-roots, rest.
@@ -590,8 +654,8 @@ fn draw_help(frame: &mut Frame) {
         ("1 / 2 / 3", "workspace tab (Alt+n from anywhere)"),
         ("Enter", "send chat message (Alt+Enter for newline)"),
         ("Ctrl+↑ / Ctrl+↓", "scroll chat"),
-        ("j / k", "select step or tool"),
-        ("PgUp / PgDn", "scroll detail / debug panel"),
+        ("j / k", "select step or tool (run tab: scroll)"),
+        ("J / K, PgUp / PgDn", "scroll the detail / debug / run pane"),
         ("b", "toggle breakpoint on the selected step"),
         ("v", "validate the plan"),
         ("r", "run the plan"),

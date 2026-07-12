@@ -4,6 +4,7 @@
 use graph_core::pipeline::doc::PlanDoc;
 use graph_core::{ToolDef, ToolShape};
 use serde_json::{Map, Value};
+use std::cell::Cell;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -57,7 +58,11 @@ pub struct PlanWorkspace {
     pub diagnostics: Vec<String>,
     pub steps: Vec<StepRow>,
     pub selected: usize,
-    pub detail_scroll: u16,
+    /// Detail/debug pane scroll offset (lines from the top). `Cell` so the
+    /// renderer can clamp it to the actual content height.
+    pub detail_scroll: Cell<u16>,
+    /// Run-transcript scroll offset in lines from the BOTTOM; 0 follows.
+    pub run_scroll: Cell<u16>,
     pub tools: Vec<ToolDef>,
     pub shapes: HashMap<String, ToolShape>,
     pub run_log: Vec<RunLine>,
@@ -119,7 +124,7 @@ impl PlanWorkspace {
     pub fn select_step(&mut self, id: &str) {
         if let Some(index) = self.steps.iter().position(|row| row.id == id) {
             self.selected = index;
-            self.detail_scroll = 0;
+            self.detail_scroll.set(0);
         }
     }
 
@@ -169,6 +174,7 @@ impl PlanWorkspace {
         }
         self.run_log.clear();
         self.solver_text.clear();
+        self.run_scroll.set(0);
         self.outcome = None;
         self.tab = WsTab::Run;
         self.run_log_info(if gated {
@@ -258,13 +264,36 @@ impl PlanWorkspace {
         let len = self.list_len();
         if len > 0 {
             self.selected = (self.selected + 1).min(len - 1);
-            self.detail_scroll = 0;
+            self.detail_scroll.set(0);
         }
     }
 
     pub fn select_previous(&mut self) {
         self.selected = self.selected.saturating_sub(1);
-        self.detail_scroll = 0;
+        self.detail_scroll.set(0);
+    }
+
+    /// Scroll the pane the current tab shows: the run transcript (offset
+    /// from the bottom) or the detail/debug pane (offset from the top).
+    pub fn scroll_by(&mut self, up: bool, amount: u16) {
+        match self.tab {
+            WsTab::Run => {
+                let current = self.run_scroll.get();
+                self.run_scroll.set(if up {
+                    current.saturating_add(amount)
+                } else {
+                    current.saturating_sub(amount)
+                });
+            }
+            _ => {
+                let current = self.detail_scroll.get();
+                self.detail_scroll.set(if up {
+                    current.saturating_sub(amount)
+                } else {
+                    current.saturating_add(amount)
+                });
+            }
+        }
     }
 
     fn list_len(&self) -> usize {

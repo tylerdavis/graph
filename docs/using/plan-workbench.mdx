@@ -64,7 +64,7 @@ A debug run (`g`) works like a debugger over plan execution. Pauses are **non-mo
 
 **The inject editor** explains itself: a header says what the JSON becomes, where the prefill came from (the tool's declared output example → an observed example → a skeleton synthesized from its `output_schema` → empty), and — the part that matters — **which paths downstream templates read** from this step, so you know exactly what fields the value must contain. `Ctrl+S` submits; `Esc` returns to the pause; the hints stay visible alongside any parse error.
 
-Control-step *evaluation* is never gated — `exit`/`decide` gates (including `infer` judge calls) and `map`/`reduce` orchestration are read-only engine computation; their side effects are the body calls, which are. While paused, quit/help/run keys are blocked (a pending decision must be answered) and the chat input is inert.
+Control-step *evaluation* is never gated — `exit`/`decide` gates (including `infer` judge calls) and `map`/`reduce` orchestration are read-only engine computation; their side effects are the body calls, which are. While paused, quit and run keys are blocked (a pending decision must be answered) and the chat input is inert; `?` still opens help, and the workspace scrolls and navigates normally.
 
 The agent can drive all of this too: `workbench__run_plan` accepts `breakpoints` (top-level step ids, implies a debug run) — every pause still asks *you*.
 
@@ -80,8 +80,8 @@ The agent can drive all of this too: `workbench__run_plan` accepts `breakpoints`
 | `1` / `2` / `3` | workspace | switch tab (`Alt+1/2/3` from anywhere, even mid-typing) |
 | `Enter` | chat | send (`Alt+Enter` inserts a newline) |
 | `Ctrl+↑` / `Ctrl+↓` | chat | scroll the conversation |
-| `j` / `k` | workspace | select a step or tool |
-| `PgUp` / `PgDn` | workspace | scroll the detail pane |
+| `j` / `k` | workspace | select a step or tool (run tab: scroll the transcript) |
+| `J` / `K`, `PgUp` / `PgDn` | workspace | scroll the detail / debug / run pane (a scrollbar appears when content overflows) |
 | `v` / `r` / `g` | workspace | validate / run / debug run |
 | `b` | plan tab | toggle breakpoint on the selected step |
 | `n` / `Enter` | paused | next step — proceed this call, pause at the next |
@@ -90,5 +90,5 @@ The agent can drive all of this too: `workbench__run_plan` accepts `breakpoints`
 | `a` | paused | abort the run |
 | `Ctrl+S` | anywhere | save the draft (in an editor: submit) |
 | `Esc` | editor | cancel (returns to the pause when injecting) |
-| `?` | workspace | help overlay |
+| `?` | workspace | help overlay (works while paused too; any key closes it) |
 | `q`, `Ctrl+C` | — | quit (confirms when running or unsaved) |

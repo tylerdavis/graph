@@ -73,8 +73,6 @@ pub enum Mode {
     Paused(GatePrompt),
     /// A modal editor (inject result, run input) or confirm dialog is open.
     Editing(Box<EditorState>),
-    /// The help overlay is open.
-    Help,
 }
 
 pub enum ChatEntry {
@@ -122,6 +120,9 @@ pub struct App {
     pub tick: u8,
     /// The call currently executing, for the status-bar indicator.
     pub in_flight: Option<InFlight>,
+    /// The help overlay — independent of `mode`, so it works while paused
+    /// without touching the parked gate reply. Any key closes it.
+    pub show_help: bool,
     pub should_quit: bool,
 }
 
@@ -142,12 +143,13 @@ impl App {
             breakpoints: HashSet::new(),
             tick: 0,
             in_flight: None,
+            show_help: false,
             should_quit: false,
         }
     }
 
     fn busy(&self) -> bool {
-        !matches!(self.mode, Mode::Idle | Mode::Help)
+        !matches!(self.mode, Mode::Idle)
     }
 
     /// The event loop only ticks while something is actually executing —
@@ -470,14 +472,16 @@ fn on_terminal_event(app: &mut App, event: Event) -> Vec<Effect> {
         return Vec::new();
     }
 
+    // The help overlay swallows one key and closes, whatever the mode.
+    if app.show_help {
+        app.show_help = false;
+        return Vec::new();
+    }
+
     match &mut app.mode {
         // Paused is non-modal: debug keys first, navigation falls through.
         Mode::Paused(_) => return on_paused_key(app, key),
         Mode::Editing(_) => return on_editor_key(app, key),
-        Mode::Help => {
-            app.mode = Mode::Idle;
-            return Vec::new();
-        }
         _ => {}
     }
 
@@ -529,19 +533,27 @@ fn on_workspace_nav(app: &mut App, key: KeyEvent) -> Option<Vec<Effect>> {
             Some(Vec::new())
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            app.ws.select_next();
+            if app.ws.tab == WsTab::Run {
+                app.ws.scroll_by(false, 1);
+            } else {
+                app.ws.select_next();
+            }
             Some(Vec::new())
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.ws.select_previous();
+            if app.ws.tab == WsTab::Run {
+                app.ws.scroll_by(true, 1);
+            } else {
+                app.ws.select_previous();
+            }
             Some(Vec::new())
         }
-        KeyCode::PageDown => {
-            app.ws.detail_scroll = app.ws.detail_scroll.saturating_add(5);
+        KeyCode::PageDown | KeyCode::Char('J') => {
+            app.ws.scroll_by(false, 5);
             Some(Vec::new())
         }
-        KeyCode::PageUp => {
-            app.ws.detail_scroll = app.ws.detail_scroll.saturating_sub(5);
+        KeyCode::PageUp | KeyCode::Char('K') => {
+            app.ws.scroll_by(true, 5);
             Some(Vec::new())
         }
         KeyCode::Char('b') => Some(toggle_breakpoint(app)),
@@ -648,9 +660,7 @@ fn on_workspace_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
     }
     match key.code {
         KeyCode::Char('?') => {
-            if matches!(app.mode, Mode::Idle) {
-                app.mode = Mode::Help;
-            }
+            app.show_help = true;
             Vec::new()
         }
         KeyCode::Char('r') => start_run(app, false),
@@ -731,9 +741,13 @@ fn on_paused_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
         KeyCode::Char('s') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             return open_inject_editor(app);
         }
+        KeyCode::Char('?') => {
+            app.show_help = true;
+            return Vec::new();
+        }
         // Blocked: these would replace Mode::Paused and drop the reply
         // sender — the run would silently abort.
-        KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Char('r') | KeyCode::Char('g') => {
+        KeyCode::Char('q') | KeyCode::Char('r') | KeyCode::Char('g') => {
             app.status =
                 "paused — decide first: n next step · c continue · s skip · a abort".to_string();
             return Vec::new();
@@ -1156,14 +1170,13 @@ steps:
     }
 
     #[test]
-    fn paused_blocks_quit_help_and_run_keys() {
+    fn paused_blocks_quit_and_run_keys() {
         let mut app = App::new(Some(two_step_doc()));
         app.mode = Mode::Running { gated: true };
         let (msg, mut receiver) = gate_ask(GateKind::BeforeCall, "E0");
         update(&mut app, msg);
         for blocked in [
             key(KeyCode::Char('q')),
-            key(KeyCode::Char('?')),
             key(KeyCode::Char('r')),
             key(KeyCode::Char('g')),
             ctrl('c'),
@@ -1176,6 +1189,53 @@ steps:
         }
         assert!(!app.should_quit);
         assert!(receiver.try_recv().is_err(), "reply undelivered");
+    }
+
+    #[test]
+    fn help_works_while_paused_and_any_key_closes_it() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.mode = Mode::Running { gated: true };
+        let (msg, mut receiver) = gate_ask(GateKind::BeforeCall, "E0");
+        update(&mut app, msg);
+
+        update(&mut app, key(KeyCode::Char('?')));
+        assert!(app.show_help, "help opens over the pause");
+        assert!(matches!(app.mode, Mode::Paused(_)), "the pause is intact");
+
+        // Any key closes help without acting — even a decision key.
+        update(&mut app, key(KeyCode::Char('n')));
+        assert!(!app.show_help);
+        assert!(matches!(app.mode, Mode::Paused(_)));
+        assert!(receiver.try_recv().is_err(), "no decision was sent");
+
+        // Now the decision key acts normally.
+        update(&mut app, key(KeyCode::Char('n')));
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            UiDecision::Proceed { .. }
+        ));
+    }
+
+    #[test]
+    fn scroll_keys_are_tab_aware() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.focus = Focus::Workspace;
+        // Plan tab: J scrolls the detail pane down.
+        update(
+            &mut app,
+            Msg::Term(Event::Key(KeyEvent::new(
+                KeyCode::Char('J'),
+                KeyModifiers::SHIFT,
+            ))),
+        );
+        assert_eq!(app.ws.detail_scroll.get(), 5);
+        // Run tab: j/k scroll the transcript (offset from the bottom).
+        app.ws.tab = WsTab::Run;
+        update(&mut app, key(KeyCode::Char('k')));
+        assert_eq!(app.ws.run_scroll.get(), 1);
+        update(&mut app, key(KeyCode::Char('j')));
+        assert_eq!(app.ws.run_scroll.get(), 0);
+        assert_eq!(app.ws.selected, 0, "run-tab j/k does not move selection");
     }
 
     #[test]
