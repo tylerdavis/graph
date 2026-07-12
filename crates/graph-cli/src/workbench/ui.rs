@@ -672,7 +672,7 @@ fn draw_help(frame: &mut Frame) {
         ),
         ("a", "paused: abort the run"),
         ("Ctrl+S", "save the draft to the plans directory"),
-        ("Ctrl+C, q", "quit"),
+        ("Ctrl+C, q", "quit (while paused: abort the run)"),
     ];
     let lines: Vec<Line> = bindings
         .iter()

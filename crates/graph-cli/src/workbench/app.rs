@@ -745,17 +745,23 @@ fn on_paused_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
             app.show_help = true;
             return Vec::new();
         }
+        // The app-exit controls abort the run — like Ctrl+C cancelling a
+        // foreground task. Quit still requires the run to stop first.
+        KeyCode::Char('q') => {
+            return decide(app, UiDecision::Abort);
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return decide(app, UiDecision::Abort);
+        }
         // Blocked: these would replace Mode::Paused and drop the reply
         // sender — the run would silently abort.
-        KeyCode::Char('q') | KeyCode::Char('r') | KeyCode::Char('g') => {
+        KeyCode::Char('r') | KeyCode::Char('g') => {
             app.status =
                 "paused — decide first: n next step · c continue · s skip · a abort".to_string();
             return Vec::new();
         }
-        KeyCode::Char('c') | KeyCode::Char('s')
-            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            // Ctrl+C (quit) and Ctrl+S (save) are blocked too.
+        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Ctrl+S (save) waits for a decision too.
             app.status =
                 "paused — decide first: n next step · c continue · s skip · a abort".to_string();
             return Vec::new();
@@ -1170,17 +1176,12 @@ steps:
     }
 
     #[test]
-    fn paused_blocks_quit_and_run_keys() {
+    fn paused_blocks_run_keys() {
         let mut app = App::new(Some(two_step_doc()));
         app.mode = Mode::Running { gated: true };
         let (msg, mut receiver) = gate_ask(GateKind::BeforeCall, "E0");
         update(&mut app, msg);
-        for blocked in [
-            key(KeyCode::Char('q')),
-            key(KeyCode::Char('r')),
-            key(KeyCode::Char('g')),
-            ctrl('c'),
-        ] {
+        for blocked in [key(KeyCode::Char('r')), key(KeyCode::Char('g'))] {
             assert!(update(&mut app, blocked).is_empty());
             assert!(
                 matches!(app.mode, Mode::Paused(_)),
@@ -1189,6 +1190,20 @@ steps:
         }
         assert!(!app.should_quit);
         assert!(receiver.try_recv().is_err(), "reply undelivered");
+    }
+
+    #[test]
+    fn exit_controls_abort_the_paused_run() {
+        for exit_key in [key(KeyCode::Char('q')), ctrl('c')] {
+            let mut app = App::new(Some(two_step_doc()));
+            app.mode = Mode::Running { gated: true };
+            let (msg, mut receiver) = gate_ask(GateKind::BeforeCall, "E0");
+            update(&mut app, msg);
+            update(&mut app, exit_key);
+            assert!(matches!(receiver.try_recv().unwrap(), UiDecision::Abort));
+            assert!(!app.should_quit, "abort the run, not the app");
+            assert!(matches!(app.mode, Mode::Running { gated: true }));
+        }
     }
 
     #[test]
