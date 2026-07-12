@@ -35,7 +35,7 @@ Everything a plan step or the agent can do is a **tool**, and every tool lives i
 | Prefix | Source | Example |
 |---|---|---|
 | `<server>__` | [MCP servers](/tools/mcp-servers) from `[mcp.*]` config | `linear__list_issues` |
-| `user__` | [User-defined tools](/tools/user-defined) (exec / cypher / prompt YAML) | `user__git_log` |
+| `user__` | [User-defined tools](/tools/user-defined) (exec / prompt YAML) | `user__git_log` |
 | `plan__` | One per [plan document](/plans/overview) | `plan__project_status` |
 | — | `plan_and_execute`: on-the-fly planning for novel multi-step tasks | |
 
@@ -55,7 +55,7 @@ Use it as the workbench: probe tools, prototype a workflow conversationally, see
 
 ## 5. Threads
 
-Every `ask` and `chat` turn persists to a **thread** in the embedded database — messages, tool calls, and results.
+Every `ask` and `chat` turn persists to a **thread** under the data directory — messages, tool calls, and results.
 
 ```bash
 graph threads list

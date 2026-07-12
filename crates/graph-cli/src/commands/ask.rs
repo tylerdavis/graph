@@ -18,8 +18,7 @@ pub async fn run(args: AskArgs) -> Result<()> {
     let message = resolve_message(args.message)?;
 
     let runtime = Runtime::init()?;
-    let handles = runtime.store_handles()?;
-    let store = handles.store.clone();
+    let store = runtime.store()?;
     let existing = resolve_thread(store.as_ref(), args.thread).await?;
 
     let stream_text = !args.json && !args.no_stream;
@@ -33,7 +32,7 @@ pub async fn run(args: AskArgs) -> Result<()> {
     } else {
         crate::output::make_sink(!stream_text, false)
     };
-    let toolbox = runtime.toolbox(&handles, events.clone()).await?;
+    let toolbox = runtime.toolbox(&store, events.clone()).await?;
     let agent = runtime.agent(events, toolbox)?;
 
     let mut messages = match &existing {

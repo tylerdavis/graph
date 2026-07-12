@@ -1,6 +1,5 @@
-//! In-memory `Store`: ephemeral runtime state for CI jobs and as an escape
-//! hatch when the embedded database is locked by another process. Nothing
-//! survives the process.
+//! In-memory `Store`: ephemeral runtime state for CI jobs and tests.
+//! Nothing survives the process.
 
 use graph_core::store::{Store, StoreError, ThreadMeta, ToolShape};
 use graph_llm::types::ChatMessage;
@@ -87,13 +86,6 @@ impl Store for MemoryStore {
         Ok(self.inner.lock().unwrap().threads.remove(id).is_some())
     }
 
-    async fn set_title(&self, id: &str, title: &str) -> Result<(), StoreError> {
-        if let Some((meta, _)) = self.inner.lock().unwrap().threads.get_mut(id) {
-            meta.title = title.to_string();
-        }
-        Ok(())
-    }
-
     async fn append_messages(
         &self,
         thread_id: &str,
@@ -149,40 +141,5 @@ impl Store for MemoryStore {
             .values()
             .cloned()
             .collect())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn thread_and_shape_roundtrip() {
-        let store = MemoryStore::new();
-        let thread = store.create_thread("t").await.unwrap();
-        store
-            .append_messages(
-                &thread.id,
-                &[ChatMessage::User {
-                    content: "hi".into(),
-                }],
-            )
-            .await
-            .unwrap();
-        assert_eq!(store.load_messages(&thread.id).await.unwrap().len(), 1);
-        assert_eq!(store.latest_thread().await.unwrap().unwrap().id, thread.id);
-
-        store
-            .record_tool_shape("t__x", &serde_json::json!({}), &serde_json::json!({}))
-            .await
-            .unwrap();
-        store
-            .record_tool_shape("t__x", &serde_json::json!({}), &serde_json::json!({}))
-            .await
-            .unwrap();
-        assert_eq!(store.tool_shapes().await.unwrap()[0].seen_count, 2);
-
-        assert!(store.delete_thread(&thread.id).await.unwrap());
-        assert!(!store.delete_thread(&thread.id).await.unwrap());
     }
 }

@@ -7,9 +7,9 @@ use graph_core::ToolRegistry;
 
 pub async fn run(command: ToolsCommand) -> Result<()> {
     let runtime = Runtime::init()?;
-    let handles = runtime.store_handles()?;
+    let store = runtime.store()?;
     let toolbox = runtime
-        .toolbox(&handles, std::sync::Arc::new(graph_core::NullSink))
+        .toolbox(&store, std::sync::Arc::new(graph_core::NullSink))
         .await?;
     let result = dispatch(toolbox.as_ref(), command).await;
     runtime.shutdown().await;

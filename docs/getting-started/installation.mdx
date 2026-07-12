@@ -4,7 +4,7 @@ description: "From source, release binaries, or the container image"
 icon: "download"
 ---
 
-Build from source for development; grab a release binary or the container image to just run it. For source builds, tooling (Rust, cmake, pkg-config) is managed with [mise](https://mise.jdx.dev); OpenSSL can come from any source (nix, Homebrew, …) as long as `pkg-config` can resolve it.
+Build from source for development; grab a release binary or the container image to just run it. For source builds, tooling (Rust, pkg-config) is managed with [mise](https://mise.jdx.dev); OpenSSL can come from any source (nix, Homebrew, …) as long as `pkg-config` can resolve it.
 
 <Steps>
   <Step title="Clone and set up the toolchain">
@@ -19,7 +19,7 @@ Build from source for development; grab a release binary or the container image 
     ```bash
     mise run install
     ```
-    This builds the release binary and installs `graph` onto your PATH (`~/.cargo/bin`). Plain `cargo build` works too — the embedded database's linker requirements are handled by build scripts in the workspace.
+    This builds the release binary and installs `graph` onto your PATH (`~/.cargo/bin`). Plain `cargo build` works too.
   </Step>
   <Step title="Verify">
     ```bash
@@ -56,12 +56,11 @@ While the repository is private the image is too — `docker login ghcr.io` with
 | Requirement | Notes |
 |---|---|
 | Rust 1.94+ | installed by `mise install` |
-| cmake, pkg-config | installed by `mise install` |
+| pkg-config | installed by `mise install` |
 | OpenSSL | from nix, Homebrew, or system — must be visible to `pkg-config` |
-| Network on first build | the build embeds the database's FTS/vector extensions (fetched once, cached in `target/`); for offline builds set `GRAPH_LBUG_EXT_DIR` to pre-fetched files — see [Storage](/architecture/storage#extensions) |
 | An LLM provider key | e.g. `ANTHROPIC_API_KEY` — see [Quickstart](/getting-started/quickstart) |
 
 ## First-run notes
 
-- graph creates its embedded database at `~/.local/share/graph/db/` on first use (configurable via `[settings] data_dir`).
-- The embedded database is **single-process**: one running `graph chat` holds a lock that blocks other graph commands against the same data directory. Use `GRAPH_STORAGE=memory` for concurrent/ephemeral runs — see [Storage](/architecture/storage).
+- graph creates its data directory at `~/.local/share/graph/` on first use (configurable via `[settings] data_dir`).
+- State is plain files under the data directory, safe under concurrent runs. Use `GRAPH_STORAGE=memory` for ephemeral runs that should leave nothing behind — see [Storage](/architecture/storage).

@@ -3,11 +3,11 @@
 use anyhow::{Context, Result};
 use graph_core::pipeline::{doc::PlanDoc, Pipeline};
 use graph_core::toolbox::AgentToolbox;
-use graph_core::user_tools::{CypherExecutor, UserToolRegistry};
+use graph_core::user_tools::UserToolRegistry;
 use graph_core::{Agent, CompositeRegistry, EventSink, Store, ThreadMeta, ToolRegistry};
 use graph_llm::ModelRouter;
 use graph_mcp::McpManager;
-use graph_store::{GraphStore, MemoryStore, RecordingRegistry};
+use graph_store::{FileStore, MemoryStore, RecordingRegistry};
 use std::sync::Arc;
 
 pub struct Runtime {
@@ -35,8 +35,8 @@ impl Runtime {
         self.registry.shutdown().await;
     }
 
-    /// Open the store keeping the Cypher handle (ladybug backend only).
-    pub fn store_handles(&self) -> Result<StoreHandles> {
+    /// Open the configured runtime-state store.
+    pub fn store(&self) -> Result<Arc<dyn Store>> {
         open_store(&self.config)
     }
 
@@ -67,39 +67,27 @@ impl Runtime {
 
     /// Base tool catalog (MCP servers + builtin packs + user-defined
     /// tools), wrapped with shape recording.
-    pub fn recording_registry(&self, handles: &StoreHandles) -> Result<Arc<dyn ToolRegistry>> {
-        let builtin_tools = self.builtin_tools(handles.cypher.clone())?;
-        let user_tools = self.user_tools(handles.cypher.clone())?;
+    pub fn recording_registry(&self, store: &Arc<dyn Store>) -> Result<Arc<dyn ToolRegistry>> {
         let base: Arc<dyn ToolRegistry> = Arc::new(CompositeRegistry::new(vec![
             self.registry.clone() as Arc<dyn ToolRegistry>,
-            builtin_tools,
-            user_tools,
+            self.builtin_tools()?,
+            self.user_tools()?,
         ]));
-        Ok(Arc::new(RecordingRegistry::new(
-            base,
-            handles.store.clone(),
-        )))
+        Ok(Arc::new(RecordingRegistry::new(base, store.clone())))
     }
 
     /// Bundled pack tools from `[tools].packs`, served under `builtin__`.
-    pub fn builtin_tools(
-        &self,
-        cypher: Option<Arc<dyn CypherExecutor>>,
-    ) -> Result<Arc<dyn ToolRegistry>> {
+    pub fn builtin_tools(&self) -> Result<Arc<dyn ToolRegistry>> {
         let docs = graph_core::user_tools::load_pack_tools(&self.config.tools.packs)
             .map_err(anyhow::Error::msg)?;
         Ok(Arc::new(UserToolRegistry::builtins(
             docs,
             self.router.clone(),
-            cypher,
         )))
     }
 
     /// User-defined tools from `[tools].paths`, served under `user__`.
-    pub fn user_tools(
-        &self,
-        cypher: Option<Arc<dyn CypherExecutor>>,
-    ) -> Result<Arc<dyn ToolRegistry>> {
+    pub fn user_tools(&self) -> Result<Arc<dyn ToolRegistry>> {
         let dirs: Vec<std::path::PathBuf> = self
             .config
             .tools
@@ -108,11 +96,7 @@ impl Runtime {
             .map(|p| graph_config::expand_tilde(p))
             .collect();
         let docs = graph_core::user_tools::load_user_tools(&dirs).map_err(anyhow::Error::msg)?;
-        Ok(Arc::new(UserToolRegistry::new(
-            docs,
-            self.router.clone(),
-            cypher,
-        )))
+        Ok(Arc::new(UserToolRegistry::new(docs, self.router.clone())))
     }
 
     /// Plan documents whose `requires_servers` are all configured.
@@ -147,10 +131,10 @@ impl Runtime {
     /// user tools).
     pub async fn pipeline(
         &self,
-        handles: &StoreHandles,
+        store: &Arc<dyn Store>,
         events: Arc<dyn EventSink>,
     ) -> Result<Arc<Pipeline>> {
-        let base = self.recording_registry(handles)?;
+        let base = self.recording_registry(store)?;
         let user_context = user_context_text(&self.config.user);
         Ok(Arc::new(Pipeline {
             router: self.router.clone(),
@@ -158,7 +142,7 @@ impl Runtime {
             events,
             plans: Arc::new(self.plan_docs()?),
             call_stack: Vec::new(),
-            store: Some(handles.store.clone()),
+            store: Some(store.clone()),
             gate: None,
             user_context,
             current_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
@@ -170,21 +154,14 @@ impl Runtime {
     /// plan_and_execute.
     pub async fn toolbox(
         &self,
-        handles: &StoreHandles,
+        store: &Arc<dyn Store>,
         events: Arc<dyn EventSink>,
     ) -> Result<Arc<AgentToolbox>> {
-        let base = self.recording_registry(handles)?;
-        let pipeline = self.pipeline(handles, events).await?;
+        let base = self.recording_registry(store)?;
+        let pipeline = self.pipeline(store, events).await?;
         let plans = pipeline.plans.as_ref().clone();
         Ok(Arc::new(AgentToolbox::new(base, pipeline, plans)))
     }
-}
-
-/// The opened store plus backend-specific capabilities.
-pub struct StoreHandles {
-    pub store: Arc<dyn Store>,
-    /// Present on the ladybug backend; user cypher tools need it.
-    pub cypher: Option<Arc<dyn CypherExecutor>>,
 }
 
 fn user_context_text(user: &graph_config::UserConfig) -> String {
@@ -202,35 +179,24 @@ fn user_context_text(user: &graph_config::UserConfig) -> String {
 }
 
 /// Open the configured runtime-state store. Backend selection:
-/// `GRAPH_STORAGE` env var (`ladybug` | `memory`) wins over
-/// `[storage].backend`; the default is the embedded LadybugDB.
-pub fn open_store(config: &graph_config::Config) -> Result<StoreHandles> {
+/// `GRAPH_STORAGE` env var (`file` | `memory`) wins over
+/// `[storage].backend`; the default is plain files under `data_dir`.
+pub fn open_store(config: &graph_config::Config) -> Result<Arc<dyn Store>> {
     let backend = match std::env::var("GRAPH_STORAGE").ok().as_deref() {
         Some("memory") => graph_config::StorageBackend::Memory,
-        Some("ladybug") => graph_config::StorageBackend::Ladybug,
-        Some(other) => anyhow::bail!("GRAPH_STORAGE must be 'ladybug' or 'memory', got '{other}'"),
+        Some("file") => graph_config::StorageBackend::File,
+        Some(other) => anyhow::bail!("GRAPH_STORAGE must be 'file' or 'memory', got '{other}'"),
         None => config.storage.backend,
     };
     match backend {
-        graph_config::StorageBackend::Memory => Ok(StoreHandles {
-            store: Arc::new(MemoryStore::new()),
-            cypher: None,
-        }),
-        graph_config::StorageBackend::Ladybug => {
-            let store = Arc::new(open_ladybug(config)?);
-            Ok(StoreHandles {
-                cypher: Some(store.clone()),
-                store,
-            })
+        graph_config::StorageBackend::Memory => Ok(Arc::new(MemoryStore::new())),
+        graph_config::StorageBackend::File => {
+            let root = graph_config::expand_tilde(&config.settings.data_dir);
+            Ok(Arc::new(
+                FileStore::open(&root).map_err(anyhow::Error::msg)?,
+            ))
         }
     }
-}
-
-/// Open the embedded LadybugDB directly (Ladybug-only surfaces such as
-/// `graph db query`).
-pub fn open_ladybug(config: &graph_config::Config) -> Result<GraphStore> {
-    let dir = graph_config::expand_tilde(&config.settings.data_dir).join("db");
-    GraphStore::open(&dir).map_err(Into::into)
 }
 
 /// Resolve which existing thread to continue, if any.

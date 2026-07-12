@@ -16,10 +16,11 @@ and run it forever — in your terminal or in CI.
   a plan (success or failure) before wasting steps, with CI-friendly exit
   codes.
 - **MCP tools** — connect any Model Context Protocol server (stdio or HTTP).
-- **User-defined tools** — YAML definitions for exec/shell, Cypher, and
-  prompt tools, plus bundled `builtin__` tool packs.
-- **Embedded graph database** — [LadybugDB](https://ladybugdb.com/) stores
-  threads, run history, tool shape knowledge, and your entity graph.
+- **User-defined tools** — YAML definitions for exec/shell and prompt
+  tools, plus bundled `builtin__` tool packs.
+- **Plain-file storage** — threads and tool shape knowledge live as
+  JSON/JSONL files under the data directory: greppable, safe under
+  concurrent runs, and trivially backed up.
 - **Bring your own models** — Anthropic, OpenAI, OpenAI-compatible (local),
   and AWS Bedrock, assignable per role (chat, planner, solver, judge, …).
 - **Chat workbench** — `graph ask` and `graph chat` run a tool-calling agent
@@ -34,12 +35,12 @@ and run it forever — in your terminal or in CI.
 | `graph-core` | agent loop, plan pipeline, template renderer, prompts |
 | `graph-llm` | provider abstraction (tool use, structured output, streaming) |
 | `graph-mcp` | MCP client manager and tool adaptation |
-| `graph-store` | LadybugDB storage and built-in graph tools |
+| `graph-store` | file-based and in-memory storage backends |
 | `graph-config` | layered TOML config + YAML plan/tool documents |
 
 ## Building (macOS)
 
-Tooling (Rust, cmake, pkg-config) and tasks are managed with
+Tooling (Rust, pkg-config) and tasks are managed with
 [mise](https://mise.jdx.dev). OpenSSL can come from anywhere (nix, Homebrew,
 …) as long as `pkg-config` can resolve it:
 
@@ -49,12 +50,11 @@ mise install
 mise run build
 ```
 
-Common tasks: `mise run test`, `mise run test:spike`, `mise run lint`,
+Common tasks: `mise run test`, `mise run lint`,
 `mise run run -- config show`.
 
-OpenSSL (from nix, Homebrew, or apt) must be resolvable via `pkg-config`;
-the workspace's build scripts handle the embedded database's linker quirks
-(see `crates/graph-store/SPIKE.md`). Plain `cargo build` works.
+OpenSSL (from nix, Homebrew, or apt) must be resolvable via `pkg-config`.
+Plain `cargo build` works.
 
 ## Documentation
 

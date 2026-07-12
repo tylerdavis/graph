@@ -50,8 +50,8 @@ prompt: |
   4. prompt-surface — planner-facing field names (toolName, queryToAnswer)
      stay camelCase and aligned with graph-core/src/pipeline/prompts.rs;
      tool descriptions and exemplars are routing signals.
-  5. store-access — Store access goes through Arc<dyn Store>; only
-     `graph db query` and CypherExecutor may touch GraphStore concretely.
+  5. store-access — Store access goes through Arc<dyn Store>; commands
+     never touch a concrete backend type directly.
   6. mcp-shutdown — MCP child processes shut down via McpManager::shutdown()
      before the tokio runtime drops.
   7. docs-parity — behavior changes in crates/ ship with matching docs/

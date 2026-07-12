@@ -17,7 +17,7 @@ Config is layered TOML — later wins, tables deep-merge:
 
 ```toml
 [settings]
-data_dir = "~/.local/share/graph"   # embedded DB location
+data_dir = "~/.local/share/graph"   # where threads and the shape cache live
 max_agent_iterations = 15           # agent-loop tool rounds per turn
 planning_attempts = 2               # plan_and_execute replan budget
 history_limit = 20                  # conversation trimming
@@ -101,7 +101,7 @@ packs = []              # bundled tool packs to enable, e.g. ["github"]
 
 ```toml
 [storage]
-backend = "ladybug"     # default: embedded, zero-config, single-process
+backend = "file"        # default: plain files under data_dir
 # backend = "memory"    # ephemeral (CI); or GRAPH_STORAGE=memory
 ```
 

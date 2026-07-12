@@ -8,7 +8,6 @@
 # dropped it, and every target environment ships it anyway.
 [tools]
 rust = { version = "1.94", components = "rustfmt,clippy" }
-cmake = "4"
 "ubi:orhun/git-cliff" = "latest"
 
 [tasks.build]
@@ -18,10 +17,6 @@ run = "cargo build"
 [tasks.test]
 description = "Run all workspace tests"
 run = "cargo test"
-
-[tasks."test:spike"]
-description = "Run the LadybugDB spike tests"
-run = "cargo test -p graph-store --test ladybug_spike"
 
 [tasks.lint]
 description = "Check formatting and run clippy"
@@ -58,7 +53,3 @@ run = "scripts/release.sh minor"
 [tasks."release:major"]
 description = "Cut a major release"
 run = "scripts/release.sh major"
-
-[tasks.explorer]
-description = "Ladybug DB Explorer"
-run = "podman run -p 8888:8000 -v ~/.local/share/graph:/database -e LBUG_FILE=db --rm ghcr.io/ladybugdb/explorer:latest"

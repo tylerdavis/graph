@@ -423,9 +423,6 @@ impl crate::store::Store for ShapeOnlyStore {
     async fn delete_thread(&self, _: &str) -> Result<bool, crate::store::StoreError> {
         unimplemented!()
     }
-    async fn set_title(&self, _: &str, _: &str) -> Result<(), crate::store::StoreError> {
-        unimplemented!()
-    }
     async fn append_messages(
         &self,
         _: &str,

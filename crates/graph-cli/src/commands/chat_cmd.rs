@@ -12,11 +12,10 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
         bail!("chat needs an interactive terminal — use `graph ask` for scripted queries");
     }
     let runtime = Runtime::init()?;
-    let handles = runtime.store_handles()?;
-    let store = handles.store.clone();
+    let store = runtime.store()?;
     let mut thread: Option<ThreadMeta> = resolve_thread(store.as_ref(), thread).await?;
     let events: Arc<dyn graph_core::EventSink> = crate::output::make_sink(false, false);
-    let toolbox = runtime.toolbox(&handles, events.clone()).await?;
+    let toolbox = runtime.toolbox(&store, events.clone()).await?;
     let agent = runtime.agent(events, toolbox)?;
 
     let mut messages: Vec<ChatMessage> = match &thread {

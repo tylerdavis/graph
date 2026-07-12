@@ -64,12 +64,12 @@ async fn run_plan_workbench(runtime: &Runtime, name_or_path: Option<String>) -> 
         Some(arg) => Some(resolve_doc(runtime, arg)?),
         None => None,
     };
-    let handles = runtime.store_handles()?;
+    let store = runtime.store()?;
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
 
     // Plan runs report through their own sink; gated runs add a UiGate.
     let run_sink: Arc<dyn EventSink> = Arc::new(chat::ChannelSink::plan_run(tx.clone()));
-    let pipeline = runtime.pipeline(&handles, run_sink).await?;
+    let pipeline = runtime.pipeline(&store, run_sink).await?;
 
     // The draft is shared between the reducer's world (via messages), the
     // workbench tools, and the effect executor.
@@ -77,7 +77,7 @@ async fn run_plan_workbench(runtime: &Runtime, name_or_path: Option<String>) -> 
 
     // The chat agent: normal catalog + the workbench draft tools.
     let agent_sink: Arc<dyn EventSink> = Arc::new(chat::ChannelSink::agent(tx.clone()));
-    let toolbox = runtime.toolbox(&handles, agent_sink.clone()).await?;
+    let toolbox = runtime.toolbox(&store, agent_sink.clone()).await?;
     let workbench_tools = Arc::new(tools::WorkbenchTools::new(
         draft.clone(),
         pipeline.clone(),
@@ -103,7 +103,7 @@ async fn run_plan_workbench(runtime: &Runtime, name_or_path: Option<String>) -> 
         history: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         draft,
         catalog: toolbox as Arc<dyn ToolRegistry>,
-        store: handles.store.clone(),
+        store,
         plans_dir,
         tx: tx.clone(),
     });
