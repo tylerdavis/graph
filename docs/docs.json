@@ -101,5 +101,8 @@
       "source": "/automation/ci",
       "destination": "/cookbook/ci-checks"
     }
-  ]
+  ],
+  "navbar": {
+    "links": []
+  }
 }
