@@ -85,8 +85,9 @@ pub enum ChatEntry {
 pub struct ChatState {
     pub entries: Vec<ChatEntry>,
     pub input: TextArea<'static>,
-    /// Scrollback offset in lines from the bottom; 0 follows.
-    pub scroll: u16,
+    /// Scrollback offset in lines from the bottom; 0 follows. `Cell` so
+    /// the renderer can clamp it to the actual (wrapped) content height.
+    pub scroll: std::cell::Cell<u16>,
 }
 
 impl Default for ChatState {
@@ -96,7 +97,7 @@ impl Default for ChatState {
         Self {
             entries: Vec::new(),
             input,
-            scroll: 0,
+            scroll: std::cell::Cell::new(0),
         }
     }
 }
@@ -269,7 +270,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             } else {
                 app.chat.entries.push(ChatEntry::Assistant(text));
             }
-            app.chat.scroll = 0;
+            app.chat.scroll.set(0);
             Vec::new()
         }
         Msg::AgentToolStarted(name) => {
@@ -533,26 +534,18 @@ fn on_workspace_nav(app: &mut App, key: KeyEvent) -> Option<Vec<Effect>> {
             Some(Vec::new())
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            if app.ws.tab == WsTab::Run {
-                app.ws.scroll_by(false, 1);
-            } else {
-                app.ws.select_next();
-            }
+            app.ws.select_next();
             Some(Vec::new())
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            if app.ws.tab == WsTab::Run {
-                app.ws.scroll_by(true, 1);
-            } else {
-                app.ws.select_previous();
-            }
+            app.ws.select_previous();
             Some(Vec::new())
         }
-        KeyCode::PageDown | KeyCode::Char('J') => {
+        KeyCode::PageDown => {
             app.ws.scroll_by(false, 5);
             Some(Vec::new())
         }
-        KeyCode::PageUp | KeyCode::Char('K') => {
+        KeyCode::PageUp => {
             app.ws.scroll_by(true, 5);
             Some(Vec::new())
         }
@@ -634,17 +627,19 @@ fn on_chat_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
             }
             app.chat.input = TextArea::default();
             app.chat.entries.push(ChatEntry::User(message.clone()));
-            app.chat.scroll = 0;
+            app.chat.scroll.set(0);
             app.mode = Mode::Chatting;
             app.turn_in_flight = true;
             vec![Effect::RunAgentTurn { message }]
         }
-        KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.chat.scroll = app.chat.scroll.saturating_add(3);
+        // PgUp/PgDn is THE scroll binding: with chat focus it scrolls
+        // the conversation.
+        KeyCode::PageUp => {
+            app.chat.scroll.set(app.chat.scroll.get().saturating_add(5));
             Vec::new()
         }
-        KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.chat.scroll = app.chat.scroll.saturating_sub(3);
+        KeyCode::PageDown => {
+            app.chat.scroll.set(app.chat.scroll.get().saturating_sub(5));
             Vec::new()
         }
         _ => {
@@ -1232,25 +1227,25 @@ steps:
     }
 
     #[test]
-    fn scroll_keys_are_tab_aware() {
+    fn page_keys_scroll_the_focused_pane() {
         let mut app = App::new(Some(two_step_doc()));
+        // Chat focus: PgUp scrolls the conversation.
+        update(&mut app, key(KeyCode::PageUp));
+        assert_eq!(app.chat.scroll.get(), 5);
+        update(&mut app, key(KeyCode::PageDown));
+        assert_eq!(app.chat.scroll.get(), 0);
+
+        // Workspace focus, plan tab: PgDn scrolls the detail pane.
         app.focus = Focus::Workspace;
-        // Plan tab: J scrolls the detail pane down.
-        update(
-            &mut app,
-            Msg::Term(Event::Key(KeyEvent::new(
-                KeyCode::Char('J'),
-                KeyModifiers::SHIFT,
-            ))),
-        );
+        update(&mut app, key(KeyCode::PageDown));
         assert_eq!(app.ws.detail_scroll.get(), 5);
-        // Run tab: j/k scroll the transcript (offset from the bottom).
+
+        // Run tab: the same keys scroll the transcript (from the bottom).
         app.ws.tab = WsTab::Run;
-        update(&mut app, key(KeyCode::Char('k')));
-        assert_eq!(app.ws.run_scroll.get(), 1);
-        update(&mut app, key(KeyCode::Char('j')));
+        update(&mut app, key(KeyCode::PageUp));
+        assert_eq!(app.ws.run_scroll.get(), 5);
+        update(&mut app, key(KeyCode::PageDown));
         assert_eq!(app.ws.run_scroll.get(), 0);
-        assert_eq!(app.ws.selected, 0, "run-tab j/k does not move selection");
     }
 
     #[test]

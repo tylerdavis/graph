@@ -99,10 +99,22 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let height = scrollback.height as usize;
-    let bottom_offset = lines.len().saturating_sub(height);
-    let offset = bottom_offset.saturating_sub(app.chat.scroll as usize);
+    let total = lines.len();
+    let bottom_offset = total.saturating_sub(height);
+    app.chat
+        .scroll
+        .set(app.chat.scroll.get().min(bottom_offset as u16));
+    let offset = bottom_offset.saturating_sub(app.chat.scroll.get() as usize);
     let paragraph = Paragraph::new(lines).scroll((offset as u16, 0));
     frame.render_widget(paragraph, scrollback);
+    if total > height {
+        let mut state = ScrollbarState::new(bottom_offset).position(offset);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            scrollback,
+            &mut state,
+        );
+    }
 
     let mut input_widget = app.chat.input.clone();
     input_widget.set_block(
@@ -153,14 +165,17 @@ fn render_scrolled(
     scroll: &std::cell::Cell<u16>,
 ) {
     let viewport = area.height.saturating_sub(2) as usize;
-    let total = lines.len();
+    let inner_width = area.width.saturating_sub(2);
+    let widget = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+    // Post-wrap height: long JSON lines wrap to multiple rows, so the raw
+    // line count would under-scroll and strand the tail off-screen.
+    let total = widget.line_count(inner_width);
     let max_scroll = total.saturating_sub(viewport) as u16;
     scroll.set(scroll.get().min(max_scroll));
     let offset = scroll.get();
-    let widget = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false })
-        .scroll((offset, 0));
+    let widget = widget.scroll((offset, 0));
     frame.render_widget(widget, area);
     if total > viewport {
         let mut state = ScrollbarState::new(max_scroll as usize).position(offset as usize);
@@ -336,7 +351,7 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
         lines,
         Block::bordered()
             .border_style(DIM)
-            .title(" detail ─ J/K scroll "),
+            .title(" detail ─ PgUp/PgDn scroll "),
         detail,
         &ws.detail_scroll,
     );
@@ -397,7 +412,7 @@ fn draw_context_tab(frame: &mut Frame, ws: &PlanWorkspace, area: Rect) {
         lines,
         Block::bordered()
             .border_style(DIM)
-            .title(" detail ─ J/K scroll "),
+            .title(" detail ─ PgUp/PgDn scroll "),
         detail,
         &ws.detail_scroll,
     );
@@ -435,7 +450,7 @@ fn draw_run_tab(frame: &mut Frame, ws: &PlanWorkspace, area: Rect) {
         .block(
             Block::bordered()
                 .border_style(DIM)
-                .title(" run ─ j/k scroll "),
+                .title(" run ─ PgUp/PgDn scroll "),
         )
         .scroll((offset, 0));
     frame.render_widget(widget, area);
@@ -550,7 +565,7 @@ fn draw_debug_panel(
     push_json_section(&mut lines, "rendered input", &prompt.input);
 
     // Scope: every root in full, pretty-printed — input first, step ids by
-    // number, then the body pseudo-roots. The panel scrolls (J/K).
+    // number, then the body pseudo-roots. The panel scrolls (PgUp/PgDn).
     lines.push(Line::styled("scope:", DIM));
     lines.push(Line::default());
     let mut roots: Vec<&String> = prompt.scope.keys().collect();
@@ -651,9 +666,11 @@ fn draw_help(frame: &mut Frame) {
         ("Tab", "toggle focus chat ↔ workspace"),
         ("1 / 2 / 3", "workspace tab (Alt+n from anywhere)"),
         ("Enter", "send chat message (Alt+Enter for newline)"),
-        ("Ctrl+↑ / Ctrl+↓", "scroll chat"),
-        ("j / k", "select step or tool (run tab: scroll)"),
-        ("J / K, PgUp / PgDn", "scroll the detail / debug / run pane"),
+        ("j / k", "select step or tool"),
+        (
+            "PgUp / PgDn",
+            "scroll the focused pane (chat · detail · debug · run)",
+        ),
         ("b", "toggle breakpoint on the selected step"),
         ("v", "validate the plan"),
         ("r", "run the plan"),
