@@ -65,6 +65,12 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
     match effect {
         Effect::RunAgentTurn { message } => {
             tokio::spawn(async move {
+                tracing::debug!(
+                    target: "workbench",
+                    "agent turn started ({} chars)",
+                    message.len()
+                );
+                let turn_started = std::time::Instant::now();
                 // Rebuild the agent with the draft baked into the system
                 // prompt (fields are Arcs and small strings — cheap).
                 let agent = Agent {
@@ -86,6 +92,12 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                     // Drop the failed turn's messages so a retry starts clean.
                     history.truncate(pre_len);
                 }
+                tracing::debug!(
+                    target: "workbench",
+                    "agent turn took {:.1}s ({} messages in history)",
+                    turn_started.elapsed().as_secs_f64(),
+                    history.len()
+                );
                 let _ = ctx.tx.send(Msg::TurnFinished(
                     result.map(|_| ()).map_err(|e| e.to_string()),
                 ));
@@ -109,10 +121,22 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                     pipeline = pipeline
                         .with_gate(Arc::new(UiGate::new(ctx.tx.clone(), ctx.debug.clone())));
                 }
+                tracing::debug!(
+                    target: "workbench",
+                    "run started: '{}' ({} steps, gated={gated})",
+                    doc.identifier,
+                    doc.steps.len()
+                );
+                let run_started = std::time::Instant::now();
                 let query = format!("Run the '{}' plan", doc.name);
                 let result = pipeline
                     .run_explicit(&query, doc.steps.clone(), doc.finish(), Some(input))
                     .await;
+                tracing::debug!(
+                    target: "workbench",
+                    "run took {:.1}s",
+                    run_started.elapsed().as_secs_f64()
+                );
                 let msg = super::runner::report(result).finished_msg();
                 let _ = ctx.tx.send(msg);
             });

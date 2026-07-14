@@ -31,6 +31,21 @@ pub enum UiDecision {
     Abort,
 }
 
+impl UiDecision {
+    /// Variant name for the debug log — never the payload (an injected
+    /// result can be arbitrarily large).
+    fn label(&self) -> &'static str {
+        match self {
+            UiDecision::Proceed {
+                continue_mode: true,
+            } => "proceed (continue mode)",
+            UiDecision::Proceed { .. } => "proceed (step)",
+            UiDecision::Skip { .. } => "skip / inject",
+            UiDecision::Abort => "abort",
+        }
+    }
+}
+
 #[derive(Default)]
 struct DebugState {
     breakpoints: HashSet<String>,
@@ -46,6 +61,9 @@ pub struct DebugControls(std::sync::Mutex<DebugState>);
 
 impl DebugControls {
     pub fn set_breakpoints(&self, breakpoints: HashSet<String>) {
+        let mut sorted: Vec<&String> = breakpoints.iter().collect();
+        sorted.sort();
+        tracing::debug!(target: "workbench", "breakpoints set: {sorted:?}");
         self.0.lock().unwrap().breakpoints = breakpoints;
     }
 
@@ -58,6 +76,12 @@ impl DebugControls {
     pub fn arm(&self) {
         let mut state = self.0.lock().unwrap();
         state.continue_mode = !state.breakpoints.is_empty();
+        tracing::debug!(
+            target: "workbench",
+            "debugger armed: {} breakpoint(s), continue_mode={}",
+            state.breakpoints.len(),
+            state.continue_mode
+        );
     }
 
     /// True → the gate proceeds without asking: continue mode is on and no
@@ -156,7 +180,7 @@ pub fn report(result: Result<PipelineOutcome, PipelineError>) -> RunReport {
     }
 }
 
-fn truncate(text: &str, max: usize) -> String {
+pub(super) fn truncate(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         text.to_string()
     } else {
@@ -193,9 +217,15 @@ impl UiGate {
         } else {
             format!("{}→{}", ctx.call_stack.join("→"), ctx.path)
         };
+        let asked_at = std::time::Instant::now();
+        tracing::debug!(
+            target: "workbench",
+            "gate pause at {path} ({}) — waiting for a decision",
+            ctx.tool_name
+        );
         let sent = self.tx.send(Msg::GateAsk {
             kind,
-            path,
+            path: path.clone(),
             tool: ctx.tool_name.to_string(),
             input: ctx.rendered_input.clone(),
             call_stack: ctx.call_stack.to_vec(),
@@ -204,9 +234,16 @@ impl UiGate {
         });
         if sent.is_err() {
             // UI is gone — end the run rather than free-running.
+            tracing::debug!(target: "workbench", "gate at {path}: UI channel closed — aborting");
             return UiDecision::Abort;
         }
         let decision = receiver.await.unwrap_or(UiDecision::Abort);
+        tracing::debug!(
+            target: "workbench",
+            "gate decision at {path}: {} (waited {:.1}s)",
+            decision.label(),
+            asked_at.elapsed().as_secs_f64()
+        );
         if let UiDecision::Proceed { continue_mode } = &decision {
             self.controls.set_continue(*continue_mode);
         }
@@ -218,6 +255,12 @@ impl UiGate {
 impl ExecutionGate for UiGate {
     async fn before_tool(&self, ctx: GateContext<'_>) -> GateDecision {
         if self.controls.auto_proceed(ctx.path, ctx.call_stack) {
+            tracing::debug!(
+                target: "workbench",
+                "gate auto-proceed at {} ({}) — continue mode, no breakpoint",
+                ctx.path,
+                ctx.tool_name
+            );
             return GateDecision::Proceed;
         }
         match self.ask(GateKind::BeforeCall, &ctx).await {

@@ -75,6 +75,20 @@ pub enum Mode {
     Editing(Box<EditorState>),
 }
 
+impl Mode {
+    /// Short name for the debug log's mode-transition lines.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Mode::Idle => "idle",
+            Mode::Chatting => "chatting",
+            Mode::Running { gated: false } => "running",
+            Mode::Running { gated: true } => "debug-running",
+            Mode::Paused(_) => "paused",
+            Mode::Editing(_) => "editing",
+        }
+    }
+}
+
 pub enum ChatEntry {
     User(String),
     Assistant(String),
@@ -124,6 +138,8 @@ pub struct App {
     /// The help overlay — independent of `mode`, so it works while paused
     /// without touching the parked gate reply. Any key closes it.
     pub show_help: bool,
+    /// Where the debug log is being written, shown in the help overlay.
+    pub log_path: Option<std::path::PathBuf>,
     pub should_quit: bool,
 }
 
@@ -145,6 +161,7 @@ impl App {
             tick: 0,
             in_flight: None,
             show_help: false,
+            log_path: None,
             should_quit: false,
         }
     }
@@ -235,6 +252,91 @@ pub enum Msg {
     Saved(Result<String, String>),
 }
 
+impl Msg {
+    /// A one-line summary for the debug log, with the level it should log
+    /// at: TRACE for high-frequency noise (keys, stream deltas), DEBUG for
+    /// everything meaningful. None for the pure animation heartbeat.
+    pub fn log_line(&self) -> Option<(tracing::Level, String)> {
+        use tracing::Level;
+        let line = match self {
+            Msg::Tick => return None,
+            Msg::Term(Event::Key(key)) => {
+                return Some((
+                    Level::TRACE,
+                    format!("key {:?} {:?}", key.modifiers, key.code),
+                ))
+            }
+            Msg::Term(event) => return Some((Level::TRACE, format!("term event {event:?}"))),
+            Msg::AgentDelta(text) => {
+                return Some((Level::TRACE, format!("agent delta ({} chars)", text.len())))
+            }
+            Msg::SolverDelta(text) => {
+                return Some((Level::TRACE, format!("solver delta ({} chars)", text.len())))
+            }
+            Msg::AgentToolStarted(name) => format!("agent tool started: {name}"),
+            Msg::AgentToolFinished { name, is_error } => {
+                format!(
+                    "agent tool finished: {name}{}",
+                    if *is_error { " (error)" } else { "" }
+                )
+            }
+            Msg::TurnFinished(result) => match result {
+                Ok(()) => "agent turn finished".to_string(),
+                Err(error) => format!("agent turn failed: {error}"),
+            },
+            Msg::DraftReplaced { doc, dirty } => format!(
+                "draft replaced: '{}' ({} steps, dirty={dirty})",
+                doc.identifier,
+                doc.steps.len()
+            ),
+            Msg::RunStarted { gated, breakpoints } => {
+                format!("agent run started (gated={gated}, breakpoints={breakpoints:?})")
+            }
+            Msg::Planning => "planning…".to_string(),
+            Msg::Synthesizing => "synthesizing…".to_string(),
+            Msg::StepStarted { path, tool, .. } => format!("step started: {path} {tool}"),
+            Msg::StepFinished {
+                path,
+                result,
+                is_error,
+                ..
+            } => format!(
+                "step finished: {path}{} ({} result bytes)",
+                if *is_error { " (error)" } else { "" },
+                result.to_string().len()
+            ),
+            Msg::GateAsk {
+                kind,
+                path,
+                tool,
+                call_stack,
+                ..
+            } => format!(
+                "gate ask: {} at {path} ({tool}), call-stack depth {}",
+                match kind {
+                    GateKind::BeforeCall => "before-call",
+                    GateKind::OnError { .. } => "on-error",
+                },
+                call_stack.len()
+            ),
+            Msg::RunFinished {
+                headline, is_error, ..
+            } => format!("run finished (is_error={is_error}): {headline}"),
+            Msg::Validated(problems) => format!("validated: {} problem(s)", problems.len()),
+            Msg::ContextLoaded { tools, shapes } => format!(
+                "context loaded: {} tools, {} shapes",
+                tools.len(),
+                shapes.len()
+            ),
+            Msg::Saved(result) => match result {
+                Ok(path) => format!("saved to {path}"),
+                Err(error) => format!("save failed: {error}"),
+            },
+        };
+        Some((Level::DEBUG, line))
+    }
+}
+
 /// Work the reducer wants done; the executor spawns it and reports back
 /// with a `Msg`.
 #[derive(Debug, PartialEq, Eq)]
@@ -253,6 +355,21 @@ pub enum Effect {
     SyncDebug {
         breakpoints: HashSet<String>,
     },
+}
+
+impl Effect {
+    /// Short name for the debug log (details are logged by the executor).
+    pub fn label(&self) -> &'static str {
+        match self {
+            Effect::RunAgentTurn { .. } => "run-agent-turn",
+            Effect::StartRun { gated: false, .. } => "start-run",
+            Effect::StartRun { gated: true, .. } => "start-debug-run",
+            Effect::Validate => "validate",
+            Effect::LoadContext => "load-context",
+            Effect::SavePlan => "save-plan",
+            Effect::SyncDebug { .. } => "sync-debug",
+        }
+    }
 }
 
 pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
@@ -1415,6 +1532,63 @@ steps:
         }
         update(&mut app, key(KeyCode::Char('y')));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn log_lines_summarize_messages_at_the_right_level() {
+        assert!(
+            Msg::Tick.log_line().is_none(),
+            "the heartbeat is not logged"
+        );
+
+        let (level, line) = key(KeyCode::Char('n')).log_line().unwrap();
+        assert_eq!(level, tracing::Level::TRACE, "keys are trace-level noise");
+        assert!(line.contains("Char('n')"), "{line}");
+
+        let (level, line) = Msg::StepStarted {
+            path: "E3/do.2/E10".into(),
+            tool: "user__echo".into(),
+            input: json!({}),
+            top_level: false,
+        }
+        .log_line()
+        .unwrap();
+        assert_eq!(level, tracing::Level::DEBUG);
+        assert!(
+            line.contains("E3/do.2/E10") && line.contains("user__echo"),
+            "{line}"
+        );
+
+        let (msg, _receiver) = gate_ask(
+            GateKind::OnError {
+                error: json!({"error": "boom"}),
+            },
+            "E2",
+        );
+        let (level, line) = msg.log_line().unwrap();
+        assert_eq!(level, tracing::Level::DEBUG);
+        assert!(line.contains("on-error") && line.contains("E2"), "{line}");
+    }
+
+    #[test]
+    fn labels_name_modes_and_effects() {
+        assert_eq!(Mode::Idle.label(), "idle");
+        assert_eq!(Mode::Running { gated: true }.label(), "debug-running");
+        assert_eq!(
+            Effect::StartRun {
+                gated: true,
+                input: json!({})
+            }
+            .label(),
+            "start-debug-run"
+        );
+        assert_eq!(
+            Effect::SyncDebug {
+                breakpoints: HashSet::new()
+            }
+            .label(),
+            "sync-debug"
+        );
     }
 
     #[test]

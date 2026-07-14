@@ -68,6 +68,16 @@ Control-step *evaluation* is never gated — `exit`/`decide` gates (including `i
 
 The agent can drive all of this too: `workbench__run_plan` accepts `breakpoints` (top-level step ids, implies a debug run) — every pause still asks *you*.
 
+## Debug logging
+
+The workbench owns the terminal, so its diagnostics go to a log file instead of stderr: `<data_dir>/workbench.log` (append-mode across sessions; override the path with `GRAPH_WORKBENCH_LOG`). The `?` help overlay shows the active path. Tail it from another terminal to watch the workbench think:
+
+```nushell
+tail -f ~/.local/share/graph/workbench.log
+```
+
+Logging is always on. Every workbench line carries the `workbench` target, and the default filter (`warn,workbench=debug`) records the interesting events — engine messages arriving at the UI (steps, gate asks, run results), effects dispatched by the reducer, mode transitions, gate pauses with the decision taken and how long you deliberated, breakpoint syncs, agent tool invocations with durations, and agent-turn/run timings. `-v` raises the rest of the stack to info; `-vv` adds trace-level workbench noise (every keypress, stream deltas, status-line changes) — that's the level for debugging key routing; `GRAPH_LOG` (a tracing filter string) overrides the filter entirely, e.g. `GRAPH_LOG=workbench=trace`.
+
 ## Saving
 
 `Ctrl+S` writes the draft as YAML — back to the file it was loaded from, or to `<first [plans].paths dir>/<identifier>.yaml` for new drafts (it refuses to overwrite a file it didn't load). The status bar shows an `[unsaved]` marker while the draft is dirty, and quitting with unsaved changes asks first.
