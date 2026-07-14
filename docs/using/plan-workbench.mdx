@@ -70,7 +70,7 @@ The agent can drive all of this too: `workbench__run_plan` accepts `breakpoints`
 
 ## Debug logging
 
-The workbench owns the terminal, so its diagnostics go to a log file instead of stderr: `<data_dir>/workbench.log` (append-mode across sessions; override the path with `GRAPH_WORKBENCH_LOG`). The `?` help overlay shows the active path. Tail it from another terminal to watch the workbench think:
+The workbench owns the terminal, so its diagnostics go to a log file instead of stderr: `<data_dir>/workbench.log` by default, append-mode across sessions (set `[workbench].log_path` in [config](/reference/configuration#workbench), or `GRAPH_WORKBENCH_LOG` to override both). The `?` help overlay shows the active path. Tail it from another terminal to watch the workbench think:
 
 ```nushell
 tail -f ~/.local/share/graph/workbench.log

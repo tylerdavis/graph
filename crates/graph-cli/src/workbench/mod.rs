@@ -81,13 +81,10 @@ pub async fn run(command: WorkbenchCommand, verbosity: u8) -> Result<()> {
 /// output would scribble over it. Always on — the default filter keeps
 /// the workbench's own instrumentation at debug and everything else at
 /// warn; `-v` flags raise it and `GRAPH_LOG` overrides it entirely.
-/// `GRAPH_WORKBENCH_LOG` overrides the file path (default:
-/// `<data_dir>/workbench.log`, appended across sessions).
+/// The path resolves `GRAPH_WORKBENCH_LOG` → `[workbench].log_path` →
+/// `<data_dir>/workbench.log` (appended across sessions).
 fn init_debug_log(runtime: &Runtime, verbosity: u8) -> Option<std::path::PathBuf> {
-    let path = match std::env::var_os("GRAPH_WORKBENCH_LOG") {
-        Some(path) => std::path::PathBuf::from(path),
-        None => graph_config::expand_tilde(&runtime.config.settings.data_dir).join("workbench.log"),
-    };
+    let path = log_path(&runtime.config, std::env::var_os("GRAPH_WORKBENCH_LOG"));
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -110,6 +107,20 @@ fn init_debug_log(runtime: &Runtime, verbosity: u8) -> Option<std::path::PathBuf
         env!("CARGO_PKG_VERSION")
     );
     Some(path)
+}
+
+/// Env var → `[workbench].log_path` (tilde-expanded) → the data dir.
+fn log_path(
+    config: &graph_config::Config,
+    env_override: Option<std::ffi::OsString>,
+) -> std::path::PathBuf {
+    if let Some(path) = env_override {
+        return std::path::PathBuf::from(path);
+    }
+    match &config.workbench.log_path {
+        Some(path) => graph_config::expand_tilde(path),
+        None => graph_config::expand_tilde(&config.settings.data_dir).join("workbench.log"),
+    }
 }
 
 /// `workbench` is the explicit target on every workbench log line, so the
@@ -287,6 +298,29 @@ fn install_panic_hook() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_path_resolves_env_then_config_then_data_dir() {
+        let mut config = graph_config::Config::default();
+        assert!(
+            log_path(&config, None).ends_with("workbench.log"),
+            "default lands in the data dir"
+        );
+
+        config.workbench.log_path = Some("~/logs/wb.log".into());
+        let from_config = log_path(&config, None);
+        assert!(from_config.ends_with("logs/wb.log"));
+        assert!(
+            !from_config.starts_with("~"),
+            "config paths are tilde-expanded"
+        );
+
+        assert_eq!(
+            log_path(&config, Some("/tmp/env.log".into())),
+            std::path::PathBuf::from("/tmp/env.log"),
+            "the env var beats the config"
+        );
+    }
 
     #[test]
     fn default_log_filter_scales_with_verbosity() {

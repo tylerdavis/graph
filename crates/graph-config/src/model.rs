@@ -26,6 +26,18 @@ pub struct Config {
     pub storage: StorageConfig,
     #[serde(default)]
     pub user: UserConfig,
+    #[serde(default)]
+    pub workbench: WorkbenchConfig,
+}
+
+/// `graph workbench` settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct WorkbenchConfig {
+    /// Where the workbench writes its debug log (tilde-expanded). Default:
+    /// `<data_dir>/workbench.log`; the `GRAPH_WORKBENCH_LOG` env var wins
+    /// over both.
+    pub log_path: Option<PathBuf>,
 }
 
 /// Runtime-state storage. Defaults to plain files under `data_dir`, so a

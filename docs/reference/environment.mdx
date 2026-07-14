@@ -11,6 +11,7 @@ icon: "list-check"
 | `GRAPH_STORAGE` | `file` \| `memory` — overrides `[storage].backend`. Invalid values error. |
 | `GRAPH_EVENTS` | `jsonl` — stderr becomes machine-parseable JSONL events (`tool_started`, `tool_finished`, `planning`, …). `github` — a failing `plan run` additionally emits a GitHub Actions `::error::` annotation (see stream conventions below). |
 | `GRAPH_LOG` | [tracing filter](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for diagnostics on stderr (e.g. `GRAPH_LOG=debug`, `GRAPH_LOG=graph_mcp=trace`). Overrides `-v` flags. |
+| `GRAPH_WORKBENCH_LOG` | file path for the [workbench's debug log](/using/plan-workbench#debug-logging). Overrides `[workbench].log_path` and the `<data_dir>/workbench.log` default. |
 | anything referenced as `${VAR}` in config | provider keys, MCP auth, tool env — resolved at load, required |
 
 ## Exit codes

@@ -115,3 +115,12 @@ name = "Tyler"
 context = "CEO and technical architect of LaunchNotes. Primary Linear team: LaunchNotes."
 timezone = "America/Chicago"
 ```
+
+## `[workbench]`
+
+```toml
+[workbench]
+log_path = "~/logs/graph-workbench.log"   # default: <data_dir>/workbench.log
+```
+
+Where the [workbench's debug log](/using/plan-workbench#debug-logging) is written (tilde-expanded). The `GRAPH_WORKBENCH_LOG` environment variable overrides both.
