@@ -74,5 +74,6 @@ To the people whose ideas and code shaped graph's design:
 [@gjdame](https://github.com/gjdame),
 [@bryceholcomb](https://github.com/bryceholcomb),
 [@Korywon](https://github.com/Korywon),
-[@brianhasenstab](https://github.com/brianhasenstab), and
-[@ashleyhomen](https://github.com/ashleyhomen).
+[@brianhasenstab](https://github.com/brianhasenstab),
+[@ashleyhomen](https://github.com/ashleyhomen), and
+[@emichy](https://github.com/emichy).
