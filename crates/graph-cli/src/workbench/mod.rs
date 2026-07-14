@@ -6,6 +6,7 @@ mod app;
 mod chat;
 mod editor;
 mod effects;
+mod fs_tools;
 mod plan_ws;
 mod runner;
 mod tools;
@@ -56,6 +57,11 @@ to answer those prompts yourself). Pass breakpoints (top-level step ids) \
 to run freely to a step of interest. Run one plan at a time.\n\
 - workbench__save_plan: write the draft to disk when the user asks to \
 save.\n\
+- workbench__read_file / workbench__grep / workbench__glob: read-only \
+research over the project directory the workbench was started in \
+(paths outside it are rejected). Use them when the user asks about the \
+codebase or a draft needs grounding in real files — glob to find files, \
+grep to search contents, read_file for the surrounding context.\n\
 Never claim the draft changed, ran, or was saved without calling the \
 matching tool. The user can also drive everything with keybindings \
 (v validate, r run, g gated run, Ctrl+S save) — never run a plan with \
@@ -171,9 +177,14 @@ async fn run_plan_workbench(
         debug.clone(),
         tx.clone(),
     ));
+    let fs_tools = Arc::new(
+        fs_tools::FsTools::new(std::env::current_dir()?)
+            .context("failed to resolve the workbench project directory")?,
+    );
     let registry: Arc<dyn ToolRegistry> = Arc::new(CompositeRegistry::new(vec![
         toolbox.clone() as Arc<dyn ToolRegistry>,
         workbench_tools,
+        fs_tools,
     ]));
     let mut agent = runtime.agent(agent_sink, registry)?;
     agent.system_prompt.push_str(WORKBENCH_SYSTEM_PROMPT);

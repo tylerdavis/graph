@@ -24,6 +24,7 @@ The workbench needs an interactive terminal (it refuses to start otherwise); for
 - `workbench__validate_plan` — check the draft and update the plan pane's verdict ("is this valid?").
 - `workbench__run_plan` — execute the draft on request ("run it", "do a gated run"). Step activity streams to the workspace either way, and **gated runs still pause for *your* y/s/a decision on every tool call** — the agent starts the run but cannot approve its side effects.
 - `workbench__save_plan` — write the draft to disk ("save that").
+- `workbench__read_file` / `workbench__grep` / `workbench__glob` — read-only research over the project directory the workbench was started in ("what does the config loader do?", "find every caller of render_step"). Searches respect `.gitignore` and skip `.git` and binaries; paths outside the launch directory are rejected. These are workbench tools, not catalog tools: always available here, deliberately absent from the plan catalog, `graph tools list`, and `graph chat`.
 
 Every draft change shows up in the plan pane immediately and is validated automatically. Workbench chats are scratch sessions — they are not persisted as threads.
 
