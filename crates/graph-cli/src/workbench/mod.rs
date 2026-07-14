@@ -61,7 +61,7 @@ matching tool. The user can also drive everything with keybindings \
 (v validate, r run, g gated run, Ctrl+S save) — never run a plan with \
 side effects unprompted.";
 
-pub async fn run(command: WorkbenchCommand) -> Result<()> {
+pub async fn run(command: WorkbenchCommand, verbosity: u8) -> Result<()> {
     let WorkbenchCommand::Plan { name_or_path } = command;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         bail!(
@@ -70,13 +70,75 @@ pub async fn run(command: WorkbenchCommand) -> Result<()> {
         );
     }
     let runtime = Runtime::init()?;
-    let result = run_plan_workbench(&runtime, name_or_path).await;
+    let log_path = init_debug_log(&runtime, verbosity);
+    let result = run_plan_workbench(&runtime, name_or_path, log_path).await;
     // MCP child processes must shut down before the tokio runtime drops.
     runtime.shutdown().await;
     result
 }
 
-async fn run_plan_workbench(runtime: &Runtime, name_or_path: Option<String>) -> Result<()> {
+/// Route tracing to a log file: the TUI owns the terminal, so stderr
+/// output would scribble over it. Always on — the default filter keeps
+/// the workbench's own instrumentation at debug and everything else at
+/// warn; `-v` flags raise it and `GRAPH_LOG` overrides it entirely.
+/// The path resolves `GRAPH_WORKBENCH_LOG` → `[workbench].log_path` →
+/// `<data_dir>/workbench.log` (appended across sessions).
+fn init_debug_log(runtime: &Runtime, verbosity: u8) -> Option<std::path::PathBuf> {
+    let path = log_path(&runtime.config, std::env::var_os("GRAPH_WORKBENCH_LOG"));
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
+    let filter = tracing_subscriber::EnvFilter::try_from_env("GRAPH_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_log_filter(verbosity)));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::sync::Mutex::new(file))
+        .with_ansi(false)
+        .try_init()
+        .ok()?;
+    tracing::info!(
+        target: "workbench",
+        "── session started (graph {}) ──",
+        env!("CARGO_PKG_VERSION")
+    );
+    Some(path)
+}
+
+/// Env var → `[workbench].log_path` (tilde-expanded) → the data dir.
+fn log_path(
+    config: &graph_config::Config,
+    env_override: Option<std::ffi::OsString>,
+) -> std::path::PathBuf {
+    if let Some(path) = env_override {
+        return std::path::PathBuf::from(path);
+    }
+    match &config.workbench.log_path {
+        Some(path) => graph_config::expand_tilde(path),
+        None => graph_config::expand_tilde(&config.settings.data_dir).join("workbench.log"),
+    }
+}
+
+/// `workbench` is the explicit target on every workbench log line, so the
+/// instrumentation stays selectable regardless of module layout.
+fn default_log_filter(verbosity: u8) -> &'static str {
+    match verbosity {
+        0 => "warn,workbench=debug",
+        1 => "info,workbench=debug",
+        2 => "debug,workbench=trace",
+        _ => "trace",
+    }
+}
+
+async fn run_plan_workbench(
+    runtime: &Runtime,
+    name_or_path: Option<String>,
+    log_path: Option<std::path::PathBuf>,
+) -> Result<()> {
     let doc = match &name_or_path {
         Some(arg) => Some(resolve_doc(runtime, arg)?),
         None => None,
@@ -129,6 +191,7 @@ async fn run_plan_workbench(runtime: &Runtime, name_or_path: Option<String>) -> 
     });
 
     let mut app = App::new(doc);
+    app.log_path = log_path;
     effects::run_effect(app::Effect::LoadContext, &context);
     if app.ws.doc.is_some() {
         effects::run_effect(app::Effect::Validate, &context);
@@ -173,8 +236,27 @@ async fn event_loop(
             Some(msg) = rx.recv() => msg,
             _ = ticker.tick(), if app.wants_tick() => Msg::Tick,
         };
+        if let Some((level, line)) = msg.log_line() {
+            match level {
+                tracing::Level::TRACE => tracing::trace!(target: "workbench", "{line}"),
+                _ => tracing::debug!(target: "workbench", "{line}"),
+            }
+        }
+        let mode_before = app.mode.label();
+        let status_before = app.status.clone();
         for effect in app::update(app, msg) {
+            tracing::debug!(target: "workbench", "effect: {}", effect.label());
             effects::run_effect(effect, context);
+        }
+        if app.mode.label() != mode_before {
+            tracing::debug!(
+                target: "workbench",
+                "mode: {mode_before} → {}",
+                app.mode.label()
+            );
+        }
+        if app.status != status_before {
+            tracing::trace!(target: "workbench", "status: {}", app.status);
         }
         if app.should_quit {
             return Ok(());
@@ -211,4 +293,40 @@ fn install_panic_hook() {
             original(info);
         }));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_path_resolves_env_then_config_then_data_dir() {
+        let mut config = graph_config::Config::default();
+        assert!(
+            log_path(&config, None).ends_with("workbench.log"),
+            "default lands in the data dir"
+        );
+
+        config.workbench.log_path = Some("~/logs/wb.log".into());
+        let from_config = log_path(&config, None);
+        assert!(from_config.ends_with("logs/wb.log"));
+        assert!(
+            !from_config.starts_with("~"),
+            "config paths are tilde-expanded"
+        );
+
+        assert_eq!(
+            log_path(&config, Some("/tmp/env.log".into())),
+            std::path::PathBuf::from("/tmp/env.log"),
+            "the env var beats the config"
+        );
+    }
+
+    #[test]
+    fn default_log_filter_scales_with_verbosity() {
+        assert_eq!(default_log_filter(0), "warn,workbench=debug");
+        assert_eq!(default_log_filter(1), "info,workbench=debug");
+        assert_eq!(default_log_filter(2), "debug,workbench=trace");
+        assert_eq!(default_log_filter(9), "trace");
+    }
 }

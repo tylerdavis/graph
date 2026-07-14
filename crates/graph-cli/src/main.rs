@@ -12,7 +12,11 @@ use tracing_subscriber::EnvFilter;
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    init_tracing(cli.verbose);
+    // The workbench owns the terminal, so it routes tracing to a log file
+    // itself instead of stderr.
+    if !matches!(cli.command, Command::Workbench { .. }) {
+        init_tracing(cli.verbose);
+    }
 
     match cli.command {
         Command::Config { command } => commands::config_cmd::run(command),
@@ -36,7 +40,7 @@ async fn main() -> Result<()> {
         Command::Threads { command } => commands::threads_cmd::run(command).await,
         Command::Shapes { command } => commands::shapes_cmd::run(command).await,
         Command::Plan { command } => commands::plan_cmd::run(command).await,
-        Command::Workbench { command } => workbench::run(command).await,
+        Command::Workbench { command } => workbench::run(command, cli.verbose).await,
     }
 }
 

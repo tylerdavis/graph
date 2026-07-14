@@ -524,7 +524,13 @@ impl ToolRegistry for WorkbenchTools {
     }
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
-        match name {
+        tracing::debug!(
+            target: "workbench",
+            "agent invoked {name}: {}",
+            super::runner::truncate(&input.to_string(), 300)
+        );
+        let started = std::time::Instant::now();
+        let outcome = match name {
             DRAFT_PLAN => Ok(self.draft_plan(&input).await),
             GET_PLAN => Ok(self.get_plan()),
             SET_PLAN => Ok(self.set_plan(&input)),
@@ -534,7 +540,17 @@ impl ToolRegistry for WorkbenchTools {
             RUN_PLAN => Ok(self.run_plan(&input).await),
             SAVE_PLAN => Ok(self.save_plan()),
             other => Err(ToolError::Unknown(other.to_string())),
+        };
+        if let Ok(outcome) = &outcome {
+            tracing::debug!(
+                target: "workbench",
+                "{name} finished in {:.1}s (is_error={}): {}",
+                started.elapsed().as_secs_f64(),
+                outcome.is_error,
+                super::runner::truncate(&outcome.result.to_string(), 300)
+            );
         }
+        outcome
     }
 }
 

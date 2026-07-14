@@ -4,7 +4,7 @@ description: "Every command and flag"
 icon: "square-terminal"
 ---
 
-Global: `-v/-vv/-vvv` raises log verbosity (stderr); `GRAPH_LOG` accepts a tracing filter string.
+Global: `-v/-vv/-vvv` raises log verbosity (stderr); `GRAPH_LOG` accepts a tracing filter string. Exception: `graph workbench` logs to `<data_dir>/workbench.log` instead of stderr (the TUI owns the terminal; `[workbench].log_path` or `GRAPH_WORKBENCH_LOG` overrides the path) — see [Plan workbench](/using/plan-workbench#debug-logging).
 
 ## `graph ask`
 

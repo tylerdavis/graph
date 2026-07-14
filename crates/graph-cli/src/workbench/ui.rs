@@ -40,7 +40,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         draw_editor(frame, editor);
     }
     if app.show_help {
-        draw_help(frame);
+        draw_help(frame, app);
     }
 }
 
@@ -659,7 +659,7 @@ fn draw_editor(frame: &mut Frame, editor: &super::editor::EditorState) {
     frame.render_widget(Paragraph::new(footer_lines), footer);
 }
 
-fn draw_help(frame: &mut Frame) {
+fn draw_help(frame: &mut Frame, app: &App) {
     let area = centered(frame.area(), 60, 70);
     frame.render_widget(Clear, area);
     let bindings = [
@@ -691,7 +691,7 @@ fn draw_help(frame: &mut Frame) {
         ("Ctrl+S", "save the draft to the plans directory"),
         ("Ctrl+C, q", "quit (while paused: abort the run)"),
     ];
-    let lines: Vec<Line> = bindings
+    let mut lines: Vec<Line> = bindings
         .iter()
         .map(|(keys, what)| {
             Line::from(vec![
@@ -700,6 +700,10 @@ fn draw_help(frame: &mut Frame) {
             ])
         })
         .collect();
+    if let Some(path) = &app.log_path {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(format!("debug log: {}", path.display()), DIM));
+    }
     let widget = Paragraph::new(lines).block(
         Block::bordered()
             .border_style(ACCENT)
