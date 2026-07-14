@@ -28,7 +28,7 @@ async-trait.workspace = true
 futures.workspace = true
 # TUI stack for `graph workbench` — crossterm pinned to reedline's 0.28 so
 # the lockfile carries exactly one copy.
-ratatui = "0.29"
+ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 tui-textarea = "0.7"
 
