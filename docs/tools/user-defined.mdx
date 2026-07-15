@@ -48,7 +48,7 @@ prompt: |
   Summarize into a single-sentence gist and exactly three keywords:
 
   {{input.text}}
-role: chat                   # chat | planner | solver | repair (model role to run under)
+model: chat                  # a role name (chat, solver, …) or a [models.named] entry
 output_schema:               # optional → enforced structured output
   type: object
   required: [gist, keywords]
@@ -57,7 +57,7 @@ output_schema:               # optional → enforced structured output
     keywords: { type: array, items: { type: string } }
 ```
 
-With an `output_schema`, the result is validated JSON; without one, `{"text": …}`. Useful as a cheap sub-task inside plans — classify, extract, reword — with the model role controlling cost.
+With an `output_schema`, the result is validated JSON; without one, `{"text": …}`. Useful as a cheap sub-task inside plans — classify, extract, reword — with `model` controlling cost: a [role name](/reference/configuration#models--per-role-assignment) (`chat` default, with the usual fallback to `default`) or a [named model](/reference/configuration#modelsnamed--named-models) like `nano`. An unknown name fails the call with the configured names listed.
 
 ## Built-in packs
 

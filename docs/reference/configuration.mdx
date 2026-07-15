@@ -65,6 +65,21 @@ repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
 
 A common cost setup: strong model for `chat`/`planner`, fast model for `solver`/`repair`.
 
+## `[models.named]` — named models
+
+Beyond the fixed roles, any number of **named models** — referenceable wherever a model name is accepted: a [prompt tool](/tools/user-defined)'s `model` field, or [`builtin__infer`](/tools/builtins#builtin-infer)'s `model` input.
+
+```toml
+[models.named.nano]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+description = "fast and cheap; small self-contained tasks like per-item map bodies"
+```
+
+The `description` is a **planner-facing routing signal**: when any named models are configured, `builtin__infer`'s catalog schema advertises them (name, description, and guidance to prefer the smallest adequate model), so planner-authored plans route small chunks of work — per-item [map bodies](/plans/iteration#per-item-inference) especially — to cheap models on their own. Write descriptions for that audience.
+
+Names may not shadow the role names above (config load fails); role names themselves also resolve wherever a model name is accepted, with their usual fallback to `default`. An unknown name fails the call, listing what is configured — never a silent fallback.
+
 ## `[mcp.*]`
 
 See [MCP servers](/tools/mcp-servers) for full detail.
