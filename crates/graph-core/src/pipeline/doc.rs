@@ -43,8 +43,8 @@ pub struct PlanDoc {
 pub enum DocError {
     #[error("{path}: {message}")]
     Invalid { path: String, message: String },
-    #[error("duplicate plan identifier '{0}'")]
-    Duplicate(String),
+    #[error("{path}: duplicate plan identifier '{identifier}' — the earlier file wins")]
+    Duplicate { path: String, identifier: String },
     #[error("io error reading {path}: {source}")]
     Io {
         path: String,
@@ -52,19 +52,63 @@ pub enum DocError {
     },
 }
 
+impl DocError {
+    /// The file (or directory) the error is about.
+    pub fn path(&self) -> &str {
+        match self {
+            DocError::Invalid { path, .. }
+            | DocError::Duplicate { path, .. }
+            | DocError::Io { path, .. } => path,
+        }
+    }
+}
+
+/// The plan catalog: every document that loaded, plus one error per file
+/// that didn't. A broken file never takes the catalog down — callers
+/// surface `skipped` as diagnostics.
+#[derive(Debug, Default)]
+pub struct LoadedPlans {
+    pub docs: Vec<PlanDoc>,
+    pub skipped: Vec<DocError>,
+}
+
+impl LoadedPlans {
+    /// Why a plan with this identifier is absent from `docs`, if a skipped
+    /// file's stem matches it (plan files are conventionally named after
+    /// their identifier).
+    pub fn skip_reason(&self, identifier: &str) -> Option<&DocError> {
+        self.skipped.iter().find(|error| {
+            Path::new(error.path())
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                == Some(identifier)
+        })
+    }
+}
+
 /// Load every `*.yaml`/`*.yml` under the given directories. Missing
-/// directories are skipped; malformed documents are errors.
-pub fn load_plan_docs(dirs: &[PathBuf]) -> Result<Vec<PlanDoc>, DocError> {
-    let mut docs: Vec<PlanDoc> = Vec::new();
+/// directories are skipped; files that fail to read, parse, or validate
+/// (and later duplicates of an already-loaded identifier) are reported in
+/// `skipped` instead of failing the whole catalog. Files load in sorted
+/// order per directory, directories in the order given — so the first
+/// definition of an identifier wins deterministically.
+pub fn load_plan_docs(dirs: &[PathBuf]) -> LoadedPlans {
+    let mut loaded = LoadedPlans::default();
     for dir in dirs {
         if !dir.is_dir() {
             continue;
         }
-        let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
-            .map_err(|e| DocError::Io {
-                path: dir.display().to_string(),
-                source: e,
-            })?
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                loaded.skipped.push(DocError::Io {
+                    path: dir.display().to_string(),
+                    source: e,
+                });
+                continue;
+            }
+        };
+        let mut paths: Vec<PathBuf> = entries
             .filter_map(|entry| entry.ok().map(|e| e.path()))
             .filter(|path| {
                 matches!(
@@ -73,16 +117,21 @@ pub fn load_plan_docs(dirs: &[PathBuf]) -> Result<Vec<PlanDoc>, DocError> {
                 )
             })
             .collect();
-        entries.sort();
-        for path in entries {
-            let doc = load_plan_doc(&path)?;
-            if docs.iter().any(|d| d.identifier == doc.identifier) {
-                return Err(DocError::Duplicate(doc.identifier));
+        paths.sort();
+        for path in paths {
+            match load_plan_doc(&path) {
+                Ok(doc) if loaded.docs.iter().any(|d| d.identifier == doc.identifier) => {
+                    loaded.skipped.push(DocError::Duplicate {
+                        path: path.display().to_string(),
+                        identifier: doc.identifier,
+                    });
+                }
+                Ok(doc) => loaded.docs.push(doc),
+                Err(error) => loaded.skipped.push(error),
             }
-            docs.push(doc);
         }
     }
-    Ok(docs)
+    loaded
 }
 
 pub fn load_plan_doc(path: &Path) -> Result<PlanDoc, DocError> {
@@ -325,9 +374,10 @@ solver:
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sprint.yaml");
         std::fs::write(&path, DOC).unwrap();
-        let docs = load_plan_docs(&[dir.path().to_path_buf()]).unwrap();
-        assert_eq!(docs.len(), 1);
-        let doc = &docs[0];
+        let loaded = load_plan_docs(&[dir.path().to_path_buf()]);
+        assert_eq!(loaded.docs.len(), 1);
+        assert!(loaded.skipped.is_empty());
+        let doc = &loaded.docs[0];
         assert_eq!(doc.identifier, "sprint_analysis");
         assert_eq!(doc.steps[1].tool_name, "linear__list_issues");
         assert!(doc.tool_description().contains("how is my sprint going"));
@@ -398,11 +448,41 @@ solver:
     }
 
     #[test]
-    fn duplicate_identifiers_error() {
+    fn later_duplicate_identifiers_are_skipped() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.yaml"), DOC).unwrap();
         std::fs::write(dir.path().join("b.yaml"), DOC).unwrap();
-        let err = load_plan_docs(&[dir.path().to_path_buf()]).unwrap_err();
-        assert!(matches!(err, DocError::Duplicate(_)));
+        let loaded = load_plan_docs(&[dir.path().to_path_buf()]);
+        // Sorted order: a.yaml wins, b.yaml is reported.
+        assert_eq!(loaded.docs.len(), 1);
+        assert_eq!(
+            loaded.docs[0].path.as_deref(),
+            Some(dir.path().join("a.yaml").as_path())
+        );
+        assert!(
+            matches!(&loaded.skipped[..], [DocError::Duplicate { path, .. }] if path.ends_with("b.yaml"))
+        );
+    }
+
+    #[test]
+    fn broken_files_are_skipped_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("good.yaml"), DOC).unwrap();
+        std::fs::write(dir.path().join("bad.yaml"), "steps: {").unwrap();
+        std::fs::write(
+            dir.path().join("invalid.yaml"),
+            DOC.replace("{{E0.values.0.id}}", "{{E5.values.0.id}}")
+                .replace("sprint_analysis", "forward_ref"),
+        )
+        .unwrap();
+        let loaded = load_plan_docs(&[dir.path().to_path_buf()]);
+        assert_eq!(loaded.docs.len(), 1);
+        assert_eq!(loaded.docs[0].identifier, "sprint_analysis");
+        assert_eq!(loaded.skipped.len(), 2);
+        // skip_reason matches a skipped file's stem to the identifier the
+        // caller asked for.
+        let reason = loaded.skip_reason("invalid").unwrap();
+        assert!(reason.to_string().contains("E5"), "{reason}");
+        assert!(loaded.skip_reason("sprint_analysis").is_none());
     }
 }
