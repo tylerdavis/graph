@@ -340,8 +340,14 @@ impl WorkbenchTools {
         if let Err(problems) = self.pipeline.validate_plan(&doc.steps) {
             return error_outcome(&format!("invalid plan: {}", problems.join("; ")));
         }
-        // Keep the on-disk identity of the draft being edited.
-        doc.path = self.current().and_then(|prior| prior.path);
+        // Keep the on-disk identity of the draft being edited — but only
+        // while it IS the same plan. If the yaml changes the identifier,
+        // this is a different plan now; carrying the old file's path
+        // forward would make the next save overwrite that file.
+        doc.path = self
+            .current()
+            .filter(|prior| prior.identifier == doc.identifier)
+            .and_then(|prior| prior.path);
         let summary = json!({"ok": true, "identifier": doc.identifier, "steps": doc.steps.len()});
         self.publish(doc, true);
         ToolOutcome {
@@ -689,6 +695,55 @@ steps:
         assert!(!outcome.is_error, "{:?}", outcome.result);
         assert!(dir.path().join("demo.yaml").exists());
         assert!(matches!(rx.try_recv().unwrap(), Msg::Saved(Ok(_))));
+    }
+
+    #[test]
+    fn set_plan_keeps_the_loaded_path_only_for_the_same_plan() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut loaded = demo_doc();
+        loaded.path = Some(PathBuf::from("/plans/demo.yaml"));
+        let draft = Arc::new(Mutex::new(Some(loaded)));
+        let tools = WorkbenchTools::new(
+            draft.clone(),
+            test_pipeline(vec![]),
+            None,
+            Arc::new(DebugControls::default()),
+            tx,
+        );
+
+        // Same identifier: a surgical edit keeps the on-disk identity.
+        let same = serde_yaml::to_string(&demo_doc()).unwrap();
+        assert!(!tools.set_plan(&json!({ "yaml": same })).is_error);
+        assert_eq!(
+            draft.lock().unwrap().as_ref().unwrap().path,
+            Some(PathBuf::from("/plans/demo.yaml"))
+        );
+
+        // Different identifier: this is a different plan now — carrying
+        // the path forward would make the next save overwrite demo.yaml.
+        let mut other = demo_doc();
+        other.identifier = "other_plan".to_string();
+        let other = serde_yaml::to_string(&other).unwrap();
+        assert!(!tools.set_plan(&json!({ "yaml": other })).is_error);
+        assert_eq!(draft.lock().unwrap().as_ref().unwrap().path, None);
+    }
+
+    #[test]
+    fn save_refuses_to_overwrite_a_file_holding_another_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("demo.yaml");
+        std::fs::write(&path, serde_yaml::to_string(&demo_doc()).unwrap()).unwrap();
+
+        // A draft whose identity drifted from the file its path points at
+        // (the pre-fix bug state) must not clobber that file on save.
+        let mut drifted = demo_doc();
+        drifted.identifier = "other_plan".to_string();
+        drifted.path = Some(path.clone());
+        let draft = Mutex::new(Some(drifted));
+        let error = super::super::effects::save_draft(&draft, Some(dir.path())).unwrap_err();
+        assert!(error.contains("refusing to overwrite"), "{error}");
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(on_disk.contains("identifier: demo"), "file was clobbered");
     }
 
     #[test]

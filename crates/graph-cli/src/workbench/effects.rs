@@ -192,7 +192,22 @@ pub fn save_draft(
         return Err("no draft".to_string());
     };
     let path = match &doc.path {
-        Some(path) => path.clone(),
+        Some(path) => {
+            // The path is the file the draft was loaded from. Never write
+            // over a file that holds a different plan — the draft's
+            // identity must match the file's.
+            if let Some(existing) = on_disk_identifier(path) {
+                if existing != doc.identifier {
+                    return Err(format!(
+                        "{} holds plan '{}', not '{}' — refusing to overwrite it",
+                        path.display(),
+                        existing,
+                        doc.identifier
+                    ));
+                }
+            }
+            path.clone()
+        }
         None => {
             let dir = plans_dir
                 .map(|p| p.to_path_buf())
@@ -214,6 +229,15 @@ pub fn save_draft(
     std::fs::write(&path, yaml).map_err(|e| e.to_string())?;
     doc.path = Some(path.clone());
     Ok(path.display().to_string())
+}
+
+/// The `identifier` of the plan currently in a file, if it can be read
+/// and parsed at all — unreadable/garbled files return None and the save
+/// proceeds (the write can't lose a plan that isn't there).
+fn on_disk_identifier(path: &std::path::Path) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let value: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
+    Some(value.get("identifier")?.as_str()?.to_string())
 }
 
 #[cfg(test)]
