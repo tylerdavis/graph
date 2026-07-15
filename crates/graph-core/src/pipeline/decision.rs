@@ -38,7 +38,7 @@ pub struct DecideSpec {
 
 /// The decide step as described to the planner.
 pub fn decide_tool_def() -> crate::tools::ToolDef {
-    let branch_schema = body_schema();
+    let branch_schema = body_schema(true);
     crate::tools::ToolDef {
         name: DECIDE_TOOL.to_string(),
         description: "Fork the plan on a condition: run `then` when it holds, otherwise \
@@ -47,10 +47,11 @@ pub fn decide_tool_def() -> crate::tools::ToolDef {
                       vs. create a new one. Gate it with exactly one of `if` (a logical \
                       comparison) or `infer` (a yes/no question judged against prior \
                       results). A branch is a single tool call or a list of steps; \
-                      branches may not contain `exit`, `decide`, `map`, or `reduce` — \
-                      call a plan (plan__*) for nested control flow. Later steps \
-                      reference this step's id: {{Ex.result}} is the chosen branch's \
-                      output, {{Ex.branch}} which side ran."
+                      branches may contain `exit` steps (a fired exit ends the WHOLE \
+                      plan) but not `decide`, `map`, or `reduce` — call a plan \
+                      (plan__*) for nested control flow. Later steps reference this \
+                      step's id: {{Ex.result}} is the chosen branch's output, \
+                      {{Ex.branch}} which side ran."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -121,10 +122,20 @@ pub fn validate_decide_input(
         &[],
         all_plan_ids,
         step_id,
+        true,
         problems,
     );
     if let Some(else_) = &spec.else_ {
-        validate_body("else", else_, seen, &[], all_plan_ids, step_id, problems);
+        validate_body(
+            "else",
+            else_,
+            seen,
+            &[],
+            all_plan_ids,
+            step_id,
+            true,
+            problems,
+        );
     }
 }
 
@@ -234,6 +245,8 @@ impl Pipeline {
                     BodyFail::Aborted => ExecutionEnd::Aborted {
                         step: step.id.clone(),
                     },
+                    // Not a failure: an exit in the branch ends the plan.
+                    BodyFail::Exited(exit) => ExecutionEnd::Exited(exit),
                 });
             }
         };
@@ -264,12 +277,27 @@ mod tests {
     #[test]
     fn validation_catches_gate_arity_and_nested_control() {
         let input: Map<String, Value> = serde_json::from_value(json!({
-            "then": {"toolName": "exit", "input": {}},
+            "then": {"toolName": "map", "input": {}},
         }))
         .unwrap();
         let mut problems = Vec::new();
         validate_decide_input(&input, &["input"], &["E0"], "E0", &mut problems);
         assert!(problems.iter().any(|p| p.contains("`if` or `infer`")));
         assert!(problems.iter().any(|p| p.contains("cannot nest")));
+    }
+
+    #[test]
+    fn branches_may_contain_exit() {
+        let input: Map<String, Value> = serde_json::from_value(json!({
+            "if": {"value": "{{input.n}}", "op": "gt", "to": 0},
+            "then": {"toolName": "exit", "input": {"status": "success", "message": "done"}},
+            "else": [
+                {"id": "bail", "toolName": "exit", "input": {"status": "error", "message": "no"}},
+            ],
+        }))
+        .unwrap();
+        let mut problems = Vec::new();
+        validate_decide_input(&input, &["input"], &["E0"], "E0", &mut problems);
+        assert!(problems.is_empty(), "{problems:?}");
     }
 }

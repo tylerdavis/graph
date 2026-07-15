@@ -73,7 +73,7 @@ pub fn map_tool_def() -> crate::tools::ToolDef {
             "required": ["over", "do"],
             "properties": {
                 "over": {"description": "The list to iterate — usually a template like {{E0.issues}} that resolves to an array."},
-                "do": body_schema(),
+                "do": body_schema(false),
                 "concurrency": {"type": "integer", "minimum": 1, "description": "Maximum items in flight; 1 (default) runs items one at a time."}
             }
         }),
@@ -102,7 +102,7 @@ pub fn reduce_tool_def() -> crate::tools::ToolDef {
             "required": ["over", "do"],
             "properties": {
                 "over": {"description": "The list to fold — usually a template like {{E1.results}} that resolves to an array."},
-                "do": body_schema(),
+                "do": body_schema(false),
                 "initial": {"description": "Starting accumulator value (any JSON; may use templates). Defaults to null."}
             }
         }),
@@ -142,6 +142,7 @@ pub fn validate_map_input(
         &pseudo,
         all_plan_ids,
         step_id,
+        false,
         problems,
     );
     if template_roots(&spec.do_).iter().any(|r| r == "accumulator") {
@@ -176,6 +177,7 @@ pub fn validate_reduce_input(
         &pseudo,
         all_plan_ids,
         step_id,
+        false,
         problems,
     );
 }
@@ -348,6 +350,10 @@ impl Pipeline {
                 BodyFail::Aborted => ExecutionEnd::Aborted {
                     step: step.id.clone(),
                 },
+                // Validation forbids exit in iteration bodies; defensive.
+                BodyFail::Exited(_) => {
+                    failed("`exit` fired inside a map body — not supported".to_string())
+                }
             });
         }
         self.events
@@ -439,6 +445,10 @@ impl Pipeline {
                         BodyFail::Aborted => ExecutionEnd::Aborted {
                             step: step.id.clone(),
                         },
+                        // Validation forbids exit in iteration bodies; defensive.
+                        BodyFail::Exited(_) => {
+                            failed("`exit` fired inside a reduce body — not supported".to_string())
+                        }
                     });
                 }
             }
