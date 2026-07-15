@@ -1,12 +1,15 @@
 # github pack: unified diff between two refs, scoped and truncated.
 # `paths` and `exclude` are space-separated lists; pass "." and "" when
-# unscoped. Truncation (head) is intentional, so no pipefail here — refs are
-# expected to be validated by an earlier step (e.g. git_changed_files).
+# unscoped. The diff lands in a temp file first, so truncation is detected
+# and marked in the output — and an unresolvable ref fails the step loudly
+# instead of yielding an empty diff that downstream gates would misread as
+# "nothing changed".
 name: git_diff
 description: >
   Unified diff between two git refs (merge-base three-dot diff), optionally
   scoped to paths, with excludes, truncated to a byte budget for LLM
-  consumption.
+  consumption. A truncated diff ends with a "[diff truncated: showing X of
+  Y bytes]" marker line; its absence means the diff is complete.
 kind: exec
 command: bash
 args:
@@ -16,7 +19,14 @@ args:
     spec=()
     for p in $paths; do spec+=("$p"); done
     for e in $exclude; do spec+=(":(exclude)$e"); done
-    git diff "$base...$head" -- "${spec[@]}" | head -c "$max"
+    tmp=$(mktemp)
+    trap 'rm -f "$tmp"' EXIT
+    git diff "$base...$head" -- "${spec[@]}" > "$tmp"
+    total=$(wc -c < "$tmp" | tr -d ' ')
+    head -c "$max" "$tmp"
+    if [ "$total" -gt "$max" ]; then
+      printf '\n\n[diff truncated: showing %s of %s bytes]\n' "$max" "$total"
+    fi
   - git_diff
   - "{{input.base}}"
   - "{{input.head}}"
@@ -34,4 +44,4 @@ input_schema:
     head:      { type: string, description: Head ref or commit sha }
     paths:     { type: string, description: Space-separated pathspecs; "." for everything }
     exclude:   { type: string, description: Space-separated paths to exclude; "" for none }
-    max_bytes: { type: integer, description: Truncate the diff to this many bytes }
+    max_bytes: { type: integer, description: Truncate the diff to this many bytes (a marker line flags truncation) }

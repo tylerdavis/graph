@@ -86,7 +86,7 @@ Inline comments never block a merge by themselves: they post as plain review com
 
 ### `builtin__git_diff`
 
-Unified diff between two refs (merge-base three-dot diff), path-scoped, truncated to a byte budget — sized for LLM consumption. Read-only. Needs a checkout with enough history to resolve both refs (`fetch-depth: 0` in CI).
+Unified diff between two refs (merge-base three-dot diff), path-scoped, truncated to a byte budget — sized for LLM consumption. A diff over budget ends with a `[diff truncated: showing X of Y bytes]` marker line, so a consumer can tell a complete diff from a cut one; an unresolvable ref fails the call instead of returning an empty diff. Read-only. Needs a checkout with enough history to resolve both refs (`fetch-depth: 0` in CI).
 
 | Input | Type |  |
 | --- | --- | --- |

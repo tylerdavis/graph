@@ -23,18 +23,30 @@ steps:
     input: { pr: "{{input.pr}}" }
     reasoning: Title, body, and the base/head shas to diff.
   - id: E1
+    tool_name: builtin__git_changed_files
+    input:
+      base: "{{E0.base_sha}}"
+      head: "{{E0.head_sha}}"
+      prefix: ""
+    reasoning: >
+      Complete changed-file list — small, never truncated; grounds the
+      absence-style invariants (docs-parity, test-parity) and fails
+      loudly on a bad ref.
+  - id: E2
     tool_name: builtin__git_diff
     input:
       base: "{{E0.base_sha}}"
       head: "{{E0.head_sha}}"
       paths: "."
       exclude: "Cargo.lock CHANGELOG.md"
-      max_bytes: 120000
-    reasoning: The full change, minus generated files, within token budget.
-  - id: E2
+      max_bytes: 300000
+    reasoning: >
+      The full change, minus generated files, within token budget; ends
+      with a truncation marker when it exceeds max_bytes.
+  - id: E2X
     tool_name: exit
     input:
-      when: { value: "{{E1.text}}", op: empty }
+      when: { value: "{{E2.text}}", op: empty }
       status: success
       message: empty diff — nothing to review
     reasoning: Nothing to review means a clean, zero-LLM exit, no comment.
@@ -43,7 +55,8 @@ steps:
     input:
       title: "{{E0.title}}"
       body: "{{E0.body}}"
-      diff: "{{E1.text}}"
+      files: "{{E1.files}}"
+      diff: "{{E2.text}}"
     reasoning: One rubric'd review call with enforced structured output.
   - id: E4
     tool_name: user__findings_to_review_comments

@@ -31,7 +31,18 @@ system: |
     blocker**: stdout pollution in the agent loop." / "Clean — no
     invariant findings."
 
-  The diff may be truncated; never guess about code you cannot see.
+  Evidence rules. The diff is byte-capped and ends with a
+  "[diff truncated: showing X of Y bytes]" marker when cut; the
+  changed-file list is always complete:
+  - Judge docs-parity and test-parity ONLY from the changed-file list.
+    A docs/ or test edit in the list satisfies parity even when its
+    hunks are not visible in the diff.
+  - Every other finding must cite code visible in the diff. Never
+    report that something is missing, unshown, or unconfirmed —
+    absence from a possibly-truncated diff is not evidence. If you
+    cannot see it, you have no finding.
+  - A finding is a violation needing a fix. Never emit observations,
+    acknowledgements, or defensible-pattern notes as findings.
 prompt: |
   Review this pull request against graph-cli's invariants.
 
@@ -63,14 +74,21 @@ prompt: |
   Title: {{input.title}}
   Description: {{input.body}}
 
-  ## Diff (may be truncated)
+  ## Changed files (complete list — judge docs-parity and test-parity from this)
+  {{input.files}}
+
+  ## Diff (byte-capped; a trailing marker line flags truncation)
   {{input.diff}}
 input_schema:
   type: object
-  required: [title, body, diff]
+  required: [title, body, files, diff]
   properties:
     title: { type: string, description: PR title }
     body:  { type: string, description: PR description (may be empty) }
+    files:
+      type: array
+      items: { type: string }
+      description: Complete changed-file list; never truncated.
     diff:  { type: string, description: Unified diff, pre-truncated by the caller }
 output_schema:
   type: object
