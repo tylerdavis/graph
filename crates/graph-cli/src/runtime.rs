@@ -76,10 +76,19 @@ impl Runtime {
         Ok(Arc::new(RecordingRegistry::new(base, store.clone())))
     }
 
-    /// Bundled pack tools from `[tools].packs`, served under `builtin__`.
+    /// Bundled pack tools, served under `builtin__`: the default packs
+    /// (always on) plus whatever `[tools].packs` opts into.
     pub fn builtin_tools(&self) -> Result<Arc<dyn ToolRegistry>> {
-        let docs = graph_core::user_tools::load_pack_tools(&self.config.tools.packs)
-            .map_err(anyhow::Error::msg)?;
+        let mut packs: Vec<String> = graph_core::user_tools::DEFAULT_PACKS
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
+        for pack in &self.config.tools.packs {
+            if !packs.contains(pack) {
+                packs.push(pack.clone());
+            }
+        }
+        let docs = graph_core::user_tools::load_pack_tools(&packs).map_err(anyhow::Error::msg)?;
         Ok(Arc::new(UserToolRegistry::builtins(
             docs,
             self.router.clone(),
