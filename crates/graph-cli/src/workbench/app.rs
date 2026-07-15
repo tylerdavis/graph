@@ -276,6 +276,9 @@ impl Msg {
                     format!("key {:?} {:?}", key.modifiers, key.code),
                 ))
             }
+            Msg::Term(Event::Paste(text)) => {
+                return Some((Level::TRACE, format!("paste ({} chars)", text.len())))
+            }
             Msg::Term(event) => return Some((Level::TRACE, format!("term event {event:?}"))),
             Msg::AgentDelta(text) => {
                 return Some((Level::TRACE, format!("agent delta ({} chars)", text.len())))
@@ -631,8 +634,10 @@ fn finish_turn_text(app: &mut App, text: String) {
 }
 
 fn on_terminal_event(app: &mut App, event: Event) -> Vec<Effect> {
-    let Event::Key(key) = event else {
-        return Vec::new();
+    let key = match event {
+        Event::Key(key) => key,
+        Event::Paste(text) => return on_paste(app, text),
+        _ => return Vec::new(),
     };
     if key.kind != KeyEventKind::Press {
         return Vec::new();
@@ -666,6 +671,30 @@ fn on_terminal_event(app: &mut App, event: Event) -> Vec<Effect> {
         Focus::Chat => on_chat_key(app, key),
         Focus::Workspace => on_workspace_key(app, key),
     }
+}
+
+/// Bracketed paste: the pasted text is a literal insertion into the
+/// focused input — newlines stay newlines in the buffer, never a submit.
+/// Raw-mode terminals deliver line breaks as \r inside a paste, so
+/// normalize them first.
+fn on_paste(app: &mut App, text: String) -> Vec<Effect> {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    match &mut app.mode {
+        Mode::Editing(editor) => {
+            if !matches!(editor.context, EditorContext::ConfirmQuit) {
+                editor.textarea.insert_str(text);
+            }
+        }
+        // The chat input is inert while paused (single-letter debug keys
+        // own the keyboard), so a paste has nowhere to land.
+        Mode::Paused(_) => {}
+        _ => {
+            if app.focus == Focus::Chat {
+                app.chat.input.insert_str(text);
+            }
+        }
+    }
+    Vec::new()
 }
 
 /// Navigation shared by normal and paused states: focus, tabs, selection,
@@ -1166,6 +1195,70 @@ steps:
         update(&mut app, Msg::TurnFinished(Ok("done".to_string())));
         assert!(matches!(app.mode, Mode::Idle));
         assert!(app.turn_started.is_none());
+    }
+
+    #[test]
+    fn paste_inserts_literal_newlines_without_submitting() {
+        let mut app = App::new(None);
+        let effects = update(
+            &mut app,
+            Msg::Term(Event::Paste("line1\nline2".to_string())),
+        );
+        assert!(effects.is_empty(), "a paste never submits");
+        assert!(matches!(app.mode, Mode::Idle));
+        assert!(app.chat.entries.is_empty(), "no message was sent");
+        assert_eq!(app.chat.input.lines(), ["line1", "line2"]);
+
+        // Raw-mode terminals deliver \r for line breaks inside a paste.
+        update(&mut app, Msg::Term(Event::Paste("\rline3".to_string())));
+        assert_eq!(app.chat.input.lines(), ["line1", "line2", "line3"]);
+
+        // Enter then submits the whole buffer as one message.
+        let effects = update(&mut app, key(KeyCode::Enter));
+        assert_eq!(
+            effects,
+            vec![Effect::RunAgentTurn {
+                message: "line1\nline2\nline3".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn paste_routes_to_the_modal_editor_and_is_inert_while_paused() {
+        // An open JSON editor receives the paste.
+        let mut app = App::new(Some(two_step_doc()));
+        app.mode = Mode::Running { gated: true };
+        let (msg, _receiver) = gate_ask(GateKind::BeforeCall, "E0");
+        update(&mut app, msg);
+        update(&mut app, key(KeyCode::Char('s')));
+        if let Mode::Editing(editor) = &mut app.mode {
+            editor.textarea = TextArea::default();
+        }
+        update(
+            &mut app,
+            Msg::Term(Event::Paste("{\n  \"a\": 1\n}".to_string())),
+        );
+        let Mode::Editing(editor) = &app.mode else {
+            panic!("editor should stay open");
+        };
+        assert_eq!(editor.textarea.lines(), ["{", "  \"a\": 1", "}"]);
+
+        // Paused with no editor: the chat input is inert, so the paste
+        // lands nowhere and the pause is untouched.
+        let mut app = App::new(Some(two_step_doc()));
+        app.mode = Mode::Running { gated: true };
+        let (msg, mut receiver) = gate_ask(GateKind::BeforeCall, "E0");
+        update(&mut app, msg);
+        update(&mut app, Msg::Term(Event::Paste("stray".to_string())));
+        assert!(matches!(app.mode, Mode::Paused(_)));
+        assert!(receiver.try_recv().is_err(), "no decision sent");
+        assert_eq!(app.chat.input.lines(), [""]);
+
+        // Workspace focus: nothing to type into.
+        let mut app = App::new(None);
+        app.focus = Focus::Workspace;
+        update(&mut app, Msg::Term(Event::Paste("stray".to_string())));
+        assert_eq!(app.chat.input.lines(), [""]);
     }
 
     #[test]

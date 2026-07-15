@@ -315,7 +315,7 @@ fn glob_find(root: &Path, input: &Value) -> ToolOutcome {
 #[async_trait]
 impl ToolRegistry for FsTools {
     async fn tools(&self) -> Result<Vec<ToolDef>, ToolError> {
-        Ok(vec![
+        let mut defs = vec![
             ToolDef {
                 name: READ_FILE.to_string(),
                 description: "Read a text file from the project directory the workbench was \
@@ -391,7 +391,11 @@ impl ToolRegistry for FsTools {
                 })),
                 read_only: Some(true),
             },
-        ])
+        ];
+        for def in &mut defs {
+            def.description.push_str(super::tools::WORKBENCH_ONLY_NOTE);
+        }
+        Ok(defs)
     }
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
@@ -616,6 +620,12 @@ mod tests {
         assert_eq!(defs.len(), 3);
         assert!(defs.iter().all(|d| d.read_only == Some(true)));
         assert!(defs.iter().all(|d| d.name.starts_with("workbench__")));
+        assert!(
+            defs.iter().all(|d| d
+                .description
+                .ends_with(super::super::tools::WORKBENCH_ONLY_NOTE)),
+            "fs tools must carry the not-plan-legal note"
+        );
     }
 
     #[tokio::test]
