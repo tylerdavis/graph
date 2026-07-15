@@ -28,6 +28,8 @@ Generic LLM inference — the [`prompt` tool kind](/tools/user-defined) exposed 
 | `instruction` | string | required — complete, self-contained instruction; interpolate the data to analyze with `{{Ex...}}` templates |
 | `output_schema` | object | optional — JSON Schema for the result; omit for `{ "text": ... }` |
 
+To analyze each element of a list, call `infer` inside a [`map` body](/plans/iteration#per-item-inference) with `{{item}}` interpolated per call rather than interpolating the whole list into one instruction — small, focused contexts are cheaper and more accurate, and `concurrency` recovers the speed. Interpolate a whole list only for genuinely cross-item questions (ranking, deduplication, aggregation). The tool's description steers the planner the same way.
+
 For a *fixed* inference step you reuse across plans (a classifier, a reviewer), still prefer a dedicated `user__` prompt tool — its prompt and schema live in one reviewed file instead of being repeated in every plan.
 
 ## The `github` pack

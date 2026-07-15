@@ -65,6 +65,10 @@ Like a decide step, `map`/`reduce` defer rendering: `over` (and reduce's `initia
 
 `reduce` has none: every iteration reads the previous accumulator, so a fold is sequential by definition. For concurrent aggregation, map first (concurrently), then reduce over `{{Ex.results}}`.
 
+## Per-item inference
+
+When a step runs inference over a list — classify each issue, summarize each incident, score each finding — prefer a `map` whose body calls [`builtin__infer`](/tools/builtins#builtin-infer) (or a `user__` prompt tool) with `{{item}}` interpolated per call, over one inference step carrying the whole list in its instruction. Small, focused contexts are cheaper and more accurate, and `concurrency` recovers the speed. Reserve whole-list interpolation for genuinely cross-item questions — ranking, deduplication, aggregation. The planner is instructed the same way, so planner-authored plans default to this shape too.
+
 Two things to know when raising `concurrency`:
 
 - **Same-server MCP calls serialize anyway.** Each MCP server connection handles one call at a time, so concurrency pays off across *different* servers, `plan__*` sub-plans, and LLM-call tools — not for ten calls to one server.
