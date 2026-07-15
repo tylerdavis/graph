@@ -62,6 +62,16 @@ pub fn load_from(paths: &[PathBuf]) -> Result<LoadedConfig> {
         server.validate(name).map_err(anyhow::Error::msg)?;
     }
 
+    for name in config.models.named.keys() {
+        if crate::model::RESERVED_MODEL_NAMES.contains(&name.as_str()) {
+            anyhow::bail!(
+                "[models.named] entry '{name}' shadows a built-in role name; \
+                 reserved names: {}",
+                crate::model::RESERVED_MODEL_NAMES.join(", ")
+            );
+        }
+    }
+
     Ok(LoadedConfig { config, sources })
 }
 
@@ -140,6 +150,47 @@ mod tests {
         let path = dir.join(name);
         std::fs::write(&path, contents).unwrap();
         path
+    }
+
+    #[test]
+    fn named_models_parse_resolve_and_reject_role_shadowing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "config.toml",
+            r#"
+[models]
+default = { provider = "p", model = "m" }
+
+[models.named.nano]
+provider = "p"
+model = "nano-model"
+description = "fast and cheap"
+"#,
+        );
+        let loaded = load_from(&[path]).unwrap();
+        let models = &loaded.config.models;
+        assert_eq!(models.named["nano"].model, "nano-model");
+        assert_eq!(
+            models.named["nano"].description.as_deref(),
+            Some("fast and cheap")
+        );
+        assert_eq!(models.resolve_name("nano").unwrap().model, "nano-model");
+        // Role names resolve with the default fallback; unknown names don't.
+        assert_eq!(models.resolve_name("solver").unwrap().model, "m");
+        assert!(models.resolve_name("bogus").is_none());
+
+        let path = write(
+            dir.path(),
+            "bad.toml",
+            r#"
+[models.named.judge]
+provider = "p"
+model = "m"
+"#,
+        );
+        let err = load_from(&[path]).unwrap_err().to_string();
+        assert!(err.contains("shadows a built-in role name"), "{err}");
     }
 
     #[test]

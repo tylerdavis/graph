@@ -19,6 +19,8 @@ pub enum LlmError {
     UnknownProvider(String),
     #[error("no model configured for role '{0}' and no default set")]
     NoModelForRole(String),
+    #[error("no model named '{name}' is configured; available names: {available}")]
+    UnknownModelName { name: String, available: String },
     #[error("{0}")]
     Unsupported(String),
 }

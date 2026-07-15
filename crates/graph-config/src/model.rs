@@ -127,6 +127,10 @@ pub struct ModelChoice {
     pub temperature: Option<f32>,
     /// Embedding dimension; only meaningful for the embedder role.
     pub dimensions: Option<u32>,
+    /// What this model is good for. Surfaced to the planner as a routing
+    /// signal wherever named models are selectable (e.g. `builtin__infer`'s
+    /// `model` input), so write it for that audience.
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -141,6 +145,11 @@ pub struct ModelRoles {
     pub embedder: Option<ModelChoice>,
     /// Cheap verdict calls for inferred exit gates.
     pub judge: Option<ModelChoice>,
+    /// User-defined named models (`[models.named.<name>]`), referenceable
+    /// wherever a model name is accepted (prompt-tool `model`,
+    /// `builtin__infer`'s `model` input). Names must not shadow the role
+    /// names above — enforced at config load.
+    pub named: BTreeMap<String, ModelChoice>,
 }
 
 /// One pipeline/agent role that needs a model.
@@ -155,6 +164,35 @@ pub enum Role {
     Judge,
 }
 
+impl Role {
+    /// The role a config-facing name refers to, if any. These names are
+    /// reserved: `[models.named]` entries may not shadow them.
+    pub fn from_name(name: &str) -> Option<Role> {
+        match name {
+            "chat" => Some(Role::Chat),
+            "planner" => Some(Role::Planner),
+            "solver" => Some(Role::Solver),
+            "use_case_solver" => Some(Role::UseCaseSolver),
+            "repair" => Some(Role::Repair),
+            "embedder" => Some(Role::Embedder),
+            "judge" => Some(Role::Judge),
+            _ => None,
+        }
+    }
+}
+
+/// Names `[models.named]` entries may not use: the role keys plus `default`.
+pub const RESERVED_MODEL_NAMES: &[&str] = &[
+    "default",
+    "chat",
+    "planner",
+    "solver",
+    "use_case_solver",
+    "repair",
+    "embedder",
+    "judge",
+];
+
 impl ModelRoles {
     /// Resolve a role to its model choice, falling back to `default`.
     pub fn resolve(&self, role: Role) -> Option<&ModelChoice> {
@@ -168,6 +206,18 @@ impl ModelRoles {
             Role::Judge => &self.judge,
         };
         specific.as_ref().or(self.default.as_ref())
+    }
+
+    /// Resolve a model *name*: a role name (with its fallback to
+    /// `default`), the literal `default`, or a `[models.named]` entry.
+    pub fn resolve_name(&self, name: &str) -> Option<&ModelChoice> {
+        if name == "default" {
+            return self.default.as_ref();
+        }
+        match Role::from_name(name) {
+            Some(role) => self.resolve(role),
+            None => self.named.get(name),
+        }
     }
 }
 

@@ -171,6 +171,7 @@ mod tests {
                     model: "m".into(),
                     temperature: None,
                     dimensions: None,
+                    description: None,
                 }),
                 ..Default::default()
             },

@@ -73,6 +73,37 @@ impl ModelRouter {
         Ok((Arc::clone(provider), choice))
     }
 
+    /// Resolve a model *name*: a role name (with its `default` fallback)
+    /// or a `[models.named]` entry.
+    pub fn resolve_named(
+        &self,
+        name: &str,
+    ) -> Result<(Arc<dyn ChatProvider>, &ModelChoice), LlmError> {
+        let choice = self
+            .roles
+            .resolve_name(name)
+            .ok_or_else(|| LlmError::UnknownModelName {
+                name: name.to_string(),
+                available: {
+                    let mut names: Vec<&str> =
+                        self.roles.named.keys().map(String::as_str).collect();
+                    names.extend_from_slice(graph_config::RESERVED_MODEL_NAMES);
+                    names.join(", ")
+                },
+            })?;
+        let provider = self
+            .providers
+            .get(&choice.provider)
+            .ok_or_else(|| LlmError::UnknownProvider(choice.provider.clone()))?;
+        Ok((Arc::clone(provider), choice))
+    }
+
+    /// The configured `[models.named]` entries, for catalog surfaces that
+    /// advertise selectable models.
+    pub fn named_models(&self) -> &std::collections::BTreeMap<String, ModelChoice> {
+        &self.roles.named
+    }
+
     /// Convenience: run a chat for a role with its configured model and
     /// temperature applied (request model/temperature are overwritten).
     pub async fn chat(&self, role: Role, mut req: ChatRequest) -> Result<ChatResponse, LlmError> {
@@ -91,5 +122,17 @@ impl ModelRouter {
         req.model = choice.model.clone();
         req.temperature = req.temperature.or(choice.temperature);
         provider.chat_stream(req).await
+    }
+
+    /// Like [`ModelRouter::chat`], but selecting the model by name.
+    pub async fn chat_named(
+        &self,
+        name: &str,
+        mut req: ChatRequest,
+    ) -> Result<ChatResponse, LlmError> {
+        let (provider, choice) = self.resolve_named(name)?;
+        req.model = choice.model.clone();
+        req.temperature = req.temperature.or(choice.temperature);
+        provider.chat(req).await
     }
 }

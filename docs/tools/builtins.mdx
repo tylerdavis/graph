@@ -27,6 +27,7 @@ Generic LLM inference — the [`prompt` tool kind](/tools/user-defined) exposed 
 | --- | --- | --- |
 | `instruction` | string | required — complete, self-contained instruction; interpolate the data to analyze with `{{Ex...}}` templates |
 | `output_schema` | object | optional — JSON Schema for the result; omit for `{ "text": ... }` |
+| `model` | string | optional — a [named model](/reference/configuration#modelsnamed--named-models) (or role name) to run on; omit for the chat default. When named models are configured, the catalog advertises them on this input with their descriptions, steering the planner toward the smallest adequate model |
 
 For a *fixed* inference step you reuse across plans (a classifier, a reviewer), still prefer a dedicated `user__` prompt tool — its prompt and schema live in one reviewed file instead of being repeated in every plan.
 

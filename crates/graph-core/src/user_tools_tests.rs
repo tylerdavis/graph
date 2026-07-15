@@ -47,6 +47,7 @@ fn router() -> Arc<ModelRouter> {
                 model: "m".into(),
                 temperature: None,
                 dimensions: None,
+                description: None,
             }),
             ..Default::default()
         },
@@ -322,6 +323,7 @@ fn schema_router(chat_value: Value, repair_value: Value) -> Arc<ModelRouter> {
         model: "m".into(),
         temperature: None,
         dimensions: None,
+        description: None,
     };
     Arc::new(ModelRouter::with_providers(
         providers,
@@ -389,4 +391,159 @@ async fn prompt_output_valid_passes_untouched() {
         .await
         .unwrap();
     assert_eq!(outcome.result["severity"], "high");
+}
+
+// ── Named models ─────────────────────────────────────────────────────────
+
+/// Router that echoes the resolved model id back in the response text,
+/// with two `[models.named]` entries alongside the default.
+fn named_model_router() -> Arc<ModelRouter> {
+    struct Echo;
+    #[async_trait]
+    impl ChatProvider for Echo {
+        async fn chat(&self, req: ChatRequest) -> Result<ChatResponse, LlmError> {
+            Ok(ChatResponse {
+                content: Some(format!("model={}", req.model)),
+                tool_calls: vec![],
+                structured: None,
+                stop_reason: StopReason::EndTurn,
+                usage: Usage::default(),
+            })
+        }
+        async fn chat_stream(&self, _req: ChatRequest) -> Result<EventStream, LlmError> {
+            unimplemented!()
+        }
+    }
+    let mut providers: HashMap<String, Arc<dyn ChatProvider>> = HashMap::new();
+    providers.insert("mock".into(), Arc::new(Echo));
+    let choice = |model: &str, description: Option<&str>| ModelChoice {
+        provider: "mock".into(),
+        model: model.into(),
+        temperature: None,
+        dimensions: None,
+        description: description.map(str::to_string),
+    };
+    let mut named = std::collections::BTreeMap::new();
+    named.insert(
+        "nano".to_string(),
+        choice("nano-model", Some("fast and cheap")),
+    );
+    named.insert("deep".to_string(), choice("deep-model", None));
+    Arc::new(ModelRouter::with_providers(
+        providers,
+        ModelRoles {
+            default: Some(choice("default-model", None)),
+            named,
+            ..Default::default()
+        },
+    ))
+}
+
+#[tokio::test]
+async fn prompt_tool_model_pin_routes_to_named_model() {
+    let tool = doc(r#"
+name: pinned
+description: runs on a named model
+kind: prompt
+prompt: "go"
+model: nano
+"#);
+    let registry = UserToolRegistry::new(vec![tool], named_model_router());
+    let outcome = registry.invoke("user__pinned", json!({})).await.unwrap();
+    assert_eq!(outcome.result, json!({"text": "model=nano-model"}));
+}
+
+#[tokio::test]
+async fn caller_model_overrides_the_doc_pin() {
+    let tool = doc(r#"
+name: pick
+description: caller picks the model
+kind: prompt
+prompt: "go"
+model: deep
+caller_model: true
+"#);
+    let registry = UserToolRegistry::new(vec![tool], named_model_router());
+    let outcome = registry
+        .invoke("user__pick", json!({"model": "nano"}))
+        .await
+        .unwrap();
+    assert_eq!(outcome.result, json!({"text": "model=nano-model"}));
+    let outcome = registry.invoke("user__pick", json!({})).await.unwrap();
+    assert_eq!(outcome.result, json!({"text": "model=deep-model"}));
+}
+
+#[tokio::test]
+async fn unknown_model_name_errors_listing_configured_names() {
+    let tool = doc(r#"
+name: broken
+description: pins a model that is not configured
+kind: prompt
+prompt: "go"
+model: bogus
+"#);
+    let registry = UserToolRegistry::new(vec![tool], named_model_router());
+    let err = registry
+        .invoke("user__broken", json!({}))
+        .await
+        .unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("no model named 'bogus'"), "{message}");
+    assert!(message.contains("nano"), "{message}");
+}
+
+#[tokio::test]
+async fn role_names_still_resolve_with_default_fallback() {
+    let tool = doc(r#"
+name: solver_tool
+description: runs under the solver role
+kind: prompt
+prompt: "go"
+model: solver
+"#);
+    let registry = UserToolRegistry::new(vec![tool], named_model_router());
+    // No solver entry configured: falls back to default.
+    let outcome = registry
+        .invoke("user__solver_tool", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(outcome.result, json!({"text": "model=default-model"}));
+}
+
+#[tokio::test]
+async fn caller_model_tools_advertise_named_models_in_the_catalog() {
+    let docs = load_pack_tools(&["llm".to_string()]).unwrap();
+
+    // Named models configured: the catalog schema advertises them.
+    let registry = UserToolRegistry::builtins(docs.clone(), named_model_router());
+    let defs = registry.tools().await.unwrap();
+    let infer = defs.iter().find(|d| d.name == "builtin__infer").unwrap();
+    let model = &infer.input_schema["properties"]["model"];
+    assert_eq!(model["enum"], json!(["deep", "nano"]));
+    let description = model["description"].as_str().unwrap();
+    assert!(
+        description.contains("nano — fast and cheap"),
+        "{description}"
+    );
+    assert!(description.contains("deep — deep-model"), "{description}");
+
+    // None configured: no model property — nothing to select.
+    let registry = UserToolRegistry::builtins(docs, router());
+    let defs = registry.tools().await.unwrap();
+    let infer = defs.iter().find(|d| d.name == "builtin__infer").unwrap();
+    assert!(infer.input_schema["properties"].get("model").is_none());
+}
+
+#[tokio::test]
+async fn llm_pack_infer_routes_by_model_input() {
+    let docs = load_pack_tools(&["llm".to_string()]).unwrap();
+    let registry = UserToolRegistry::builtins(docs, named_model_router());
+    let outcome = registry
+        .invoke(
+            "builtin__infer",
+            json!({"instruction": "go", "model": "nano"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.result, json!({"text": "model=nano-model"}));
 }

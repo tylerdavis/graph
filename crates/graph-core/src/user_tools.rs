@@ -10,7 +10,6 @@
 use crate::template::{render_str, Roots};
 use crate::tools::{ToolDef, ToolError, ToolOutcome, ToolRegistry};
 use async_trait::async_trait;
-use graph_config::Role;
 use graph_llm::types::{ChatMessage, ChatRequest, ResponseSchema};
 use graph_llm::ModelRouter;
 use serde::{Deserialize, Serialize};
@@ -67,14 +66,21 @@ pub enum ToolKind {
         /// Extra system prompt (optional).
         #[serde(default)]
         system: Option<String>,
-        /// Model role to run under (default: chat).
+        /// Which configured model runs the call: a role name (`chat`,
+        /// `solver`, …) or a `[models.named]` entry. Default: chat.
         #[serde(default)]
-        role: PromptRole,
+        model: Option<String>,
         /// Take `output_schema` from the call's input instead of (only)
         /// the doc — the generic `builtin__infer` path, where each step
         /// decides between plain text and structured output.
         #[serde(default)]
         caller_output_schema: bool,
+        /// Let the call's `model` input pick the model (overriding the
+        /// doc's `model`) — the generic `builtin__infer` path. The
+        /// catalog advertises configured `[models.named]` entries on the
+        /// tool's input schema when this is set.
+        #[serde(default)]
+        caller_model: bool,
     },
 }
 
@@ -84,27 +90,6 @@ pub enum ExecOutput {
     #[default]
     Json,
     Text,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PromptRole {
-    #[default]
-    Chat,
-    Planner,
-    Solver,
-    Repair,
-}
-
-impl From<PromptRole> for Role {
-    fn from(role: PromptRole) -> Self {
-        match role {
-            PromptRole::Chat => Role::Chat,
-            PromptRole::Planner => Role::Planner,
-            PromptRole::Solver => Role::Solver,
-            PromptRole::Repair => Role::Repair,
-        }
-    }
 }
 
 // ── Bundled tool packs ───────────────────────────────────────────────────
@@ -287,14 +272,23 @@ impl UserToolRegistry {
                 }
             }
         }
-        // A prompt tool that opted in takes its output schema from the
-        // call itself (the generic builtin__infer path) — grab it before
-        // the input becomes template roots.
+        // A prompt tool that opted in takes its output schema (and model
+        // name) from the call itself (the generic builtin__infer path) —
+        // grab them before the input becomes template roots.
         let caller_schema = match &doc.kind {
             ToolKind::Prompt {
                 caller_output_schema: true,
                 ..
             } => input.get("output_schema").cloned(),
+            _ => None,
+        };
+        let caller_model = match &doc.kind {
+            ToolKind::Prompt {
+                caller_model: true, ..
+            } => input
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             _ => None,
         };
         let mut roots = Map::new();
@@ -324,10 +318,12 @@ impl UserToolRegistry {
             ToolKind::Prompt {
                 prompt,
                 system,
-                role,
+                model,
                 ..
             } => {
-                self.run_prompt(doc, prompt, system.as_deref(), *role, caller_schema, &roots)
+                // Call-level model wins over the doc's pin.
+                let model = caller_model.as_deref().or(model.as_deref());
+                self.run_prompt(doc, prompt, system.as_deref(), model, caller_schema, &roots)
                     .await
             }
         }
@@ -414,12 +410,45 @@ impl UserToolRegistry {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Add a `model` property to a caller-model prompt tool's catalog
+    /// schema, enumerating the configured `[models.named]` entries with
+    /// their descriptions — the planner's routing signal for picking the
+    /// smallest adequate model. No named models configured → no property:
+    /// a knob with nothing to select would only invite invented names.
+    fn advertise_named_models(&self, schema: &mut Value) {
+        let named = self.router.named_models();
+        if named.is_empty() {
+            return;
+        }
+        let names: Vec<&String> = named.keys().collect();
+        let catalog = named
+            .iter()
+            .map(|(name, choice)| match &choice.description {
+                Some(description) => format!("{name} — {description}"),
+                None => format!("{name} — {}", choice.model),
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let description = format!(
+            "Which configured model runs this inference. Available: {catalog}. \
+             Prefer the smallest adequate model for small, self-contained \
+             instructions (for example per-item map bodies); omit to use \
+             the default."
+        );
+        if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+            properties.insert(
+                "model".to_string(),
+                json!({"type": "string", "enum": names, "description": description}),
+            );
+        }
+    }
+
     async fn run_prompt(
         &self,
         doc: &UserToolDoc,
         prompt: &str,
         system: Option<&str>,
-        role: PromptRole,
+        model: Option<&str>,
         caller_schema: Option<Value>,
         roots: &Roots<'_>,
     ) -> Result<ToolOutcome, ToolError> {
@@ -439,7 +468,7 @@ impl UserToolRegistry {
         };
         let response = self
             .router
-            .chat(role.into(), request)
+            .chat_named(model.unwrap_or("chat"), request)
             .await
             .map_err(|e| ToolError::Transport(e.to_string()))?;
         let result = match response.structured {
@@ -516,19 +545,31 @@ impl ToolRegistry for UserToolRegistry {
         Ok(self
             .tools
             .iter()
-            .map(|doc| ToolDef {
-                name: format!("{}{}", self.prefix, doc.name),
-                description: doc.description.clone(),
-                input_schema: doc
+            .map(|doc| {
+                let mut input_schema = doc
                     .input_schema
                     .clone()
-                    .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
-                output_schema: doc.output_schema.clone(),
-                output_example: None,
-                read_only: doc.read_only.or(match &doc.kind {
-                    ToolKind::Prompt { .. } => Some(true),
-                    ToolKind::Exec { .. } => None,
-                }),
+                    .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+                if matches!(
+                    &doc.kind,
+                    ToolKind::Prompt {
+                        caller_model: true,
+                        ..
+                    }
+                ) {
+                    self.advertise_named_models(&mut input_schema);
+                }
+                ToolDef {
+                    name: format!("{}{}", self.prefix, doc.name),
+                    description: doc.description.clone(),
+                    input_schema,
+                    output_schema: doc.output_schema.clone(),
+                    output_example: None,
+                    read_only: doc.read_only.or(match &doc.kind {
+                        ToolKind::Prompt { .. } => Some(true),
+                        ToolKind::Exec { .. } => None,
+                    }),
+                }
             })
             .collect())
     }

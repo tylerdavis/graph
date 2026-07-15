@@ -54,7 +54,7 @@ The solver's report streams dim to stderr as progress; the agent's answer is the
 
 ## Model roles
 
-Every inference site resolves through `[models]` role assignment (`chat`, `planner`, `solver`, `repair` — falling back to `default`), so cost tuning is pure config: strong model where judgment lives, fast model where volume lives. Structured outputs (planner, prompt tools) get one automatic `repair`-role fix-up attempt before erroring into the replan loop.
+Every inference site resolves through `[models]` role assignment (`chat`, `planner`, `solver`, `repair` — falling back to `default`), so cost tuning is pure config: strong model where judgment lives, fast model where volume lives. [Named models](/reference/configuration#modelsnamed--named-models) (`[models.named]`) extend the fixed roles with user-defined entries that prompt tools and `builtin__infer` select by name — per-step model routing without touching the role assignments. Structured outputs (planner, prompt tools) get one automatic `repair`-role fix-up attempt before erroring into the replan loop.
 
 ## Learning across turns
 

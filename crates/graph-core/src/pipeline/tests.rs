@@ -121,6 +121,7 @@ fn pipeline(
             model: "test".to_string(),
             temperature: None,
             dimensions: None,
+            description: None,
         }),
         ..Default::default()
     };

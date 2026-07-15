@@ -6,7 +6,7 @@ description: >
   Reviews a graph-cli pull-request diff against the repo's invariants and
   returns structured findings. Findings may be empty when the diff is clean.
 kind: prompt
-role: chat
+model: chat
 system: |
   You review pull requests for graph-cli, a Rust CLI with a plan-based
   execution engine. Report ONLY violations of the invariants listed in the

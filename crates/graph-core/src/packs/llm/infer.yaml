@@ -12,6 +12,9 @@ description: >
 kind: prompt
 prompt: "{{input.instruction}}"
 caller_output_schema: true
+# The call's `model` input picks the model; the catalog advertises the
+# configured [models.named] entries on this tool's schema when any exist.
+caller_model: true
 input_schema:
   type: object
   required: [instruction]

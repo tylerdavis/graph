@@ -12,5 +12,5 @@ pub use load::{
 pub use model::{
     Config, McpServerConfig, ModelChoice, ModelRoles, PlanPaths, PromptConfig, ProviderConfig,
     ProviderKind, Role, Settings, StorageBackend, StorageConfig, ToolOverride, ToolPaths,
-    UserConfig, WorkbenchConfig,
+    UserConfig, WorkbenchConfig, RESERVED_MODEL_NAMES,
 };
