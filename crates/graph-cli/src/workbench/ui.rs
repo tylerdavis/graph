@@ -14,7 +14,9 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-const DIM: Style = Style::new().fg(Color::DarkGray);
+// Faded default foreground rather than `Color::DarkGray`: many dark themes map
+// ANSI bright-black almost onto the background, making DarkGray unreadable.
+const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 const ERROR: Style = Style::new().fg(Color::Red);
 const OK: Style = Style::new().fg(Color::Green);
 const ACCENT: Style = Style::new().fg(Color::Cyan);
