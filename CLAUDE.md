@@ -60,3 +60,7 @@ CI (`.github/workflows/ci.yaml`) runs lint + tests on ubuntu-24.04 and macos-15 
 - Every feature lands with tests and a lint-clean tree, then gets **live verification**: the MCP reference server (`npx @modelcontextprotocol/server-everything`) for tool mechanics, the user's real Linear workspace for plan behavior. Use the scratch pattern — a temp dir with `.graph/config.toml` overriding `data_dir` (and `GRAPH_STORAGE=memory`) — to keep the user's real state out of test runs.
 - Linux behavior is reproducible locally in a container (`podman run --rm -v $PWD:/repo:ro rust:1.94-trixie …`).
 - Live example plans and user tools ship in the user's `~/.config/graph/{plans,tools}/` (sprint_analysis, project_status, urgent_issues; git_log, summarize) — useful as behavioral references.
+
+## Worktrees
+
+Always use worktrees for any coding work. Never make changes directly on the main branch. When spawning subagents, set `isolation: worktree` in their frontmatter.
