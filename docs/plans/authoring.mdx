@@ -29,7 +29,7 @@ name: Project Status
 description: Status report for a Linear project — health, activity, risks.
 exemplars:                          # how users will ask for this (routing signal)
   - "How is the New Relic migration going?"
-requires_servers: [linear]          # hidden if this MCP server isn't configured
+requires_servers: [linear]          # MCP dependencies — unconfigured: hidden from the catalog, loud error by name
 input_schema:                       # JSON Schema; referenced as {{input.*}}
   type: object
   required: [project]
@@ -99,7 +99,9 @@ graph plan validate project_status
 graph plan run project_status '{"project":"New Relic"}'
 ```
 
-Validation catches structural problems at load time: template syntax errors, references to roots that aren't `input` or an earlier step (forward references and typos alike), duplicate or reserved ids, unknown fields. What it *can't* catch — a path that doesn't exist in a tool's real output — surfaces at run time as a typed error with the available keys listed. See [Errors & replanning](/plans/errors-and-replanning).
+Validation is two layers. The structural layer runs at every load: template syntax errors, references to roots that aren't `input` or an earlier step (forward references and typos alike), duplicate or reserved ids, unknown fields, and `workbench__*` tool names (workbench tools never exist in the plan runtime). The catalog layer runs wherever the full config exists — `plan validate`, `plan run`, and the workbench — and resolves every step tool against what actually loads: `builtin__*` against the enabled packs, `user__*` against `[tools].paths`, `plan__*` against the plan catalog (composed plans are followed transitively), and MCP names at the server level (`[mcp.*]` must configure the server; individual MCP tools are only verifiable by connecting, so those are still checked at dispatch). `plan run` refuses to start — before any step executes — when a tool can't resolve. What neither layer can catch — a path that doesn't exist in a tool's real output — surfaces at run time as a typed error with the available keys listed. See [Errors & replanning](/plans/errors-and-replanning).
+
+`requires_servers` is the plan's declaration of its MCP dependencies, and it is load-bearing: a plan declaring an unconfigured server is hidden from the catalog, and naming it directly (`plan run`, `plan show`, `plan validate`, `workbench plan`) fails loudly with the missing servers instead of "no plan named". Validating such a plan **by file path** still succeeds — the file is portable — with a note that it can't run here. A step using an unconfigured server the plan *doesn't* declare is a hard validation error.
 
 A plan that fails validation is skipped from the catalog with a warning rather than breaking other commands — but validating or running it by name reports its load error. See [plan discovery](/plans/overview#plan-discovery).
 

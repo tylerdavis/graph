@@ -63,6 +63,14 @@ impl DocError {
     }
 }
 
+/// A plan withheld from the catalog because `requires_servers` names MCP
+/// servers that aren't configured — not broken, just not runnable here.
+#[derive(Debug)]
+pub struct HiddenPlan {
+    pub identifier: String,
+    pub missing_servers: Vec<String>,
+}
+
 /// The plan catalog: every document that loaded, plus one error per file
 /// that didn't. A broken file never takes the catalog down — callers
 /// surface `skipped` as diagnostics.
@@ -70,9 +78,27 @@ impl DocError {
 pub struct LoadedPlans {
     pub docs: Vec<PlanDoc>,
     pub skipped: Vec<DocError>,
+    /// Plans hidden by unconfigured `requires_servers` (populated by the
+    /// CLI runtime, which knows the MCP config). Naming one directly must
+    /// fail loudly with the missing servers, never "no plan named".
+    pub hidden: Vec<HiddenPlan>,
 }
 
 impl LoadedPlans {
+    /// Why a plan with this identifier is hidden from the catalog, if it is.
+    pub fn hidden_reason(&self, identifier: &str) -> Option<String> {
+        let hidden = self.hidden.iter().find(|h| h.identifier == identifier)?;
+        Some(format!(
+            "plan '{identifier}' requires MCP server(s) {} — configure them \
+             under [mcp.<name>] to use it",
+            hidden
+                .missing_servers
+                .iter()
+                .map(|s| format!("'{s}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
     /// Why a plan with this identifier is absent from `docs`, if a skipped
     /// file's stem matches it (plan files are conventionally named after
     /// their identifier).
@@ -174,6 +200,9 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
         check_step_id(&step.id)?;
         if seen.contains(&step.id.as_str()) {
             return Err(format!("duplicate step id '{}'", step.id));
+        }
+        if let Some(problem) = super::plan::workbench_tool_problem(&step.tool_name) {
+            return Err(format!("step {}: {problem}", step.id));
         }
         if !step.tool_name.contains("__")
             && step.tool_name != "plan_and_execute"
@@ -430,6 +459,13 @@ solver:
             err.contains("exit, decide, map, reduce, plan_and_execute"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn rejects_workbench_tools_outright() {
+        let err = doc_from(&DOC.replace("linear__list_issues", "workbench__grep")).unwrap_err();
+        assert!(err.contains("'workbench__grep'"), "{err}");
+        assert!(err.contains("not available in the plan runtime"), "{err}");
     }
 
     #[test]

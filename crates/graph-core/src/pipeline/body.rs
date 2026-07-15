@@ -178,6 +178,10 @@ fn check_body_tool(
         }
         return;
     }
+    if let Some(problem) = super::plan::workbench_tool_problem(tool) {
+        problems.push(format!("step {step_id}: `{name}` {problem}"));
+        return;
+    }
     let control = [super::DECIDE_TOOL, super::MAP_TOOL, super::REDUCE_TOOL];
     if control.contains(&tool) {
         problems.push(format!(

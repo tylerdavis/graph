@@ -1,7 +1,7 @@
 //! Shared wiring: config → providers → MCP registry → store → agent.
 
 use anyhow::{Context, Result};
-use graph_core::pipeline::{doc::LoadedPlans, Pipeline};
+use graph_core::pipeline::{doc::LoadedPlans, Pipeline, ToolCatalog};
 use graph_core::toolbox::AgentToolbox;
 use graph_core::user_tools::UserToolRegistry;
 use graph_core::{Agent, CompositeRegistry, EventSink, Store, ThreadMeta, ToolRegistry};
@@ -84,9 +84,9 @@ impl Runtime {
         Ok(Arc::new(RecordingRegistry::new(base, store.clone())))
     }
 
-    /// Bundled pack tools, served under `builtin__`: the default packs
-    /// (always on) plus whatever `[tools].packs` opts into.
-    pub fn builtin_tools(&self) -> Result<Arc<dyn ToolRegistry>> {
+    /// The enabled pack names: the default packs (always on) plus whatever
+    /// `[tools].packs` opts into.
+    fn pack_names(&self) -> Vec<String> {
         let mut packs: Vec<String> = graph_core::user_tools::DEFAULT_PACKS
             .iter()
             .map(|p| p.to_string())
@@ -96,7 +96,23 @@ impl Runtime {
                 packs.push(pack.clone());
             }
         }
-        let docs = graph_core::user_tools::load_pack_tools(&packs).map_err(anyhow::Error::msg)?;
+        packs
+    }
+
+    /// The directories user tools load from (`[tools].paths`, expanded).
+    fn tool_dirs(&self) -> Vec<std::path::PathBuf> {
+        self.config
+            .tools
+            .paths
+            .iter()
+            .map(|p| graph_config::expand_tilde(p))
+            .collect()
+    }
+
+    /// Bundled pack tools, served under `builtin__`.
+    pub fn builtin_tools(&self) -> Result<Arc<dyn ToolRegistry>> {
+        let docs = graph_core::user_tools::load_pack_tools(&self.pack_names())
+            .map_err(anyhow::Error::msg)?;
         Ok(Arc::new(UserToolRegistry::builtins(
             docs,
             self.router.clone(),
@@ -105,15 +121,40 @@ impl Runtime {
 
     /// User-defined tools from `[tools].paths`, served under `user__`.
     pub fn user_tools(&self) -> Result<Arc<dyn ToolRegistry>> {
-        let dirs: Vec<std::path::PathBuf> = self
-            .config
-            .tools
-            .paths
-            .iter()
-            .map(|p| graph_config::expand_tilde(p))
-            .collect();
-        let docs = graph_core::user_tools::load_user_tools(&dirs).map_err(anyhow::Error::msg)?;
+        let docs = graph_core::user_tools::load_user_tools(&self.tool_dirs())
+            .map_err(anyhow::Error::msg)?;
         Ok(Arc::new(UserToolRegistry::new(docs, self.router.clone())))
+    }
+
+    /// The loadable-tool catalog for catalog-aware plan validation: what a
+    /// plan step can actually resolve to at run time. Built from config
+    /// alone — MCP servers are included by *name*, never connected to.
+    pub fn tool_catalog(
+        &self,
+        plan_docs: &[graph_core::pipeline::doc::PlanDoc],
+    ) -> Result<ToolCatalog> {
+        let builtin_tools = graph_core::user_tools::load_pack_tools(&self.pack_names())
+            .map_err(anyhow::Error::msg)?
+            .into_iter()
+            .map(|doc| {
+                format!(
+                    "{}{}",
+                    graph_core::user_tools::BUILTIN_TOOL_PREFIX,
+                    doc.name
+                )
+            })
+            .collect();
+        let user_tools = graph_core::user_tools::load_user_tools(&self.tool_dirs())
+            .map_err(anyhow::Error::msg)?
+            .into_iter()
+            .map(|doc| format!("{}{}", graph_core::user_tools::USER_TOOL_PREFIX, doc.name))
+            .collect();
+        Ok(ToolCatalog {
+            builtin_tools,
+            user_tools,
+            plans: plan_docs.iter().map(|d| d.identifier.clone()).collect(),
+            mcp_servers: self.config.mcp.keys().cloned().collect(),
+        })
     }
 
     /// The plan catalog, kept to documents whose `requires_servers` are all
@@ -136,19 +177,27 @@ impl Runtime {
                 tracing::warn!("skipping plan file — {error}");
             }
         }
-        loaded.docs.retain(|doc| {
-            let ok = doc
-                .requires_servers
+        let (visible, hidden): (Vec<_>, Vec<_>) = loaded.docs.drain(..).partition(|doc| {
+            doc.requires_servers
                 .iter()
-                .all(|server| self.config.mcp.contains_key(server));
-            if !ok {
-                tracing::info!(
-                    plan = doc.identifier,
-                    "hidden: required MCP server not configured"
-                );
-            }
-            ok
+                .all(|server| self.config.mcp.contains_key(server))
         });
+        loaded.docs = visible;
+        for doc in hidden {
+            tracing::info!(
+                plan = doc.identifier,
+                "hidden: required MCP server not configured"
+            );
+            loaded.hidden.push(graph_core::pipeline::doc::HiddenPlan {
+                missing_servers: doc
+                    .requires_servers
+                    .iter()
+                    .filter(|server| !self.config.mcp.contains_key(*server))
+                    .cloned()
+                    .collect(),
+                identifier: doc.identifier,
+            });
+        }
         loaded
     }
 
@@ -161,14 +210,17 @@ impl Runtime {
     ) -> Result<Arc<Pipeline>> {
         let base = self.recording_registry(store)?;
         let user_context = user_context_text(&self.config.user);
+        let plans = self.plan_docs().docs;
+        let catalog = self.tool_catalog(&plans)?;
         Ok(Arc::new(Pipeline {
             router: self.router.clone(),
             registry: base,
             events,
-            plans: Arc::new(self.plan_docs().docs),
+            plans: Arc::new(plans),
             call_stack: Vec::new(),
             store: Some(store.clone()),
             gate: None,
+            catalog: Some(Arc::new(catalog)),
             user_context,
             current_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
             max_attempts: self.config.settings.planning_attempts.max(1),
