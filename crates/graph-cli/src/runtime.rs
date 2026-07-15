@@ -64,7 +64,11 @@ impl Runtime {
             events,
             model: choice.model.clone(),
             temperature: choice.temperature,
-            system_prompt: graph_core::prompts::chat_system_prompt(&self.config.user, &now),
+            system_prompt: graph_core::prompts::chat_system_prompt(
+                &self.config.user,
+                &now,
+                self.config.prompts.chat.as_deref(),
+            ),
             max_iterations: self.config.settings.max_agent_iterations,
         })
     }

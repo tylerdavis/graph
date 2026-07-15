@@ -30,8 +30,9 @@ use std::io::{IsTerminal, Stdout};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-/// Appended to the chat agent's system prompt inside the workbench.
-const WORKBENCH_SYSTEM_PROMPT: &str = "\n\n# Plan workbench\n\
+/// Appended to the chat agent's system prompt inside the workbench;
+/// `[prompts].workbench` in config replaces it.
+const WORKBENCH_SYSTEM_PROMPT: &str = "# Plan workbench\n\
 You are running inside the graph plan workbench: a side pane shows the user \
 the current draft plan, live. Operate on that draft with the workbench \
 tools:\n\
@@ -193,7 +194,15 @@ async fn run_plan_workbench(
         fs_tools,
     ]));
     let mut agent = runtime.agent(agent_sink, registry)?;
-    agent.system_prompt.push_str(WORKBENCH_SYSTEM_PROMPT);
+    agent.system_prompt.push_str("\n\n");
+    agent.system_prompt.push_str(
+        runtime
+            .config
+            .prompts
+            .workbench
+            .as_deref()
+            .unwrap_or(WORKBENCH_SYSTEM_PROMPT),
+    );
 
     let context = Arc::new(WorkbenchContext {
         agent,
