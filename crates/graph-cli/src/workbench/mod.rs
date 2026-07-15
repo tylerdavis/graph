@@ -225,10 +225,16 @@ fn resolve_doc(runtime: &Runtime, name_or_path: &str) -> Result<PlanDoc> {
     if path.exists() {
         return load_plan_doc(path).context("failed to load plan file");
     }
-    let docs = runtime.plan_docs()?;
-    docs.into_iter()
+    let loaded = runtime.plan_docs();
+    loaded
+        .docs
+        .iter()
         .find(|d| d.identifier == name_or_path)
-        .with_context(|| format!("'{name_or_path}' is neither a file nor a known plan identifier"))
+        .cloned()
+        .with_context(|| match loaded.skip_reason(name_or_path) {
+            Some(reason) => format!("plan '{name_or_path}' failed to load — {reason}"),
+            None => format!("'{name_or_path}' is neither a file nor a known plan identifier"),
+        })
 }
 
 async fn event_loop(

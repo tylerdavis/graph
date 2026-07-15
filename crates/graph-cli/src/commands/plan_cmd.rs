@@ -4,7 +4,7 @@ use crate::cli::PlanCommand;
 use crate::commands::input::resolve_input;
 use crate::runtime::Runtime;
 use anyhow::{bail, Result};
-use graph_core::pipeline::doc::{load_plan_doc, validate_input};
+use graph_core::pipeline::doc::{load_plan_doc, validate_input, LoadedPlans};
 use std::sync::Arc;
 
 /// Exit code for "the plan needs inputs you didn't provide".
@@ -17,21 +17,21 @@ pub async fn run(command: PlanCommand) -> Result<()> {
     match command {
         PlanCommand::List => {
             let runtime = Runtime::init()?;
-            let docs = runtime.plan_docs()?;
-            if docs.is_empty() {
+            let loaded = runtime.plan_docs();
+            if loaded.docs.is_empty() && loaded.skipped.is_empty() {
                 println!("no plan documents found — add YAML files under [plans].paths");
                 return Ok(());
             }
-            for doc in docs {
+            for doc in &loaded.docs {
                 println!("{}\t{}", doc.identifier, doc.name);
             }
             Ok(())
         }
         PlanCommand::Show { name } => {
             let runtime = Runtime::init()?;
-            let docs = runtime.plan_docs()?;
-            let Some(doc) = docs.iter().find(|d| d.identifier == name) else {
-                bail!("no plan named '{name}' (see `graph plan list`)");
+            let loaded = runtime.plan_docs();
+            let Some(doc) = loaded.docs.iter().find(|d| d.identifier == name) else {
+                bail!(missing_plan(&loaded, &name));
             };
             print!("{}", serde_yaml::to_string(doc)?);
             Ok(())
@@ -44,9 +44,12 @@ pub async fn run(command: PlanCommand) -> Result<()> {
                 return Ok(());
             }
             let runtime = Runtime::init()?;
-            let docs = runtime.plan_docs()?;
-            let Some(doc) = docs.iter().find(|d| d.identifier == name_or_path) else {
-                bail!("'{name_or_path}' is neither a file nor a known plan identifier");
+            let loaded = runtime.plan_docs();
+            let Some(doc) = loaded.docs.iter().find(|d| d.identifier == name_or_path) else {
+                match loaded.skip_reason(&name_or_path) {
+                    Some(reason) => bail!("{reason}"),
+                    None => bail!("'{name_or_path}' is neither a file nor a known plan identifier"),
+                }
             };
             println!("ok: '{}' — {} steps", doc.identifier, doc.steps.len());
             Ok(())
@@ -60,6 +63,15 @@ pub async fn run(command: PlanCommand) -> Result<()> {
     }
 }
 
+/// Why a named plan isn't in the catalog: its file failed to load (say
+/// why), or it simply doesn't exist.
+fn missing_plan(loaded: &LoadedPlans, name: &str) -> String {
+    match loaded.skip_reason(name) {
+        Some(reason) => format!("plan '{name}' failed to load — {reason}"),
+        None => format!("no plan named '{name}' (see `graph plan list`)"),
+    }
+}
+
 async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: bool) -> Result<()> {
     // `--json` promises machine-parseable stdout, so it suppresses CI
     // annotations (which are stdout workflow commands) even when a mode
@@ -70,9 +82,11 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         }
     };
     let runtime = Runtime::init()?;
-    let docs = runtime.plan_docs()?;
-    let Some(doc) = docs.into_iter().find(|d| d.identifier == name) else {
-        bail!("no plan named '{name}' (see `graph plan list`)");
+    let loaded = runtime.plan_docs();
+    let Some(doc) = loaded.docs.iter().find(|d| d.identifier == name).cloned() else {
+        let message = missing_plan(&loaded, name);
+        annotate(&message);
+        bail!(message);
     };
     let mut input = resolve_input(document, inputs)?;
     if let Some(schema) = &doc.input_schema {
