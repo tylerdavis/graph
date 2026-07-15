@@ -159,7 +159,8 @@ fn check_body_tool(name: &str, tool: &str, step_id: &str, problems: &mut Vec<Str
         ));
     } else if !tool.contains("__") && tool != "plan_and_execute" {
         problems.push(format!(
-            "step {step_id}: `{name}` tool '{tool}' is not a namespaced tool name"
+            "step {step_id}: `{name}` tool '{tool}' is not a namespaced tool \
+             name like server__tool"
         ));
     }
 }

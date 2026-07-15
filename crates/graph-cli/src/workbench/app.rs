@@ -252,6 +252,8 @@ pub enum Msg {
         shapes: Vec<ToolShape>,
     },
     Saved(Result<String, String>),
+    /// A one-line status from the effect executor (e.g. an undo miss).
+    Status(String),
 }
 
 impl Msg {
@@ -334,6 +336,7 @@ impl Msg {
                 Ok(path) => format!("saved to {path}"),
                 Err(error) => format!("save failed: {error}"),
             },
+            Msg::Status(text) => format!("status: {text}"),
         };
         Some((Level::DEBUG, line))
     }
@@ -353,6 +356,8 @@ pub enum Effect {
     Validate,
     LoadContext,
     SavePlan,
+    /// One-level undo of the last draft replacement (again to redo).
+    RestoreDraft,
     /// Mirror the display breakpoints into the shared debug controls.
     SyncDebug {
         breakpoints: HashSet<String>,
@@ -369,6 +374,7 @@ impl Effect {
             Effect::Validate => "validate",
             Effect::LoadContext => "load-context",
             Effect::SavePlan => "save-plan",
+            Effect::RestoreDraft => "restore-draft",
             Effect::SyncDebug { .. } => "sync-debug",
         }
     }
@@ -582,6 +588,10 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             }
             Vec::new()
         }
+        Msg::Status(text) => {
+            app.status = text;
+            Vec::new()
+        }
     }
 }
 
@@ -785,6 +795,13 @@ fn on_workspace_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
         }
         KeyCode::Char('r') => start_run(app, false),
         KeyCode::Char('g') => start_run(app, true),
+        KeyCode::Char('u') => {
+            if matches!(app.mode, Mode::Idle) {
+                vec![Effect::RestoreDraft]
+            } else {
+                Vec::new()
+            }
+        }
         KeyCode::Char('q') => {
             if matches!(app.mode, Mode::Idle) {
                 request_quit(app)
@@ -1251,6 +1268,25 @@ steps:
         // No-op on the context tab.
         app.ws.tab = WsTab::Context;
         assert!(update(&mut app, key(KeyCode::Char('b'))).is_empty());
+    }
+
+    #[test]
+    fn u_key_restores_only_when_idle_with_workspace_focus() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.focus = Focus::Workspace;
+        assert_eq!(
+            update(&mut app, key(KeyCode::Char('u'))),
+            vec![Effect::RestoreDraft]
+        );
+
+        // Busy: no restore while an agent turn runs.
+        app.mode = Mode::Chatting;
+        assert!(update(&mut app, key(KeyCode::Char('u'))).is_empty());
+
+        // Chat focus: 'u' is ordinary typing.
+        let mut app = App::new(Some(two_step_doc()));
+        assert!(update(&mut app, key(KeyCode::Char('u'))).is_empty());
+        assert_eq!(app.chat.input.lines().join(""), "u");
     }
 
     #[test]

@@ -395,6 +395,12 @@ impl ToolRegistry for FsTools {
     }
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
+        match name {
+            READ_FILE | GREP | GLOB => {}
+            // Not ours: stay silent, or the composite registry's fallthrough
+            // double-logs calls that another workbench__* registry owns.
+            other => return Err(ToolError::Unknown(other.to_string())),
+        }
         tracing::debug!(
             target: "workbench",
             "agent invoked {name}: {}",

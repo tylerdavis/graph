@@ -697,6 +697,7 @@ fn draw_help(frame: &mut Frame, app: &App) {
             "paused: skip / inject (on error: replace the failed result)",
         ),
         ("a", "paused: abort the run"),
+        ("u", "undo the last draft replacement (again to redo)"),
         ("Ctrl+S", "save the draft to the plans directory"),
         ("Ctrl+C, q", "quit (while paused: abort the run)"),
     ];

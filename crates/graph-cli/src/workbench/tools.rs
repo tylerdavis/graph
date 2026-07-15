@@ -27,9 +27,44 @@ pub const UPDATE_METADATA: &str = "workbench__update_metadata";
 pub const ADD_STEP: &str = "workbench__add_step";
 pub const UPDATE_STEP: &str = "workbench__update_step";
 pub const DELETE_STEP: &str = "workbench__delete_step";
+pub const RESTORE_DRAFT: &str = "workbench__restore_draft";
+
+/// The shared draft: the doc, its unsaved-changes flag, and a one-deep undo
+/// snapshot. One mutex holds all three so a tool can check `dirty`
+/// atomically with replacing the doc — the agent runs a batch's tool calls
+/// concurrently, so a check across two locks would race.
+pub struct DraftState {
+    pub doc: Option<PlanDoc>,
+    pub dirty: bool,
+    /// The (doc, dirty) displaced by the last replacement. `restore` swaps
+    /// it with the current draft, so calling it twice is redo.
+    pub undo: Option<(PlanDoc, bool)>,
+}
+
+impl DraftState {
+    pub fn new(doc: Option<PlanDoc>) -> Self {
+        Self {
+            doc,
+            dirty: false,
+            undo: None,
+        }
+    }
+
+    /// Swap the current draft with the undo snapshot; returns the restored
+    /// (doc, dirty), or None when nothing has been replaced yet.
+    pub fn restore(&mut self) -> Option<(PlanDoc, bool)> {
+        let (doc, dirty) = self.undo.take()?;
+        self.undo = self.doc.take().map(|old| (old, self.dirty));
+        self.doc = Some(doc.clone());
+        self.dirty = dirty;
+        Some((doc, dirty))
+    }
+}
+
+pub type SharedDraft = Arc<Mutex<DraftState>>;
 
 pub struct WorkbenchTools {
-    draft: Arc<Mutex<Option<PlanDoc>>>,
+    draft: SharedDraft,
     pipeline: Arc<Pipeline>,
     plans_dir: Option<PathBuf>,
     debug: Arc<DebugControls>,
@@ -38,7 +73,7 @@ pub struct WorkbenchTools {
 
 impl WorkbenchTools {
     pub fn new(
-        draft: Arc<Mutex<Option<PlanDoc>>>,
+        draft: SharedDraft,
         pipeline: Arc<Pipeline>,
         plans_dir: Option<PathBuf>,
         debug: Arc<DebugControls>,
@@ -54,11 +89,21 @@ impl WorkbenchTools {
     }
 
     fn current(&self) -> Option<PlanDoc> {
-        self.draft.lock().unwrap().clone()
+        self.draft.lock().unwrap().doc.clone()
     }
 
+    /// Replace the draft, stashing the displaced doc as the undo snapshot.
+    /// Deliberately unguarded: the edit path (draft_plan, set_plan, the
+    /// precise tools) preserves unsaved work by setting dirty=true, and any
+    /// bad replacement is one restore away. Only load_plan needs the dirty
+    /// guard, and it does its check-and-replace under the same lock.
     fn publish(&self, doc: PlanDoc, dirty: bool) {
-        *self.draft.lock().unwrap() = Some(doc.clone());
+        {
+            let mut state = self.draft.lock().unwrap();
+            state.undo = state.doc.take().map(|old| (old, state.dirty));
+            state.doc = Some(doc.clone());
+            state.dirty = dirty;
+        }
         let _ = self.tx.send(Msg::DraftReplaced {
             doc: Box::new(doc),
             dirty,
@@ -113,10 +158,56 @@ impl WorkbenchTools {
             "steps": doc.steps.len(),
             "validation": if problems.is_empty() { json!("ok") } else { json!(problems) },
         });
-        self.publish(doc, false);
+        // Check-and-replace under one lock: concurrent same-batch loads
+        // each see the true dirty state, so unsaved work is never lost
+        // without an explicit overwrite.
+        let overwrite = input
+            .get("overwrite_draft")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        {
+            let mut state = self.draft.lock().unwrap();
+            if state.dirty && !overwrite {
+                return ToolOutcome {
+                    result: json!({
+                        "error": "the draft has unsaved changes — save them with \
+                                  workbench__save_plan, or pass overwrite_draft: true \
+                                  only after the user confirms discarding them",
+                        "dirtyDraft": state.doc.as_ref().map(|d| d.identifier.clone()),
+                    }),
+                    is_error: true,
+                };
+            }
+            state.undo = state.doc.take().map(|old| (old, state.dirty));
+            state.doc = Some(doc.clone());
+            state.dirty = false;
+        }
+        let _ = self.tx.send(Msg::DraftReplaced {
+            doc: Box::new(doc),
+            dirty: false,
+        });
         ToolOutcome {
             result: summary,
             is_error: false,
+        }
+    }
+
+    /// One-level undo of the last draft replacement; calling it again redoes.
+    fn restore_draft(&self) -> ToolOutcome {
+        let restored = self.draft.lock().unwrap().restore();
+        match restored {
+            Some((doc, dirty)) => {
+                let result = json!({"restored": doc.identifier, "dirty": dirty});
+                let _ = self.tx.send(Msg::DraftReplaced {
+                    doc: Box::new(doc),
+                    dirty,
+                });
+                ToolOutcome {
+                    result,
+                    is_error: false,
+                }
+            }
+            None => error_outcome("nothing to restore — the draft has not been replaced yet"),
         }
     }
 
@@ -336,7 +427,18 @@ impl WorkbenchTools {
         };
         let mut doc: PlanDoc = match serde_yaml::from_str(yaml) {
             Ok(doc) => doc,
-            Err(error) => return error_outcome(&format!("invalid plan YAML: {error}")),
+            Err(error) => {
+                let mut message = format!("invalid plan YAML: {error}");
+                if error.to_string().contains("unknown field") {
+                    message.push_str(
+                        "\nhint: control flow is not a field — it is a step whose \
+                         toolName is one of the bare control steps exit, decide, map, \
+                         or reduce (there is no gate/assert tool); a plan finishes \
+                         with `solver` OR `output`, never both",
+                    );
+                }
+                return error_outcome(&message);
+            }
         };
         if let Err(problem) = validate_doc(&doc) {
             return error_outcome(&format!("invalid plan: {problem}"));
@@ -650,16 +752,19 @@ impl ToolRegistry for WorkbenchTools {
             },
             ToolDef {
                 name: LOAD_PLAN.to_string(),
-                description: "Load an existing plan into the workbench as the draft — by \
+                description: "Open a DIFFERENT plan the user explicitly names — by \
                               identifier from the plan catalog, or by YAML file path. \
-                              Replaces the current draft: if there are unsaved changes, \
-                              confirm with the user before loading over them."
+                              Never use it to edit, fix, or continue the current draft; \
+                              use the editing tools for that. Replaces the current \
+                              draft, and FAILS if the draft has unsaved changes unless \
+                              overwrite_draft is true."
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
                     "required": ["name_or_path"],
                     "properties": {
-                        "name_or_path": {"type": "string", "description": "A plan identifier (e.g. sprint_analysis) or a path to a plan YAML file."}
+                        "name_or_path": {"type": "string", "description": "A plan identifier (e.g. sprint_analysis) or a path to a plan YAML file."},
+                        "overwrite_draft": {"type": "boolean", "description": "Required (true) to load over a draft with unsaved changes. Only pass it after the user explicitly confirms discarding them. Default false."}
                     }
                 }),
                 output_schema: None,
@@ -858,10 +963,30 @@ impl ToolRegistry for WorkbenchTools {
                 output_example: Some(json!({"ok": true, "id": "E2", "steps": 3})),
                 read_only: None,
             },
+            ToolDef {
+                name: RESTORE_DRAFT.to_string(),
+                description: "One-level undo: put the draft back to what it was before \
+                              the last replacement (load, draft, set, or edit) — use it \
+                              when you or the user replaced the draft by mistake. \
+                              Calling it again redoes."
+                    .to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                output_schema: None,
+                output_example: Some(json!({"restored": "sprint_report", "dirty": true})),
+                read_only: None,
+            },
         ])
     }
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
+        match name {
+            DRAFT_PLAN | GET_PLAN | SET_PLAN | LOAD_PLAN | LIST_PLANS | VALIDATE_PLAN
+            | RUN_PLAN | SAVE_PLAN | UPDATE_METADATA | ADD_STEP | UPDATE_STEP | DELETE_STEP
+            | RESTORE_DRAFT => {}
+            // Not ours: stay silent, or the composite registry's fallthrough
+            // (the fs tools are also workbench__*) double-logs the call.
+            other => return Err(ToolError::Unknown(other.to_string())),
+        }
         tracing::debug!(
             target: "workbench",
             "agent invoked {name}: {}",
@@ -881,6 +1006,7 @@ impl ToolRegistry for WorkbenchTools {
             ADD_STEP => Ok(self.add_step(&input)),
             UPDATE_STEP => Ok(self.update_step(&input)),
             DELETE_STEP => Ok(self.delete_step(&input)),
+            RESTORE_DRAFT => Ok(self.restore_draft()),
             other => Err(ToolError::Unknown(other.to_string())),
         };
         if let Ok(outcome) = &outcome {
@@ -936,7 +1062,7 @@ steps:
     #[test]
     fn load_plan_by_identifier_publishes_a_clean_draft() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let draft = Arc::new(Mutex::new(None));
+        let draft: SharedDraft = Arc::new(Mutex::new(DraftState::new(None)));
         let tools = WorkbenchTools::new(
             draft.clone(),
             test_pipeline(vec![demo_doc()]),
@@ -949,7 +1075,7 @@ steps:
         assert!(!outcome.is_error, "{:?}", outcome.result);
         assert_eq!(outcome.result["identifier"], json!("demo"));
         assert_eq!(outcome.result["validation"], json!("ok"));
-        assert!(draft.lock().unwrap().is_some());
+        assert!(draft.lock().unwrap().doc.is_some());
         match rx.try_recv().unwrap() {
             Msg::DraftReplaced { doc, dirty } => {
                 assert_eq!(doc.identifier, "demo");
@@ -963,7 +1089,7 @@ steps:
     fn load_plan_unknown_name_lists_available_plans() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let tools = WorkbenchTools::new(
-            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(DraftState::new(None))),
             test_pipeline(vec![demo_doc()]),
             None,
             Arc::new(DebugControls::default()),
@@ -974,11 +1100,84 @@ steps:
         assert_eq!(outcome.result["availablePlans"], json!(["demo"]));
     }
 
+    fn other_doc() -> PlanDoc {
+        let mut other = demo_doc();
+        other.identifier = "other_plan".to_string();
+        other
+    }
+
+    #[test]
+    fn load_plan_refuses_to_replace_a_dirty_draft() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = DraftState::new(Some(demo_doc()));
+        state.dirty = true;
+        let draft: SharedDraft = Arc::new(Mutex::new(state));
+        let tools = WorkbenchTools::new(
+            draft.clone(),
+            test_pipeline(vec![other_doc()]),
+            None,
+            Arc::new(DebugControls::default()),
+            tx,
+        );
+
+        let outcome = tools.load_plan(&json!({"name_or_path": "other_plan"}));
+        assert!(outcome.is_error);
+        assert!(
+            outcome.result["error"]
+                .as_str()
+                .unwrap()
+                .contains("unsaved changes"),
+            "{:?}",
+            outcome.result
+        );
+        assert_eq!(outcome.result["dirtyDraft"], json!("demo"));
+        assert!(rx.try_recv().is_err(), "a refused load must not publish");
+        assert_eq!(
+            draft.lock().unwrap().doc.as_ref().unwrap().identifier,
+            "demo",
+            "the dirty draft survives"
+        );
+    }
+
+    #[test]
+    fn load_plan_overwrite_flag_replaces_a_dirty_draft() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = DraftState::new(Some(demo_doc()));
+        state.dirty = true;
+        let draft: SharedDraft = Arc::new(Mutex::new(state));
+        let tools = WorkbenchTools::new(
+            draft.clone(),
+            test_pipeline(vec![other_doc()]),
+            None,
+            Arc::new(DebugControls::default()),
+            tx,
+        );
+
+        let outcome =
+            tools.load_plan(&json!({"name_or_path": "other_plan", "overwrite_draft": true}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        match rx.try_recv().unwrap() {
+            Msg::DraftReplaced { doc, dirty } => {
+                assert_eq!(doc.identifier, "other_plan");
+                assert!(!dirty);
+            }
+            _ => panic!("expected DraftReplaced"),
+        }
+        let state = draft.lock().unwrap();
+        assert_eq!(state.doc.as_ref().unwrap().identifier, "other_plan");
+        let (undone, was_dirty) = state.undo.as_ref().unwrap();
+        assert_eq!(
+            undone.identifier, "demo",
+            "the overwritten draft is one undo away"
+        );
+        assert!(*was_dirty);
+    }
+
     #[test]
     fn list_plans_enumerates_the_catalog() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let tools = WorkbenchTools::new(
-            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(DraftState::new(None))),
             test_pipeline(vec![demo_doc()]),
             None,
             Arc::new(DebugControls::default()),
@@ -1000,7 +1199,7 @@ steps:
             Value::String("{{E5.values}}".to_string()),
         );
         let tools = WorkbenchTools::new(
-            Arc::new(Mutex::new(Some(doc))),
+            Arc::new(Mutex::new(DraftState::new(Some(doc)))),
             test_pipeline(vec![]),
             None,
             Arc::new(DebugControls::default()),
@@ -1021,7 +1220,7 @@ steps:
         let dir = tempfile::tempdir().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let tools = WorkbenchTools::new(
-            Arc::new(Mutex::new(Some(demo_doc()))),
+            Arc::new(Mutex::new(DraftState::new(Some(demo_doc())))),
             test_pipeline(vec![]),
             Some(dir.path().to_path_buf()),
             Arc::new(DebugControls::default()),
@@ -1038,7 +1237,7 @@ steps:
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut loaded = demo_doc();
         loaded.path = Some(PathBuf::from("/plans/demo.yaml"));
-        let draft = Arc::new(Mutex::new(Some(loaded)));
+        let draft: SharedDraft = Arc::new(Mutex::new(DraftState::new(Some(loaded))));
         let tools = WorkbenchTools::new(
             draft.clone(),
             test_pipeline(vec![]),
@@ -1051,7 +1250,7 @@ steps:
         let same = serde_yaml::to_string(&demo_doc()).unwrap();
         assert!(!tools.set_plan(&json!({ "yaml": same })).is_error);
         assert_eq!(
-            draft.lock().unwrap().as_ref().unwrap().path,
+            draft.lock().unwrap().doc.as_ref().unwrap().path,
             Some(PathBuf::from("/plans/demo.yaml"))
         );
 
@@ -1061,7 +1260,7 @@ steps:
         other.identifier = "other_plan".to_string();
         let other = serde_yaml::to_string(&other).unwrap();
         assert!(!tools.set_plan(&json!({ "yaml": other })).is_error);
-        assert_eq!(draft.lock().unwrap().as_ref().unwrap().path, None);
+        assert_eq!(draft.lock().unwrap().doc.as_ref().unwrap().path, None);
     }
 
     #[test]
@@ -1075,7 +1274,7 @@ steps:
         let mut drifted = demo_doc();
         drifted.identifier = "other_plan".to_string();
         drifted.path = Some(path.clone());
-        let draft = Mutex::new(Some(drifted));
+        let draft = Mutex::new(DraftState::new(Some(drifted)));
         let error = super::super::effects::save_draft(&draft, Some(dir.path())).unwrap_err();
         assert!(error.contains("refusing to overwrite"), "{error}");
         let on_disk = std::fs::read_to_string(&path).unwrap();
@@ -1092,7 +1291,7 @@ steps:
             "properties": {"team": {"type": "string"}}
         }));
         let tools = WorkbenchTools::new(
-            Arc::new(Mutex::new(Some(doc))),
+            Arc::new(Mutex::new(DraftState::new(Some(doc)))),
             test_pipeline(vec![]),
             None,
             Arc::new(DebugControls::default()),
@@ -1133,11 +1332,11 @@ solver:
         doc: Option<PlanDoc>,
     ) -> (
         WorkbenchTools,
-        Arc<Mutex<Option<PlanDoc>>>,
+        SharedDraft,
         tokio::sync::mpsc::UnboundedReceiver<Msg>,
     ) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let draft = Arc::new(Mutex::new(doc));
+        let draft = Arc::new(Mutex::new(DraftState::new(doc)));
         let tools = WorkbenchTools::new(
             draft.clone(),
             test_pipeline(vec![]),
@@ -1162,7 +1361,7 @@ solver:
             tools.update_metadata(&json!({"name": "Better name", "description": "clearer"}));
         assert!(!outcome.is_error, "{:?}", outcome.result);
         assert_eq!(outcome.result["name"], json!("Better name"));
-        let doc = draft.lock().unwrap().clone().unwrap();
+        let doc = draft.lock().unwrap().doc.clone().unwrap();
         assert_eq!(doc.name, "Better name");
         assert_eq!(doc.description, "clearer");
         assert_dirty_publish(&mut rx);
@@ -1176,7 +1375,7 @@ solver:
 
         // Renaming (display name) keeps the on-disk identity…
         assert!(!tools.update_metadata(&json!({"name": "Renamed"})).is_error);
-        assert!(draft.lock().unwrap().as_ref().unwrap().path.is_some());
+        assert!(draft.lock().unwrap().doc.as_ref().unwrap().path.is_some());
 
         // …but a new identifier is a different plan: the path is dropped
         // so the next save cannot overwrite the old file.
@@ -1185,7 +1384,7 @@ solver:
                 .update_metadata(&json!({"identifier": "other_plan"}))
                 .is_error
         );
-        assert_eq!(draft.lock().unwrap().as_ref().unwrap().path, None);
+        assert_eq!(draft.lock().unwrap().doc.as_ref().unwrap().path, None);
     }
 
     #[test]
@@ -1205,20 +1404,29 @@ solver:
         assert!(!outcome.is_error, "{:?}", outcome.result);
         assert_eq!(outcome.result["index"], json!(3));
         assert_eq!(outcome.result["steps"], json!(4));
-        assert_eq!(draft.lock().unwrap().as_ref().unwrap().steps[3].id, "E3");
+        assert_eq!(
+            draft.lock().unwrap().doc.as_ref().unwrap().steps[3].id,
+            "E3"
+        );
         assert_dirty_publish(&mut rx);
 
         let (tools, draft, _rx) = editing_tools(Some(referencing_doc()));
         let outcome = tools.add_step(&json!({"step": step, "after": "E0"}));
         assert_eq!(outcome.result["index"], json!(1), "{:?}", outcome.result);
-        assert_eq!(draft.lock().unwrap().as_ref().unwrap().steps[1].id, "E3");
+        assert_eq!(
+            draft.lock().unwrap().doc.as_ref().unwrap().steps[1].id,
+            "E3"
+        );
 
         let (tools, draft, _rx) = editing_tools(Some(referencing_doc()));
         // Anchored before E0 the step may not reference E0 anymore.
         let independent = json!({"id": "E3", "toolName": "t__extra", "input": {"q": "fixed"}});
         let outcome = tools.add_step(&json!({"step": independent, "before": "E0"}));
         assert_eq!(outcome.result["index"], json!(0), "{:?}", outcome.result);
-        assert_eq!(draft.lock().unwrap().as_ref().unwrap().steps[0].id, "E3");
+        assert_eq!(
+            draft.lock().unwrap().doc.as_ref().unwrap().steps[0].id,
+            "E3"
+        );
     }
 
     #[test]
@@ -1252,7 +1460,7 @@ solver:
             "{:?}",
             outcome.result
         );
-        assert_eq!(draft.lock().unwrap().as_ref().unwrap().steps.len(), 3);
+        assert_eq!(draft.lock().unwrap().doc.as_ref().unwrap().steps.len(), 3);
         assert!(rx.try_recv().is_err(), "rejected edits must not publish");
 
         let duplicate = json!({"id": "E0", "toolName": "t__extra", "input": {}});
@@ -1269,7 +1477,7 @@ solver:
             "reasoning": "narrower query",
         }));
         assert!(!outcome.is_error, "{:?}", outcome.result);
-        let doc = draft.lock().unwrap().clone().unwrap();
+        let doc = draft.lock().unwrap().doc.clone().unwrap();
         assert_eq!(doc.steps[0].tool_name, "t__better_search");
         assert_eq!(doc.steps[0].input["limit"], json!(5));
         assert_eq!(doc.steps[0].reasoning.as_deref(), Some("narrower query"));
@@ -1282,7 +1490,7 @@ solver:
                 .is_error
         );
         assert_eq!(
-            draft.lock().unwrap().as_ref().unwrap().steps[0].reasoning,
+            draft.lock().unwrap().doc.as_ref().unwrap().steps[0].reasoning,
             None
         );
         assert!(tools.update_step(&json!({"id": "E0"})).is_error);
@@ -1299,7 +1507,7 @@ solver:
         let outcome = tools.update_step(&json!({"id": "E1", "newId": "issues"}));
         assert!(!outcome.is_error, "{:?}", outcome.result);
         assert_eq!(outcome.result["id"], json!("issues"));
-        let doc = draft.lock().unwrap().clone().unwrap();
+        let doc = draft.lock().unwrap().doc.clone().unwrap();
         assert_eq!(doc.steps[1].id, "issues");
         assert_eq!(
             doc.steps[2].input["rows"],
@@ -1321,7 +1529,10 @@ solver:
             "{:?}",
             outcome.result
         );
-        assert_eq!(draft.lock().unwrap().as_ref().unwrap().steps[0].id, "E0");
+        assert_eq!(
+            draft.lock().unwrap().doc.as_ref().unwrap().steps[0].id,
+            "E0"
+        );
         assert!(rx.try_recv().is_err(), "rejected edits must not publish");
     }
 
@@ -1331,7 +1542,7 @@ solver:
         let outcome = tools.delete_step(&json!({"id": "E2"}));
         assert!(!outcome.is_error, "{:?}", outcome.result);
         assert_eq!(outcome.result["steps"], json!(2));
-        assert_eq!(draft.lock().unwrap().as_ref().unwrap().steps.len(), 2);
+        assert_eq!(draft.lock().unwrap().doc.as_ref().unwrap().steps.len(), 2);
         assert_dirty_publish(&mut rx);
     }
 
@@ -1346,12 +1557,64 @@ solver:
             "{:?}",
             outcome.result
         );
-        assert_eq!(draft.lock().unwrap().as_ref().unwrap().steps.len(), 3);
+        assert_eq!(draft.lock().unwrap().doc.as_ref().unwrap().steps.len(), 3);
         assert!(rx.try_recv().is_err(), "rejected edits must not publish");
 
         // The last remaining step cannot be deleted either.
         let (tools, _draft, _rx) = editing_tools(Some(demo_doc()));
         assert!(tools.delete_step(&json!({"id": "E0"})).is_error);
+    }
+
+    #[test]
+    fn set_plan_unknown_field_error_includes_a_control_flow_hint() {
+        let (tools, _draft, _rx) = editing_tools(Some(referencing_doc()));
+        let yaml = "identifier: demo\nname: Demo\ndescription: d\nsteps:\n\
+                    - id: E0\n  tool_name: t__x\n  input: {}\ngate:\n  condition: true\n";
+        let outcome = tools.set_plan(&json!({ "yaml": yaml }));
+        assert!(outcome.is_error);
+        let message = outcome.result["error"].as_str().unwrap();
+        assert!(message.contains("unknown field"), "{message}");
+        assert!(message.contains("hint:"), "{message}");
+        assert!(message.contains("exit, decide, map"), "{message}");
+    }
+
+    #[test]
+    fn edits_capture_an_undo_snapshot_and_restore_swaps_back() {
+        let (tools, draft, mut rx) = editing_tools(Some(referencing_doc()));
+        assert!(!tools.update_metadata(&json!({"name": "Renamed"})).is_error);
+        assert_dirty_publish(&mut rx);
+        {
+            let state = draft.lock().unwrap();
+            let (undone, was_dirty) = state.undo.as_ref().unwrap();
+            assert_eq!(undone.name, "Demo");
+            assert!(!*was_dirty, "the displaced draft was clean");
+        }
+
+        // Restore puts the original back with its clean flag…
+        let outcome = tools.restore_draft();
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        match rx.try_recv().unwrap() {
+            Msg::DraftReplaced { doc, dirty } => {
+                assert_eq!(doc.name, "Demo");
+                assert!(!dirty);
+            }
+            _ => panic!("expected DraftReplaced"),
+        }
+        assert!(!draft.lock().unwrap().dirty);
+
+        // …and restoring again redoes the edit.
+        assert!(!tools.restore_draft().is_error);
+        let state = draft.lock().unwrap();
+        assert_eq!(state.doc.as_ref().unwrap().name, "Renamed");
+        assert!(state.dirty);
+    }
+
+    #[test]
+    fn restore_with_no_snapshot_errors() {
+        let (tools, _draft, mut rx) = editing_tools(Some(referencing_doc()));
+        let outcome = tools.restore_draft();
+        assert!(outcome.is_error);
+        assert!(rx.try_recv().is_err(), "nothing should have been published");
     }
 
     #[test]
