@@ -30,6 +30,13 @@ pub const DELETE_STEP: &str = "workbench__delete_step";
 pub const RESTORE_DRAFT: &str = "workbench__restore_draft";
 pub const SHOW_PLAN: &str = "workbench__show_plan";
 
+/// Appended to every workbench__ tool description surfaced to the chat
+/// agent: these are agent-side tools, not runtime tools, so a plan step
+/// referencing one only fails at run time. Descriptions are routing
+/// signals — this keeps them out of drafted steps.
+pub(crate) const WORKBENCH_ONLY_NOTE: &str =
+    " Workbench-only: not available to plan steps at runtime.";
+
 /// The shared draft: the doc, its unsaved-changes flag, and a one-deep undo
 /// snapshot. One mutex holds all three so a tool can check `dirty`
 /// atomically with replacing the doc — the agent runs a batch's tool calls
@@ -261,16 +268,7 @@ impl WorkbenchTools {
         let Some(doc) = self.current() else {
             return error_outcome("no draft to validate");
         };
-        let mut problems = self
-            .pipeline
-            .validate_plan(&doc.steps)
-            .err()
-            .unwrap_or_default();
-        if let Err(problem) = validate_doc(&doc) {
-            if !problems.contains(&problem) {
-                problems.push(problem);
-            }
-        }
+        let problems = self.doc_problems(&doc);
         let _ = self.tx.send(Msg::Validated(problems.clone()));
         ToolOutcome {
             result: json!({"valid": problems.is_empty(), "problems": problems}),
@@ -383,7 +381,7 @@ impl WorkbenchTools {
             plan: doc.steps.clone(),
             solver_data: doc.solver.clone().unwrap_or_default(),
         });
-        let output = match self
+        let mut output = match self
             .pipeline
             .draft_plan(goal, existing_output.as_ref(), feedback)
             .await
@@ -392,17 +390,57 @@ impl WorkbenchTools {
             Err(error) => return error_outcome(&format!("planner failed: {error}")),
         };
 
-        let doc = merge_planner_output(existing, goal, output);
-        let problems = self
+        // One bounded repair pass: never hand over an invalid draft
+        // silently. The invalid draft goes back to the planner as the
+        // draft under revision with the problems as the error to fix;
+        // whatever the retry produces is handed over, problems surfaced.
+        let mut problems = self
             .pipeline
-            .validate_plan(&doc.steps)
+            .validate_plan(&output.plan)
             .err()
             .unwrap_or_default();
-        let summary = json!({
+        let mut repair_attempted = false;
+        if !problems.is_empty() {
+            repair_attempted = true;
+            let repair_feedback = format!(
+                "the drafted plan failed validation — fix these problems: {}",
+                problems.join("; ")
+            );
+            match self
+                .pipeline
+                .draft_plan(goal, Some(&output), Some(&repair_feedback))
+                .await
+            {
+                Ok(retry) => {
+                    problems = self
+                        .pipeline
+                        .validate_plan(&retry.plan)
+                        .err()
+                        .unwrap_or_default();
+                    output = retry;
+                }
+                // A failed retry keeps the first draft and its problems.
+                Err(error) => {
+                    tracing::debug!(target: "workbench", "draft repair pass failed: {error}")
+                }
+            }
+        }
+
+        let doc = merge_planner_output(existing, goal, output);
+        let mut summary = json!({
             "identifier": doc.identifier,
             "steps": doc.steps.len(),
             "validation": if problems.is_empty() { json!("ok") } else { json!(problems) },
         });
+        if repair_attempted {
+            summary["repairAttempted"] = json!(true);
+            if !problems.is_empty() {
+                summary["note"] = json!(
+                    "the draft is still invalid after one repair pass — \
+                     fix the remaining problems with the editing tools"
+                );
+            }
+        }
         self.publish(doc, true);
         ToolOutcome {
             result: summary,
@@ -469,15 +507,35 @@ impl WorkbenchTools {
         }
     }
 
+    /// Every validation problem in a doc: plan-level plus document-level.
+    fn doc_problems(&self, doc: &PlanDoc) -> Vec<String> {
+        let mut problems = self
+            .pipeline
+            .validate_plan(&doc.steps)
+            .err()
+            .unwrap_or_default();
+        if let Err(problem) = validate_doc(doc) {
+            if !problems.contains(&problem) {
+                problems.push(problem);
+            }
+        }
+        problems
+    }
+
     /// The choke point for the precise editing tools: apply `mutate` to a
-    /// clone of the draft and publish only if the result validates — an
-    /// edit that would make the plan invalid is rejected with the problems
-    /// and the draft stays untouched (same contract as set_plan). `mutate`
-    /// errors are full result bodies so they can carry structured fields.
+    /// clone of the draft and reject only edits that introduce NEW
+    /// validation problems (absent before, present after) — the draft stays
+    /// untouched. Pre-existing problems never block an edit: an already-
+    /// invalid draft (e.g. straight from the planner) must stay editable,
+    /// or fixing it becomes chicken-and-egg. Accepted edits on a
+    /// still-invalid plan report the remaining pre-existing problems in
+    /// the success result. `mutate` errors are full result bodies so they
+    /// can carry structured fields.
     fn edit_draft(&self, mutate: impl FnOnce(&mut PlanDoc) -> Result<Value, Value>) -> ToolOutcome {
         let Some(mut doc) = self.current() else {
             return error_outcome("no draft — load or draft one first");
         };
+        let before = self.doc_problems(&doc);
         let summary = match mutate(&mut doc) {
             Ok(summary) => summary,
             Err(body) => {
@@ -487,26 +545,32 @@ impl WorkbenchTools {
                 }
             }
         };
-        let mut problems = self
-            .pipeline
-            .validate_plan(&doc.steps)
-            .err()
-            .unwrap_or_default();
-        if let Err(problem) = validate_doc(&doc) {
-            if !problems.contains(&problem) {
-                problems.push(problem);
+        let after = self.doc_problems(&doc);
+        let introduced: Vec<&String> = after.iter().filter(|p| !before.contains(p)).collect();
+        if !introduced.is_empty() {
+            let pre_existing: Vec<&String> = after.iter().filter(|p| before.contains(p)).collect();
+            let mut body = json!({
+                "error": "edit rejected — it would introduce new validation problems \
+                          (the draft is unchanged)",
+                "problemsIntroduced": introduced,
+            });
+            if !pre_existing.is_empty() {
+                body["preExistingProblems"] = json!(pre_existing);
             }
-        }
-        if !problems.is_empty() {
             return ToolOutcome {
-                result: json!({
-                    "error": "edit rejected — it would make the plan invalid",
-                    "problems": problems,
-                }),
+                result: body,
                 is_error: true,
             };
         }
         self.publish(doc, true);
+        let mut summary = summary;
+        if !after.is_empty() {
+            summary["preExistingProblems"] = json!(after);
+            summary["note"] = json!(
+                "edit applied; the plan is still invalid, but only from \
+                 pre-existing problems (not caused by this edit) — fix them next"
+            );
+        }
         ToolOutcome {
             result: summary,
             is_error: false,
@@ -655,8 +719,12 @@ fn merge_planner_output(existing: Option<PlanDoc>, goal: &str, output: PlannerOu
             doc
         }
         None => PlanDoc {
-            identifier: identifier_from(goal),
-            name: name_from(goal),
+            // A name the goal states explicitly ('named "the_goat"') is
+            // the plan's identity; raw goal prose is only the fallback.
+            identifier: stated_name(goal)
+                .map(|name| identifier_from(&name))
+                .unwrap_or_else(|| identifier_from(goal)),
+            name: stated_name(goal).unwrap_or_else(|| name_from(goal)),
             description: goal.to_string(),
             exemplars: Vec::new(),
             requires_servers: Vec::new(),
@@ -734,6 +802,59 @@ fn error_outcome(message: &str) -> ToolOutcome {
     }
 }
 
+/// A plan name the goal states explicitly — "named X", "called X", or
+/// "name it X". A quoted string anywhere after the marker wins (so
+/// 'named something like "the_goat"' resolves to the_goat); otherwise the
+/// next word, unless it's filler that describes rather than names.
+fn stated_name(goal: &str) -> Option<String> {
+    let position = ["named", "called", "name it"]
+        .iter()
+        .filter_map(|marker| find_ascii_ci(goal, marker).map(|at| at + marker.len()))
+        .min()?;
+    let mut rest = goal[position..].trim_start();
+    loop {
+        let first = rest.chars().next()?;
+        // A quoted string is the name verbatim.
+        if matches!(first, '"' | '\'' | '`') {
+            let inner = &rest[first.len_utf8()..];
+            let name = inner[..inner.find(first)?].trim();
+            return (!name.is_empty() && name.chars().count() <= 60).then(|| name.to_string());
+        }
+        let (token, remainder) = match rest.split_once(char::is_whitespace) {
+            Some((token, remainder)) => (token, remainder.trim_start()),
+            None => (rest, ""),
+        };
+        let word = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-');
+        // Skip filler that describes rather than names.
+        if matches!(
+            word.to_ascii_lowercase().as_str(),
+            "" | "something" | "like" | "maybe" | "perhaps" | "it" | "the" | "a" | "an"
+        ) {
+            rest = remainder;
+            continue;
+        }
+        return Some(word.to_string());
+    }
+}
+
+/// Byte offset of an ASCII needle, case-insensitively and on word
+/// boundaries ("renamed" must not match "named"). Matches are all-ASCII,
+/// so the offset is always a char boundary.
+fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let bytes = haystack.as_bytes();
+    let target = needle.as_bytes();
+    if bytes.len() < target.len() {
+        return None;
+    }
+    (0..=bytes.len() - target.len()).find(|&at| {
+        bytes[at..at + target.len()].eq_ignore_ascii_case(target)
+            && (at == 0 || !bytes[at - 1].is_ascii_alphanumeric())
+            && bytes
+                .get(at + target.len())
+                .is_none_or(|next| !next.is_ascii_alphanumeric())
+    })
+}
+
 /// Tool-name-safe identifier from a free-form goal.
 fn identifier_from(goal: &str) -> String {
     let mut identifier = String::new();
@@ -764,7 +885,7 @@ fn name_from(goal: &str) -> String {
 #[async_trait]
 impl ToolRegistry for WorkbenchTools {
     async fn tools(&self) -> Result<Vec<ToolDef>, ToolError> {
-        Ok(vec![
+        let mut defs = vec![
             ToolDef {
                 name: DRAFT_PLAN.to_string(),
                 description: "Create or revise the workbench's draft plan from a goal. The \
@@ -773,7 +894,9 @@ impl ToolRegistry for WorkbenchTools {
                               when revising after validation problems or user corrections. \
                               Pass fresh: true when the goal describes a NEW plan — \
                               otherwise the current draft is treated as the plan under \
-                              revision and keeps its identifier and metadata."
+                              revision and keeps its identifier and metadata. A draft \
+                              that fails validation gets one automatic repair pass; \
+                              any remaining problems are returned in `validation`."
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -929,11 +1052,12 @@ impl ToolRegistry for WorkbenchTools {
                 name: ADD_STEP.to_string(),
                 description: "Insert one top-level step into the draft — appended, or \
                               anchored with `before`/`after` an existing step id. The \
-                              edit is rejected (draft unchanged) if the result would be \
-                              invalid, e.g. a duplicate id or a reference to a later \
-                              step. Steps inside decide/map/reduce bodies live in the \
-                              control step's input — use update_step on that step \
-                              instead."
+                              edit is rejected (draft unchanged) only if it introduces \
+                              NEW validation problems, e.g. a duplicate id or a \
+                              reference to a later step; pre-existing problems never \
+                              block it and are reported in the result. Steps inside \
+                              decide/map/reduce bodies live in the control step's \
+                              input — use update_step on that step instead."
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -963,10 +1087,11 @@ impl ToolRegistry for WorkbenchTools {
                               (replaced whole, not merged), reasoning (empty string \
                               clears it), and/or newId to rename the step — renaming \
                               rewrites {{id.*}} references in later steps, the solver, \
-                              and the output so templates keep working. Invalid results \
-                              are rejected with the problems. For steps inside \
-                              decide/map/reduce bodies, update the owning control \
-                              step's input."
+                              and the output so templates keep working. Rejected only \
+                              when the edit introduces NEW validation problems; \
+                              pre-existing ones are reported, not blocking. For steps \
+                              inside decide/map/reduce bodies, update the owning \
+                              control step's input."
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -1033,7 +1158,11 @@ impl ToolRegistry for WorkbenchTools {
                 output_example: Some(json!({"restored": "sprint_report", "dirty": true})),
                 read_only: None,
             },
-        ])
+        ];
+        for def in &mut defs {
+            def.description.push_str(WORKBENCH_ONLY_NOTE);
+        }
+        Ok(defs)
     }
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
@@ -1567,7 +1696,7 @@ solver:
         }));
         assert!(outcome.is_error);
         assert!(
-            outcome.result["problems"].is_array(),
+            outcome.result["problemsIntroduced"].is_array(),
             "{:?}",
             outcome.result
         );
@@ -1636,7 +1765,7 @@ solver:
         let outcome = tools.update_step(&json!({"id": "E0", "newId": "E1"}));
         assert!(outcome.is_error);
         assert!(
-            outcome.result["problems"].is_array(),
+            outcome.result["problemsIntroduced"].is_array(),
             "{:?}",
             outcome.result
         );
@@ -1664,7 +1793,9 @@ solver:
         let outcome = tools.delete_step(&json!({"id": "E0"}));
         assert!(outcome.is_error);
         assert!(
-            outcome.result["problems"].to_string().contains("E0"),
+            outcome.result["problemsIntroduced"]
+                .to_string()
+                .contains("E0"),
             "{:?}",
             outcome.result
         );
@@ -1674,6 +1805,107 @@ solver:
         // The last remaining step cannot be deleted either.
         let (tools, _draft, _rx) = editing_tools(Some(demo_doc()));
         assert!(tools.delete_step(&json!({"id": "E0"})).is_error);
+    }
+
+    /// A draft with a pre-existing validation problem: E10's input has a
+    /// template parse error — the state draft_plan handed over in the
+    /// 2026-07-15 incident.
+    fn invalid_doc() -> PlanDoc {
+        serde_yaml::from_str(
+            r#"
+identifier: demo
+name: Demo
+description: demo plan
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: x }
+  - id: E10
+    tool_name: t__report
+    input: { rows: "{{.}}" }
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn edits_on_an_already_invalid_plan_are_accepted_when_they_break_nothing() {
+        let (tools, draft, mut rx) = editing_tools(Some(invalid_doc()));
+        // The new step is valid; the plan stays invalid, but only from the
+        // pre-existing E10 problem — the edit must land.
+        let outcome = tools.add_step(&json!({
+            "step": {"id": "E5", "toolName": "t__extra", "input": {"q": "{{E0.values}}"}},
+            "after": "E0",
+        }));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        let pre_existing = outcome.result["preExistingProblems"].to_string();
+        assert!(pre_existing.contains("E10"), "{:?}", outcome.result);
+        assert!(
+            outcome.result["note"]
+                .as_str()
+                .unwrap()
+                .contains("not caused by this edit"),
+            "{:?}",
+            outcome.result
+        );
+        assert_eq!(draft.lock().unwrap().doc.as_ref().unwrap().steps.len(), 3);
+        assert_dirty_publish(&mut rx);
+    }
+
+    #[test]
+    fn edit_introducing_a_new_problem_is_rejected_citing_only_that_problem() {
+        let (tools, draft, mut rx) = editing_tools(Some(invalid_doc()));
+        // Forward reference to E99: a NEW problem on top of E10's.
+        let outcome = tools.add_step(&json!({
+            "step": {"id": "E5", "toolName": "t__extra", "input": {"q": "{{E99.values}}"}},
+        }));
+        assert!(outcome.is_error);
+        let introduced = outcome.result["problemsIntroduced"].as_array().unwrap();
+        assert_eq!(introduced.len(), 1, "{:?}", outcome.result);
+        assert!(introduced[0].as_str().unwrap().contains("E99"));
+        let pre_existing = outcome.result["preExistingProblems"].to_string();
+        assert!(
+            pre_existing.contains("E10") && !introduced[0].as_str().unwrap().contains("E10"),
+            "pre-existing problems must be reported separately, not as the cause: {:?}",
+            outcome.result
+        );
+        assert_eq!(draft.lock().unwrap().doc.as_ref().unwrap().steps.len(), 2);
+        assert!(rx.try_recv().is_err(), "rejected edits must not publish");
+    }
+
+    /// The 2026-07-15 incident replayed: draft_plan handed over a draft
+    /// whose E10 had a template parse error. The fix was add_step E9b then
+    /// update_step E10 to read from it — both edits must land in order,
+    /// without the delete/re-add workaround.
+    #[test]
+    fn incident_e9b_then_e10_fix_sequence_is_accepted_in_order() {
+        let (tools, draft, _rx) = editing_tools(Some(invalid_doc()));
+
+        // 1. Add the new valid step E9b (previously rejected with E10's
+        //    pre-existing error).
+        let outcome = tools.add_step(&json!({
+            "step": {"id": "E9b", "toolName": "t__extra", "input": {"q": "{{E0.values}}"}},
+            "after": "E0",
+        }));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+
+        // 2. Point E10 at E9b (previously rejected because E9b was never
+        //    admitted).
+        let outcome = tools.update_step(&json!({
+            "id": "E10",
+            "input": {"rows": "{{E9b.values}}"},
+        }));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert!(
+            outcome.result.get("preExistingProblems").is_none(),
+            "the plan is now fully valid: {:?}",
+            outcome.result
+        );
+
+        let doc = draft.lock().unwrap().doc.clone().unwrap();
+        let ids: Vec<&str> = doc.steps.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["E0", "E9b", "E10"]);
+        assert!(tools.validate_plan().result["valid"].as_bool().unwrap());
     }
 
     #[test]
@@ -1752,5 +1984,234 @@ solver:
             "summarize_this_sprint_s_progress"
         );
         assert_eq!(identifier_from("!!!"), "draft_plan");
+    }
+
+    #[test]
+    fn stated_names_in_goals_set_the_draft_identity() {
+        let output = || PlannerOutput {
+            plan: demo_doc().steps,
+            solver_data: Default::default(),
+        };
+
+        // The incident goal: the name is stated, quoted, after filler.
+        let goal = r#"Build a Linear-workbench plan named something like "the_goat" that pulls sprint data"#;
+        let fresh = merge_planner_output(None, goal, output());
+        assert_eq!(fresh.identifier, "the_goat");
+        assert_eq!(fresh.name, "the_goat");
+
+        // Unquoted single-token names work too.
+        let fresh = merge_planner_output(
+            None,
+            "make a plan called sprint_report, for the team",
+            output(),
+        );
+        assert_eq!(fresh.identifier, "sprint_report");
+        assert_eq!(fresh.name, "sprint_report");
+
+        // "renamed" is not a naming marker: prose fallback.
+        let fresh = merge_planner_output(None, "List files renamed last week", output());
+        assert_eq!(fresh.identifier, "list_files_renamed_last_week");
+    }
+
+    #[tokio::test]
+    async fn workbench_tool_descriptions_carry_the_not_plan_legal_note() {
+        let (tools, _draft, _rx) = editing_tools(None);
+        for def in ToolRegistry::tools(&tools).await.unwrap() {
+            assert!(
+                def.description.ends_with(WORKBENCH_ONLY_NOTE),
+                "{} is missing the workbench-only note",
+                def.name
+            );
+        }
+    }
+
+    // ── draft_plan repair pass (scripted LLM) ──────────────────────────
+
+    struct ScriptedProvider {
+        responses: Mutex<Vec<graph_llm::types::ChatResponse>>,
+        requests: Mutex<Vec<graph_llm::types::ChatRequest>>,
+    }
+
+    #[async_trait]
+    impl graph_llm::ChatProvider for ScriptedProvider {
+        async fn chat(
+            &self,
+            req: graph_llm::types::ChatRequest,
+        ) -> Result<graph_llm::types::ChatResponse, graph_llm::LlmError> {
+            self.requests.lock().unwrap().push(req);
+            let mut responses = self.responses.lock().unwrap();
+            if responses.is_empty() {
+                return Err(graph_llm::LlmError::Parse("script exhausted".into()));
+            }
+            Ok(responses.remove(0))
+        }
+
+        async fn chat_stream(
+            &self,
+            req: graph_llm::types::ChatRequest,
+        ) -> Result<graph_llm::types::EventStream, graph_llm::LlmError> {
+            use futures::StreamExt;
+            let response = self.chat(req).await?;
+            Ok(
+                futures::stream::iter(vec![Ok(graph_llm::types::StreamEvent::Completed(response))])
+                    .boxed(),
+            )
+        }
+    }
+
+    /// A pipeline whose planner answers from a script of structured
+    /// planner outputs — the same pattern as graph-core's pipeline tests.
+    fn scripted_pipeline(outputs: Vec<Value>) -> (Arc<Pipeline>, Arc<ScriptedProvider>) {
+        let provider = Arc::new(ScriptedProvider {
+            responses: Mutex::new(
+                outputs
+                    .into_iter()
+                    .map(|value| graph_llm::types::ChatResponse {
+                        content: None,
+                        tool_calls: vec![],
+                        structured: Some(value),
+                        stop_reason: graph_llm::types::StopReason::EndTurn,
+                        usage: graph_llm::types::Usage::default(),
+                    })
+                    .collect(),
+            ),
+            requests: Mutex::new(Vec::new()),
+        });
+        let mut providers: std::collections::HashMap<String, Arc<dyn graph_llm::ChatProvider>> =
+            std::collections::HashMap::new();
+        providers.insert("mock".to_string(), provider.clone());
+        let roles = graph_config::ModelRoles {
+            default: Some(graph_config::ModelChoice {
+                provider: "mock".to_string(),
+                model: "test".to_string(),
+                temperature: None,
+                dimensions: None,
+                description: None,
+            }),
+            ..Default::default()
+        };
+        let router = Arc::new(graph_llm::ModelRouter::with_providers(providers, roles));
+        let pipeline = Arc::new(Pipeline {
+            router,
+            registry: Arc::new(graph_core::CompositeRegistry::new(vec![])),
+            events: Arc::new(graph_core::NullSink),
+            plans: Arc::new(Vec::new()),
+            call_stack: Vec::new(),
+            store: None,
+            gate: None,
+            user_context: String::new(),
+            current_date: String::new(),
+            max_attempts: 1,
+        });
+        (pipeline, provider)
+    }
+
+    /// The incident draft as planner JSON: E10's template has a parse
+    /// error ("empty segment in path '.'").
+    fn invalid_planner_output() -> Value {
+        json!({
+            "plan": [
+                {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+                {"id": "E10", "toolName": "t__report", "input": {"rows": "{{.}}"}},
+            ],
+            "solverData": {"queryToAnswer": "q", "data": {}}
+        })
+    }
+
+    fn valid_planner_output() -> Value {
+        json!({
+            "plan": [
+                {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+                {"id": "E10", "toolName": "t__report", "input": {"rows": "{{E0.values}}"}},
+            ],
+            "solverData": {"queryToAnswer": "q", "data": {}}
+        })
+    }
+
+    fn draft_tools(
+        pipeline: Arc<Pipeline>,
+    ) -> (WorkbenchTools, tokio::sync::mpsc::UnboundedReceiver<Msg>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let tools = WorkbenchTools::new(
+            Arc::new(Mutex::new(DraftState::new(None))),
+            pipeline,
+            None,
+            Arc::new(DebugControls::default()),
+            tx,
+        );
+        (tools, rx)
+    }
+
+    #[tokio::test]
+    async fn draft_plan_repairs_an_invalid_draft_with_one_revision_pass() {
+        let (pipeline, provider) =
+            scripted_pipeline(vec![invalid_planner_output(), valid_planner_output()]);
+        let (tools, mut rx) = draft_tools(pipeline);
+
+        let outcome = tools.draft_plan(&json!({"goal": "report on x"})).await;
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert_eq!(outcome.result["validation"], json!("ok"));
+        assert_eq!(outcome.result["repairAttempted"], json!(true));
+
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2, "exactly one repair pass");
+        assert!(
+            requests[1].system.contains("Draft Under Revision"),
+            "the repair goes through the draft-revision path"
+        );
+        assert!(
+            requests[1].system.contains("empty segment"),
+            "the validation problem is the repair feedback"
+        );
+        match rx.try_recv().unwrap() {
+            Msg::DraftReplaced { doc, dirty } => {
+                assert!(dirty);
+                assert_eq!(doc.steps[1].input["rows"], json!("{{E0.values}}"));
+            }
+            _ => panic!("expected DraftReplaced"),
+        }
+    }
+
+    #[tokio::test]
+    async fn draft_plan_hands_over_a_still_invalid_draft_with_problems_surfaced() {
+        let (pipeline, provider) =
+            scripted_pipeline(vec![invalid_planner_output(), invalid_planner_output()]);
+        let (tools, mut rx) = draft_tools(pipeline);
+
+        let outcome = tools.draft_plan(&json!({"goal": "report on x"})).await;
+        assert!(!outcome.is_error, "a problem draft is not a tool error");
+        assert!(
+            outcome.result["validation"].is_array(),
+            "problems surfaced: {:?}",
+            outcome.result
+        );
+        assert!(outcome.result["validation"]
+            .to_string()
+            .contains("empty segment"));
+        assert_eq!(outcome.result["repairAttempted"], json!(true));
+        assert!(outcome.result["note"]
+            .as_str()
+            .unwrap()
+            .contains("still invalid"));
+        assert_eq!(
+            provider.requests.lock().unwrap().len(),
+            2,
+            "the repair pass is bounded to one retry"
+        );
+        assert!(
+            matches!(rx.try_recv().unwrap(), Msg::DraftReplaced { .. }),
+            "the draft is handed over anyway — editing stays possible"
+        );
+    }
+
+    #[tokio::test]
+    async fn draft_plan_valid_first_try_skips_the_repair_pass() {
+        let (pipeline, provider) = scripted_pipeline(vec![valid_planner_output()]);
+        let (tools, _rx) = draft_tools(pipeline);
+        let outcome = tools.draft_plan(&json!({"goal": "report on x"})).await;
+        assert!(!outcome.is_error);
+        assert_eq!(outcome.result["validation"], json!("ok"));
+        assert!(outcome.result.get("repairAttempted").is_none());
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
     }
 }
