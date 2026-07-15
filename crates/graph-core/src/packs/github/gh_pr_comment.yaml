@@ -1,21 +1,42 @@
-# github pack: upsert a PR comment. Edits the token identity's most recent
-# comment in place (so repeated runs update one comment instead of stacking);
-# falls back to plain create for older gh versions without --create-if-none.
+# github pack: upsert a PR comment. With a marker, the body carries it as a
+# hidden HTML tag and repeated runs find and edit that comment — so several
+# plans can each keep their own comment on one PR without overwriting each
+# other. Without one, edits the token identity's most recent comment in
+# place (--edit-last); falls back to plain create for older gh versions
+# without --create-if-none.
 name: gh_pr_comment
 description: >
-  Post or update a comment on a GitHub pull request. Updates the most recent
-  comment by the same user when one exists, so repeated runs keep a single
-  comment. Side-effecting.
+  Post or update a comment on a GitHub pull request. With a marker, finds
+  and edits the comment carrying that marker (embedded as a hidden HTML
+  tag), so plans that each use their own marker keep separate comments on
+  the same PR. Without one, updates the most recent comment by the same
+  user, so repeated runs keep a single comment. Side-effecting.
 kind: exec
 command: bash
 args:
   - "-ceu"
   - |
-    gh pr comment "$1" --body "$2" --edit-last --create-if-none \
-      || gh pr comment "$1" --body "$2"
+    pr="$1"; body="$2"; marker="$3"
+    if [ -z "$marker" ]; then
+      gh pr comment "$pr" --body "$body" --edit-last --create-if-none \
+        || gh pr comment "$pr" --body "$body"
+      exit 0
+    fi
+    tag="<!-- $marker -->"
+    tagged="$body"$'\n\n'"$tag"
+    id=$(gh api "repos/{owner}/{repo}/issues/$pr/comments" --paginate 2>/dev/null \
+      | jq -r --arg tag "$tag" '.[] | select(.body | contains($tag)) | .id' \
+      | head -n1)
+    if [ -n "$id" ]; then
+      gh api -X PATCH "repos/{owner}/{repo}/issues/comments/$id" \
+        -f body="$tagged" --jq .html_url
+    else
+      gh pr comment "$pr" --body "$tagged"
+    fi
   - gh_pr_comment
   - "{{input.pr}}"
   - "{{input.body}}"
+  - "{{input.marker}}"
 output: text
 timeout_secs: 30
 read_only: false
@@ -25,3 +46,12 @@ input_schema:
   properties:
     pr:   { type: integer, description: Pull request number }
     body: { type: string, description: Markdown comment body }
+    marker:
+      type: string
+      default: ""
+      description: >
+        Stable identifier embedded in the body as a hidden tag; the next
+        run with the same marker edits that comment. Use one marker per
+        plan (e.g. "graph:pr_review:summary") when several plans comment
+        on the same PR. Omit to edit the token identity's most recent
+        comment instead.

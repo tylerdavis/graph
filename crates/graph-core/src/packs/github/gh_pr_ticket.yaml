@@ -1,0 +1,61 @@
+# github pack: ticket ID from PR metadata, deterministically (regex, zero
+# LLM calls). Scans the head branch name, then the title, then the body;
+# the first pattern match wins and is normalized to uppercase-with-dash
+# (ln1234, LN 1234, ln-1234 → LN-1234). Every output field is always
+# present so template references never dangle; no match is {found: false},
+# not an error.
+name: gh_pr_ticket
+description: >
+  Extract a ticket identifier (e.g. LN-1234) from a pull request's head
+  branch name, title, or body — scanned in that order, first match wins,
+  normalized to uppercase-with-dash form. Deterministic regex extraction,
+  no LLM call. Returns {found, ticket, source} with every field always
+  present; a PR without a ticket is {found: false, ticket: null,
+  source: null}, not an error.
+kind: exec
+command: bash
+args:
+  - "-ceu"
+  - |
+    pr="$1"; pattern="$2"
+    meta=$(gh pr view "$pr" --json headRefName,title,body)
+    for source in branch title body; do
+      case "$source" in
+        branch) field=headRefName ;;
+        title)  field=title ;;
+        body)   field=body ;;
+      esac
+      text=$(jq -r --arg f "$field" '.[$f] // ""' <<<"$meta")
+      match=$(grep -oE "$pattern" <<<"$text" | head -n1 || true)
+      if [ -n "$match" ]; then
+        ticket=$(printf '%s' "$match" | tr '[:lower:]' '[:upper:]' \
+          | sed -E 's/^([A-Z]+)[- ]?([0-9]+)$/\1-\2/')
+        jq -n --arg ticket "$ticket" --arg source "$source" \
+          '{found: true, ticket: $ticket, source: $source}'
+        exit 0
+      fi
+    done
+    echo '{"found": false, "ticket": null, "source": null}'
+  - gh_pr_ticket
+  - "{{input.pr}}"
+  - "{{input.pattern}}"
+output: json
+timeout_secs: 30
+read_only: true
+input_schema:
+  type: object
+  required: [pr]
+  properties:
+    pr: { type: integer, description: Pull request number }
+    pattern:
+      type: string
+      default: "[A-Za-z]{2,6}[- ]?[0-9]+"
+      description: >
+        POSIX extended regex the ticket ID must match; the default matches
+        common tracker forms like LN-1234, ln1234, and "LN 1234".
+output_schema:
+  type: object
+  properties:
+    found:  { type: boolean }
+    ticket: { type: ["string", "null"], description: Normalized uppercase-with-dash ID, null when not found }
+    source: { type: ["string", "null"], description: Where the match came from — branch, title, or body; null when not found }

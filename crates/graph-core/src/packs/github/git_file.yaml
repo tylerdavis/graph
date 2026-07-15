@@ -1,0 +1,42 @@
+# github pack: file contents at a ref, truncated. The content lands in a
+# temp file first, so truncation is detected and marked in the output —
+# and an unresolvable ref or missing path fails the step loudly instead of
+# yielding empty content downstream steps would misread.
+name: git_file
+description: >
+  Contents of a file at a git ref (git show), truncated to a byte budget
+  for LLM consumption. A truncated file ends with a "[file truncated:
+  showing X of Y bytes]" marker line; its absence means the content is
+  complete. Use to read a file as it exists at the PR head rather than
+  whatever is checked out.
+kind: exec
+command: bash
+args:
+  - "-ceu"
+  - |
+    ref=$1 path=$2 max=$3
+    tmp=$(mktemp)
+    trap 'rm -f "$tmp"' EXIT
+    git show "$ref:$path" > "$tmp"
+    total=$(wc -c < "$tmp" | tr -d ' ')
+    head -c "$max" "$tmp"
+    if [ "$total" -gt "$max" ]; then
+      printf '\n\n[file truncated: showing %s of %s bytes]\n' "$max" "$total"
+    fi
+  - git_file
+  - "{{input.ref}}"
+  - "{{input.path}}"
+  - "{{input.max_bytes}}"
+output: text
+timeout_secs: 30
+read_only: true
+input_schema:
+  type: object
+  required: [ref, path]
+  properties:
+    ref:  { type: string, description: Ref or commit sha (e.g. the PR head sha) }
+    path: { type: string, description: File path within the repository }
+    max_bytes:
+      type: integer
+      default: 200000
+      description: Truncate the content to this many bytes (a marker line flags truncation)

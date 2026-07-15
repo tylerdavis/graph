@@ -1,0 +1,73 @@
+# github pack: search tracked files at a ref. `paths` is a space-separated
+# pathspec list ("" for everything); matches parse into {path, line, text}
+# objects and are capped at max_matches, with `truncated` flagging the cut.
+# No matches is a normal {count: 0} result; an unresolvable ref fails the
+# step loudly instead of reading as "nothing found".
+name: git_grep
+description: >
+  Search tracked file contents at a git ref (git grep, POSIX extended
+  regex), optionally scoped to pathspecs. Returns {matches, count,
+  truncated} with every field always present — matches are {path, line,
+  text} objects, capped at max_matches with truncated flagging the cut,
+  and no match at all is {matches: [], count: 0}, not an error. Use to
+  check code at the PR head rather than whatever is checked out.
+kind: exec
+command: bash
+args:
+  - "-ceu"
+  - |
+    pattern="$1" ref="$2" paths="$3" max="$4"
+    status=0
+    if [ -n "$paths" ]; then
+      spec=()
+      for p in $paths; do spec+=("$p"); done
+      out=$(git grep -nIE -e "$pattern" "$ref" -- "${spec[@]}") || status=$?
+    else
+      out=$(git grep -nIE -e "$pattern" "$ref") || status=$?
+    fi
+    [ "$status" -le 1 ] || exit "$status"
+    printf '%s\n' "$out" | jq -R -s --arg ref "$ref" --argjson max "$max" '
+      (split("\n") | map(select(length > 0))) as $all
+      | ($all[:$max]
+         | map(ltrimstr($ref + ":")
+               | capture("^(?<path>[^:]+):(?<line>[0-9]+):(?<text>.*)$")
+               | {path, line: (.line | tonumber), text})) as $m
+      | {matches: $m, count: ($m | length), truncated: (($all | length) > $max)}'
+  - git_grep
+  - "{{input.pattern}}"
+  - "{{input.ref}}"
+  - "{{input.paths}}"
+  - "{{input.max_matches}}"
+output: json
+timeout_secs: 30
+read_only: true
+input_schema:
+  type: object
+  required: [pattern]
+  properties:
+    pattern: { type: string, description: POSIX extended regex to search for }
+    ref:
+      type: string
+      default: HEAD
+      description: Ref or commit sha to search at
+    paths:
+      type: string
+      default: ""
+      description: Space-separated pathspecs scoping the search; "" for everything
+    max_matches:
+      type: integer
+      default: 200
+      description: Cap on returned matches (truncated flags the cut)
+output_schema:
+  type: object
+  properties:
+    matches:
+      type: array
+      items:
+        type: object
+        properties:
+          path: { type: string }
+          line: { type: integer }
+          text: { type: string }
+    count:     { type: integer }
+    truncated: { type: boolean }

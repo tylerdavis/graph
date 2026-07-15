@@ -56,14 +56,36 @@ Metadata for a pull request — the starting point for anything that diffs or re
 
 ### `builtin__gh_pr_comment`
 
-Post or update a comment on the PR conversation. Updates the token identity's most recent comment when one exists (`--edit-last --create-if-none`), so repeated runs keep a single comment instead of stacking. **Side-effecting** (`read_only: false`).
+Post or update a comment on the PR conversation. With a `marker`, the body carries it as a hidden HTML tag (`<!-- marker -->`) and repeated runs find and edit *that* comment — so several plans can each maintain their own comment on one PR. Without one, updates the token identity's most recent comment (`--edit-last --create-if-none`), so repeated runs keep a single comment instead of stacking. **Side-effecting** (`read_only: false`).
 
 | Input | Type |  |
 | --- | --- | --- |
 | `pr` | integer | required |
 | `body` | string | required — markdown comment body (render it with [template sections](/plans/template-language#sections)) |
+| `marker` | string | optional — stable identifier for find-and-edit; use one per plan (e.g. `"graph:pr_review:summary"`). Omit to edit the identity's most recent comment |
 
 Output: `{ "text": "<comment URL>" }`.
+
+<Warning>
+When two plans post summary comments to the same PR under one token, the markerless `--edit-last` upsert makes the later run overwrite the earlier plan's comment. Give each plan its own `marker` to keep the comments separate.
+</Warning>
+
+### `builtin__gh_pr_ticket`
+
+Ticket identifier (e.g. `LN-1234`) from a PR's metadata — deterministic regex extraction, zero LLM calls, so plans don't burn an inference on what a pattern match can do. Scans the head branch name, then the title, then the body; first match wins and is normalized to uppercase-with-dash form (`ln1234`, `LN 1234`, `ln-1234` → `LN-1234`). Read-only.
+
+| Input | Type |  |
+| --- | --- | --- |
+| `pr` | integer | required |
+| `pattern` | string | optional — POSIX extended regex the ID must match; default `[A-Za-z]{2,6}[- ]?[0-9]+` covers common tracker forms |
+
+| Output | Type |  |
+| --- | --- | --- |
+| `found` | boolean | ready for `exit`/`decide` gates |
+| `ticket` | string \| null | normalized ID; `null` when not found |
+| `source` | string \| null | `branch`, `title`, or `body`; `null` when not found |
+
+Every field is always present, so template references like `{{Ex.ticket}}` never dangle; a PR without a ticket is `{found: false}`, not an error.
 
 ### `builtin__gh_pr_inline_comments`
 
@@ -115,3 +137,34 @@ Files changed between two refs, filtered to a path prefix, with a count — the 
 | --- | --- | --- |
 | `files` | array of string | matching paths |
 | `count` | integer | `files.length`, ready for `eq`/`gt` gates |
+
+### `builtin__git_file`
+
+Contents of a file at a ref (`git show <ref>:<path>`), truncated to a byte budget — so a review plan can read a file as it exists at the PR head instead of whatever is checked out. Over-budget content ends with a `[file truncated: showing X of Y bytes]` marker line, same convention as `git_diff`; an unresolvable ref or missing path fails the call instead of returning empty content. Read-only.
+
+| Input | Type |  |
+| --- | --- | --- |
+| `ref` | string | required — ref or sha (e.g. the PR `head_sha`) |
+| `path` | string | required — file path within the repository |
+| `max_bytes` | integer | optional — truncation budget; default 200000 |
+
+Output: `{ "text": "<content>" }`.
+
+### `builtin__git_grep`
+
+Search tracked file contents at a ref (`git grep -n`, POSIX extended regex), optionally scoped to pathspecs — check code at the PR head without an LLM call or a checkout switch. No match at all is `{matches: [], count: 0}`, not an error; a bad ref fails loudly instead of reading as "nothing found". Read-only. Git only — no `rg` required.
+
+| Input | Type |  |
+| --- | --- | --- |
+| `pattern` | string | required — POSIX extended regex |
+| `ref` | string | optional — ref or sha to search at; default `HEAD` |
+| `paths` | string | optional — space-separated pathspecs; default `""` (everything) |
+| `max_matches` | integer | optional — cap on returned matches; default 200 |
+
+| Output | Type |  |
+| --- | --- | --- |
+| `matches` | array | `{path, line, text}` objects, in git's path order |
+| `count` | integer | `matches.length`, ready for `eq`/`gt` gates |
+| `truncated` | boolean | `true` when `max_matches` cut the list |
+
+Every field is always present, so gates and templates can consume the result unconditionally — iterate `matches` in a [`map` body](/plans/iteration) with `{{item.path}}`/`{{item.line}}`/`{{item.text}}`.
