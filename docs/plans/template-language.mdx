@@ -46,6 +46,7 @@ Sections iterate arrays and gate on truthiness — used mostly in solver templat
   {{^E1.values}}no results found{{/E1.values}}
   ```
 - A bare key missing on a list item renders empty (items legitimately omit optional fields). A **root-anchored** section path that goes nowhere is falsy rather than an error — sections are conditionals.
+- Static validation applies the same scoping rule: a bare key inside a section body is an item read, never a root reference, so it is exempt from the "`input` or an earlier step" check. Dotted paths are root-anchored everywhere — a typo'd or forward root inside a section (`{{E9.summary}}` before `E9` runs) is still caught at load time.
 
 ## Error taxonomy
 

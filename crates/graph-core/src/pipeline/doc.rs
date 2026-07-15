@@ -379,6 +379,25 @@ solver:
     }
 
     #[test]
+    fn section_scoped_bare_keys_are_not_root_references() {
+        // Bare keys inside {{#E0.values}}…{{/E0.values}} read the current
+        // item, so they must not be flagged as unknown roots — while a
+        // dotted path with a typo'd root inside the section still is.
+        let sectioned = DOC.replace(
+            r#"{ teamId: "{{E0.values.0.id}}" }"#,
+            r#"{ teamId: "{{#E0.values}}{{id}} {{#name}}{{name}}{{/name}}{{/E0.values}}" }"#,
+        );
+        doc_from(&sectioned).unwrap();
+
+        let typo = DOC.replace(
+            r#"{ teamId: "{{E0.values.0.id}}" }"#,
+            r#"{ teamId: "{{#E0.values}}{{E9.summary}}{{/E0.values}}" }"#,
+        );
+        let err = doc_from(&typo).unwrap_err();
+        assert!(err.contains("E9"), "{err}");
+    }
+
+    #[test]
     fn duplicate_identifiers_error() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.yaml"), DOC).unwrap();
