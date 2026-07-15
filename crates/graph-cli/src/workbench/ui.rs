@@ -3,7 +3,7 @@
 
 use super::app::{App, ChatEntry, Focus, GateKind, GatePrompt, Mode};
 use super::editor::EditorContext;
-use super::plan_ws::{PlanWorkspace, RunLine, StepStatus, WsTab};
+use super::plan_ws::{PlanWorkspace, RowKey, RunLine, StepStatus, WsTab};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -259,13 +259,17 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
         header,
     );
 
-    // Step list: breakpoint gutter · status glyph · id · tool. The paused
-    // step's id renders yellow-bold; running rows animate.
-    let paused_step = paused_prompt(app).and_then(|p| p.top_level_step().map(str::to_string));
+    // Step list: breakpoint gutter · status glyph · id · tool, with body
+    // sub-steps indented under their control step. The paused row's id
+    // renders yellow-bold; running rows animate.
+    let paused_row = paused_prompt(app)
+        .filter(|p| p.call_stack.is_empty())
+        .and_then(|p| ws.find_path(&p.path));
     let items: Vec<ListItem> = ws
         .steps
         .iter()
-        .map(|row| {
+        .enumerate()
+        .map(|(index, row)| {
             let style = match row.status {
                 StepStatus::Pending => DIM,
                 StepStatus::Running => Style::new().fg(Color::Yellow),
@@ -280,18 +284,20 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 row.status.glyph()
             };
-            let gutter = if app.breakpoints.contains(&row.id) {
+            let gutter = if matches!(row.key, RowKey::Step(_)) && app.breakpoints.contains(&row.id)
+            {
                 Span::styled("●", ERROR)
             } else {
                 Span::raw(" ")
             };
-            let id_style = if paused_step.as_deref() == Some(row.id.as_str()) {
+            let id_style = if paused_row == Some(index) {
                 Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else {
                 Style::new().add_modifier(Modifier::BOLD)
             };
             ListItem::new(Line::from(vec![
                 gutter,
+                Span::raw("  ".repeat(row.depth as usize)),
                 Span::styled(format!("{glyph} "), style),
                 Span::styled(format!("{:4} ", row.id), id_style),
                 Span::raw(row.tool.clone()),
@@ -308,11 +314,14 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
     let mut state = ListState::default().with_selected(Some(ws.selected));
     frame.render_stateful_widget(list, steps_area, &mut state);
 
-    // While paused on the selected step (or any nested/body pause), the
-    // detail pane becomes the debug panel.
-    let show_debug = paused_prompt(app).is_some_and(|p| match p.top_level_step() {
-        Some(step) => ws.steps.get(ws.selected).is_some_and(|row| row.id == step),
-        None => true,
+    // While the selected row is the paused call (or the pause is inside a
+    // nested plan), the detail pane becomes the debug panel.
+    let show_debug = paused_prompt(app).is_some_and(|p| {
+        if p.call_stack.is_empty() {
+            ws.find_path(&p.path) == Some(ws.selected)
+        } else {
+            true
+        }
     });
     if show_debug {
         let prompt = paused_prompt(app).expect("checked above");

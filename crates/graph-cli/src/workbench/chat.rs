@@ -40,10 +40,11 @@ impl ChannelSink {
 }
 
 /// A display path for a step event: nested plan frames prefix the step
-/// path, and only unprefixed top-level paths map onto plan-pane rows.
+/// path, and only unprefixed paths — the run plan's own steps and their
+/// body sub-steps — map onto plan-pane rows.
 fn display_path(call_stack: &[String], path: &str) -> (String, bool) {
     if call_stack.is_empty() {
-        (path.to_string(), !path.contains('/'))
+        (path.to_string(), true)
     } else {
         (format!("{}→{path}", call_stack.join("→")), false)
     }
@@ -91,12 +92,12 @@ impl EventSink for ChannelSink {
 
     fn step_started(&self, call_stack: &[String], path: &str, tool: &str, input: &Value) {
         if matches!(self.kind, SinkKind::PlanRun) {
-            let (path, top_level) = display_path(call_stack, path);
+            let (path, in_plan) = display_path(call_stack, path);
             self.send(Msg::StepStarted {
                 path,
                 tool: tool.to_string(),
                 input: input.clone(),
-                top_level,
+                in_plan,
             });
         }
     }
@@ -111,12 +112,12 @@ impl EventSink for ChannelSink {
         _elapsed: Duration,
     ) {
         if matches!(self.kind, SinkKind::PlanRun) {
-            let (path, top_level) = display_path(call_stack, path);
+            let (path, in_plan) = display_path(call_stack, path);
             self.send(Msg::StepFinished {
                 path,
                 result: result.clone(),
                 is_error,
-                top_level,
+                in_plan,
             });
         }
     }
