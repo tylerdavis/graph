@@ -20,7 +20,8 @@ The workbench needs an interactive terminal (it refuses to start otherwise); for
 
 - `workbench__list_plans` / `workbench__load_plan` — enumerate the catalog and load a plan by identifier or YAML path ("load the sprint_analysis plan"); loading replaces the draft, so the agent confirms first when you have unsaved changes.
 - `workbench__draft_plan` — create or revise the draft from a goal (the planner sees the full tool catalog, observed shapes, and the current draft).
-- `workbench__get_plan` / `workbench__set_plan` — re-read the draft as YAML and replace it, for surgical edits. The agent always sees the current draft in its context, so "debug this plan" or "what does E2 do?" needs no read-back call.
+- `workbench__update_metadata` / `workbench__add_step` / `workbench__update_step` / `workbench__delete_step` — precise edits ("rename the plan", "add a step after E1 that fetches the issue", "change E0's query", "drop E2"). Metadata patches identifier / name / description / exemplars; steps are inserted appended or anchored `before`/`after` an id; `update_step` patches a step's tool, input, or reasoning, and its `newId` renames the step **and rewrites every downstream `{{id.*}}` reference** — templates keep working. An edit that would make the plan invalid (duplicate id, forward reference, deleting a step others still read) is rejected with the problems and the draft stays untouched. These edit top-level steps; `decide`/`map`/`reduce` body steps live inside the control step's input, so update that step.
+- `workbench__get_plan` / `workbench__set_plan` — re-read the draft as YAML and replace it wholesale, for rewrites the precise tools don't cover. The agent always sees the current draft in its context, so "debug this plan" or "what does E2 do?" needs no read-back call.
 - `workbench__validate_plan` — check the draft and update the plan pane's verdict ("is this valid?").
 - `workbench__run_plan` — execute the draft on request ("run it", "do a gated run"). Step activity streams to the workspace either way, and **gated runs still pause for *your* y/s/a decision on every tool call** — the agent starts the run but cannot approve its side effects.
 - `workbench__save_plan` — write the draft to disk ("save that").
@@ -81,7 +82,7 @@ Logging is always on. Every workbench line carries the `workbench` target, and t
 
 ## Saving
 
-`Ctrl+S` writes the draft as YAML — back to the file it was loaded from, or to `<first [plans].paths dir>/<identifier>.yaml` for new drafts (it refuses to overwrite a file it didn't load). The loaded-file target is tied to the plan's identity: replacing the draft with a plan whose identifier differs (via `workbench__set_plan` or a load) drops it, so the next save creates a new file instead of overwriting the old plan — and as a backstop, a save never writes over a file whose `identifier` doesn't match the draft's. The status bar shows an `[unsaved]` marker while the draft is dirty, and quitting with unsaved changes asks first.
+`Ctrl+S` writes the draft as YAML — back to the file it was loaded from, or to `<first [plans].paths dir>/<identifier>.yaml` for new drafts (it refuses to overwrite a file it didn't load). The loaded-file target is tied to the plan's identity: changing the draft's identifier (via `workbench__update_metadata`, `workbench__set_plan`, or a load) drops it, so the next save creates a new file instead of overwriting the old plan — and as a backstop, a save never writes over a file whose `identifier` doesn't match the draft's. The status bar shows an `[unsaved]` marker while the draft is dirty, and quitting with unsaved changes asks first.
 
 ## Keys
 

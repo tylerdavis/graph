@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use graph_core::pipeline::doc::{
     apply_schema_defaults, load_plan_doc, validate_doc, validate_input, PlanDoc,
 };
-use graph_core::pipeline::{Pipeline, PlannerOutput};
-use graph_core::{ToolDef, ToolError, ToolOutcome, ToolRegistry};
+use graph_core::pipeline::{Pipeline, PlannerOutput, Step};
+use graph_core::{template, ToolDef, ToolError, ToolOutcome, ToolRegistry};
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -23,6 +23,10 @@ pub const LIST_PLANS: &str = "workbench__list_plans";
 pub const VALIDATE_PLAN: &str = "workbench__validate_plan";
 pub const RUN_PLAN: &str = "workbench__run_plan";
 pub const SAVE_PLAN: &str = "workbench__save_plan";
+pub const UPDATE_METADATA: &str = "workbench__update_metadata";
+pub const ADD_STEP: &str = "workbench__add_step";
+pub const UPDATE_STEP: &str = "workbench__update_step";
+pub const DELETE_STEP: &str = "workbench__delete_step";
 
 pub struct WorkbenchTools {
     draft: Arc<Mutex<Option<PlanDoc>>>,
@@ -355,6 +359,234 @@ impl WorkbenchTools {
             is_error: false,
         }
     }
+
+    /// The choke point for the precise editing tools: apply `mutate` to a
+    /// clone of the draft and publish only if the result validates — an
+    /// edit that would make the plan invalid is rejected with the problems
+    /// and the draft stays untouched (same contract as set_plan). `mutate`
+    /// errors are full result bodies so they can carry structured fields.
+    fn edit_draft(&self, mutate: impl FnOnce(&mut PlanDoc) -> Result<Value, Value>) -> ToolOutcome {
+        let Some(mut doc) = self.current() else {
+            return error_outcome("no draft — load or draft one first");
+        };
+        let summary = match mutate(&mut doc) {
+            Ok(summary) => summary,
+            Err(body) => {
+                return ToolOutcome {
+                    result: body,
+                    is_error: true,
+                }
+            }
+        };
+        let mut problems = self
+            .pipeline
+            .validate_plan(&doc.steps)
+            .err()
+            .unwrap_or_default();
+        if let Err(problem) = validate_doc(&doc) {
+            if !problems.contains(&problem) {
+                problems.push(problem);
+            }
+        }
+        if !problems.is_empty() {
+            return ToolOutcome {
+                result: json!({
+                    "error": "edit rejected — it would make the plan invalid",
+                    "problems": problems,
+                }),
+                is_error: true,
+            };
+        }
+        self.publish(doc, true);
+        ToolOutcome {
+            result: summary,
+            is_error: false,
+        }
+    }
+
+    /// Patch the draft's metadata: identifier, name, description, exemplars.
+    fn update_metadata(&self, input: &Value) -> ToolOutcome {
+        self.edit_draft(|doc| {
+            let mut changed = false;
+            if let Some(identifier) = input.get("identifier").and_then(Value::as_str) {
+                if identifier != doc.identifier {
+                    // A new identifier is a different plan: drop the on-disk
+                    // identity so the next save creates a new file instead
+                    // of overwriting the old plan (same rule as set_plan).
+                    doc.path = None;
+                }
+                doc.identifier = identifier.to_string();
+                changed = true;
+            }
+            if let Some(name) = input.get("name").and_then(Value::as_str) {
+                doc.name = name.to_string();
+                changed = true;
+            }
+            if let Some(description) = input.get("description").and_then(Value::as_str) {
+                doc.description = description.to_string();
+                changed = true;
+            }
+            if let Some(exemplars) = input.get("exemplars").and_then(Value::as_array) {
+                doc.exemplars = exemplars
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
+                changed = true;
+            }
+            if !changed {
+                return Err(json!({
+                    "error": "update_metadata needs at least one of \
+                              identifier, name, description, exemplars"
+                }));
+            }
+            Ok(json!({"ok": true, "identifier": doc.identifier, "name": doc.name}))
+        })
+    }
+
+    /// Insert a step: appended, or anchored before/after an existing id.
+    fn add_step(&self, input: &Value) -> ToolOutcome {
+        self.edit_draft(|doc| {
+            let Some(step) = input.get("step") else {
+                return Err(json!({
+                    "error": "add_step requires a 'step' object: \
+                              {id, toolName, input, reasoning?}"
+                }));
+            };
+            let step: Step = serde_json::from_value(step.clone())
+                .map_err(|error| json!({"error": format!("invalid step: {error}")}))?;
+            let before = input.get("before").and_then(Value::as_str);
+            let after = input.get("after").and_then(Value::as_str);
+            let index = match (before, after) {
+                (Some(_), Some(_)) => {
+                    return Err(json!({"error": "pass 'before' or 'after', not both"}))
+                }
+                (Some(anchor), None) => position_of(anchor, &doc.steps)?,
+                (None, Some(anchor)) => position_of(anchor, &doc.steps)? + 1,
+                (None, None) => doc.steps.len(),
+            };
+            let id = step.id.clone();
+            doc.steps.insert(index, step);
+            Ok(json!({"ok": true, "id": id, "index": index, "steps": doc.steps.len()}))
+        })
+    }
+
+    /// Patch one step's fields; `newId` renames it and rewrites downstream
+    /// `{{id.*}}` references so templates keep working.
+    fn update_step(&self, input: &Value) -> ToolOutcome {
+        self.edit_draft(|doc| {
+            let Some(id) = input.get("id").and_then(Value::as_str) else {
+                return Err(json!({"error": "update_step requires an 'id' string"}));
+            };
+            let index = position_of(id, &doc.steps)?;
+            let mut changed = false;
+            if let Some(tool_name) = input.get("toolName").and_then(Value::as_str) {
+                doc.steps[index].tool_name = tool_name.to_string();
+                changed = true;
+            }
+            if let Some(new_input) = input.get("input") {
+                let Some(map) = new_input.as_object() else {
+                    return Err(json!({
+                        "error": "'input' must be a JSON object — \
+                                  it replaces the step's whole input"
+                    }));
+                };
+                doc.steps[index].input = map.clone();
+                changed = true;
+            }
+            if let Some(reasoning) = input.get("reasoning").and_then(Value::as_str) {
+                doc.steps[index].reasoning = (!reasoning.is_empty()).then(|| reasoning.to_string());
+                changed = true;
+            }
+            let mut final_id = id.to_string();
+            if let Some(new_id) = input.get("newId").and_then(Value::as_str) {
+                if new_id != id {
+                    doc.steps[index].id = new_id.to_string();
+                    rename_references(doc, index, id, new_id);
+                    final_id = new_id.to_string();
+                }
+                changed = true;
+            }
+            if !changed {
+                return Err(json!({
+                    "error": "update_step needs at least one of \
+                              newId, toolName, input, reasoning"
+                }));
+            }
+            Ok(json!({"ok": true, "id": final_id}))
+        })
+    }
+
+    /// Remove a step. Validation rejects the edit if later steps still
+    /// reference it — the problems say which templates dangle.
+    fn delete_step(&self, input: &Value) -> ToolOutcome {
+        self.edit_draft(|doc| {
+            let Some(id) = input.get("id").and_then(Value::as_str) else {
+                return Err(json!({"error": "delete_step requires an 'id' string"}));
+            };
+            let index = position_of(id, &doc.steps)?;
+            doc.steps.remove(index);
+            Ok(json!({"ok": true, "id": id, "steps": doc.steps.len()}))
+        })
+    }
+}
+
+/// Index of a top-level step by id, or a structured error listing what
+/// exists (mirrors load_plan's availablePlans).
+fn position_of(id: &str, steps: &[Step]) -> Result<usize, Value> {
+    steps.iter().position(|step| step.id == id).ok_or_else(|| {
+        json!({
+            "error": format!("no step with id '{id}'"),
+            "availableSteps": steps.iter().map(|step| step.id.as_str()).collect::<Vec<_>>(),
+        })
+    })
+}
+
+/// After renaming a step id, rewrite `{{old.*}}` roots everywhere that can
+/// see the step's result: later steps' inputs (which contain any control
+/// bodies), the output map, and the solver templates.
+fn rename_references(doc: &mut PlanDoc, index: usize, old: &str, new: &str) {
+    for step in doc.steps.iter_mut().skip(index + 1) {
+        for value in step.input.values_mut() {
+            rewrite_value_roots(value, old, new);
+        }
+    }
+    if let Some(output) = &mut doc.output {
+        for value in output.values_mut() {
+            rewrite_value_roots(value, old, new);
+        }
+    }
+    if let Some(solver) = &mut doc.solver {
+        solver.query_to_answer = template::rewrite_root(&solver.query_to_answer, old, new);
+        if let Some(prompt) = &mut solver.system_prompt {
+            *prompt = template::rewrite_root(prompt, old, new);
+        }
+        for value in solver.data.values_mut() {
+            rewrite_value_roots(value, old, new);
+        }
+    }
+}
+
+/// Apply `rewrite_root` to every string in a JSON value.
+fn rewrite_value_roots(value: &mut Value, old: &str, new: &str) {
+    match value {
+        Value::String(text) => {
+            if text.contains("{{") {
+                *text = template::rewrite_root(text, old, new);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                rewrite_value_roots(item, old, new);
+            }
+        }
+        Value::Object(map) => {
+            for entry in map.values_mut() {
+                rewrite_value_roots(entry, old, new);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn error_outcome(message: &str) -> ToolOutcome {
@@ -513,7 +745,9 @@ impl ToolRegistry for WorkbenchTools {
                 name: SET_PLAN.to_string(),
                 description: "Replace the draft plan with a complete YAML plan document \
                               (identifier, name, description, steps, and solver/output). \
-                              Invalid documents are rejected with the problems to fix."
+                              Invalid documents are rejected with the problems to fix. \
+                              For targeted changes, prefer the precise editing tools \
+                              (update_metadata, add_step, update_step, delete_step)."
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -524,6 +758,104 @@ impl ToolRegistry for WorkbenchTools {
                 }),
                 output_schema: None,
                 output_example: None,
+                read_only: None,
+            },
+            ToolDef {
+                name: UPDATE_METADATA.to_string(),
+                description: "Update the draft's metadata: identifier, name, description, \
+                              and/or exemplars. Changing the identifier makes it a new \
+                              plan — the next save writes a new file instead of the one \
+                              it was loaded from."
+                    .to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "identifier": {"type": "string", "description": "Tool-name-safe identifier (letters, digits, _, -). Changing it detaches the draft from its loaded file."},
+                        "name": {"type": "string", "description": "Human-readable display name."},
+                        "description": {"type": "string", "description": "What the plan does — shown in the catalog and used for routing."},
+                        "exemplars": {"type": "array", "items": {"type": "string"}, "description": "Example requests the plan should handle; replaces the current list."}
+                    }
+                }),
+                output_schema: None,
+                output_example: Some(
+                    json!({"ok": true, "identifier": "sprint_report", "name": "Sprint report"}),
+                ),
+                read_only: None,
+            },
+            ToolDef {
+                name: ADD_STEP.to_string(),
+                description: "Insert one top-level step into the draft — appended, or \
+                              anchored with `before`/`after` an existing step id. The \
+                              edit is rejected (draft unchanged) if the result would be \
+                              invalid, e.g. a duplicate id or a reference to a later \
+                              step. Steps inside decide/map/reduce bodies live in the \
+                              control step's input — use update_step on that step \
+                              instead."
+                    .to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "required": ["step"],
+                    "properties": {
+                        "step": {
+                            "type": "object",
+                            "required": ["id", "toolName", "input"],
+                            "properties": {
+                                "id": {"type": "string", "description": "Unique step id templates reference: E-style (E4) or descriptive (fetch_issues)."},
+                                "toolName": {"type": "string", "description": "Exact tool name from the catalog."},
+                                "input": {"type": "object", "description": "Tool input; string values may reference earlier steps with {{id.path}} templates."},
+                                "reasoning": {"type": "string", "description": "Why this step exists and what it should produce."}
+                            }
+                        },
+                        "before": {"type": "string", "description": "Insert before this existing step id."},
+                        "after": {"type": "string", "description": "Insert after this existing step id. Omit both anchors to append."}
+                    }
+                }),
+                output_schema: None,
+                output_example: Some(json!({"ok": true, "id": "E4", "index": 2, "steps": 5})),
+                read_only: None,
+            },
+            ToolDef {
+                name: UPDATE_STEP.to_string(),
+                description: "Update fields of one top-level step: toolName, input \
+                              (replaced whole, not merged), reasoning (empty string \
+                              clears it), and/or newId to rename the step — renaming \
+                              rewrites {{id.*}} references in later steps, the solver, \
+                              and the output so templates keep working. Invalid results \
+                              are rejected with the problems. For steps inside \
+                              decide/map/reduce bodies, update the owning control \
+                              step's input."
+                    .to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": {
+                        "id": {"type": "string", "description": "The step to update."},
+                        "newId": {"type": "string", "description": "Rename the step; downstream template references are rewritten."},
+                        "toolName": {"type": "string", "description": "New tool name from the catalog."},
+                        "input": {"type": "object", "description": "New tool input — replaces the step's entire input object."},
+                        "reasoning": {"type": "string", "description": "New reasoning; an empty string clears it."}
+                    }
+                }),
+                output_schema: None,
+                output_example: Some(json!({"ok": true, "id": "fetch_issues"})),
+                read_only: None,
+            },
+            ToolDef {
+                name: DELETE_STEP.to_string(),
+                description: "Delete one top-level step from the draft. Rejected \
+                              (draft unchanged) if later steps still reference it — \
+                              update those steps first — or if it is the plan's only \
+                              step."
+                    .to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": {
+                        "id": {"type": "string", "description": "The step to delete."}
+                    }
+                }),
+                output_schema: None,
+                output_example: Some(json!({"ok": true, "id": "E2", "steps": 3})),
                 read_only: None,
             },
         ])
@@ -545,6 +877,10 @@ impl ToolRegistry for WorkbenchTools {
             VALIDATE_PLAN => Ok(self.validate_plan()),
             RUN_PLAN => Ok(self.run_plan(&input).await),
             SAVE_PLAN => Ok(self.save_plan()),
+            UPDATE_METADATA => Ok(self.update_metadata(&input)),
+            ADD_STEP => Ok(self.add_step(&input)),
+            UPDATE_STEP => Ok(self.update_step(&input)),
+            DELETE_STEP => Ok(self.delete_step(&input)),
             other => Err(ToolError::Unknown(other.to_string())),
         };
         if let Ok(outcome) = &outcome {
@@ -766,6 +1102,273 @@ steps:
         assert!(outcome.is_error);
         assert!(outcome.result["inputSchema"].is_object());
         assert!(rx.try_recv().is_err(), "no run should have started");
+    }
+
+    /// Three steps with cross-references plus solver templates — the
+    /// fixture for the precise editing tools.
+    fn referencing_doc() -> PlanDoc {
+        serde_yaml::from_str(
+            r#"
+identifier: demo
+name: Demo
+description: demo plan
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: x }
+  - id: E1
+    tool_name: t__fetch
+    input: { id: "{{E0.values.0.id}}" }
+  - id: E2
+    tool_name: t__report
+    input: { rows: "{{#E1.values}}x{{/E1.values}} of {{E1.values.length}}" }
+solver:
+  queryToAnswer: "Summarize {{E1.values.length}} items"
+"#,
+        )
+        .unwrap()
+    }
+
+    fn editing_tools(
+        doc: Option<PlanDoc>,
+    ) -> (
+        WorkbenchTools,
+        Arc<Mutex<Option<PlanDoc>>>,
+        tokio::sync::mpsc::UnboundedReceiver<Msg>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let draft = Arc::new(Mutex::new(doc));
+        let tools = WorkbenchTools::new(
+            draft.clone(),
+            test_pipeline(vec![]),
+            None,
+            Arc::new(DebugControls::default()),
+            tx,
+        );
+        (tools, draft, rx)
+    }
+
+    fn assert_dirty_publish(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Msg>) {
+        match rx.try_recv().unwrap() {
+            Msg::DraftReplaced { dirty, .. } => assert!(dirty, "edits are unsaved changes"),
+            _ => panic!("expected DraftReplaced"),
+        }
+    }
+
+    #[test]
+    fn update_metadata_patches_fields_and_publishes_dirty() {
+        let (tools, draft, mut rx) = editing_tools(Some(referencing_doc()));
+        let outcome =
+            tools.update_metadata(&json!({"name": "Better name", "description": "clearer"}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert_eq!(outcome.result["name"], json!("Better name"));
+        let doc = draft.lock().unwrap().clone().unwrap();
+        assert_eq!(doc.name, "Better name");
+        assert_eq!(doc.description, "clearer");
+        assert_dirty_publish(&mut rx);
+    }
+
+    #[test]
+    fn update_metadata_identifier_change_drops_the_loaded_path() {
+        let mut loaded = referencing_doc();
+        loaded.path = Some(PathBuf::from("/plans/demo.yaml"));
+        let (tools, draft, _rx) = editing_tools(Some(loaded));
+
+        // Renaming (display name) keeps the on-disk identity…
+        assert!(!tools.update_metadata(&json!({"name": "Renamed"})).is_error);
+        assert!(draft.lock().unwrap().as_ref().unwrap().path.is_some());
+
+        // …but a new identifier is a different plan: the path is dropped
+        // so the next save cannot overwrite the old file.
+        assert!(
+            !tools
+                .update_metadata(&json!({"identifier": "other_plan"}))
+                .is_error
+        );
+        assert_eq!(draft.lock().unwrap().as_ref().unwrap().path, None);
+    }
+
+    #[test]
+    fn update_metadata_with_nothing_to_change_errors() {
+        let (tools, _draft, mut rx) = editing_tools(Some(referencing_doc()));
+        let outcome = tools.update_metadata(&json!({}));
+        assert!(outcome.is_error);
+        assert!(rx.try_recv().is_err(), "nothing should have been published");
+    }
+
+    #[test]
+    fn add_step_appends_by_default_and_anchors_on_request() {
+        let step = json!({"id": "E3", "toolName": "t__extra", "input": {"q": "{{E0.values}}"}});
+
+        let (tools, draft, mut rx) = editing_tools(Some(referencing_doc()));
+        let outcome = tools.add_step(&json!({ "step": step }));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert_eq!(outcome.result["index"], json!(3));
+        assert_eq!(outcome.result["steps"], json!(4));
+        assert_eq!(draft.lock().unwrap().as_ref().unwrap().steps[3].id, "E3");
+        assert_dirty_publish(&mut rx);
+
+        let (tools, draft, _rx) = editing_tools(Some(referencing_doc()));
+        let outcome = tools.add_step(&json!({"step": step, "after": "E0"}));
+        assert_eq!(outcome.result["index"], json!(1), "{:?}", outcome.result);
+        assert_eq!(draft.lock().unwrap().as_ref().unwrap().steps[1].id, "E3");
+
+        let (tools, draft, _rx) = editing_tools(Some(referencing_doc()));
+        // Anchored before E0 the step may not reference E0 anymore.
+        let independent = json!({"id": "E3", "toolName": "t__extra", "input": {"q": "fixed"}});
+        let outcome = tools.add_step(&json!({"step": independent, "before": "E0"}));
+        assert_eq!(outcome.result["index"], json!(0), "{:?}", outcome.result);
+        assert_eq!(draft.lock().unwrap().as_ref().unwrap().steps[0].id, "E3");
+    }
+
+    #[test]
+    fn add_step_anchor_and_shape_errors() {
+        let (tools, _draft, _rx) = editing_tools(Some(referencing_doc()));
+        let step = json!({"id": "E3", "toolName": "t__extra", "input": {}});
+
+        let outcome = tools.add_step(&json!({"step": step, "after": "E9"}));
+        assert!(outcome.is_error);
+        assert_eq!(outcome.result["availableSteps"], json!(["E0", "E1", "E2"]));
+
+        let outcome = tools.add_step(&json!({"step": step, "before": "E0", "after": "E1"}));
+        assert!(outcome.is_error);
+
+        let outcome = tools.add_step(&json!({"step": {"id": "E3"}}));
+        assert!(outcome.is_error, "missing toolName/input must not parse");
+    }
+
+    #[test]
+    fn add_step_rejects_an_invalid_result_and_keeps_the_draft() {
+        let (tools, draft, mut rx) = editing_tools(Some(referencing_doc()));
+        // Inserted at the front, this step references E1 — a forward
+        // reference the validator must reject.
+        let outcome = tools.add_step(&json!({
+            "step": {"id": "E3", "toolName": "t__extra", "input": {"q": "{{E1.values}}"}},
+            "before": "E0",
+        }));
+        assert!(outcome.is_error);
+        assert!(
+            outcome.result["problems"].is_array(),
+            "{:?}",
+            outcome.result
+        );
+        assert_eq!(draft.lock().unwrap().as_ref().unwrap().steps.len(), 3);
+        assert!(rx.try_recv().is_err(), "rejected edits must not publish");
+
+        let duplicate = json!({"id": "E0", "toolName": "t__extra", "input": {}});
+        assert!(tools.add_step(&json!({ "step": duplicate })).is_error);
+    }
+
+    #[test]
+    fn update_step_patches_fields() {
+        let (tools, draft, mut rx) = editing_tools(Some(referencing_doc()));
+        let outcome = tools.update_step(&json!({
+            "id": "E0",
+            "toolName": "t__better_search",
+            "input": {"query": "y", "limit": 5},
+            "reasoning": "narrower query",
+        }));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        let doc = draft.lock().unwrap().clone().unwrap();
+        assert_eq!(doc.steps[0].tool_name, "t__better_search");
+        assert_eq!(doc.steps[0].input["limit"], json!(5));
+        assert_eq!(doc.steps[0].reasoning.as_deref(), Some("narrower query"));
+        assert_dirty_publish(&mut rx);
+
+        // An empty reasoning clears it; an empty patch is an error.
+        assert!(
+            !tools
+                .update_step(&json!({"id": "E0", "reasoning": ""}))
+                .is_error
+        );
+        assert_eq!(
+            draft.lock().unwrap().as_ref().unwrap().steps[0].reasoning,
+            None
+        );
+        assert!(tools.update_step(&json!({"id": "E0"})).is_error);
+        assert!(
+            tools
+                .update_step(&json!({"id": "E9", "toolName": "t__x"}))
+                .is_error
+        );
+    }
+
+    #[test]
+    fn update_step_rename_rewrites_downstream_references() {
+        let (tools, draft, _rx) = editing_tools(Some(referencing_doc()));
+        let outcome = tools.update_step(&json!({"id": "E1", "newId": "issues"}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert_eq!(outcome.result["id"], json!("issues"));
+        let doc = draft.lock().unwrap().clone().unwrap();
+        assert_eq!(doc.steps[1].id, "issues");
+        assert_eq!(
+            doc.steps[2].input["rows"],
+            json!("{{#issues.values}}x{{/issues.values}} of {{issues.values.length}}")
+        );
+        assert_eq!(
+            doc.solver.unwrap().query_to_answer,
+            "Summarize {{issues.values.length}} items"
+        );
+    }
+
+    #[test]
+    fn update_step_rename_collision_is_rejected() {
+        let (tools, draft, mut rx) = editing_tools(Some(referencing_doc()));
+        let outcome = tools.update_step(&json!({"id": "E0", "newId": "E1"}));
+        assert!(outcome.is_error);
+        assert!(
+            outcome.result["problems"].is_array(),
+            "{:?}",
+            outcome.result
+        );
+        assert_eq!(draft.lock().unwrap().as_ref().unwrap().steps[0].id, "E0");
+        assert!(rx.try_recv().is_err(), "rejected edits must not publish");
+    }
+
+    #[test]
+    fn delete_step_removes_and_publishes() {
+        let (tools, draft, mut rx) = editing_tools(Some(referencing_doc()));
+        let outcome = tools.delete_step(&json!({"id": "E2"}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert_eq!(outcome.result["steps"], json!(2));
+        assert_eq!(draft.lock().unwrap().as_ref().unwrap().steps.len(), 2);
+        assert_dirty_publish(&mut rx);
+    }
+
+    #[test]
+    fn delete_step_rejects_dangling_references_and_empty_plans() {
+        let (tools, draft, mut rx) = editing_tools(Some(referencing_doc()));
+        // E1 still reads {{E0.values.0.id}} — deleting E0 must be refused.
+        let outcome = tools.delete_step(&json!({"id": "E0"}));
+        assert!(outcome.is_error);
+        assert!(
+            outcome.result["problems"].to_string().contains("E0"),
+            "{:?}",
+            outcome.result
+        );
+        assert_eq!(draft.lock().unwrap().as_ref().unwrap().steps.len(), 3);
+        assert!(rx.try_recv().is_err(), "rejected edits must not publish");
+
+        // The last remaining step cannot be deleted either.
+        let (tools, _draft, _rx) = editing_tools(Some(demo_doc()));
+        assert!(tools.delete_step(&json!({"id": "E0"})).is_error);
+    }
+
+    #[test]
+    fn editing_tools_require_a_draft() {
+        let (tools, _draft, _rx) = editing_tools(None);
+        assert!(tools.update_metadata(&json!({"name": "x"})).is_error);
+        assert!(
+            tools
+                .add_step(&json!({"step": {"id": "E0", "toolName": "t__x", "input": {}}}))
+                .is_error
+        );
+        assert!(
+            tools
+                .update_step(&json!({"id": "E0", "toolName": "t__x"}))
+                .is_error
+        );
+        assert!(tools.delete_step(&json!({"id": "E0"})).is_error);
     }
 
     #[test]

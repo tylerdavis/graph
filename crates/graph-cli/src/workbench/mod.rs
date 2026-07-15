@@ -46,8 +46,14 @@ validation problems or user corrections.\n\
 - workbench__get_plan: re-read the draft YAML. The current draft is \
 already included below in this prompt each turn — call this only to \
 re-check after your own edits within the same turn.\n\
+- workbench__update_metadata / workbench__add_step / \
+workbench__update_step / workbench__delete_step: precise edits — patch \
+the plan's metadata, insert a step (before/after an id, or appended), \
+update one step's fields (newId renames it and rewrites downstream \
+references), or remove a step. Prefer these for targeted changes; an \
+edit that would make the plan invalid is rejected with the problems.\n\
 - workbench__set_plan: replace the draft with complete YAML (get, modify, \
-set) for surgical changes.\n\
+set) for wholesale rewrites the precise tools don't cover.\n\
 - workbench__validate_plan: check the draft and surface the verdict in \
 the pane.\n\
 - workbench__run_plan: execute the draft when the user asks. Prefer \
