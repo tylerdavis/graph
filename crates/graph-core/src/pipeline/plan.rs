@@ -9,7 +9,8 @@ use serde_json::{Map, Value};
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Step {
-    /// Sequential id: "E0", "E1", …
+    /// Unique identifier templates reference the step by: "E0", "E1", …
+    /// or a descriptive name like "fetch_pr_meta". See [`check_step_id`].
     pub id: String,
     /// Exact tool name from the tool list, e.g. "linear__search_issues".
     #[serde(alias = "tool_name")]
@@ -47,13 +48,41 @@ pub struct PlannerOutput {
     pub solver_data: SolverData,
 }
 
-/// Parse the numeric part of a step id ("E2" → 2).
+/// Parse the numeric part of an E-sequence step id ("E2" → 2). The
+/// E-sequence is the planner's convention, not a requirement — see
+/// [`check_step_id`]; this exists so replans can mint fresh E ids past
+/// the executed ones.
 pub fn step_number(id: &str) -> Option<u32> {
     id.strip_prefix('E')?.parse().ok()
 }
 
-pub fn sort_plan(plan: &mut Plan) {
-    plan.sort_by_key(|step| step_number(&step.id).unwrap_or(u32::MAX));
+/// Roots with fixed meanings in templates (`input`, the map/reduce
+/// pseudo-roots) plus `length`, which the path grammar claims as an
+/// operator. Step ids may not shadow them.
+pub const RESERVED_ROOTS: [&str; 5] = ["input", "item", "index", "accumulator", "length"];
+
+/// A legal step id: any identifier templates can reference as a root —
+/// letters, digits, and `_`, not starting with a digit — that doesn't
+/// shadow a reserved root. `E0`-style ids and descriptive names
+/// (`fetch_pr_meta`) are equally valid; uniqueness is checked per plan.
+pub fn check_step_id(id: &str) -> Result<(), String> {
+    let starts_well = id
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    if !starts_well || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(format!(
+            "step id '{id}' must be an identifier — letters, digits, or _, \
+             not starting with a digit"
+        ));
+    }
+    if RESERVED_ROOTS.contains(&id) {
+        return Err(format!(
+            "step id '{id}' shadows a reserved template root ({})",
+            RESERVED_ROOTS.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 /// Default solver data mapping every step result in, used when the planner

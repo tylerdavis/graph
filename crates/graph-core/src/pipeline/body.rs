@@ -6,7 +6,7 @@
 //! step ids never enter `RunState::results` (the step cursor and replan
 //! merge are keyed on it), but their work counts in `steps_executed`.
 
-use super::plan::{step_number, Step};
+use super::plan::{check_step_id, Step};
 use super::state::{BusEntry, BusKind};
 use super::Pipeline;
 use crate::template::{render_input, RenderError, Roots};
@@ -76,7 +76,7 @@ pub fn body_schema() -> Value {
                     "type": "object",
                     "required": ["id", "toolName", "input"],
                     "properties": {
-                        "id": {"type": "string", "description": "E-shaped id unique across the whole plan; visible only inside this body."},
+                        "id": {"type": "string", "description": "Identifier (letters, digits, _) unique across the whole plan; visible only inside this body."},
                         "toolName": {"type": "string"},
                         "input": {"type": "object"}
                     }
@@ -88,13 +88,14 @@ pub fn body_schema() -> Value {
 
 /// Static validation of a body: shape, tool names, step ids, and template
 /// reference ordering. `seen` is the ids available before the owning step
-/// (including `input`); `all_plan_ids` is every top-level id, for
-/// collision checks. Pseudo-roots (`item`, `index`, `accumulator`) pass
-/// the ordering walk untouched — it only checks E-shaped references.
+/// (including `input`); `pseudo` is the pseudo-roots this body's scope
+/// adds (`item`/`index` for map, plus `accumulator` for reduce, none for
+/// decide); `all_plan_ids` is every top-level id, for collision checks.
 pub fn validate_body(
     name: &str,
     raw: &Value,
     seen: &[&str],
+    pseudo: &[&str],
     all_plan_ids: &[&str],
     step_id: &str,
     problems: &mut Vec<String>,
@@ -106,23 +107,21 @@ pub fn validate_body(
             return;
         }
     };
+    let mut body_seen: Vec<&str> = seen.to_vec();
+    body_seen.extend_from_slice(pseudo);
     match branch {
         Branch::Call(call) => {
             check_body_tool(name, &call.tool_name, step_id, problems);
             for value in call.input.values() {
-                super::check_templates(value, seen, step_id, problems);
+                super::check_templates(value, &body_seen, step_id, problems);
             }
         }
         Branch::Steps(steps) => {
             // Body steps may reference earlier top-level steps and earlier
             // same-body steps — never a sibling body or anything later.
-            let mut body_seen: Vec<&str> = seen.to_vec();
             for (index, step) in steps.iter().enumerate() {
-                if step_number(&step.id).is_none() {
-                    problems.push(format!(
-                        "step {step_id}: `{name}` step id '{}' must look like E0, E1, …",
-                        step.id
-                    ));
+                if let Err(problem) = check_step_id(&step.id) {
+                    problems.push(format!("step {step_id}: `{name}` {problem}"));
                 }
                 if all_plan_ids.contains(&step.id.as_str()) {
                     problems.push(format!(

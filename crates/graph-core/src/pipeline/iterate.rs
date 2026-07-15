@@ -132,7 +132,18 @@ pub fn validate_map_input(
         problems.push(format!("step {step_id}: `concurrency` must be at least 1"));
     }
     check_eager_field(&spec.over, seen, step_id, problems);
-    validate_body("do", &spec.do_, seen, all_plan_ids, step_id, problems);
+    // `accumulator` is passed as an available root so the pointed message
+    // below is the only one reported for it.
+    let pseudo = ["item", "index", "accumulator"];
+    validate_body(
+        "do",
+        &spec.do_,
+        seen,
+        &pseudo,
+        all_plan_ids,
+        step_id,
+        problems,
+    );
     if template_roots(&spec.do_).iter().any(|r| r == "accumulator") {
         problems.push(format!(
             "step {step_id}: `{{{{accumulator}}}}` is only available inside a reduce body"
@@ -157,13 +168,26 @@ pub fn validate_reduce_input(
     };
     check_eager_field(&spec.over, seen, step_id, problems);
     check_eager_field(&spec.initial, seen, step_id, problems);
-    validate_body("do", &spec.do_, seen, all_plan_ids, step_id, problems);
+    let pseudo = ["item", "index", "accumulator"];
+    validate_body(
+        "do",
+        &spec.do_,
+        seen,
+        &pseudo,
+        all_plan_ids,
+        step_id,
+        problems,
+    );
 }
 
 /// `over` and `initial` render before any item exists, so pseudo-roots in
-/// them can never resolve — catch that statically.
+/// them can never resolve — catch that statically. The generic walk runs
+/// with the pseudo-roots marked available so the pointed message below is
+/// the only one reported for them.
 fn check_eager_field(value: &Value, seen: &[&str], step_id: &str, problems: &mut Vec<String>) {
-    super::check_templates(value, seen, step_id, problems);
+    let mut available: Vec<&str> = seen.to_vec();
+    available.extend(["item", "index", "accumulator"]);
+    super::check_templates(value, &available, step_id, problems);
     for pseudo in ["item", "index", "accumulator"] {
         if template_roots(value).iter().any(|r| r == pseudo) {
             problems.push(format!(

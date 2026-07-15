@@ -530,7 +530,8 @@ impl Pipeline {
                 "plan",
             )
             .await?;
-        plan::sort_plan(&mut output.plan);
+        // Plans run in emitted order; reference-ordering validation (not
+        // an id sort — ids are opaque) catches a mis-sequenced plan.
         plan::default_solver_data(&output.plan, &mut output.solver_data.data);
         Ok(output)
     }
@@ -623,8 +624,8 @@ impl Pipeline {
             )
             .await?;
 
-        // Merge: executed steps are immutable; the planner's steps replace
-        // the pending tail.
+        // Merge: executed steps are immutable and keep their run order;
+        // the planner's steps replace the pending tail in emitted order.
         let mut merged = executed;
         let executed_ids: Vec<String> = merged.iter().map(|s| s.id.clone()).collect();
         merged.extend(
@@ -633,7 +634,6 @@ impl Pipeline {
                 .into_iter()
                 .filter(|step| !executed_ids.contains(&step.id)),
         );
-        plan::sort_plan(&mut merged);
         state.plan = merged;
         state.solver_data = output.solver_data;
         plan::default_solver_data(&state.plan, &mut state.solver_data.data);
@@ -659,6 +659,12 @@ impl Pipeline {
         let all_ids: Vec<&str> = plan.iter().map(|s| s.id.as_str()).collect();
         let mut seen: Vec<&str> = vec!["input"];
         for step in plan {
+            if let Err(problem) = plan::check_step_id(&step.id) {
+                problems.push(problem);
+            }
+            if seen.contains(&step.id.as_str()) {
+                problems.push(format!("duplicate step id '{}'", step.id));
+            }
             // Control steps are body-aware: body-internal references
             // (same-body ids, per-item pseudo-roots) are legal, so the
             // generic walk below would false-flag them.
@@ -1130,7 +1136,9 @@ impl Pipeline {
 }
 
 /// Recursively parse template strings, recording parse failures and
-/// references to steps that are not yet available at this point in the plan.
+/// references to roots that are not available at this point in the plan —
+/// `available` carries `input`, every earlier step id, and (inside
+/// control-step bodies) the pseudo-roots and earlier same-body ids.
 fn check_templates(value: &Value, available: &[&str], step_id: &str, problems: &mut Vec<String>) {
     match value {
         Value::String(s) => {
@@ -1140,10 +1148,10 @@ fn check_templates(value: &Value, available: &[&str], step_id: &str, problems: &
             match crate::template::referenced_roots(s) {
                 Ok(roots) => {
                     for root in roots {
-                        let is_step_ref = plan::step_number(&root).is_some();
-                        if is_step_ref && !available.contains(&root.as_str()) {
+                        if !available.contains(&root.as_str()) {
                             problems.push(format!(
-                                "step {step_id} references {root}, which is not an earlier step"
+                                "step {step_id} references {root}, which is not \
+                                 `input` or an earlier step"
                             ));
                         }
                     }
