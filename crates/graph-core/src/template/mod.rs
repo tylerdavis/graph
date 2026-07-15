@@ -52,6 +52,73 @@ pub fn referenced_roots(template: &str) -> Result<Vec<String>, RenderError> {
     Ok(roots)
 }
 
+/// Rewrite every reference whose root is `old` to `new` — `{{old.x}}` →
+/// `{{new.x}}`, including section (`{{#old.x}}`), inverted (`{{^old.x}}`),
+/// and closing (`{{/old.x}}`) tags. Used when a step id is renamed so
+/// downstream templates keep working. A lexical pass that tracks section
+/// depth: bare keys inside a section body are item-relative, never roots,
+/// so they are left alone even when they equal `old`. Matching tags are
+/// re-emitted with inner whitespace normalized (the parser trims anyway);
+/// everything else — text, non-matching tags, malformed tags — passes
+/// through byte-for-byte.
+pub fn rewrite_root(template: &str, old: &str, new: &str) -> String {
+    // Rewrite one tag, given whether bare keys are root-anchored here.
+    fn rewrite_tag(raw: &str, old: &str, new: &str, at_root: bool) -> Option<String> {
+        let trimmed = raw.trim();
+        let (sigil, path) = match trimmed.chars().next() {
+            Some(c @ ('#' | '^' | '/')) => (Some(c), trimmed[c.len_utf8()..].trim_start()),
+            _ => (None, trimmed),
+        };
+        let (root, tail) = match path.split_once('.') {
+            Some((root, tail)) => (root, Some(tail)),
+            None => (path, None),
+        };
+        if root != old || (tail.is_none() && !at_root) {
+            return None;
+        }
+        let mut tag = String::new();
+        tag.extend(sigil);
+        tag.push_str(new);
+        if let Some(tail) = tail {
+            tag.push('.');
+            tag.push_str(tail);
+        }
+        Some(tag)
+    }
+
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    let mut depth: usize = 0;
+    while let Some(open) = rest.find("{{") {
+        let after = &rest[open + 2..];
+        let Some(close) = after.find("}}") else {
+            break; // unclosed tag — leave the remainder untouched
+        };
+        let raw = &after[..close];
+        // Closers pop before the rewrite decision so they resolve at the
+        // same depth as their opener; openers push after.
+        let sigil = raw.trim().chars().next();
+        if sigil == Some('/') {
+            depth = depth.saturating_sub(1);
+        }
+        out.push_str(&rest[..open]);
+        match rewrite_tag(raw, old, new, depth == 0) {
+            Some(tag) => {
+                out.push_str("{{");
+                out.push_str(&tag);
+                out.push_str("}}");
+            }
+            None => out.push_str(&rest[open..open + 2 + close + 2]),
+        }
+        if matches!(sigil, Some('#') | Some('^')) {
+            depth += 1;
+        }
+        rest = &after[close + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Parse a template and return every full data path it references, dotted
 /// (`E0.values.0.id`, `input.team`). Section paths are included; paths
 /// referenced *inside* a section body relative to its items are emitted
@@ -382,6 +449,61 @@ mod tests {
         let paths = referenced_paths("{{E0.id}} {{E0.id}}").unwrap();
         assert_eq!(paths, vec!["E0.id"]);
         assert!(referenced_paths("{{> partial}}").is_err());
+    }
+
+    #[test]
+    fn rewrite_root_renames_matching_references() {
+        // Plain var, dotted path, exact tag.
+        assert_eq!(rewrite_root("{{E0}}", "E0", "fetch"), "{{fetch}}");
+        assert_eq!(
+            rewrite_root("id: {{E0.values.0.id}}", "E0", "fetch"),
+            "id: {{fetch.values.0.id}}"
+        );
+        // Section, inverted, and closing tags all carry the root.
+        assert_eq!(
+            rewrite_root(
+                "{{#E0.values}}{{id}}{{/E0.values}}{{^E0.values}}none{{/E0.values}}",
+                "E0",
+                "fetch"
+            ),
+            "{{#fetch.values}}{{id}}{{/fetch.values}}{{^fetch.values}}none{{/fetch.values}}"
+        );
+        // Whitespace inside braces still matches (normalized on rewrite).
+        assert_eq!(rewrite_root("{{ E0.id }}", "E0", "fetch"), "{{fetch.id}}");
+    }
+
+    #[test]
+    fn rewrite_root_leaves_everything_else_alone() {
+        // Other roots, including prefixes: E1 must not rewrite E10.
+        assert_eq!(
+            rewrite_root("{{E10.id}} {{input.x}}", "E1", "fetch"),
+            "{{E10.id}} {{input.x}}"
+        );
+        // Non-matching tags keep their exact bytes (whitespace included).
+        assert_eq!(rewrite_root("{{ E2.id }}", "E0", "fetch"), "{{ E2.id }}");
+        // Bare keys inside a section body are item-relative, not roots —
+        // even one that happens to equal the renamed id stays put.
+        assert_eq!(
+            rewrite_root("{{#E0.values}}{{title}}{{/E0.values}}", "title", "t"),
+            "{{#E0.values}}{{title}}{{/E0.values}}"
+        );
+        // …but a dotted path anywhere is root-anchored and does rewrite,
+        // and a bare tag at the top level is a root reference.
+        assert_eq!(
+            rewrite_root(
+                "{{#items.rows}}{{E0.id}}{{/items.rows}} {{E0}}",
+                "E0",
+                "fetch"
+            ),
+            "{{#items.rows}}{{fetch.id}}{{/items.rows}} {{fetch}}"
+        );
+        // Plain text and malformed tags pass through untouched.
+        assert_eq!(rewrite_root("no tags here", "E0", "fetch"), "no tags here");
+        assert_eq!(rewrite_root("{{E0.id", "E0", "fetch"), "{{E0.id");
+        assert_eq!(
+            rewrite_root("{{E0.a}} then {{E0.b", "E0", "fetch"),
+            "{{fetch.a}} then {{E0.b"
+        );
     }
 
     #[test]
