@@ -195,8 +195,11 @@ fn github_pack_loads_and_validates() {
             "gh_pr_meta",
             "gh_pr_comment",
             "gh_pr_inline_comments",
+            "gh_pr_ticket",
             "git_diff",
-            "git_changed_files"
+            "git_changed_files",
+            "git_file",
+            "git_grep"
         ]
     );
     // The comment tools post; everything else is read-only.
@@ -293,6 +296,158 @@ prompt: "Summarize: {{input.text}}"
         .unwrap();
     assert!(!outcome.is_error);
     assert_eq!(outcome.result, json!({"text": "echo: Summarize: hi"}));
+}
+
+// ── Git-backed pack tools (real git, scratch repo, no network) ───────────
+
+/// One-commit git repo: greeting.txt at the root, src/lib.rs with two fns.
+fn scratch_git_repo() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    std::fs::write(
+        dir.path().join("greeting.txt"),
+        "hello graph\nsecond line\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn alpha() {}\nfn beta() {}\n",
+    )
+    .unwrap();
+    git(&["add", "."]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
+    dir
+}
+
+/// The named github pack tool, pinned to run inside `cwd`.
+fn github_tool_in(name: &str, cwd: &std::path::Path) -> UserToolDoc {
+    let mut doc = load_pack_tools(&["github".to_string()])
+        .unwrap()
+        .into_iter()
+        .find(|d| d.name == name)
+        .unwrap_or_else(|| panic!("no pack tool '{name}'"));
+    if let ToolKind::Exec { cwd: dir, .. } = &mut doc.kind {
+        *dir = Some(cwd.to_path_buf());
+    }
+    doc
+}
+
+#[tokio::test]
+async fn git_file_reads_content_at_ref_and_marks_truncation() {
+    let repo = scratch_git_repo();
+    let registry =
+        UserToolRegistry::builtins(vec![github_tool_in("git_file", repo.path())], router());
+
+    // max_bytes defaulted: full content.
+    let outcome = registry
+        .invoke(
+            "builtin__git_file",
+            json!({"ref": "HEAD", "path": "greeting.txt"}),
+        )
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    assert_eq!(outcome.result, json!({"text": "hello graph\nsecond line"}));
+
+    // Over budget: capped, with the truncation marker line.
+    let outcome = registry
+        .invoke(
+            "builtin__git_file",
+            json!({"ref": "HEAD", "path": "greeting.txt", "max_bytes": 5}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.result,
+        json!({"text": "hello\n\n[file truncated: showing 5 of 24 bytes]"})
+    );
+
+    // A missing path fails loudly, not as empty content.
+    let outcome = registry
+        .invoke(
+            "builtin__git_file",
+            json!({"ref": "HEAD", "path": "missing.txt"}),
+        )
+        .await
+        .unwrap();
+    assert!(outcome.is_error);
+}
+
+#[tokio::test]
+async fn git_grep_returns_structured_matches_with_defaults() {
+    let repo = scratch_git_repo();
+    let registry =
+        UserToolRegistry::builtins(vec![github_tool_in("git_grep", repo.path())], router());
+
+    // ref/paths/max_matches all defaulted (HEAD, everything, 200).
+    let outcome = registry
+        .invoke("builtin__git_grep", json!({"pattern": "fn (alpha|beta)"}))
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    assert_eq!(
+        outcome.result,
+        json!({
+            "matches": [
+                {"path": "src/lib.rs", "line": 1, "text": "fn alpha() {}"},
+                {"path": "src/lib.rs", "line": 2, "text": "fn beta() {}"},
+            ],
+            "count": 2,
+            "truncated": false,
+        })
+    );
+
+    // Pathspec scoping + cap: one match returned, the cut flagged.
+    let outcome = registry
+        .invoke(
+            "builtin__git_grep",
+            json!({"pattern": "fn", "paths": "src/", "max_matches": 1}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.result["count"], 1);
+    assert_eq!(outcome.result["truncated"], true);
+
+    // No matches is a result, not an error.
+    let outcome = registry
+        .invoke(
+            "builtin__git_grep",
+            json!({"pattern": "nowhere_to_be_found"}),
+        )
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    assert_eq!(
+        outcome.result,
+        json!({"matches": [], "count": 0, "truncated": false})
+    );
+
+    // A bad ref fails loudly instead of reading as "no matches".
+    let outcome = registry
+        .invoke(
+            "builtin__git_grep",
+            json!({"pattern": "fn", "ref": "no-such-ref"}),
+        )
+        .await
+        .unwrap();
+    assert!(outcome.is_error);
 }
 
 // ── Prompt-tool output_schema enforcement ────────────────────────────────
