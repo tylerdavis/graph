@@ -105,7 +105,9 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                     history.len()
                 );
                 let _ = ctx.tx.send(Msg::TurnFinished(
-                    result.map(|_| ()).map_err(turn_failure_message),
+                    result
+                        .map(|outcome| outcome.text)
+                        .map_err(turn_failure_message),
                 ));
             });
         }

@@ -28,6 +28,7 @@ pub const ADD_STEP: &str = "workbench__add_step";
 pub const UPDATE_STEP: &str = "workbench__update_step";
 pub const DELETE_STEP: &str = "workbench__delete_step";
 pub const RESTORE_DRAFT: &str = "workbench__restore_draft";
+pub const SHOW_PLAN: &str = "workbench__show_plan";
 
 /// The shared draft: the doc, its unsaved-changes flag, and a one-deep undo
 /// snapshot. One mutex holds all three so a tool can check `dirty`
@@ -110,42 +111,65 @@ impl WorkbenchTools {
         });
     }
 
+    /// Resolve a catalog identifier or YAML file path to a plan document.
+    fn resolve_plan(&self, name_or_path: &str) -> Result<PlanDoc, ToolOutcome> {
+        if let Some(doc) = self
+            .pipeline
+            .plans
+            .iter()
+            .find(|d| d.identifier == name_or_path)
+        {
+            return Ok(doc.clone());
+        }
+        let path = std::path::Path::new(name_or_path);
+        if !path.exists() {
+            let available: Vec<&str> = self
+                .pipeline
+                .plans
+                .iter()
+                .map(|d| d.identifier.as_str())
+                .collect();
+            return Err(ToolOutcome {
+                result: json!({
+                    "error": format!(
+                        "'{name_or_path}' is neither a known plan identifier nor a file"
+                    ),
+                    "availablePlans": available,
+                }),
+                is_error: true,
+            });
+        }
+        load_plan_doc(path).map_err(|error| error_outcome(&format!("failed to load plan: {error}")))
+    }
+
+    /// Read a plan's YAML without touching the draft — the inspection
+    /// counterpart to load_plan, so studying a plan never replaces work.
+    fn show_plan(&self, input: &Value) -> ToolOutcome {
+        let Some(name_or_path) = input.get("name_or_path").and_then(Value::as_str) else {
+            return error_outcome("show_plan requires a 'name_or_path' string");
+        };
+        let doc = match self.resolve_plan(name_or_path) {
+            Ok(doc) => doc,
+            Err(outcome) => return outcome,
+        };
+        match serde_yaml::to_string(&doc) {
+            Ok(yaml) => ToolOutcome {
+                result: json!({"identifier": doc.identifier, "name": doc.name, "yaml": yaml}),
+                is_error: false,
+            },
+            Err(error) => error_outcome(&error.to_string()),
+        }
+    }
+
     /// Load an existing plan into the workbench: an identifier from the
     /// configured plan catalog, or a YAML file path.
     fn load_plan(&self, input: &Value) -> ToolOutcome {
         let Some(name_or_path) = input.get("name_or_path").and_then(Value::as_str) else {
             return error_outcome("load_plan requires a 'name_or_path' string");
         };
-        let doc = if let Some(doc) = self
-            .pipeline
-            .plans
-            .iter()
-            .find(|d| d.identifier == name_or_path)
-        {
-            doc.clone()
-        } else {
-            let path = std::path::Path::new(name_or_path);
-            if !path.exists() {
-                let available: Vec<&str> = self
-                    .pipeline
-                    .plans
-                    .iter()
-                    .map(|d| d.identifier.as_str())
-                    .collect();
-                return ToolOutcome {
-                    result: json!({
-                        "error": format!(
-                            "'{name_or_path}' is neither a known plan identifier nor a file"
-                        ),
-                        "availablePlans": available,
-                    }),
-                    is_error: true,
-                };
-            }
-            match load_plan_doc(path) {
-                Ok(doc) => doc,
-                Err(error) => return error_outcome(&format!("failed to load plan: {error}")),
-            }
+        let doc = match self.resolve_plan(name_or_path) {
+            Ok(doc) => doc,
+            Err(outcome) => return outcome,
         };
         let problems = self
             .pipeline
@@ -350,7 +374,11 @@ impl WorkbenchTools {
             return error_outcome("draft_plan requires a 'goal' string");
         };
         let feedback = input.get("feedback").and_then(Value::as_str);
-        let existing = self.current();
+        // fresh: the goal describes a NEW plan — ignore the current draft
+        // entirely, so an unrelated loaded plan isn't treated as the plan
+        // under revision (which would keep its identifier and metadata).
+        let fresh = input.get("fresh").and_then(Value::as_bool).unwrap_or(false);
+        let existing = if fresh { None } else { self.current() };
         let existing_output = existing.as_ref().map(|doc| PlannerOutput {
             plan: doc.steps.clone(),
             solver_data: doc.solver.clone().unwrap_or_default(),
@@ -364,28 +392,7 @@ impl WorkbenchTools {
             Err(error) => return error_outcome(&format!("planner failed: {error}")),
         };
 
-        let doc = match existing {
-            Some(mut doc) => {
-                doc.steps = output.plan;
-                // Preserve an `output` finish; otherwise refresh the solver.
-                if doc.output.is_none() {
-                    doc.solver = Some(output.solver_data);
-                }
-                doc
-            }
-            None => PlanDoc {
-                identifier: identifier_from(goal),
-                name: name_from(goal),
-                description: goal.to_string(),
-                exemplars: Vec::new(),
-                requires_servers: Vec::new(),
-                input_schema: None,
-                steps: output.plan,
-                solver: Some(output.solver_data),
-                output: None,
-                path: None,
-            },
-        };
+        let doc = merge_planner_output(existing, goal, output);
         let problems = self
             .pipeline
             .validate_plan(&doc.steps)
@@ -633,6 +640,35 @@ impl WorkbenchTools {
     }
 }
 
+/// Fold the planner's output into a draft: a revision keeps the existing
+/// doc's identity and metadata (identifier, name, description, exemplars,
+/// requires_servers) and replaces its steps; a fresh draft derives them
+/// from the goal.
+fn merge_planner_output(existing: Option<PlanDoc>, goal: &str, output: PlannerOutput) -> PlanDoc {
+    match existing {
+        Some(mut doc) => {
+            doc.steps = output.plan;
+            // Preserve an `output` finish; otherwise refresh the solver.
+            if doc.output.is_none() {
+                doc.solver = Some(output.solver_data);
+            }
+            doc
+        }
+        None => PlanDoc {
+            identifier: identifier_from(goal),
+            name: name_from(goal),
+            description: goal.to_string(),
+            exemplars: Vec::new(),
+            requires_servers: Vec::new(),
+            input_schema: None,
+            steps: output.plan,
+            solver: Some(output.solver_data),
+            output: None,
+            path: None,
+        },
+    }
+}
+
 /// Index of a top-level step by id, or a structured error listing what
 /// exists (mirrors load_plan's availablePlans).
 fn position_of(id: &str, steps: &[Step]) -> Result<usize, Value> {
@@ -734,14 +770,18 @@ impl ToolRegistry for WorkbenchTools {
                 description: "Create or revise the workbench's draft plan from a goal. The \
                               planner sees the full tool catalog and the current draft; pass \
                               the user's request as a self-contained `goal`, and `feedback` \
-                              when revising after validation problems or user corrections."
+                              when revising after validation problems or user corrections. \
+                              Pass fresh: true when the goal describes a NEW plan — \
+                              otherwise the current draft is treated as the plan under \
+                              revision and keeps its identifier and metadata."
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
                     "required": ["goal"],
                     "properties": {
                         "goal": {"type": "string", "description": "What the plan should accomplish, self-contained."},
-                        "feedback": {"type": "string", "description": "What to change about the current draft, or validation errors to fix."}
+                        "feedback": {"type": "string", "description": "What to change about the current draft, or validation errors to fix."},
+                        "fresh": {"type": "boolean", "description": "Draft a NEW plan from scratch, ignoring the current draft (which otherwise keeps its identifier and metadata as the plan under revision). Default false."}
                     }
                 }),
                 output_schema: None,
@@ -964,6 +1004,26 @@ impl ToolRegistry for WorkbenchTools {
                 read_only: None,
             },
             ToolDef {
+                name: SHOW_PLAN.to_string(),
+                description: "Read a catalog plan's YAML without touching the draft — by \
+                              identifier or YAML file path. Use this to inspect or \
+                              reference existing plans; use load_plan only to switch the \
+                              draft to a plan the user names."
+                    .to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "required": ["name_or_path"],
+                    "properties": {
+                        "name_or_path": {"type": "string", "description": "A plan identifier (e.g. sprint_analysis) or a path to a plan YAML file."}
+                    }
+                }),
+                output_schema: None,
+                output_example: Some(
+                    json!({"identifier": "sprint_analysis", "name": "Sprint analysis", "yaml": "identifier: sprint_analysis\n…"}),
+                ),
+                read_only: Some(true),
+            },
+            ToolDef {
                 name: RESTORE_DRAFT.to_string(),
                 description: "One-level undo: put the draft back to what it was before \
                               the last replacement (load, draft, set, or edit) — use it \
@@ -982,7 +1042,7 @@ impl ToolRegistry for WorkbenchTools {
         match name {
             DRAFT_PLAN | GET_PLAN | SET_PLAN | LOAD_PLAN | LIST_PLANS | VALIDATE_PLAN
             | RUN_PLAN | SAVE_PLAN | UPDATE_METADATA | ADD_STEP | UPDATE_STEP | DELETE_STEP
-            | RESTORE_DRAFT => {}
+            | RESTORE_DRAFT | SHOW_PLAN => {}
             // Not ours: stay silent, or the composite registry's fallthrough
             // (the fs tools are also workbench__*) double-logs the call.
             other => return Err(ToolError::Unknown(other.to_string())),
@@ -1007,6 +1067,7 @@ impl ToolRegistry for WorkbenchTools {
             UPDATE_STEP => Ok(self.update_step(&input)),
             DELETE_STEP => Ok(self.delete_step(&input)),
             RESTORE_DRAFT => Ok(self.restore_draft()),
+            SHOW_PLAN => Ok(self.show_plan(&input)),
             other => Err(ToolError::Unknown(other.to_string())),
         };
         if let Ok(outcome) = &outcome {
@@ -1104,6 +1165,58 @@ steps:
         let mut other = demo_doc();
         other.identifier = "other_plan".to_string();
         other
+    }
+
+    #[test]
+    fn show_plan_reads_yaml_without_touching_the_draft() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = DraftState::new(Some(demo_doc()));
+        state.dirty = true;
+        let draft: SharedDraft = Arc::new(Mutex::new(state));
+        let tools = WorkbenchTools::new(
+            draft.clone(),
+            test_pipeline(vec![other_doc()]),
+            None,
+            Arc::new(DebugControls::default()),
+            tx,
+        );
+
+        let outcome = tools.show_plan(&json!({"name_or_path": "other_plan"}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert_eq!(outcome.result["identifier"], json!("other_plan"));
+        assert!(outcome.result["yaml"]
+            .as_str()
+            .unwrap()
+            .contains("identifier: other_plan"));
+        assert!(rx.try_recv().is_err(), "a peek must not publish");
+        let state = draft.lock().unwrap();
+        assert_eq!(
+            state.doc.as_ref().unwrap().identifier,
+            "demo",
+            "the draft is untouched"
+        );
+        assert!(state.dirty, "the dirty flag is untouched");
+
+        let unknown = tools.show_plan(&json!({"name_or_path": "nope"}));
+        assert!(unknown.is_error);
+        assert_eq!(unknown.result["availablePlans"], json!(["other_plan"]));
+    }
+
+    #[test]
+    fn fresh_draft_derives_identity_while_revision_keeps_it() {
+        let output = || PlannerOutput {
+            plan: demo_doc().steps,
+            solver_data: Default::default(),
+        };
+
+        // Revision: the existing doc's identity and metadata survive.
+        let revised = merge_planner_output(Some(other_doc()), "Summarize the sprint", output());
+        assert_eq!(revised.identifier, "other_plan");
+
+        // Fresh (no existing draft): identity comes from the goal.
+        let fresh = merge_planner_output(None, "Summarize the sprint", output());
+        assert_eq!(fresh.identifier, "summarize_the_sprint");
+        assert_eq!(fresh.description, "Summarize the sprint");
     }
 
     #[test]

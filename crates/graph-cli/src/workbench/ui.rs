@@ -95,7 +95,7 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::default());
     }
     if matches!(app.mode, Mode::Chatting) {
-        lines.push(Line::styled("…", DIM));
+        lines.push(Line::styled(spinner_frame(app.tick), DIM));
     }
 
     let height = scrollback.height as usize;
@@ -495,6 +495,9 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw(" "),
     ];
     // The live indicator: what's executing right now, with elapsed time.
+    // A turn with no tool in flight is the model thinking — without this,
+    // a slow completion (or a silent rate-limit backoff inside it) is
+    // indistinguishable from a hang.
     if app.wants_tick() {
         if let Some(in_flight) = &app.in_flight {
             spans.push(Span::styled(
@@ -504,6 +507,15 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     in_flight.path,
                     in_flight.tool,
                     in_flight.started.elapsed().as_secs_f32()
+                ),
+                Style::new().fg(Color::Yellow),
+            ));
+        } else if let Some(started) = &app.turn_started {
+            spans.push(Span::styled(
+                format!(
+                    "{} thinking {:.0}s ",
+                    spinner_frame(app.tick),
+                    started.elapsed().as_secs_f32()
                 ),
                 Style::new().fg(Color::Yellow),
             ));

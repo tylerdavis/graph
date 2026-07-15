@@ -37,16 +37,20 @@ the current draft plan, live. Operate on that draft with the workbench \
 tools:\n\
 - workbench__list_plans: enumerate the plan catalog when the user asks \
 what exists.\n\
+- workbench__show_plan: read any catalog plan's YAML without touching \
+the draft — always use this to inspect or reference existing plans.\n\
 - workbench__load_plan: open a DIFFERENT plan the user explicitly names \
 (identifier or YAML path). Never use it to edit, fix, or continue the \
-current draft — use the editing tools for that. It replaces the draft \
-and FAILS if there are unsaved changes unless you pass \
-overwrite_draft: true, which you may only do after the user confirms \
-discarding them.\n\
+current draft (use the editing tools) or to read a plan (use \
+show_plan). It replaces the draft and FAILS if there are unsaved \
+changes unless you pass overwrite_draft: true, which you may only do \
+after the user confirms discarding them.\n\
 - workbench__draft_plan: draft a plan from a goal when there is no draft \
 yet, or when the user asks to start over from scratch. Pass the user's \
 request as a self-contained goal; pass feedback when revising after \
-validation problems or user corrections.\n\
+validation problems or user corrections; pass fresh: true when the goal \
+is a NEW plan — otherwise the current draft is treated as the plan \
+under revision and keeps its identifier and metadata.\n\
 - workbench__get_plan: re-read the draft YAML. The current draft is \
 already included below in this prompt each turn — call this only to \
 re-check after your own edits within the same turn.\n\
