@@ -6,6 +6,10 @@ icon: "badge-check"
 
 This repo dogfoods graph in its own pull-request checks: a **docs-drift gate** (an inferred exit gate as a merge check) and a **specialized reviewer** (structured findings posted as a PR comment by the plan itself). Every piece ships in this repo — the plans in `./.graph/plans/`, the rubric tool in `./.graph/tools/`, the workflow in `.github/workflows/graph-checks.yaml` — and every PR against graph runs them.
 
+<Tip>
+To replicate this setup in your own repository, hand the work to your coding agent: `npx skills add tylerdavis/graph` installs the [graph-github-actions-setup](https://github.com/tylerdavis/graph/blob/main/skills/graph-github-actions-setup/SKILL.md) skill (Claude Code, Cursor, Codex, and most other agents). It walks the agent through choosing checks, scaffolding `./.graph/`, generating the workflow, and wiring secrets. The rest of this page explains the pieces the skill assembles.
+</Tip>
+
 The finished shape is the headline. Each CI job is:
 
 ```yaml
