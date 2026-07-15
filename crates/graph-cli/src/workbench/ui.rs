@@ -4,6 +4,7 @@
 use super::app::{App, ChatEntry, Focus, GateKind, GatePrompt, Mode};
 use super::editor::EditorContext;
 use super::plan_ws::{PlanWorkspace, RowKey, RunLine, StepRow, StepStatus, WsTab};
+use graph_core::pipeline::{DECIDE_TOOL, EXIT_TOOL, MAP_TOOL, REDUCE_TOOL};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -148,8 +149,8 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// Per-branch rail color. Deliberately distinct from the status palette
-/// (green=ok, red=error, yellow=running, magenta glyph=skipped) so a rail
+/// Per-branch pipe color. Deliberately distinct from the status palette
+/// (green=ok, red=error, yellow=running, magenta glyph=skipped) so a pipe
 /// never reads as an outcome.
 fn branch_color(body: &str) -> Color {
     match body {
@@ -160,17 +161,135 @@ fn branch_color(body: &str) -> Color {
     }
 }
 
-/// The rail text for one body row: the branch label on the group's first
-/// row (right-aligned into a fixed gutter), then a vertical pipe down the
-/// group, closed with a corner on the last row.
-fn branch_guide(body: &str, first: bool, last: bool) -> String {
-    let label = if first {
-        format!("{body:>4}")
-    } else {
-        "    ".to_string()
-    };
-    let rail = if last { '└' } else { '│' };
-    format!("{label} {rail} ")
+/// The junction icon for a control-flow tool, with its color: the icon
+/// takes the color of what flows out of it.
+fn control_icon(tool: &str) -> Option<(&'static str, Color)> {
+    match tool {
+        DECIDE_TOOL => Some(("⑂", Color::Blue)),
+        MAP_TOOL => Some(("⟳", Color::Cyan)),
+        REDUCE_TOOL => Some(("∑", Color::Cyan)),
+        EXIT_TOOL => Some(("⎋", Color::Magenta)),
+        "plan_and_execute" => Some(("ƒ", Color::White)),
+        tool if tool.starts_with("plan__") => Some(("ƒ", Color::White)),
+        _ => None,
+    }
+}
+
+/// Tree piping for one row, `tree`-style: trunk connectors in structural
+/// gray, decide's named branches and map/reduce bodies piping down in
+/// their branch color, control icons fused into the junction cell (├─⑂).
+/// Also returns whether the row's id column should render — branch heads
+/// and single-call bodies carry their label inside the piping instead.
+fn tree_spans(rows: &[StepRow], index: usize) -> (Vec<Span<'static>>, bool) {
+    let row = &rows[index];
+    let is_top = |key: &RowKey| matches!(key, RowKey::Step(_) | RowKey::Finish);
+    match &row.key {
+        RowKey::Root => (Vec::new(), false),
+        RowKey::Step(_) | RowKey::Finish => {
+            let last_top = !rows[index + 1..].iter().any(|r| is_top(&r.key));
+            let elbow = if last_top { "└─" } else { "├─" };
+            match control_icon(&row.tool) {
+                Some((icon, color)) => (
+                    vec![
+                        Span::styled(elbow, DIM),
+                        Span::styled(
+                            format!("{icon} "),
+                            Style::new().fg(color).add_modifier(Modifier::BOLD),
+                        ),
+                    ],
+                    true,
+                ),
+                None => (vec![Span::styled(format!("{elbow}─ "), DIM)], true),
+            }
+        }
+        RowKey::BranchHead { step, body } => {
+            let color = branch_color(body);
+            let elbow = if later_branch(rows, index, step, body) {
+                "├── "
+            } else {
+                "└── "
+            };
+            (
+                vec![
+                    trunk_cont(rows, index),
+                    Span::styled(elbow, Style::new().fg(color)),
+                    Span::styled(
+                        row.id.clone(),
+                        Style::new().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                ],
+                false,
+            )
+        }
+        RowKey::Body {
+            step,
+            body,
+            body_step,
+        } => {
+            let color = branch_color(body);
+            let last_in_group = !rows[index + 1..].iter().any(|r| {
+                matches!(&r.key, RowKey::Body { step: s, body: b, .. } if s == step && b == body)
+            });
+            let mut spans = vec![trunk_cont(rows, index)];
+            // Under a branch head, the head's own guide continues.
+            let has_head = rows[..index].iter().any(|r| {
+                matches!(&r.key, RowKey::BranchHead { step: s, body: b } if s == step && b == body)
+            });
+            if has_head {
+                let guide = if later_branch(rows, index, step, body) {
+                    "│   "
+                } else {
+                    "    "
+                };
+                spans.push(Span::styled(guide, Style::new().fg(color)));
+            }
+            let elbow = if last_in_group { "└─" } else { "├─" };
+            match control_icon(&row.tool) {
+                Some((icon, icon_color)) => {
+                    spans.push(Span::styled(elbow, Style::new().fg(color)));
+                    spans.push(Span::styled(
+                        format!("{icon} "),
+                        Style::new().fg(icon_color).add_modifier(Modifier::BOLD),
+                    ));
+                }
+                None => spans.push(Span::styled(format!("{elbow}─ "), Style::new().fg(color))),
+            }
+            let show_id = if body_step.is_none() {
+                // Single-call body: the branch label rides the piping.
+                spans.push(Span::styled(
+                    format!("{body} "),
+                    Style::new().fg(color).add_modifier(Modifier::BOLD),
+                ));
+                false
+            } else {
+                true
+            };
+            (spans, show_id)
+        }
+    }
+}
+
+/// The trunk continuation for rows nested under a control step: a │ while
+/// later top-level rows exist, blank once the owner is the trunk's last.
+fn trunk_cont(rows: &[StepRow], index: usize) -> Span<'static> {
+    let later_top = rows[index + 1..]
+        .iter()
+        .any(|r| matches!(&r.key, RowKey::Step(_) | RowKey::Finish));
+    Span::styled(if later_top { "│  " } else { "   " }, DIM)
+}
+
+/// Whether another branch group of the same control step follows this
+/// row — i.e. this branch's guide must keep flowing past its subtree.
+/// Counts branch heads and body rows alike, so a single-call `else`
+/// (which has no head row) still holds the `then` guide open.
+fn later_branch(rows: &[StepRow], index: usize, step: &str, body: &str) -> bool {
+    rows[index + 1..].iter().any(|r| match &r.key {
+        RowKey::BranchHead { step: s, body: b } => s == step && b != body,
+        RowKey::Body {
+            step: s, body: b, ..
+        } => s == step && b != body,
+        _ => false,
+    })
 }
 
 /// Character-level soft wrap for the input box: each logical line becomes
@@ -343,11 +462,11 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
         header,
     );
 
-    // Step list: breakpoint gutter · status glyph · id · tool. Body
-    // sub-steps render under a colored branch rail — the branch label on
-    // the group's first row, a `│` down the group, a `└` corner on the
-    // last — so then/else/do read as distinct tracks at a glance. The
-    // paused row's id renders yellow-bold; running rows animate.
+    // Step list, tree-style: breakpoint gutter · status glyph · piping ·
+    // id · tool. The plan identifier is the root; steps fork off a gray
+    // trunk; control steps fuse their icon into the junction (├─⑂) and
+    // their subtrees pipe down in the branch's color. The paused row's id
+    // renders yellow-bold; running rows animate.
     let paused_row = paused_prompt(app)
         .filter(|p| p.call_stack.is_empty())
         .and_then(|p| ws.find_path(&p.path));
@@ -381,40 +500,26 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::new().add_modifier(Modifier::BOLD)
             };
-            let (rail, display_id) = match &row.key {
-                RowKey::Body {
-                    step,
-                    body,
-                    body_step,
-                } => {
-                    let same = |other: &StepRow| {
-                        matches!(&other.key,
-                            RowKey::Body { step: s, body: b, .. } if s == step && b == body)
-                    };
-                    let first = index == 0 || !same(&ws.steps[index - 1]);
-                    let last = ws.steps.get(index + 1).is_none_or(|next| !same(next));
-                    let rail = Span::styled(
-                        branch_guide(body, first, last),
-                        Style::new().fg(branch_color(body)),
-                    );
-                    // A single-call body's display id IS the branch name —
-                    // the rail label already says it.
-                    let id = if body_step.is_none() {
-                        "·".to_string()
-                    } else {
-                        row.id.clone()
-                    };
-                    (rail, id)
-                }
-                _ => (Span::raw(""), row.id.clone()),
-            };
-            ListItem::new(Line::from(vec![
-                gutter,
-                rail,
-                Span::styled(format!("{glyph} "), style),
-                Span::styled(format!("{display_id:4} "), id_style),
-                Span::raw(row.tool.clone()),
-            ]))
+            // Structural rows (root, branch heads) never run: no glyph.
+            let structural = matches!(row.key, RowKey::Root | RowKey::BranchHead { .. });
+            let mut spans = vec![gutter];
+            if structural {
+                spans.push(Span::raw("  "));
+            } else {
+                spans.push(Span::styled(format!("{glyph} "), style));
+            }
+            let (tree, show_id) = tree_spans(&ws.steps, index);
+            spans.extend(tree);
+            if matches!(row.key, RowKey::Root) {
+                spans.push(Span::styled(
+                    row.id.clone(),
+                    Style::new().add_modifier(Modifier::BOLD),
+                ));
+            } else if show_id {
+                spans.push(Span::styled(format!("{:4} ", row.id), id_style));
+            }
+            spans.push(Span::raw(row.tool.clone()));
+            ListItem::new(Line::from(spans))
         })
         .collect();
     let list = List::new(items)
@@ -901,7 +1006,7 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{branch_color, branch_guide, wrap_input};
+    use super::{branch_color, wrap_input};
 
     fn s(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
@@ -926,16 +1031,6 @@ mod tests {
     }
 
     #[test]
-    fn branch_rails_label_pipe_and_close() {
-        // First row carries the label; the group closes with a corner.
-        assert_eq!(branch_guide("then", true, false), "then │ ");
-        assert_eq!(branch_guide("then", false, false), "     │ ");
-        assert_eq!(branch_guide("else", false, true), "     └ ");
-        // A single-row group is both first and last.
-        assert_eq!(branch_guide("do", true, true), "  do └ ");
-    }
-
-    #[test]
     fn branch_colors_are_distinct() {
         let colors = [
             branch_color("then"),
@@ -945,6 +1040,69 @@ mod tests {
         assert_ne!(colors[0], colors[1]);
         assert_ne!(colors[1], colors[2]);
         assert_ne!(colors[0], colors[2]);
+    }
+
+    fn tree_texts(doc_yaml: &str) -> Vec<String> {
+        let doc: graph_core::pipeline::doc::PlanDoc = serde_yaml::from_str(doc_yaml).unwrap();
+        let mut ws = super::super::plan_ws::PlanWorkspace::default();
+        ws.set_doc(doc);
+        (0..ws.steps.len())
+            .map(|index| {
+                let (spans, _) = super::tree_spans(&ws.steps, index);
+                spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tree_piping_forks_branches_and_closes_the_trunk() {
+        let texts = tree_texts(
+            r#"
+identifier: demo
+name: Demo
+description: d
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: x }
+  - id: E1
+    tool_name: decide
+    input:
+      if: { value: 1, op: gt, to: 0 }
+      then:
+        - { id: warn, tool_name: t__notify, input: {} }
+        - { id: bail, tool_name: exit, input: { status: error } }
+      else:
+        tool_name: t__log
+        input: {}
+  - id: E2
+    tool_name: map
+    input:
+      over: "{{E0.values}}"
+      do:
+        - { id: note, tool_name: t__notify, input: {} }
+solver:
+  queryToAnswer: "q"
+"#,
+        );
+        assert_eq!(
+            texts,
+            vec![
+                "".to_string(),             // root
+                "├── ".to_string(),         // E0
+                "├─⑂ ".to_string(),         // E1 decide — icon in the junction
+                "│  ├── then".to_string(),  // branch head, trunk continuing
+                "│  │   ├── ".to_string(),  // warn
+                "│  │   └─⎋ ".to_string(),  // bail — exit terminates the line
+                "│  └── else ".to_string(), // single-call branch label rides the piping
+                "├─⟳ ".to_string(),         // E2 map
+                "│  └── ".to_string(),      // note — anonymous body, no head
+                "└── ".to_string(),         // solver closes the trunk
+            ]
+        );
     }
 
     #[test]

@@ -733,10 +733,11 @@ fn toggle_breakpoint(app: &mut App) -> Vec<Effect> {
     let Some(row) = app.ws.steps.get(app.ws.selected) else {
         return Vec::new();
     };
-    // Breakpoints are top-level step ids: on a body sub-step, break on the
-    // owning control step (which pauses each of its body calls).
+    // Breakpoints are top-level step ids: on a body sub-step or branch
+    // head, break on the owning control step (which pauses each of its
+    // body calls).
     let Some(id) = row.key.top_step().map(str::to_string) else {
-        app.status = "no breakpoints on the finish stage".to_string();
+        app.status = "no breakpoint on this row".to_string();
         return Vec::new();
     };
     if app.breakpoints.remove(&id) {
@@ -1205,8 +1206,8 @@ steps:
         );
         assert_eq!(effects, vec![Effect::Validate]);
         assert!(app.dirty);
-        assert_eq!(app.ws.steps.len(), 2);
-        assert!(matches!(app.ws.steps[0].status, StepStatus::Pending));
+        assert_eq!(app.ws.steps.len(), 3, "root + two steps");
+        assert!(matches!(app.ws.steps[1].status, StepStatus::Pending));
     }
 
     #[test]
@@ -1220,7 +1221,7 @@ steps:
             },
         );
         assert!(!app.dirty, "a freshly loaded plan has no unsaved changes");
-        assert_eq!(app.ws.steps.len(), 2);
+        assert_eq!(app.ws.steps.len(), 3, "root + two steps");
         assert!(app.status.contains("loaded plan 'demo'"), "{}", app.status);
     }
 
@@ -1248,7 +1249,7 @@ steps:
                 in_plan: true,
             },
         );
-        assert!(matches!(app.ws.steps[0].status, StepStatus::Running));
+        assert!(matches!(app.ws.steps[1].status, StepStatus::Running));
         assert!(app.in_flight.as_ref().is_some_and(|f| f.path == "E0"));
 
         update(
@@ -1260,8 +1261,8 @@ steps:
                 in_plan: true,
             },
         );
-        assert!(matches!(app.ws.steps[0].status, StepStatus::Ok));
-        assert_eq!(app.ws.steps[0].result, Some(json!({"values": []})));
+        assert!(matches!(app.ws.steps[1].status, StepStatus::Ok));
+        assert_eq!(app.ws.steps[1].result, Some(json!({"values": []})));
         assert!(app.in_flight.is_none());
 
         update(
@@ -1309,7 +1310,7 @@ steps:
     fn breakpoint_toggle_emits_sync_and_ignores_other_tabs() {
         let mut app = App::new(Some(two_step_doc()));
         app.focus = Focus::Workspace;
-        app.ws.selected = 1;
+        app.ws.selected = 2; // root, E0, E1
         let effects = update(&mut app, key(KeyCode::Char('b')));
         assert_eq!(
             effects,
@@ -1361,12 +1362,12 @@ steps:
         update(&mut app, msg);
         assert!(matches!(app.mode, Mode::Paused(_)));
         assert_eq!(app.ws.tab, WsTab::Plan, "pause switches to the plan tab");
-        assert_eq!(app.ws.selected, 1, "paused step auto-selected");
+        assert_eq!(app.ws.selected, 2, "paused step auto-selected");
 
         // Navigation while paused: selection moves, tabs switch, the
         // prompt (and its reply) stay intact.
         update(&mut app, key(KeyCode::Char('k')));
-        assert_eq!(app.ws.selected, 0);
+        assert_eq!(app.ws.selected, 1);
         update(&mut app, key(KeyCode::Char('2')));
         assert_eq!(app.ws.tab, WsTab::Context);
         assert!(matches!(app.mode, Mode::Paused(_)));
@@ -1506,7 +1507,7 @@ steps:
         }
         // The row is NOT marked skipped — the engine's step_finished with
         // the replacement will mark it Ok.
-        assert!(!matches!(app.ws.steps[0].status, StepStatus::Skipped));
+        assert!(!matches!(app.ws.steps[1].status, StepStatus::Skipped));
 
         update(
             &mut app,
@@ -1517,7 +1518,7 @@ steps:
                 in_plan: true,
             },
         );
-        assert!(matches!(app.ws.steps[0].status, StepStatus::Ok));
+        assert!(matches!(app.ws.steps[1].status, StepStatus::Ok));
     }
 
     #[test]
@@ -1535,7 +1536,7 @@ steps:
             UiDecision::Skip { result } => assert_eq!(result, json!({"values": []})),
             other => panic!("expected Skip, got {other:?}"),
         }
-        assert!(matches!(app.ws.steps[0].status, StepStatus::Skipped));
+        assert!(matches!(app.ws.steps[1].status, StepStatus::Skipped));
     }
 
     #[test]

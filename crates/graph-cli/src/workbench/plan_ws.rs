@@ -41,8 +41,13 @@ impl StepStatus {
 /// What a row represents, and what run-event paths land on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowKey {
+    /// The tree root: the plan identifier. Never matched by run events.
+    Root,
     /// A top-level plan step; matches bare event paths ("E3").
     Step(String),
+    /// A named decide branch head ("then"/"else") over an inline step
+    /// list — a structural node, never matched by run events.
+    BranchHead { step: String, body: String },
     /// A call inside a control-step body. The map item index is stripped
     /// from the body segment so every iteration lands on the same row
     /// ("E3/do.2/E10" → step E3, body "do", body_step E10).
@@ -72,12 +77,14 @@ impl RowKey {
         }
     }
 
-    /// The top-level step id this row belongs to (None for the finish row).
+    /// The top-level step id this row belongs to (None for the root and
+    /// finish rows).
     pub fn top_step(&self) -> Option<&str> {
         match self {
             RowKey::Step(id) => Some(id),
+            RowKey::BranchHead { step, .. } => Some(step),
             RowKey::Body { step, .. } => Some(step),
-            RowKey::Finish => None,
+            RowKey::Root | RowKey::Finish => None,
         }
     }
 }
@@ -378,9 +385,11 @@ impl PlanWorkspace {
     }
 }
 
-/// Flatten a plan into display rows: every top-level step, the sub-steps
-/// of decide/map/reduce bodies indented beneath their owner, and a final
-/// row for the finish stage (solver or output; silent plans get none).
+/// Flatten a plan into display rows, `tree`-style: the plan identifier as
+/// the root, every top-level step, decide's step-list branches under a
+/// named branch head, map/reduce bodies hanging directly beneath their
+/// owner, and a final row for the finish stage (solver or output; silent
+/// plans get none).
 fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
     let row =
         |id: String, tool: String, reasoning: Option<String>, input: Value, key: RowKey| StepRow {
@@ -394,6 +403,17 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
             key,
         };
     let mut rows = Vec::new();
+    rows.push(row(
+        doc.identifier.clone(),
+        String::new(),
+        None,
+        serde_json::json!({
+            "identifier": doc.identifier,
+            "name": doc.name,
+            "description": doc.description,
+        }),
+        RowKey::Root,
+    ));
     for step in &doc.steps {
         rows.push(row(
             step.id.clone(),
@@ -420,6 +440,21 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
                     },
                 )),
                 Ok(Branch::Steps(steps)) => {
+                    // Decide branches are named forks — the step list gets
+                    // a branch-head node, like a directory in `tree`. Map
+                    // and reduce have one anonymous body: no head.
+                    if step.tool_name == DECIDE_TOOL {
+                        rows.push(row(
+                            (*body).to_string(),
+                            String::new(),
+                            None,
+                            raw.clone(),
+                            RowKey::BranchHead {
+                                step: step.id.clone(),
+                                body: (*body).to_string(),
+                            },
+                        ));
+                    }
                     for sub in steps {
                         rows.push(row(
                             sub.id.clone(),
@@ -546,6 +581,7 @@ solver:
         assert_eq!(
             rows,
             vec![
+                ("demo", "", false), // root: the plan identifier
                 ("E0", "t__search", false),
                 ("E1", "map", false),
                 ("E2", "t__fetch", true),
@@ -555,17 +591,18 @@ solver:
                 ("solver", "synthesizes the answer", false),
             ]
         );
+        assert_eq!(ws.steps[0].key, RowKey::Root);
         assert_eq!(
-            ws.steps[2].key,
+            ws.steps[3].key,
             RowKey::Body {
                 step: "E1".into(),
                 body: "do".into(),
                 body_step: Some("E2".into()),
             }
         );
-        assert_eq!(ws.steps[6].key, RowKey::Finish);
+        assert_eq!(ws.steps[7].key, RowKey::Finish);
         assert_eq!(
-            ws.steps[6].input_template["queryToAnswer"],
+            ws.steps[7].input_template["queryToAnswer"],
             json!("what happened?")
         );
     }
@@ -598,30 +635,30 @@ solver:
         let mut ws = workspace(control_doc());
         // Map iterations: every item lands on the one structural row.
         ws.step_started("E1/do.0/E2", json!({"url": "a"}));
-        assert_eq!(ws.steps[2].status, StepStatus::Running);
+        assert_eq!(ws.steps[3].status, StepStatus::Running);
         ws.step_finished("E1/do.0/E2", json!({"ok": 1}), false);
         ws.step_started("E1/do.1/E2", json!({"url": "b"}));
         ws.step_finished("E1/do.1/E2", json!({"ok": 2}), false);
-        assert_eq!(ws.steps[2].status, StepStatus::Ok);
-        assert_eq!(ws.steps[2].result, Some(json!({"ok": 2})));
+        assert_eq!(ws.steps[3].status, StepStatus::Ok);
+        assert_eq!(ws.steps[3].result, Some(json!({"ok": 2})));
         // The owning map row is untouched by body events.
-        assert_eq!(ws.steps[1].status, StepStatus::Pending);
+        assert_eq!(ws.steps[2].status, StepStatus::Pending);
 
         // Single-call decide branch: the path has no body step id.
         ws.step_started("E3/then", json!({"message": "hit"}));
-        assert_eq!(ws.steps[4].status, StepStatus::Running);
+        assert_eq!(ws.steps[5].status, StepStatus::Running);
         ws.step_skipped("E3/then", json!({"sent": false}));
-        assert_eq!(ws.steps[4].status, StepStatus::Skipped);
-        assert_eq!(ws.steps[4].result, Some(json!({"sent": false})));
+        assert_eq!(ws.steps[5].status, StepStatus::Skipped);
+        assert_eq!(ws.steps[5].result, Some(json!({"sent": false})));
     }
 
     #[test]
     fn find_path_falls_back_to_the_owning_step() {
         let ws = workspace(control_doc());
-        assert_eq!(ws.find_path("E1/do.0/E2"), Some(2));
-        assert_eq!(ws.find_path("E3/else"), Some(5));
+        assert_eq!(ws.find_path("E1/do.0/E2"), Some(3));
+        assert_eq!(ws.find_path("E3/else"), Some(6));
         // An unknown sub-path highlights the owning control step.
-        assert_eq!(ws.find_path("E1/do.0/E99"), Some(1));
+        assert_eq!(ws.find_path("E1/do.0/E99"), Some(2));
         assert_eq!(ws.find_path("E99"), None);
     }
 
@@ -629,19 +666,19 @@ solver:
     fn the_finish_row_tracks_synthesis_and_run_end() {
         let mut ws = workspace(control_doc());
         ws.synthesizing();
-        assert_eq!(ws.steps[6].status, StepStatus::Running);
+        assert_eq!(ws.steps[7].status, StepStatus::Running);
         ws.solver_text = "the answer".to_string();
         ws.run_finished("done", false, Map::new());
-        assert_eq!(ws.steps[6].status, StepStatus::Ok);
-        assert_eq!(ws.steps[6].result, Some(json!("the answer")));
+        assert_eq!(ws.steps[7].status, StepStatus::Ok);
+        assert_eq!(ws.steps[7].result, Some(json!("the answer")));
 
         // A failed run marks a started finish as errored, not an idle one.
         let mut ws = workspace(control_doc());
         ws.run_finished("boom", true, Map::new());
-        assert_eq!(ws.steps[6].status, StepStatus::Pending);
+        assert_eq!(ws.steps[7].status, StepStatus::Pending);
         let mut ws = workspace(control_doc());
         ws.synthesizing();
         ws.run_finished("boom", true, Map::new());
-        assert_eq!(ws.steps[6].status, StepStatus::Err);
+        assert_eq!(ws.steps[7].status, StepStatus::Err);
     }
 }
