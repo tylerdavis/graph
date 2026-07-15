@@ -8,7 +8,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+    Block, Clear, List, ListItem, ListState, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
     ScrollbarState, Tabs, Wrap,
 };
 use ratatui::Frame;
@@ -56,11 +56,18 @@ fn pane_block(title: &str, focused: bool) -> Block<'_> {
 // ── Chat pane ────────────────────────────────────────────────────────────
 
 fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
-    let block = pane_block(" chat ", app.focus == Focus::Chat);
+    let block = pane_block(" chat ", app.focus == Focus::Chat).padding(Padding::horizontal(1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // Soft-wrap the input first: the box grows with its wrapped rows
+    // (within bounds), so the layout depends on the wrap.
+    let input_width = inner.width.saturating_sub(2).max(1) as usize;
+    let (input_rows, cursor) =
+        wrap_input(app.chat.input.lines(), app.chat.input.cursor(), input_width);
+    let input_height = (input_rows.len() as u16).clamp(2, 6) + 2;
     let [scrollback, input] =
-        *Layout::vertical([Constraint::Min(1), Constraint::Length(4)]).split(inner)
+        *Layout::vertical([Constraint::Min(1), Constraint::Length(input_height)]).split(inner)
     else {
         return;
     };
@@ -116,13 +123,65 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
         );
     }
 
-    let mut input_widget = app.chat.input.clone();
-    input_widget.set_block(
-        Block::bordered()
-            .border_style(DIM)
-            .title(" Enter send · Alt+Enter newline "),
-    );
-    frame.render_widget(&input_widget, input);
+    // Rendered by hand instead of the TextArea widget: tui-textarea has no
+    // soft wrap, so long lines would run off the edge. The TextArea still
+    // owns all editing state; this is a display of its lines and cursor.
+    let input_block = Block::bordered()
+        .border_style(DIM)
+        .title(" Enter send · Alt+Enter newline ");
+    let input_inner = input_block.inner(input);
+    frame.render_widget(input_block, input);
+    let empty = input_rows.len() == 1 && input_rows[0].is_empty();
+    let text: Vec<Line> = if empty {
+        vec![Line::styled(app.chat.input.placeholder_text(), DIM)]
+    } else {
+        input_rows.into_iter().map(Line::from).collect()
+    };
+    let visible = input_inner.height.max(1) as usize;
+    let scroll = cursor.0.saturating_sub(visible - 1);
+    frame.render_widget(Paragraph::new(text).scroll((scroll as u16, 0)), input_inner);
+    if app.focus == Focus::Chat && !matches!(app.mode, Mode::Editing(_)) && !app.show_help {
+        frame.set_cursor_position((
+            input_inner.x + cursor.1 as u16,
+            input_inner.y + (cursor.0 - scroll) as u16,
+        ));
+    }
+}
+
+/// Character-level soft wrap for the input box: each logical line becomes
+/// ceil(len/width) visual rows (at least one), and the cursor maps to its
+/// (visual_row, x). A cursor sitting exactly at the end of a full row gets
+/// an empty continuation row so it stays inside the box.
+fn wrap_input(
+    lines: &[String],
+    cursor: (usize, usize),
+    width: usize,
+) -> (Vec<String>, (usize, usize)) {
+    let width = width.max(1);
+    let mut rows: Vec<String> = Vec::new();
+    let mut cursor_pos = (0, 0);
+    for (i, line) in lines.iter().enumerate() {
+        let chars: Vec<char> = line.chars().collect();
+        let start = rows.len();
+        if chars.is_empty() {
+            rows.push(String::new());
+        } else {
+            for chunk in chars.chunks(width) {
+                rows.push(chunk.iter().collect());
+            }
+        }
+        if i == cursor.0 {
+            let vrow = start + cursor.1 / width;
+            cursor_pos = (vrow, cursor.1 % width);
+            while rows.len() <= vrow {
+                rows.push(String::new());
+            }
+        }
+    }
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+    (rows, cursor_pos)
 }
 
 // ── Workspace pane ───────────────────────────────────────────────────────
@@ -784,4 +843,45 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
         out.push(String::new());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap_input;
+
+    fn s(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn wrap_input_chunks_lines_and_maps_the_cursor() {
+        // Short line: untouched, cursor passes through.
+        let (rows, cursor) = wrap_input(&s(&["hello"]), (0, 3), 10);
+        assert_eq!(rows, s(&["hello"]));
+        assert_eq!(cursor, (0, 3));
+
+        // A long line wraps at the width; the cursor lands mid-chunk.
+        let (rows, cursor) = wrap_input(&s(&["abcdefghij"]), (0, 7), 4);
+        assert_eq!(rows, s(&["abcd", "efgh", "ij"]));
+        assert_eq!(cursor, (1, 3));
+
+        // Multiple logical lines: visual rows accumulate.
+        let (rows, cursor) = wrap_input(&s(&["abcdef", "xy"]), (1, 2), 4);
+        assert_eq!(rows, s(&["abcd", "ef", "xy"]));
+        assert_eq!(cursor, (2, 2));
+    }
+
+    #[test]
+    fn wrap_input_edges() {
+        // Empty input: one empty row, cursor at origin.
+        let (rows, cursor) = wrap_input(&s(&[""]), (0, 0), 8);
+        assert_eq!(rows, s(&[""]));
+        assert_eq!(cursor, (0, 0));
+
+        // Cursor exactly at the end of a full row wraps to an empty
+        // continuation row instead of the border column.
+        let (rows, cursor) = wrap_input(&s(&["abcd"]), (0, 4), 4);
+        assert_eq!(rows, s(&["abcd", ""]));
+        assert_eq!(cursor, (1, 0));
+    }
 }
