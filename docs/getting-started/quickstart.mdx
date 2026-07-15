@@ -9,7 +9,7 @@ icon: "rocket"
     ```bash
     graph config init
     ```
-    This writes a commented starter to `~/.config/graph/config.toml`. The minimal working config is a provider, a default model, and one MCP server:
+    This writes a commented starter to `./.graph/config.toml` in the current directory (`--global` targets `~/.config/graph/config.toml` for settings you want everywhere, like providers). The minimal working config is a provider, a default model, and one MCP server:
 
     ```toml
     [providers.anthropic]
@@ -66,10 +66,10 @@ icon: "rocket"
 
 | Path | What |
 |---|---|
-| `~/.config/graph/config.toml` | global config (providers, models, MCP servers) |
-| `./.graph/config.toml` | optional per-project overrides, deep-merged over global |
-| `~/.config/graph/plans/` | your [plan documents](/plans/authoring) |
-| `~/.config/graph/tools/` | your [user-defined tools](/tools/user-defined) |
+| `./.graph/config.toml` | project config, deep-merged over global |
+| `~/.config/graph/config.toml` | optional global config (providers, models, MCP servers) |
+| `./.graph/plans/` | your [plan documents](/plans/authoring) (`~/.config/graph/plans/` for global ones) |
+| `./.graph/tools/` | your [user-defined tools](/tools/user-defined) (`~/.config/graph/tools/` for global ones) |
 | `~/.local/share/graph/` | threads and learned tool shapes, as plain files |
 
 ## Next

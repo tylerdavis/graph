@@ -736,9 +736,7 @@ impl ToolRegistry for WorkbenchTools {
                     .to_string(),
                 input_schema: json!({"type": "object", "properties": {}}),
                 output_schema: None,
-                output_example: Some(
-                    json!({"savedTo": "~/.config/graph/plans/sprint_report.yaml"}),
-                ),
+                output_example: Some(json!({"savedTo": "./.graph/plans/sprint_report.yaml"})),
                 read_only: None,
             },
             ToolDef {
