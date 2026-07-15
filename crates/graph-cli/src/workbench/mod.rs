@@ -16,7 +16,7 @@ use crate::cli::WorkbenchCommand;
 use crate::runtime::Runtime;
 use anyhow::{bail, Context, Result};
 use app::{App, Msg};
-use crossterm::event::EventStream;
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, EventStream};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -62,9 +62,11 @@ the plan's metadata, insert a step (before/after an id, or appended), \
 update one step's fields (newId renames it and rewrites downstream \
 references), or remove a step. When the user asks to change the current \
 plan, prefer these — however complex the change, control flow included: \
-each edit is validated atomically and rejected with the problems if it \
-would make the plan invalid, so sequential edits are safer than a \
-wholesale re-draft.\n\
+each edit is validated atomically and rejected only if it would \
+introduce NEW validation problems, so sequential edits are safer than a \
+wholesale re-draft. Pre-existing problems never block an edit — they \
+are reported in the result so you can fix an already-invalid draft \
+step by step.\n\
 - workbench__set_plan: replace the draft with complete YAML (get, modify, \
 set) for wholesale rewrites the precise tools don't cover.\n\
 - workbench__restore_draft: one-level undo of the last draft replacement \
@@ -95,7 +97,9 @@ with side effects unprompted.";
 const CONTROL_STEP_NAMING: &str = "\n\n# Control steps\n\
 Step toolNames are namespaced `server__tool` names from the catalog \
 (e.g. linear__list_issues), plus ONLY these bare control steps: exit, \
-decide, map, reduce, and plan_and_execute. There is no `gate`, `assert`, \
+decide, map, reduce, and plan_and_execute. Plan steps may only reference \
+runtime tool namespaces — the workbench__ tools are yours alone and are \
+never valid as a step's toolName. There is no `gate`, `assert`, \
 or `exit_gate` tool and no `gate:` field. A plan finishes with `solver` \
 (LLM synthesis) OR `output` (a structured template map), never both.\n\n";
 
@@ -330,27 +334,37 @@ async fn event_loop(
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    crossterm::execute!(stdout, EnterAlternateScreen)?;
+    // Bracketed paste: a multi-line paste arrives as one Event::Paste
+    // instead of a stream of keypresses whose Enters would submit mid-paste.
+    crossterm::execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     install_panic_hook();
     Ok(Terminal::new(CrosstermBackend::new(stdout))?)
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     disable_raw_mode()?;
-    crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     Ok(())
 }
 
-/// A panic mid-draw must not leave the user's terminal in raw mode with no
-/// visible error.
+/// A panic mid-draw must not leave the user's terminal in raw mode (or
+/// with bracketed paste still on) with no visible error.
 fn install_panic_hook() {
     static HOOK: std::sync::Once = std::sync::Once::new();
     HOOK.call_once(|| {
         let original = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let _ = disable_raw_mode();
-            let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                DisableBracketedPaste,
+                LeaveAlternateScreen
+            );
             original(info);
         }));
     });
