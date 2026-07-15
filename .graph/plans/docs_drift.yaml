@@ -50,8 +50,10 @@ steps:
       head: "{{input.head}}"
       paths: "crates/"
       exclude: ""
-      max_bytes: 60000
-    reasoning: Fetch the crate diff for the judge, truncated to budget.
+      max_bytes: 150000
+    reasoning: >
+      Fetch the crate diff for the judge; a trailing marker flags
+      truncation when it exceeds the budget.
   - id: E5
     tool_name: exit
     input:
@@ -62,7 +64,8 @@ steps:
         such that the documentation under docs/ would need an update? Pure
         refactors, comment-only changes, test-only changes, and internal
         renames do not count. Answer yes only if the behavior a user or plan
-        author observes would change.
+        author observes would change, and only from code you can see — the
+        diff may end with a truncation marker.
 
         {{E4.text}}
       status: error

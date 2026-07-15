@@ -62,7 +62,7 @@ steps:
   - id: E4
     tool_name: builtin__git_diff
     input: { base: "{{input.base}}", head: "{{input.head}}",
-             paths: "crates/", exclude: "", max_bytes: 60000 }
+             paths: "crates/", exclude: "", max_bytes: 150000 }
   - id: E5
     tool_name: exit
     input:
@@ -99,18 +99,22 @@ steps:
     tool_name: builtin__gh_pr_meta
     input: { pr: "{{input.pr}}" }
   - id: E1
+    tool_name: builtin__git_changed_files    # complete file list, never truncated
+    input: { base: "{{E0.base_sha}}", head: "{{E0.head_sha}}", prefix: "" }
+  - id: E2
     tool_name: builtin__git_diff
     input: { base: "{{E0.base_sha}}", head: "{{E0.head_sha}}",
-             paths: ".", exclude: "Cargo.lock CHANGELOG.md", max_bytes: 120000 }
-  - id: E2
+             paths: ".", exclude: "Cargo.lock CHANGELOG.md", max_bytes: 300000 }
+  - id: E2X
     tool_name: exit
     input:
-      when: { value: "{{E1.text}}", op: empty }
+      when: { value: "{{E2.text}}", op: empty }
       status: success
       message: empty diff — nothing to review
   - id: E3
     tool_name: user__review_graph_pr      # repo-local prompt tool: the rubric
-    input: { title: "{{E0.title}}", body: "{{E0.body}}", diff: "{{E1.text}}" }
+    input: { title: "{{E0.title}}", body: "{{E0.body}}",
+             files: "{{E1.files}}", diff: "{{E2.text}}" }
   - id: E4
     tool_name: user__findings_to_review_comments   # repo-local jq transform
     input: { findings: "{{E3.findings}}" }
@@ -146,6 +150,7 @@ steps:
 - **Presentation is a template, not code.** The comment body renders with [sections](/plans/template-language#sections): iteration builds the findings table, `{{#@first}}` emits the header once, the inverted section handles the clean case. Logic stays in steps; the markdown is pure presentation.
 - **Declare the output schema — it's enforced.** `review_graph_pr` declares `{summary, findings[]}` required. Models occasionally omit required fields even under provider-forced structured output; graph validates prompt-tool results against the declared `output_schema` and runs one `repair`-role fix-up, so `{{E3.summary}}` can never be a missing key at render time.
 - **Review the whole diff.** The diff is scoped to nothing (`paths: "."`) minus generated files — an early version reviewed only `crates/` and `docs/`, which blinded it to the highest-leverage changes in an infra PR: workflows, plans, and the exec tools they run.
+- **Ground absence claims in the complete file list, never the diff.** The diff is byte-capped and git orders hunks by path, so on a big PR the `docs/` hunks are exactly what falls off the end — an early version reported "docs not updated" false positives on a PR whose docs edits sat past the truncation point. The fix is layered: `git_changed_files` (E1) feeds the reviewer a complete, never-truncated file list; the rubric judges docs-parity and test-parity only from that list; `git_diff` appends a visible `[diff truncated: …]` marker when it cuts; and the prompt bans "not shown in the diff" as evidence — a finding must cite something the reviewer can actually see.
 - **Findings flow through the pipeline, enriched at each step.** The jq transform (E4) adds `path`/`body` to each finding without dropping the original fields; `gh_pr_inline_comments` (E5) passes those extras through and adds `url` where a comment posted. So the summary table (E6) renders from one array — severity and finding from the review, the link from the post — with no join logic, which the [template dialect](/plans/template-language) couldn't express anyway. Findings the LLM couldn't pin to a line (or whose line the API rejects) simply come back without `url`, and the inverted section renders them as plain text.
 - **Repeated runs refresh everything in place.** `gh_pr_comment` uses `--edit-last --create-if-none` for the summary; `gh_pr_inline_comments` embeds a hidden marker in each inline comment and deletes the previous marker's comments before posting. Each push updates the review instead of stacking.
 - **Inline comments stay advisory.** They post as plain review comments, not a `REQUEST_CHANGES` review — they only gate merging on repos with _Require conversation resolution before merging_ enabled.
