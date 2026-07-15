@@ -118,7 +118,9 @@ timezone = "America/Chicago"
 
 ## `[prompts]`
 
-System-prompt overrides. Each field **replaces** the built-in text wholesale; leave a field unset to keep the default. For additive context, use `[user].context` instead.
+System-prompt overrides. Each field **replaces** the built-in text wholesale; leave a field unset (or delete it) to keep the default. For additive context, use `[user].context` instead.
+
+`graph config init` writes this section out pre-filled with the built-in defaults, so the usual starting point is editing those in place. A field left in the file pins that prompt at the written text — delete it to track the shipped default across releases.
 
 ```toml
 [prompts]
@@ -136,7 +138,7 @@ Operate on the draft plan with the workbench__* tools...
 """
 ```
 
-The `workbench` override is the agent's only description of the `workbench__*` tools — how to draft, edit, validate, run, and save the plan in the side pane. Start from the built-in text (in the source, `crates/graph-cli/src/workbench/mod.rs`) rather than writing from scratch, or the agent will stop using the workbench correctly.
+The `workbench` override is the agent's only description of the `workbench__*` tools — how to draft, edit, validate, run, and save the plan in the side pane. Start from the built-in text (written into the file by `graph config init`) rather than writing from scratch, or the agent will stop using the workbench correctly.
 
 ## `[workbench]`
 

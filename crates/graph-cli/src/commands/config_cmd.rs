@@ -44,7 +44,30 @@ default = { provider = "anthropic", model = "claude-sonnet-5" }
 [user]
 # name = "Your Name"
 # context = "Role, primary repos, teams — injected into prompts."
+
+# System prompts, written out so they are visible and editable. Each field
+# replaces the built-in text wholesale; delete a field to fall back to the
+# built-in default (which may improve across releases).
 "#;
+
+/// The starter file: the commented skeleton plus a `[prompts]` section
+/// carrying the built-in system prompts, serialized from the real
+/// constants so the starter can never drift from the shipped defaults.
+fn starter_config() -> Result<String> {
+    let mut prompts = toml::Table::new();
+    prompts.insert(
+        "chat".into(),
+        toml::Value::String(graph_core::prompts::DEFAULT_CHAT_PROMPT.into()),
+    );
+    prompts.insert(
+        "workbench".into(),
+        toml::Value::String(crate::workbench::WORKBENCH_SYSTEM_PROMPT.into()),
+    );
+    let mut root = toml::Table::new();
+    root.insert("prompts".into(), toml::Value::Table(prompts));
+    let rendered = toml::to_string_pretty(&root).context("serializing default prompts")?;
+    Ok(format!("{STARTER_CONFIG}{rendered}"))
+}
 
 pub fn run(command: ConfigCommand) -> Result<()> {
     match command {
@@ -101,8 +124,28 @@ fn init(global: bool, force: bool) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    std::fs::write(&target, STARTER_CONFIG)
+    std::fs::write(&target, starter_config()?)
         .with_context(|| format!("writing {}", target.display()))?;
     println!("wrote {}", target.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn starter_parses_and_carries_the_builtin_prompts() {
+        let starter = starter_config().unwrap();
+        // deny_unknown_fields on the model makes this catch skeleton drift.
+        let config: graph_config::Config = toml::from_str(&starter).unwrap();
+        assert_eq!(
+            config.prompts.chat.as_deref(),
+            Some(graph_core::prompts::DEFAULT_CHAT_PROMPT)
+        );
+        assert_eq!(
+            config.prompts.workbench.as_deref(),
+            Some(crate::workbench::WORKBENCH_SYSTEM_PROMPT)
+        );
+    }
 }

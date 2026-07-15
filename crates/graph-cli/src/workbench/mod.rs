@@ -31,8 +31,9 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// Appended to the chat agent's system prompt inside the workbench;
-/// `[prompts].workbench` in config replaces it.
-const WORKBENCH_SYSTEM_PROMPT: &str = "# Plan workbench\n\
+/// `[prompts].workbench` in config replaces it. Also written into the
+/// `config init` starter so users tune a copy instead of starting blank.
+pub(crate) const WORKBENCH_SYSTEM_PROMPT: &str = "# Plan workbench\n\
 You are running inside the graph plan workbench: a side pane shows the user \
 the current draft plan, live. Operate on that draft with the workbench \
 tools:\n\
