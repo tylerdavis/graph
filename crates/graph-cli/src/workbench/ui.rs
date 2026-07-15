@@ -3,7 +3,7 @@
 
 use super::app::{App, ChatEntry, Focus, GateKind, GatePrompt, Mode};
 use super::editor::EditorContext;
-use super::plan_ws::{PlanWorkspace, RowKey, RunLine, StepStatus, WsTab};
+use super::plan_ws::{PlanWorkspace, RowKey, RunLine, StepRow, StepStatus, WsTab};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -146,6 +146,31 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
             input_inner.y + (cursor.0 - scroll) as u16,
         ));
     }
+}
+
+/// Per-branch rail color. Deliberately distinct from the status palette
+/// (green=ok, red=error, yellow=running, magenta glyph=skipped) so a rail
+/// never reads as an outcome.
+fn branch_color(body: &str) -> Color {
+    match body {
+        "then" => Color::Blue,
+        "else" => Color::Magenta,
+        // "do" — map/reduce bodies
+        _ => Color::Cyan,
+    }
+}
+
+/// The rail text for one body row: the branch label on the group's first
+/// row (right-aligned into a fixed gutter), then a vertical pipe down the
+/// group, closed with a corner on the last row.
+fn branch_guide(body: &str, first: bool, last: bool) -> String {
+    let label = if first {
+        format!("{body:>4}")
+    } else {
+        "    ".to_string()
+    };
+    let rail = if last { '└' } else { '│' };
+    format!("{label} {rail} ")
 }
 
 /// Character-level soft wrap for the input box: each logical line becomes
@@ -318,9 +343,11 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
         header,
     );
 
-    // Step list: breakpoint gutter · status glyph · id · tool, with body
-    // sub-steps indented under their control step. The paused row's id
-    // renders yellow-bold; running rows animate.
+    // Step list: breakpoint gutter · status glyph · id · tool. Body
+    // sub-steps render under a colored branch rail — the branch label on
+    // the group's first row, a `│` down the group, a `└` corner on the
+    // last — so then/else/do read as distinct tracks at a glance. The
+    // paused row's id renders yellow-bold; running rows animate.
     let paused_row = paused_prompt(app)
         .filter(|p| p.call_stack.is_empty())
         .and_then(|p| ws.find_path(&p.path));
@@ -354,11 +381,38 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::new().add_modifier(Modifier::BOLD)
             };
+            let (rail, display_id) = match &row.key {
+                RowKey::Body {
+                    step,
+                    body,
+                    body_step,
+                } => {
+                    let same = |other: &StepRow| {
+                        matches!(&other.key,
+                            RowKey::Body { step: s, body: b, .. } if s == step && b == body)
+                    };
+                    let first = index == 0 || !same(&ws.steps[index - 1]);
+                    let last = ws.steps.get(index + 1).is_none_or(|next| !same(next));
+                    let rail = Span::styled(
+                        branch_guide(body, first, last),
+                        Style::new().fg(branch_color(body)),
+                    );
+                    // A single-call body's display id IS the branch name —
+                    // the rail label already says it.
+                    let id = if body_step.is_none() {
+                        "·".to_string()
+                    } else {
+                        row.id.clone()
+                    };
+                    (rail, id)
+                }
+                _ => (Span::raw(""), row.id.clone()),
+            };
             ListItem::new(Line::from(vec![
                 gutter,
-                Span::raw("  ".repeat(row.depth as usize)),
+                rail,
                 Span::styled(format!("{glyph} "), style),
-                Span::styled(format!("{:4} ", row.id), id_style),
+                Span::styled(format!("{display_id:4} "), id_style),
                 Span::raw(row.tool.clone()),
             ]))
         })
@@ -847,7 +901,7 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::wrap_input;
+    use super::{branch_color, branch_guide, wrap_input};
 
     fn s(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
@@ -869,6 +923,28 @@ mod tests {
         let (rows, cursor) = wrap_input(&s(&["abcdef", "xy"]), (1, 2), 4);
         assert_eq!(rows, s(&["abcd", "ef", "xy"]));
         assert_eq!(cursor, (2, 2));
+    }
+
+    #[test]
+    fn branch_rails_label_pipe_and_close() {
+        // First row carries the label; the group closes with a corner.
+        assert_eq!(branch_guide("then", true, false), "then │ ");
+        assert_eq!(branch_guide("then", false, false), "     │ ");
+        assert_eq!(branch_guide("else", false, true), "     └ ");
+        // A single-row group is both first and last.
+        assert_eq!(branch_guide("do", true, true), "  do └ ");
+    }
+
+    #[test]
+    fn branch_colors_are_distinct() {
+        let colors = [
+            branch_color("then"),
+            branch_color("else"),
+            branch_color("do"),
+        ];
+        assert_ne!(colors[0], colors[1]);
+        assert_ne!(colors[1], colors[2]);
+        assert_ne!(colors[0], colors[2]);
     }
 
     #[test]

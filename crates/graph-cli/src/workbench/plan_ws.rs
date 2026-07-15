@@ -92,8 +92,8 @@ pub struct StepRow {
     pub status: StepStatus,
     pub rendered_input: Option<Value>,
     pub result: Option<Value>,
-    /// 0 for plan steps and the finish row, 1 for body sub-steps.
-    pub depth: u8,
+    /// Structure lives here: `RowKey::Body` rows render under their
+    /// branch's colored rail, everything else at the top level.
     pub key: RowKey,
 }
 
@@ -382,22 +382,17 @@ impl PlanWorkspace {
 /// of decide/map/reduce bodies indented beneath their owner, and a final
 /// row for the finish stage (solver or output; silent plans get none).
 fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
-    let row = |id: String,
-               tool: String,
-               reasoning: Option<String>,
-               input: Value,
-               depth: u8,
-               key: RowKey| StepRow {
-        id,
-        tool,
-        reasoning,
-        input_template: input,
-        status: StepStatus::Pending,
-        rendered_input: None,
-        result: None,
-        depth,
-        key,
-    };
+    let row =
+        |id: String, tool: String, reasoning: Option<String>, input: Value, key: RowKey| StepRow {
+            id,
+            tool,
+            reasoning,
+            input_template: input,
+            status: StepStatus::Pending,
+            rendered_input: None,
+            result: None,
+            key,
+        };
     let mut rows = Vec::new();
     for step in &doc.steps {
         rows.push(row(
@@ -405,7 +400,6 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
             step.tool_name.clone(),
             step.reasoning.clone(),
             Value::Object(step.input.clone()),
-            0,
             RowKey::Step(step.id.clone()),
         ));
         for body in body_keys(&step.tool_name) {
@@ -419,7 +413,6 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
                     call.tool_name,
                     call.reasoning,
                     Value::Object(call.input),
-                    1,
                     RowKey::Body {
                         step: step.id.clone(),
                         body: (*body).to_string(),
@@ -433,7 +426,6 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
                             sub.tool_name,
                             sub.reasoning,
                             Value::Object(sub.input),
-                            1,
                             RowKey::Body {
                                 step: step.id.clone(),
                                 body: (*body).to_string(),
@@ -460,7 +452,6 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
             "synthesizes the answer".to_string(),
             None,
             Value::Object(input),
-            0,
             RowKey::Finish,
         ));
     } else if let Some(output) = &doc.output {
@@ -469,7 +460,6 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
             "renders the output".to_string(),
             None,
             Value::Object(output.clone()),
-            0,
             RowKey::Finish,
         ));
     }
@@ -542,21 +532,27 @@ solver:
     #[test]
     fn set_doc_expands_bodies_and_appends_the_finish_row() {
         let ws = workspace(control_doc());
-        let rows: Vec<(&str, &str, u8)> = ws
+        let rows: Vec<(&str, &str, bool)> = ws
             .steps
             .iter()
-            .map(|row| (row.id.as_str(), row.tool.as_str(), row.depth))
+            .map(|row| {
+                (
+                    row.id.as_str(),
+                    row.tool.as_str(),
+                    matches!(row.key, RowKey::Body { .. }),
+                )
+            })
             .collect();
         assert_eq!(
             rows,
             vec![
-                ("E0", "t__search", 0),
-                ("E1", "map", 0),
-                ("E2", "t__fetch", 1),
-                ("E3", "decide", 0),
-                ("then", "t__notify", 1),
-                ("else", "t__log", 1),
-                ("solver", "synthesizes the answer", 0),
+                ("E0", "t__search", false),
+                ("E1", "map", false),
+                ("E2", "t__fetch", true),
+                ("E3", "decide", false),
+                ("then", "t__notify", true),
+                ("else", "t__log", true),
+                ("solver", "synthesizes the answer", false),
             ]
         );
         assert_eq!(
