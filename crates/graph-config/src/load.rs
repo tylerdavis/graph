@@ -242,6 +242,42 @@ mod tests {
     }
 
     #[test]
+    fn prompt_overrides_parse_and_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = write(
+            dir.path(),
+            "global.toml",
+            r#"
+            [prompts]
+            chat = "global chat prompt"
+            workbench = "global workbench addendum"
+            "#,
+        );
+        let project = write(
+            dir.path(),
+            "project.toml",
+            r#"
+            [prompts]
+            chat = "project chat prompt"
+            "#,
+        );
+        let loaded = load_from(&[global, project]).unwrap();
+        assert_eq!(
+            loaded.config.prompts.chat.as_deref(),
+            Some("project chat prompt")
+        );
+        // The workbench override from the global layer survives the merge.
+        assert_eq!(
+            loaded.config.prompts.workbench.as_deref(),
+            Some("global workbench addendum")
+        );
+        // And both default to unset.
+        let empty = load_from(&[]).unwrap();
+        assert!(empty.config.prompts.chat.is_none());
+        assert!(empty.config.prompts.workbench.is_none());
+    }
+
+    #[test]
     fn tool_packs_parse_and_default_paths_survive() {
         let dir = tempfile::tempdir().unwrap();
         let path = write(
