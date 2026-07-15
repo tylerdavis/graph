@@ -24,6 +24,11 @@ pub struct Agent {
     pub max_iterations: u32,
 }
 
+/// Failures of the agent loop (`ask`/`chat`/workbench turns). The plan
+/// pipeline never runs the agent loop, so these sit outside its
+/// `EmptyData`/`BadPath` error taxonomy: they surface directly to the user
+/// as a failed turn (rolled back in the workbench and `chat`, nonzero exit
+/// in `ask`) and never trigger replanning.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     #[error(transparent)]
