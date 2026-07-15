@@ -35,6 +35,7 @@ logic-less template language:
 /// cannot drift.
 pub const CONTROL_STEP_RULES: &str = r#"### Early Exits
 - Use the `exit` tool to end the plan gracefully instead of proceeding with empty or meaningless data: exit with status "success" and a clear message when there is nothing to do, or "error" to assert a failure condition the user should see. Gate it with `when` (a template condition) or `infer` (an LLM judgment) so the plan continues when the gate does not hold; ungated it always exits.
+- When the plan is a check or assertion (a CI gate, a validation, drift detection), make the verdict explicit: end with gated `exit` steps — status "error" asserting the failure condition, status "success" when there is nothing to flag — instead of leaving pass/fail to the final answer's prose.
 
 ### Branching
 - Use the `decide` tool when the correct next call depends on a prior result: it runs `then` when the gate holds, otherwise `else` (or just continues when `else` is omitted). `decide` chooses between actions; `exit` ends the plan.
@@ -47,6 +48,7 @@ pub const CONTROL_STEP_RULES: &str = r#"### Early Exits
 - Inside a `map` body, {{item}} is the current element and {{index}} its 0-based position. A `reduce` body also gets {{accumulator}} (the running value, starting at `initial`), and each run's result becomes the next {{accumulator}}.
 - Later steps reference only the step's id — {{Ex.results}} for map's per-item outputs (input order) and {{Ex.count}}, or {{Ex.result}} for reduce's final accumulator. Body-internal step ids are invisible outside the body.
 - `map` accepts `concurrency` (default 1) to run independent items in parallel. `reduce` is always sequential — for parallel per-item work, map first, then reduce over {{Ex.results}}.
+- For inference over a list (classify, summarize, or score each element), prefer `map` with a per-item inference call in the body over interpolating the whole list into one instruction: small, focused contexts are cheaper and more accurate, and `concurrency` recovers the speed. Interpolate a whole list into one inference only when the question is genuinely cross-item (ranking, deduplication, aggregation).
 - Bodies must not contain `exit`, `decide`, `map`, or `reduce`; use a plan__* call inside the body for nested control flow."#;
 
 pub struct PlannerPromptArgs<'a> {
@@ -210,3 +212,37 @@ pub const SOLVER_SYSTEM_PROMPT: &str = r#"You are graph, an AI engineering assis
 "#;
 
 pub const ERROR_SUMMARY_PROMPT: &str = r#"You are graph, an AI engineering assistant. A plan executed to answer the user's query ran into a problem it could not recover from. Explain briefly and honestly what was attempted and what failed, in plain language — no stack traces, no internal jargon. If partial results were collected, summarize what IS known. Suggest a rephrasing or next step if one would plausibly help."#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The control-step rules carry two deliberate steering behaviors;
+    /// keep them from being edited away silently.
+    #[test]
+    fn control_step_rules_carry_steering_guidance() {
+        assert!(
+            CONTROL_STEP_RULES.contains("check or assertion"),
+            "check-shaped plans must be steered toward explicit gated exits"
+        );
+        assert!(
+            CONTROL_STEP_RULES.contains("per-item inference call"),
+            "list inference must be steered toward map with per-item calls"
+        );
+    }
+
+    #[test]
+    fn planner_prompt_includes_control_step_rules() {
+        let prompt = planner_prompt(&PlannerPromptArgs {
+            current_date: "2026-01-01",
+            last_error: None,
+            next_step_id: "E0",
+            tools: "(no tools available)",
+            user_context: "(none)",
+            existing_plan: "(none)",
+            step_schema: "{}",
+            draft: None,
+        });
+        assert!(prompt.contains(CONTROL_STEP_RULES));
+    }
+}
