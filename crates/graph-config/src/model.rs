@@ -228,8 +228,8 @@ impl Default for PlanPaths {
     fn default() -> Self {
         Self {
             paths: vec![
-                PathBuf::from("~/.config/graph/plans"),
                 PathBuf::from("./.graph/plans"),
+                PathBuf::from("~/.config/graph/plans"),
             ],
         }
     }
@@ -249,8 +249,8 @@ impl Default for ToolPaths {
     fn default() -> Self {
         Self {
             paths: vec![
-                PathBuf::from("~/.config/graph/tools"),
                 PathBuf::from("./.graph/tools"),
+                PathBuf::from("~/.config/graph/tools"),
             ],
             packs: Vec::new(),
         }

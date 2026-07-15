@@ -174,9 +174,9 @@ pub enum ConfigCommand {
     Show,
     /// Write a starter config file
     Init {
-        /// Write to the project (./.graph/) instead of the global location
+        /// Write to the global location (~/.config/graph/) instead of the project (./.graph/)
         #[arg(long)]
-        project: bool,
+        global: bool,
         /// Overwrite an existing file
         #[arg(long)]
         force: bool,
