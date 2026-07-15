@@ -34,9 +34,9 @@ One sanctioned exception: under `GRAPH_EVENTS=github`, a *failing* `plan run` pr
 
 | Path | Contents |
 |---|---|
-| `~/.config/graph/config.toml` | global config |
+| `./.graph/` | project config/plans/tools — the default target for `config init` and workbench saves |
+| `~/.config/graph/config.toml` | global config, overridden by project config |
 | `~/.config/graph/plans/`, `~/.config/graph/tools/` | global plans and user tools |
-| `./.graph/` | project-level config/plans/tools, layered over global |
 | `~/.local/share/graph/` | threads and shape cache as plain files — `[settings].data_dir` |
 
 ## Concurrency

@@ -50,7 +50,7 @@ pub fn run(command: ConfigCommand) -> Result<()> {
     match command {
         ConfigCommand::Show => show(),
         ConfigCommand::Path => path(),
-        ConfigCommand::Init { project, force, .. } => init(project, force),
+        ConfigCommand::Init { global, force, .. } => init(global, force),
     }
 }
 
@@ -84,11 +84,11 @@ fn path() -> Result<()> {
     Ok(())
 }
 
-fn init(project: bool, force: bool) -> Result<()> {
-    let target = if project {
-        graph_config::project_config_path()
-    } else {
+fn init(global: bool, force: bool) -> Result<()> {
+    let target = if global {
         graph_config::global_config_path()
+    } else {
+        graph_config::project_config_path()
     };
     let target = graph_config::expand_tilde(&target);
     if target.exists() && !force {

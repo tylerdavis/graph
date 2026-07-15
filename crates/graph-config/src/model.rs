@@ -27,7 +27,23 @@ pub struct Config {
     #[serde(default)]
     pub user: UserConfig,
     #[serde(default)]
+    pub prompts: PromptConfig,
+    #[serde(default)]
     pub workbench: WorkbenchConfig,
+}
+
+/// System-prompt overrides. Each field replaces the built-in text
+/// wholesale; leave unset to keep the default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PromptConfig {
+    /// Base system prompt for the chat/ask agent loop. The current
+    /// date/time and `[user]` name/context are still appended after it.
+    pub chat: Option<String>,
+    /// Workbench addendum appended to the chat prompt inside
+    /// `graph workbench`. It must describe the `workbench__*` tools —
+    /// they are how the agent operates on the draft.
+    pub workbench: Option<String>,
 }
 
 /// `graph workbench` settings.
@@ -212,8 +228,8 @@ impl Default for PlanPaths {
     fn default() -> Self {
         Self {
             paths: vec![
-                PathBuf::from("~/.config/graph/plans"),
                 PathBuf::from("./.graph/plans"),
+                PathBuf::from("~/.config/graph/plans"),
             ],
         }
     }
@@ -233,8 +249,8 @@ impl Default for ToolPaths {
     fn default() -> Self {
         Self {
             paths: vec![
-                PathBuf::from("~/.config/graph/tools"),
                 PathBuf::from("./.graph/tools"),
+                PathBuf::from("~/.config/graph/tools"),
             ],
             packs: Vec::new(),
         }

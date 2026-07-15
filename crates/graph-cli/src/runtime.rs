@@ -1,7 +1,7 @@
 //! Shared wiring: config → providers → MCP registry → store → agent.
 
 use anyhow::{Context, Result};
-use graph_core::pipeline::{doc::PlanDoc, Pipeline};
+use graph_core::pipeline::{doc::LoadedPlans, Pipeline};
 use graph_core::toolbox::AgentToolbox;
 use graph_core::user_tools::UserToolRegistry;
 use graph_core::{Agent, CompositeRegistry, EventSink, Store, ThreadMeta, ToolRegistry};
@@ -14,6 +14,9 @@ pub struct Runtime {
     pub config: graph_config::Config,
     pub registry: Arc<McpManager>,
     router: Arc<ModelRouter>,
+    /// One warning per skipped plan file per command, even though several
+    /// components (pipeline, toolbox, commands) each load the catalog.
+    plans_warned: std::sync::atomic::AtomicBool,
 }
 
 impl Runtime {
@@ -25,6 +28,7 @@ impl Runtime {
             config: loaded.config,
             registry,
             router: Arc::new(router),
+            plans_warned: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -60,7 +64,11 @@ impl Runtime {
             events,
             model: choice.model.clone(),
             temperature: choice.temperature,
-            system_prompt: graph_core::prompts::chat_system_prompt(&self.config.user, &now),
+            system_prompt: graph_core::prompts::chat_system_prompt(
+                &self.config.user,
+                &now,
+                self.config.prompts.chat.as_deref(),
+            ),
             max_iterations: self.config.settings.max_agent_iterations,
         })
     }
@@ -108,8 +116,10 @@ impl Runtime {
         Ok(Arc::new(UserToolRegistry::new(docs, self.router.clone())))
     }
 
-    /// Plan documents whose `requires_servers` are all configured.
-    pub fn plan_docs(&self) -> Result<Vec<PlanDoc>> {
+    /// The plan catalog, kept to documents whose `requires_servers` are all
+    /// configured. Files that fail to load stay in `skipped` and are warned
+    /// about here — a broken plan never takes the command down.
+    pub fn plan_docs(&self) -> LoadedPlans {
         let dirs: Vec<std::path::PathBuf> = self
             .config
             .plans
@@ -117,23 +127,29 @@ impl Runtime {
             .iter()
             .map(|p| graph_config::expand_tilde(p))
             .collect();
-        let docs = graph_core::pipeline::doc::load_plan_docs(&dirs)?;
-        Ok(docs
-            .into_iter()
-            .filter(|doc| {
-                let ok = doc
-                    .requires_servers
-                    .iter()
-                    .all(|server| self.config.mcp.contains_key(server));
-                if !ok {
-                    tracing::info!(
-                        plan = doc.identifier,
-                        "hidden: required MCP server not configured"
-                    );
-                }
-                ok
-            })
-            .collect())
+        let mut loaded = graph_core::pipeline::doc::load_plan_docs(&dirs);
+        if !self
+            .plans_warned
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            for error in &loaded.skipped {
+                tracing::warn!("skipping plan file — {error}");
+            }
+        }
+        loaded.docs.retain(|doc| {
+            let ok = doc
+                .requires_servers
+                .iter()
+                .all(|server| self.config.mcp.contains_key(server));
+            if !ok {
+                tracing::info!(
+                    plan = doc.identifier,
+                    "hidden: required MCP server not configured"
+                );
+            }
+            ok
+        });
+        loaded
     }
 
     /// The plan pipeline over the base registry (shape-recording MCP +
@@ -149,7 +165,7 @@ impl Runtime {
             router: self.router.clone(),
             registry: base,
             events,
-            plans: Arc::new(self.plan_docs()?),
+            plans: Arc::new(self.plan_docs().docs),
             call_stack: Vec::new(),
             store: Some(store.clone()),
             gate: None,

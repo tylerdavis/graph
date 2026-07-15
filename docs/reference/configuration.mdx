@@ -88,10 +88,10 @@ output_schema = { … }    # declare shapes the server omits
 
 ```toml
 [plans]
-paths = ["~/.config/graph/plans", "./.graph/plans"]
+paths = ["./.graph/plans", "~/.config/graph/plans"]
 
 [tools]
-paths = ["~/.config/graph/tools", "./.graph/tools"]
+paths = ["./.graph/tools", "~/.config/graph/tools"]
 packs = []              # bundled tool packs to enable, e.g. ["github"]
 ```
 
@@ -115,6 +115,28 @@ name = "Tyler"
 context = "CEO and technical architect of LaunchNotes. Primary Linear team: LaunchNotes."
 timezone = "America/Chicago"
 ```
+
+## `[prompts]`
+
+System-prompt overrides. Each field **replaces** the built-in text wholesale; leave a field unset to keep the default. For additive context, use `[user].context` instead.
+
+```toml
+[prompts]
+# Base system prompt for the chat/ask agent loop. The current date/time
+# and the [user] name/context are still appended after it.
+chat = """
+You are graph, a command-line assistant for release engineering.
+Lead with the answer; keep formatting terminal-friendly.
+"""
+
+# Addendum appended to the chat prompt inside `graph workbench`.
+workbench = """
+# Plan workbench
+Operate on the draft plan with the workbench__* tools...
+"""
+```
+
+The `workbench` override is the agent's only description of the `workbench__*` tools — how to draft, edit, validate, run, and save the plan in the side pane. Start from the built-in text (in the source, `crates/graph-cli/src/workbench/mod.rs`) rather than writing from scratch, or the agent will stop using the workbench correctly.
 
 ## `[workbench]`
 
