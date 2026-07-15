@@ -23,16 +23,19 @@ mod render;
 pub use render::{render_input, render_str, render_value, Roots};
 
 /// Parse a template and return the root names it references (`E0`, `input`,
-/// …) — used by static plan validation to check reference ordering.
+/// …) — used by static plan validation to check reference ordering. Bare
+/// keys inside a section body read the current item, not a root, so they
+/// are not reported (same scoping rule as `rewrite_root` and
+/// `referenced_paths`); dotted paths are root-anchored everywhere.
 pub fn referenced_roots(template: &str) -> Result<Vec<String>, RenderError> {
-    fn collect(nodes: &[parser::Node], roots: &mut Vec<String>) {
+    fn collect(nodes: &[parser::Node], in_section: bool, roots: &mut Vec<String>) {
         for node in nodes {
             match node {
                 parser::Node::Var(parser::Path::Data(segs))
                 | parser::Node::Section {
                     path: parser::Path::Data(segs),
                     ..
-                } => {
+                } if !(in_section && segs.len() == 1) => {
                     if let Some(parser::Seg::Key(root)) = segs.first() {
                         if !roots.contains(root) {
                             roots.push(root.clone());
@@ -42,13 +45,13 @@ pub fn referenced_roots(template: &str) -> Result<Vec<String>, RenderError> {
                 _ => {}
             }
             if let parser::Node::Section { body, .. } = node {
-                collect(body, roots);
+                collect(body, true, roots);
             }
         }
     }
     let nodes = parser::parse(template)?;
     let mut roots = Vec::new();
-    collect(&nodes, &mut roots);
+    collect(&nodes, false, &mut roots);
     Ok(roots)
 }
 
@@ -422,6 +425,23 @@ mod tests {
                 "{template} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn referenced_roots_skips_section_scoped_bare_keys() {
+        // Bare keys inside a section body ({{severity}}, {{#url}}) read the
+        // current item; dotted paths ({{E3.summary}}) stay root-anchored.
+        let roots = referenced_roots(
+            "{{#E5.comments}}{{severity}} {{E3.summary}} \
+             {{#url}}[{{file}}]({{url}}){{/url}}{{/E5.comments}}\
+             {{^E5.comments}}none for {{input.pr}}{{/E5.comments}}",
+        )
+        .unwrap();
+        assert_eq!(roots, vec!["E5", "E3", "input"]);
+
+        // At the top level a bare tag is a root reference.
+        let roots = referenced_roots("{{E0}} {{#items}}{{name}}{{/items}}").unwrap();
+        assert_eq!(roots, vec!["E0", "items"]);
     }
 
     #[test]
