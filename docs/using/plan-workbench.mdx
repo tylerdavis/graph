@@ -81,7 +81,7 @@ Logging is always on. Every workbench line carries the `workbench` target, and t
 
 ## Saving
 
-`Ctrl+S` writes the draft as YAML — back to the file it was loaded from, or to `<first [plans].paths dir>/<identifier>.yaml` for new drafts (it refuses to overwrite a file it didn't load). The status bar shows an `[unsaved]` marker while the draft is dirty, and quitting with unsaved changes asks first.
+`Ctrl+S` writes the draft as YAML — back to the file it was loaded from, or to `<first [plans].paths dir>/<identifier>.yaml` for new drafts (it refuses to overwrite a file it didn't load). The loaded-file target is tied to the plan's identity: replacing the draft with a plan whose identifier differs (via `workbench__set_plan` or a load) drops it, so the next save creates a new file instead of overwriting the old plan — and as a backstop, a save never writes over a file whose `identifier` doesn't match the draft's. The status bar shows an `[unsaved]` marker while the draft is dirty, and quitting with unsaved changes asks first.
 
 ## Keys
 
