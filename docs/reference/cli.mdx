@@ -45,7 +45,9 @@ graph plan validate <name|path>
 graph plan run <name> [<json>|@file|-] [--input k=v]... [--json]
 ```
 
-`run` exit codes: `0` ok, `3` missing/invalid inputs (schema printed to stderr), `1` failure. Solver output streams to stdout; output-mode plans print JSON; silent plans print nothing.
+`validate` checks structure (templates, references, ids) and resolves every step tool against the loadable catalog — packs, user tools, plans (composition followed transitively), and configured MCP servers (server-level; MCP tool names are only verifiable by connecting). Unresolvable tools exit `1`; a file whose `requires_servers` declares an unconfigured server validates with a note. `run` performs the same resolution and refuses to start when it fails. Naming a plan hidden by unconfigured `requires_servers` errors with the missing servers.
+
+`run` exit codes: `0` ok, `3` missing/invalid inputs (schema printed to stderr), `1` failure (including unresolvable tools). Solver output streams to stdout; output-mode plans print JSON; silent plans print nothing.
 
 ## `graph tools`
 

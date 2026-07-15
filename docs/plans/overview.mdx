@@ -79,9 +79,11 @@ Design small, single-purpose plans (fetch-and-shape, in output mode) and compose
 
 ## Plan discovery
 
-Plans load from the directories in `[plans].paths` (default: `./.graph/plans` and `~/.config/graph/plans`, so repos carry their own and your global library fills in the rest). A plan whose `requires_servers` lists an unconfigured MCP server is hidden rather than broken.
+Plans load from the directories in `[plans].paths` (default: `./.graph/plans` and `~/.config/graph/plans`, so repos carry their own and your global library fills in the rest). A plan whose `requires_servers` lists an unconfigured MCP server is hidden rather than broken — and asking for it by name (`plan run`, `plan show`, `plan validate`, `workbench plan`) says exactly which servers are missing instead of "no plan named".
 
-A file that fails to parse or validate is **skipped with a warning** (stderr; the workbench log in the TUI) — one broken plan never takes down the catalog or the commands built on it. Files load in sorted order per directory, directories in the order configured, and the first definition of a duplicate identifier wins; later ones are skipped with a warning too. Asking for a skipped plan by name (`plan run`, `plan show`, `plan validate`, `workbench plan`) reports the file's load error instead of "no plan named".
+A file that fails to parse or validate is **skipped with a warning** (stderr; the workbench log in the TUI) — one broken plan never takes down the catalog or the commands built on it. Files load in sorted order per directory, directories in the order configured, and the first definition of a duplicate identifier wins; later ones are skipped with a warning too. Asking for a skipped plan by name reports the file's load error.
+
+On top of the structural check every load performs, `plan validate` and `plan run` resolve each step's tool name against what is actually loadable (enabled packs, user tools, the plan catalog, configured MCP servers) and fail before anything executes — see [where validation happens](/plans/errors-and-replanning#where-validation-happens).
 
 ```bash
 graph plan list

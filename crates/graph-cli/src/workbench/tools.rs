@@ -171,11 +171,7 @@ impl WorkbenchTools {
             Ok(doc) => doc,
             Err(outcome) => return outcome,
         };
-        let problems = self
-            .pipeline
-            .validate_plan(&doc.steps)
-            .err()
-            .unwrap_or_default();
+        let problems = plan_problems(&self.pipeline, &doc);
         let summary = json!({
             "identifier": doc.identifier,
             "name": doc.name,
@@ -261,16 +257,7 @@ impl WorkbenchTools {
         let Some(doc) = self.current() else {
             return error_outcome("no draft to validate");
         };
-        let mut problems = self
-            .pipeline
-            .validate_plan(&doc.steps)
-            .err()
-            .unwrap_or_default();
-        if let Err(problem) = validate_doc(&doc) {
-            if !problems.contains(&problem) {
-                problems.push(problem);
-            }
-        }
+        let problems = plan_problems(&self.pipeline, &doc);
         let _ = self.tx.send(Msg::Validated(problems.clone()));
         ToolOutcome {
             result: json!({"valid": problems.is_empty(), "problems": problems}),
@@ -393,11 +380,7 @@ impl WorkbenchTools {
         };
 
         let doc = merge_planner_output(existing, goal, output);
-        let problems = self
-            .pipeline
-            .validate_plan(&doc.steps)
-            .err()
-            .unwrap_or_default();
+        let problems = plan_problems(&self.pipeline, &doc);
         let summary = json!({
             "identifier": doc.identifier,
             "steps": doc.steps.len(),
@@ -638,6 +621,35 @@ impl WorkbenchTools {
             Ok(json!({"ok": true, "id": id, "steps": doc.steps.len()}))
         })
     }
+}
+
+/// The workbench's full validation verdict for a draft: static document
+/// validation plus catalog-aware tool resolution when the pipeline carries
+/// a catalog. That catalog is the runtime-loadable one plans execute
+/// against — it deliberately does NOT include the workbench's own
+/// `workbench__*` tools, which exist only for this chat agent and would
+/// fail at plan run time (they are also rejected statically).
+/// Catalog notes (declared-but-unconfigured `requires_servers`) are
+/// reported with a `note:` prefix: the file is portable, but it cannot run
+/// here.
+pub(super) fn plan_problems(pipeline: &Pipeline, doc: &PlanDoc) -> Vec<String> {
+    let mut problems = pipeline.validate_plan(&doc.steps).err().unwrap_or_default();
+    if let Err(problem) = validate_doc(doc) {
+        if !problems.contains(&problem) {
+            problems.push(problem);
+        }
+    }
+    if let Some(catalog) = &pipeline.catalog {
+        let check =
+            graph_core::pipeline::catalog::resolve_plan_tools_deep(doc, &pipeline.plans, catalog);
+        for problem in check.errors {
+            if !problems.contains(&problem) {
+                problems.push(problem);
+            }
+        }
+        problems.extend(check.notes.into_iter().map(|note| format!("note: {note}")));
+    }
+    problems
 }
 
 /// Fold the planner's output into a draft: a revision keeps the existing
@@ -1097,6 +1109,7 @@ mod tests {
             call_stack: Vec::new(),
             store: None,
             gate: None,
+            catalog: None,
             user_context: String::new(),
             current_date: String::new(),
             max_attempts: 1,
@@ -1142,6 +1155,33 @@ steps:
             }
             _ => panic!("expected DraftReplaced"),
         }
+    }
+
+    #[test]
+    fn validate_plan_resolves_tools_against_the_runtime_catalog() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut doc = demo_doc();
+        doc.steps[0].tool_name = "user__nope".to_string();
+        // The catalog is the runtime-loadable one — empty here, so the
+        // user tool cannot resolve. workbench__* never appears in it.
+        let mut pipeline = (*test_pipeline(vec![])).clone();
+        pipeline.catalog = Some(Arc::new(graph_core::pipeline::ToolCatalog::default()));
+        let tools = WorkbenchTools::new(
+            Arc::new(Mutex::new(DraftState::new(Some(doc)))),
+            Arc::new(pipeline),
+            None,
+            Arc::new(DebugControls::default()),
+            tx,
+        );
+        let outcome = tools.validate_plan();
+        assert_eq!(outcome.result["valid"], json!(false));
+        assert!(
+            outcome.result["problems"]
+                .to_string()
+                .contains("user__nope"),
+            "{:?}",
+            outcome.result
+        );
     }
 
     #[test]

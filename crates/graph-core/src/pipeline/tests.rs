@@ -135,6 +135,7 @@ fn pipeline(
             call_stack: Vec::new(),
             store: None,
             gate: None,
+            catalog: None,
             user_context: "test user".into(),
             current_date: "2026-07-09".into(),
             max_attempts,
@@ -287,6 +288,75 @@ async fn explicit_plans_fail_hard_without_replanning() {
     assert!(
         provider.requests.lock().unwrap().is_empty(),
         "no LLM calls on hard failure"
+    );
+}
+
+#[tokio::test]
+async fn explicit_runs_resolve_tools_against_the_catalog_before_any_step() {
+    let registry = Arc::new(MockRegistry {
+        search_result: json!({"values": []}),
+        invocations: Mutex::new(Vec::new()),
+        fail_tools: vec![],
+    });
+    let (mut pipeline, provider) = pipeline(vec![], registry.clone(), 1);
+    pipeline.catalog = Some(Arc::new(catalog::ToolCatalog {
+        mcp_servers: std::collections::BTreeSet::from(["t".to_string()]),
+        ..Default::default()
+    }));
+
+    // E0 would resolve (server 't' is configured) but E1's server is not —
+    // the run must fail before E0 executes, not between E0 and E1.
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "ghost__scan", "input": {}}
+    ]))
+    .unwrap();
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Solve(SolverData::default()), None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PipelineError::InvalidPlan(_)), "{err}");
+    assert!(err.to_string().contains("ghost"), "{err}");
+    assert!(
+        registry.invocations.lock().unwrap().is_empty(),
+        "no step may execute when a later tool cannot resolve"
+    );
+    assert!(
+        provider.requests.lock().unwrap().is_empty(),
+        "no LLM spend either"
+    );
+}
+
+#[test]
+fn validate_plan_rejects_workbench_tools_statically() {
+    let (pipeline, _) = pipeline(vec![], search_registry(json!({})), 1);
+
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "workbench__grep", "input": {}}
+    ]))
+    .unwrap();
+    let problems = pipeline.validate_plan(&plan).unwrap_err();
+    assert!(problems[0].contains("'workbench__grep'"), "{problems:?}");
+    assert!(
+        problems[0].contains("not available in the plan runtime"),
+        "{problems:?}"
+    );
+
+    // The same guard applies inside control-step bodies.
+    let body_plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "decide", "input": {
+            "if": {"value": "{{E0.count}}", "op": "gt", "to": 0},
+            "then": {"toolName": "workbench__read_file", "input": {}}
+        }}
+    ]))
+    .unwrap();
+    let problems = pipeline.validate_plan(&body_plan).unwrap_err();
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("'workbench__read_file'")),
+        "{problems:?}"
     );
 }
 

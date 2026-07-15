@@ -85,6 +85,26 @@ pub fn check_step_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The tool namespace of the workbench TUI's own draft-editing tools.
+/// Those tools exist only inside the workbench chat agent — they are never
+/// registered in the plan runtime's `ToolRegistry` — so a plan step naming
+/// one is always a defect, regardless of context.
+pub const WORKBENCH_TOOL_PREFIX: &str = "workbench__";
+
+/// Why a step's tool name can never resolve in the plan runtime, if so —
+/// callers prepend their own step/body context. This is the static,
+/// context-free tier of tool-name checking; catalog resolution against
+/// what is actually loadable lives in [`super::catalog`].
+pub fn workbench_tool_problem(tool: &str) -> Option<String> {
+    tool.starts_with(WORKBENCH_TOOL_PREFIX).then(|| {
+        format!(
+            "tool '{tool}': workbench__* tools belong to the workbench TUI \
+             agent and are not available in the plan runtime — plans cannot \
+             call them"
+        )
+    })
+}
+
 /// Default solver data mapping every step result in, used when the planner
 /// leaves `data` empty.
 pub fn default_solver_data(plan: &Plan, data: &mut Map<String, Value>) {

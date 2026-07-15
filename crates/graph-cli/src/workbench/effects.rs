@@ -152,19 +152,7 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
 
         Effect::Validate => {
             let problems = match &ctx.draft.lock().unwrap().doc {
-                Some(doc) => {
-                    let mut problems = ctx
-                        .pipeline
-                        .validate_plan(&doc.steps)
-                        .err()
-                        .unwrap_or_default();
-                    if let Err(problem) = graph_core::pipeline::doc::validate_doc(doc) {
-                        if !problems.contains(&problem) {
-                            problems.push(problem);
-                        }
-                    }
-                    problems
-                }
+                Some(doc) => super::tools::plan_problems(&ctx.pipeline, doc),
                 None => vec!["no draft to validate".to_string()],
             };
             let _ = ctx.tx.send(Msg::Validated(problems));

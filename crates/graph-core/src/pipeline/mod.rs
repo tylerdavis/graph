@@ -11,6 +11,7 @@
 //!   the solver.
 
 pub mod body;
+pub mod catalog;
 pub mod condition;
 pub mod decision;
 pub mod doc;
@@ -23,6 +24,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 
+pub use catalog::{CatalogCheck, ToolCatalog};
 pub use decision::DECIDE_TOOL;
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
 pub use gate::{ErrorDecision, ExecutionGate, GateContext, GateDecision, StepPath};
@@ -61,6 +63,14 @@ pub struct Pipeline {
     /// (see [`gate`] module docs for scope). Propagates into nested plan
     /// calls via [`Pipeline::nested`].
     pub gate: Option<Arc<dyn ExecutionGate>>,
+    /// The loadable-tool catalog, when the caller can build one (the CLI
+    /// runtime does; bare test pipelines don't). When present,
+    /// [`Pipeline::run_explicit`] resolves every step tool against it and
+    /// fails before the first step instead of mid-run. Planner-authored
+    /// runs ([`Pipeline::run_planned`]) are exempt: the planner draws from
+    /// the live registry, and execution + replanning already handle its
+    /// hallucinations.
+    pub catalog: Option<Arc<ToolCatalog>>,
     pub user_context: String,
     pub current_date: String,
     pub max_attempts: u32,
@@ -257,7 +267,13 @@ impl Pipeline {
             state.results.insert("input".to_string(), input);
         }
 
-        if let Err(problems) = self.validate(&state) {
+        let mut problems = self.validate(&state).err().unwrap_or_default();
+        // Second layer: catalog-aware tool resolution, so an unresolvable
+        // tool fails here — before any step spends tool calls or LLM money.
+        if let Some(catalog) = &self.catalog {
+            problems.extend(catalog::resolve_step_tools(&state.plan, catalog));
+        }
+        if !problems.is_empty() {
             return Err(PipelineError::InvalidPlan(problems.join("; ")));
         }
         match self.execute_all(&mut state).await {
@@ -665,6 +681,9 @@ impl Pipeline {
             }
             if seen.contains(&step.id.as_str()) {
                 problems.push(format!("duplicate step id '{}'", step.id));
+            }
+            if let Some(problem) = plan::workbench_tool_problem(&step.tool_name) {
+                problems.push(format!("step {}: {problem}", step.id));
             }
             // Control steps are body-aware: body-internal references
             // (same-body ids, per-item pseudo-roots) are legal, so the

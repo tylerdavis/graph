@@ -4,6 +4,7 @@ use crate::cli::PlanCommand;
 use crate::commands::input::resolve_input;
 use crate::runtime::Runtime;
 use anyhow::{bail, Result};
+use graph_core::pipeline::catalog;
 use graph_core::pipeline::doc::{load_plan_doc, validate_input, LoadedPlans};
 use std::sync::Arc;
 
@@ -37,20 +38,32 @@ pub async fn run(command: PlanCommand) -> Result<()> {
             Ok(())
         }
         PlanCommand::Validate { name_or_path } => {
-            let path = std::path::Path::new(&name_or_path);
-            if path.exists() {
-                let doc = load_plan_doc(path)?;
-                println!("ok: '{}' — {} steps", doc.identifier, doc.steps.len());
-                return Ok(());
-            }
             let runtime = Runtime::init()?;
             let loaded = runtime.plan_docs();
-            let Some(doc) = loaded.docs.iter().find(|d| d.identifier == name_or_path) else {
-                match loaded.skip_reason(&name_or_path) {
-                    Some(reason) => bail!("{reason}"),
-                    None => bail!("'{name_or_path}' is neither a file nor a known plan identifier"),
+            let path = std::path::Path::new(&name_or_path);
+            let doc = if path.exists() {
+                load_plan_doc(path)?
+            } else {
+                match loaded.docs.iter().find(|d| d.identifier == name_or_path) {
+                    Some(doc) => doc.clone(),
+                    None => bail!(missing_plan(&loaded, &name_or_path)),
                 }
             };
+            // Second layer: resolve every step tool against what this
+            // config can actually load (structural validation already ran
+            // in load_plan_doc / plan_docs).
+            let catalog = runtime.tool_catalog(&loaded.docs)?;
+            let check = catalog::resolve_plan_tools_deep(&doc, &loaded.docs, &catalog);
+            for note in &check.notes {
+                eprintln!("note: {note}");
+            }
+            if !check.is_ok() {
+                bail!(
+                    "plan '{}' has unresolvable tools:\n  - {}",
+                    doc.identifier,
+                    check.errors.join("\n  - ")
+                );
+            }
             println!("ok: '{}' — {} steps", doc.identifier, doc.steps.len());
             Ok(())
         }
@@ -63,9 +76,13 @@ pub async fn run(command: PlanCommand) -> Result<()> {
     }
 }
 
-/// Why a named plan isn't in the catalog: its file failed to load (say
-/// why), or it simply doesn't exist.
+/// Why a named plan isn't in the catalog: it requires MCP servers this
+/// config doesn't have, its file failed to load (say why), or it simply
+/// doesn't exist.
 fn missing_plan(loaded: &LoadedPlans, name: &str) -> String {
+    if let Some(reason) = loaded.hidden_reason(name) {
+        return reason;
+    }
     match loaded.skip_reason(name) {
         Some(reason) => format!("plan '{name}' failed to load — {reason}"),
         None => format!("no plan named '{name}' (see `graph plan list`)"),
@@ -88,6 +105,20 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         annotate(&message);
         bail!(message);
     };
+    // Fail fast: resolve every step tool (sub-plans included) against the
+    // loadable catalog before anything runs or connects. At run time a
+    // declared-but-unconfigured server is as fatal as an undeclared one.
+    let catalog = runtime.tool_catalog(&loaded.docs)?;
+    let mut check = catalog::resolve_plan_tools_deep(&doc, &loaded.docs, &catalog);
+    check.errors.append(&mut check.notes);
+    if !check.errors.is_empty() {
+        let message = format!(
+            "plan '{name}' has unresolvable tools:\n  - {}",
+            check.errors.join("\n  - ")
+        );
+        annotate(&message);
+        bail!(message);
+    }
     let mut input = resolve_input(document, inputs)?;
     if let Some(schema) = &doc.input_schema {
         graph_core::pipeline::doc::apply_schema_defaults(schema, &mut input);
