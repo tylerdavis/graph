@@ -2,6 +2,35 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
+## v0.7.0 — 2026-07-15
+
+
+### Added
+
+- replace LadybugDB with file-based storage (#24)
+- plan workbench — dual-pane TUI for drafting and test-running plans (#25)
+- workbench debug logging to <data_dir>/workbench.log (#28)
+- workbench step view shows body sub-steps and the finish stage (#30)
+- workbench read_file/grep/glob tools for researching the project (#29)
+- step ids are any unique identifier, not just E-numbers (#31)
+- workbench tools for precise plan edits: update_metadata, add_step, update_step, delete_step (#33)
+- [prompts] config overrides for the chat prompt and workbench addendum (#37)
+- project-first config — config init and default search paths target ./.graph (#38)
+- draft safety, control-step guidance, turn-failure recovery (#36)
+
+### Documentation
+
+- cookbook covers a custom bot identity for the CI reviewer (#23)
+- add @emichy to special thanks (#26)
+- require worktrees for all coding work in CLAUDE.md (#39)
+
+### Fixed
+
+- scrolling reaches wrapped content; PgUp/PgDn is the one scroll binding (#27)
+- draft saves can no longer overwrite a different plan's file (#32)
+- section-scoped bare keys are not roots in plan validation (#34)
+- a broken plan file no longer takes down the whole catalog (#35)
+
 ## v0.6.0 — 2026-07-11
 
 
