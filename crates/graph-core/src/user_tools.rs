@@ -70,6 +70,11 @@ pub enum ToolKind {
         /// Model role to run under (default: chat).
         #[serde(default)]
         role: PromptRole,
+        /// Take `output_schema` from the call's input instead of (only)
+        /// the doc — the generic `builtin__infer` path, where each step
+        /// decides between plain text and structured output.
+        #[serde(default)]
+        caller_output_schema: bool,
     },
 }
 
@@ -108,16 +113,24 @@ impl From<PromptRole> for Role {
 /// through the same validation and registry machinery as user tools, but
 /// are exposed under the `builtin__` namespace — copy one into a tools
 /// directory (as a `user__` tool) to customize it.
-const PACKS: &[(&str, &[&str])] = &[(
-    "github",
-    &[
-        include_str!("packs/github/gh_pr_meta.yaml"),
-        include_str!("packs/github/gh_pr_comment.yaml"),
-        include_str!("packs/github/gh_pr_inline_comments.yaml"),
-        include_str!("packs/github/git_diff.yaml"),
-        include_str!("packs/github/git_changed_files.yaml"),
-    ],
-)];
+const PACKS: &[(&str, &[&str])] = &[
+    (
+        "github",
+        &[
+            include_str!("packs/github/gh_pr_meta.yaml"),
+            include_str!("packs/github/gh_pr_comment.yaml"),
+            include_str!("packs/github/gh_pr_inline_comments.yaml"),
+            include_str!("packs/github/git_diff.yaml"),
+            include_str!("packs/github/git_changed_files.yaml"),
+        ],
+    ),
+    ("llm", &[include_str!("packs/llm/infer.yaml")]),
+];
+
+/// Packs loaded whether or not `[tools].packs` names them — core
+/// capabilities every catalog should have (currently just `llm`, whose
+/// `builtin__infer` gives plans a generic string-or-structured LLM step).
+pub const DEFAULT_PACKS: &[&str] = &["llm"];
 
 pub fn available_packs() -> Vec<&'static str> {
     PACKS.iter().map(|(name, _)| *name).collect()
@@ -274,6 +287,16 @@ impl UserToolRegistry {
                 }
             }
         }
+        // A prompt tool that opted in takes its output schema from the
+        // call itself (the generic builtin__infer path) — grab it before
+        // the input becomes template roots.
+        let caller_schema = match &doc.kind {
+            ToolKind::Prompt {
+                caller_output_schema: true,
+                ..
+            } => input.get("output_schema").cloned(),
+            _ => None,
+        };
         let mut roots = Map::new();
         roots.insert("input".to_string(), input);
         let roots = Roots::new(&roots);
@@ -302,8 +325,9 @@ impl UserToolRegistry {
                 prompt,
                 system,
                 role,
+                ..
             } => {
-                self.run_prompt(doc, prompt, system.as_deref(), *role, &roots)
+                self.run_prompt(doc, prompt, system.as_deref(), *role, caller_schema, &roots)
                     .await
             }
         }
@@ -389,20 +413,25 @@ impl UserToolRegistry {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_prompt(
         &self,
         doc: &UserToolDoc,
         prompt: &str,
         system: Option<&str>,
         role: PromptRole,
+        caller_schema: Option<Value>,
         roots: &Roots<'_>,
     ) -> Result<ToolOutcome, ToolError> {
+        // The doc's schema wins; a caller-supplied one applies only when
+        // the tool opted in (see `caller_output_schema`).
+        let schema = doc.output_schema.as_ref().or(caller_schema.as_ref());
         let rendered =
             render_str(prompt, roots).map_err(|e| ToolError::Transport(e.to_string()))?;
         let request = ChatRequest {
             system: system.unwrap_or_default().to_string(),
             messages: vec![ChatMessage::User { content: rendered }],
-            response_schema: doc.output_schema.as_ref().map(|schema| ResponseSchema {
+            response_schema: schema.map(|schema| ResponseSchema {
                 name: doc.name.clone(),
                 schema: schema.clone(),
             }),
@@ -422,7 +451,7 @@ impl UserToolRegistry {
         // output_schema, enforce it here with one repair pass, so plans can
         // rely on every declared field existing (a missing key is a hard
         // template error downstream).
-        let result = match &doc.output_schema {
+        let result = match schema {
             Some(schema) => self.enforce_schema(result, schema).await?,
             None => result,
         };

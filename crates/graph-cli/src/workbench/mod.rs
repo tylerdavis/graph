@@ -38,12 +38,20 @@ the current draft plan, live. Operate on that draft with the workbench \
 tools:\n\
 - workbench__list_plans: enumerate the plan catalog when the user asks \
 what exists.\n\
-- workbench__load_plan: load an existing plan (identifier or YAML path) \
-into the pane; it replaces the draft, so confirm first if there are \
-unsaved changes.\n\
-- workbench__draft_plan: create or revise the draft from a goal. Pass the \
-user's request as a self-contained goal; pass feedback when revising after \
-validation problems or user corrections.\n\
+- workbench__show_plan: read any catalog plan's YAML without touching \
+the draft — always use this to inspect or reference existing plans.\n\
+- workbench__load_plan: open a DIFFERENT plan the user explicitly names \
+(identifier or YAML path). Never use it to edit, fix, or continue the \
+current draft (use the editing tools) or to read a plan (use \
+show_plan). It replaces the draft and FAILS if there are unsaved \
+changes unless you pass overwrite_draft: true, which you may only do \
+after the user confirms discarding them.\n\
+- workbench__draft_plan: draft a plan from a goal when there is no draft \
+yet, or when the user asks to start over from scratch. Pass the user's \
+request as a self-contained goal; pass feedback when revising after \
+validation problems or user corrections; pass fresh: true when the goal \
+is a NEW plan — otherwise the current draft is treated as the plan \
+under revision and keeps its identifier and metadata.\n\
 - workbench__get_plan: re-read the draft YAML. The current draft is \
 already included below in this prompt each turn — call this only to \
 re-check after your own edits within the same turn.\n\
@@ -51,10 +59,16 @@ re-check after your own edits within the same turn.\n\
 workbench__update_step / workbench__delete_step: precise edits — patch \
 the plan's metadata, insert a step (before/after an id, or appended), \
 update one step's fields (newId renames it and rewrites downstream \
-references), or remove a step. Prefer these for targeted changes; an \
-edit that would make the plan invalid is rejected with the problems.\n\
+references), or remove a step. When the user asks to change the current \
+plan, prefer these — however complex the change, control flow included: \
+each edit is validated atomically and rejected with the problems if it \
+would make the plan invalid, so sequential edits are safer than a \
+wholesale re-draft.\n\
 - workbench__set_plan: replace the draft with complete YAML (get, modify, \
 set) for wholesale rewrites the precise tools don't cover.\n\
+- workbench__restore_draft: one-level undo of the last draft replacement \
+(again to redo) — use it when you or the user replaced the draft by \
+mistake.\n\
 - workbench__validate_plan: check the draft and surface the verdict in \
 the pane.\n\
 - workbench__run_plan: execute the draft when the user asks. Prefer \
@@ -71,8 +85,18 @@ codebase or a draft needs grounding in real files — glob to find files, \
 grep to search contents, read_file for the surrounding context.\n\
 Never claim the draft changed, ran, or was saved without calling the \
 matching tool. The user can also drive everything with keybindings \
-(v validate, r run, g gated run, Ctrl+S save) — never run a plan with \
-side effects unprompted.";
+(v validate, r run, g gated run, Ctrl+S save, u undo) — never run a plan \
+with side effects unprompted.";
+
+/// Control-step reference for the chat agent: the naming rules, then the
+/// same usage rules the draft_plan planner sees (shared so they can't
+/// drift) — the agent has the full schema and edits control flow directly.
+const CONTROL_STEP_NAMING: &str = "\n\n# Control steps\n\
+Step toolNames are namespaced `server__tool` names from the catalog \
+(e.g. linear__list_issues), plus ONLY these bare control steps: exit, \
+decide, map, reduce, and plan_and_execute. There is no `gate`, `assert`, \
+or `exit_gate` tool and no `gate:` field. A plan finishes with `solver` \
+(LLM synthesis) OR `output` (a structured template map), never both.\n\n";
 
 pub async fn run(command: WorkbenchCommand, verbosity: u8) -> Result<()> {
     let WorkbenchCommand::Plan { name_or_path } = command;
@@ -165,7 +189,7 @@ async fn run_plan_workbench(
 
     // The draft is shared between the reducer's world (via messages), the
     // workbench tools, and the effect executor.
-    let draft = Arc::new(std::sync::Mutex::new(doc.clone()));
+    let draft = Arc::new(std::sync::Mutex::new(tools::DraftState::new(doc.clone())));
 
     // The chat agent: normal catalog + the workbench draft tools.
     let agent_sink: Arc<dyn EventSink> = Arc::new(chat::ChannelSink::agent(tx.clone()));
@@ -203,6 +227,10 @@ async fn run_plan_workbench(
             .as_deref()
             .unwrap_or(WORKBENCH_SYSTEM_PROMPT),
     );
+    agent.system_prompt.push_str(CONTROL_STEP_NAMING);
+    agent
+        .system_prompt
+        .push_str(graph_core::pipeline::CONTROL_STEP_RULES);
 
     let context = Arc::new(WorkbenchContext {
         agent,

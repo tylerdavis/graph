@@ -11,7 +11,14 @@ use futures::StreamExt;
 use serde_json::{json, Map, Value};
 
 const API_VERSION: &str = "2023-06-01";
-const DEFAULT_MAX_TOKENS: u32 = 8192;
+/// Non-streaming ceiling: larger values risk HTTP timeouts on a single
+/// response, per Anthropic's guidance (~16K without streaming).
+const DEFAULT_MAX_TOKENS: u32 = 16_000;
+/// Streaming default. max_tokens caps thinking + text COMBINED, and models
+/// with adaptive thinking on by default (claude-sonnet-5 and newer) can
+/// spend the whole budget thinking — an 8K cap yielded 90s turns that
+/// ended with stop_reason max_tokens and zero visible text.
+const DEFAULT_MAX_TOKENS_STREAMING: u32 = 64_000;
 const STRUCTURED_TOOL: &str = "structured_output";
 
 pub struct AnthropicProvider {
@@ -42,11 +49,16 @@ impl AnthropicProvider {
             })
             .collect();
 
+        let default_max_tokens = if stream {
+            DEFAULT_MAX_TOKENS_STREAMING
+        } else {
+            DEFAULT_MAX_TOKENS
+        };
         let mut body = Map::new();
         body.insert("model".into(), json!(req.model));
         body.insert(
             "max_tokens".into(),
-            json!(req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS)),
+            json!(req.max_tokens.unwrap_or(default_max_tokens)),
         );
         body.insert(
             "messages".into(),
@@ -370,6 +382,29 @@ mod tests {
 
     fn provider() -> AnthropicProvider {
         AnthropicProvider::new("test-key".into(), None)
+    }
+
+    #[test]
+    fn default_max_tokens_is_larger_when_streaming() {
+        let req = ChatRequest {
+            model: "claude-sonnet-5".into(),
+            ..Default::default()
+        };
+        let body = provider().build_body(&req, true);
+        assert_eq!(body["max_tokens"], json!(DEFAULT_MAX_TOKENS_STREAMING));
+        let body = provider().build_body(&req, false);
+        assert_eq!(body["max_tokens"], json!(DEFAULT_MAX_TOKENS));
+
+        // An explicit max_tokens always wins.
+        let explicit = ChatRequest {
+            model: "claude-sonnet-5".into(),
+            max_tokens: Some(1024),
+            ..Default::default()
+        };
+        assert_eq!(
+            provider().build_body(&explicit, true)["max_tokens"],
+            json!(1024)
+        );
     }
 
     #[test]

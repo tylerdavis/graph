@@ -7,7 +7,7 @@ pub use events::{EventSink, NullSink};
 use crate::tools::{ToolOutcome, ToolRegistry};
 use futures::StreamExt;
 use graph_llm::types::{
-    ChatMessage, ChatRequest, ChatResponse, StreamEvent, ToolCall, ToolSpec, Usage,
+    ChatMessage, ChatRequest, ChatResponse, StopReason, StreamEvent, ToolCall, ToolSpec, Usage,
 };
 use graph_llm::ChatProvider;
 use serde_json::json;
@@ -24,12 +24,23 @@ pub struct Agent {
     pub max_iterations: u32,
 }
 
+/// Failures of the agent loop (`ask`/`chat`/workbench turns). The plan
+/// pipeline never runs the agent loop, so these sit outside its
+/// `EmptyData`/`BadPath` error taxonomy: they surface directly to the user
+/// as a failed turn (rolled back in the workbench and `chat`, nonzero exit
+/// in `ask`) and never trigger replanning.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     #[error(transparent)]
     Llm(#[from] graph_llm::LlmError),
     #[error("agent exceeded {0} tool iterations without reaching an answer")]
     MaxIterations(u32),
+    #[error(
+        "the model hit its output-token limit before producing any visible text \
+         (the whole budget went to internal reasoning) — raise max_tokens or \
+         simplify the request"
+    )]
+    MaxTokensNoOutput,
     #[error("model stream ended without completing a response")]
     IncompleteStream,
 }
@@ -70,8 +81,15 @@ impl Agent {
             });
 
             if response.tool_calls.is_empty() {
+                let text = response.content.unwrap_or_default();
+                // A max_tokens stop with no text means the whole output
+                // budget went to (invisible) thinking — silence here reads
+                // as "nothing happened"; make it a diagnosable failure.
+                if text.is_empty() && response.stop_reason == StopReason::MaxTokens {
+                    return Err(AgentError::MaxTokensNoOutput);
+                }
                 return Ok(TurnOutcome {
-                    text: response.content.unwrap_or_default(),
+                    text,
                     usage,
                     tool_calls_made,
                     tools_used,
@@ -291,6 +309,39 @@ mod tests {
         assert_eq!(outcome.tool_calls_made, 0);
         assert_eq!(messages.len(), 2);
         assert!(registry.invocations.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn max_tokens_with_no_text_is_a_diagnosable_error() {
+        // The whole output budget went to invisible thinking: no tool
+        // calls, no text, stop_reason max_tokens.
+        let empty = ChatResponse {
+            content: None,
+            tool_calls: vec![],
+            structured: None,
+            stop_reason: StopReason::MaxTokens,
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 8192,
+            },
+        };
+        let (subject, _registry) = agent(vec![empty], false);
+        let mut messages = vec![ChatMessage::User {
+            content: "hello".into(),
+        }];
+        let err = subject.run_turn(&mut messages).await.unwrap_err();
+        assert!(matches!(err, AgentError::MaxTokensNoOutput));
+        assert!(err.to_string().contains("max_tokens"), "{err}");
+
+        // A truncated-but-nonempty answer still returns normally.
+        let mut truncated = text_response("partial answ");
+        truncated.stop_reason = StopReason::MaxTokens;
+        let (subject, _registry) = agent(vec![truncated], false);
+        let mut messages = vec![ChatMessage::User {
+            content: "hello".into(),
+        }];
+        let outcome = subject.run_turn(&mut messages).await.unwrap();
+        assert_eq!(outcome.text, "partial answ");
     }
 
     #[tokio::test]

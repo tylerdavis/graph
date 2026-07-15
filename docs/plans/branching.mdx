@@ -63,7 +63,7 @@ The judgment is a forced-schema call returning `{verdict, reason}`; `then` runs 
 - **A single tool call** — `{tool_name, input}`, no id. Any catalog tool works, including `plan__*` and `plan_and_execute`.
 - **An inline step list** — normal steps with ids. They run in authored order, and each may reference plan `input`, any earlier top-level step, and earlier steps *in the same branch*. Branch ids must not reuse top-level ids, and they are invisible outside the branch.
 
-Branches must not contain `exit`, `decide`, [`map`, or `reduce`](/plans/iteration). For nested control flow, put it in a plan and call `plan__*` from the branch — cycle detection and the depth cap apply as usual, and an error-exit inside that sub-plan surfaces as a failure of the decide step.
+Branches may contain [`exit`](/plans/escape-hatch) steps — a fired exit ends the **whole plan** from inside the branch (its `step` in the outcome carries the body path, e.g. `E4/then/bail`), and a passed gate lets the branch continue to its next step. Branches must not contain `decide`, [`map`, or `reduce`](/plans/iteration). For nested control flow, put it in a plan and call `plan__*` from the branch — cycle detection and the depth cap apply as usual, and an error-exit inside that sub-plan surfaces as a failure of the decide step.
 
 ## The step result
 

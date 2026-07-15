@@ -6,9 +6,10 @@
 //! step ids never enter `RunState::results` (the step cursor and replan
 //! merge are keyed on it), but their work counts in `steps_executed`.
 
+use super::exit::PlanExit;
 use super::plan::{check_step_id, Step};
 use super::state::{BusEntry, BusKind};
-use super::Pipeline;
+use super::{Pipeline, EXIT_TOOL};
 use crate::template::{render_input, RenderError, Roots};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -59,14 +60,24 @@ pub fn parse_branch(name: &str, raw: &Value) -> Result<Branch, String> {
 }
 
 /// The body schema shared by the decide/map/reduce planner tool defs.
-pub fn body_schema() -> Value {
+/// `allow_exit` mirrors the validator: decide branches may hold `exit`
+/// steps, iteration bodies may not.
+pub fn body_schema(allow_exit: bool) -> Value {
+    let tool_name_doc = if allow_exit {
+        "Exact tool name; may be plan__* for a multi-step body, or exit \
+         (ends the WHOLE plan from inside the branch). Never decide, map, \
+         or reduce."
+    } else {
+        "Exact tool name; may be plan__* for a multi-step body. Never \
+         exit, decide, map, or reduce."
+    };
     json!({
         "oneOf": [
             {
                 "type": "object",
                 "required": ["toolName", "input"],
                 "properties": {
-                    "toolName": {"type": "string", "description": "Exact tool name; may be plan__* for a multi-step body. Never exit, decide, map, or reduce."},
+                    "toolName": {"type": "string", "description": tool_name_doc},
                     "input": {"type": "object"}
                 }
             },
@@ -91,6 +102,10 @@ pub fn body_schema() -> Value {
 /// (including `input`); `pseudo` is the pseudo-roots this body's scope
 /// adds (`item`/`index` for map, plus `accumulator` for reduce, none for
 /// decide); `all_plan_ids` is every top-level id, for collision checks.
+/// `allow_exit` is true for decide branches — an `exit` there ends the
+/// whole plan — and false for map/reduce bodies, where a per-item exit
+/// has no coherent meaning.
+#[allow(clippy::too_many_arguments)]
 pub fn validate_body(
     name: &str,
     raw: &Value,
@@ -98,6 +113,7 @@ pub fn validate_body(
     pseudo: &[&str],
     all_plan_ids: &[&str],
     step_id: &str,
+    allow_exit: bool,
     problems: &mut Vec<String>,
 ) {
     let branch = match parse_branch(name, raw) {
@@ -111,7 +127,7 @@ pub fn validate_body(
     body_seen.extend_from_slice(pseudo);
     match branch {
         Branch::Call(call) => {
-            check_body_tool(name, &call.tool_name, step_id, problems);
+            check_body_tool(name, &call.tool_name, step_id, allow_exit, problems);
             for value in call.input.values() {
                 super::check_templates(value, &body_seen, step_id, problems);
             }
@@ -135,7 +151,7 @@ pub fn validate_body(
                         step.id
                     ));
                 }
-                check_body_tool(name, &step.tool_name, step_id, problems);
+                check_body_tool(name, &step.tool_name, step_id, allow_exit, problems);
                 for value in step.input.values() {
                     super::check_templates(value, &body_seen, &step.id, problems);
                 }
@@ -145,13 +161,24 @@ pub fn validate_body(
     }
 }
 
-fn check_body_tool(name: &str, tool: &str, step_id: &str, problems: &mut Vec<String>) {
-    let control = [
-        super::EXIT_TOOL,
-        super::DECIDE_TOOL,
-        super::MAP_TOOL,
-        super::REDUCE_TOOL,
-    ];
+fn check_body_tool(
+    name: &str,
+    tool: &str,
+    step_id: &str,
+    allow_exit: bool,
+    problems: &mut Vec<String>,
+) {
+    if tool == EXIT_TOOL {
+        if !allow_exit {
+            problems.push(format!(
+                "step {step_id}: `{name}` uses 'exit' — an exit inside an \
+                 iteration body has no single-plan meaning; it is only \
+                 allowed in decide branches"
+            ));
+        }
+        return;
+    }
+    let control = [super::DECIDE_TOOL, super::MAP_TOOL, super::REDUCE_TOOL];
     if control.contains(&tool) {
         problems.push(format!(
             "step {step_id}: `{name}` uses '{tool}' — control steps cannot nest \
@@ -159,7 +186,8 @@ fn check_body_tool(name: &str, tool: &str, step_id: &str, problems: &mut Vec<Str
         ));
     } else if !tool.contains("__") && tool != "plan_and_execute" {
         problems.push(format!(
-            "step {step_id}: `{name}` tool '{tool}' is not a namespaced tool name"
+            "step {step_id}: `{name}` tool '{tool}' is not a namespaced tool \
+             name like server__tool"
         ));
     }
 }
@@ -191,6 +219,11 @@ pub(super) enum BodyFail {
     Tool(String),
     /// The execution gate aborted the run — hard stop, never replans.
     Aborted,
+    /// An `exit` step in the body fired. Not a failure — it rides the
+    /// error channel so the accounting (steps run, bus entries) travels
+    /// with it; decide maps it to `ExecutionEnd::Exited`, ending the
+    /// whole plan.
+    Exited(PlanExit),
 }
 
 impl BodyError {
@@ -230,6 +263,19 @@ impl Pipeline {
                     render_input(&Value::Object(call.input.clone()), &Roots::new(&scope))
                         .map_err(|e| BodyError::fail(BodyFail::Render(e), 0, Vec::new()))?;
                 let path = super::StepPath::in_body(step_id, bus_path, None);
+                if call.tool_name == EXIT_TOOL {
+                    return match self.eval_body_exit(&path, &rendered, label).await {
+                        Ok(super::exit::ExitEval::Passed(value)) => Ok(BodyRun {
+                            result: value,
+                            steps_executed: 1,
+                            bus: Vec::new(),
+                        }),
+                        Ok(super::exit::ExitEval::Exited(exit)) => {
+                            Err(BodyError::fail(BodyFail::Exited(exit), 1, Vec::new()))
+                        }
+                        Err(fail) => Err(BodyError::fail(fail, 0, Vec::new())),
+                    };
+                }
                 let value = self
                     .dispatch(&path, &call.tool_name, rendered, &scope)
                     .await
@@ -259,19 +305,34 @@ impl Pipeline {
                                 BodyError::fail(BodyFail::Render(e), steps_executed, bus.clone())
                             })?;
                     let path = super::StepPath::in_body(step_id, bus_path, Some(&body_step.id));
-                    let value = self
-                        .dispatch(&path, &body_step.tool_name, rendered, &scope)
-                        .await
-                        .map_err(|e| {
-                            let fail = match e {
-                                super::DispatchError::Aborted => BodyFail::Aborted,
-                                super::DispatchError::Failed(m) => BodyFail::Tool(format!(
-                                    "{label} step {} ({}): {m}",
-                                    body_step.id, body_step.tool_name
-                                )),
-                            };
-                            BodyError::fail(fail, steps_executed, bus.clone())
-                        })?;
+                    let value = if body_step.tool_name == EXIT_TOOL {
+                        match self.eval_body_exit(&path, &rendered, label).await {
+                            Ok(super::exit::ExitEval::Passed(value)) => value,
+                            Ok(super::exit::ExitEval::Exited(exit)) => {
+                                return Err(BodyError::fail(
+                                    BodyFail::Exited(exit),
+                                    steps_executed + 1,
+                                    bus,
+                                ));
+                            }
+                            Err(fail) => {
+                                return Err(BodyError::fail(fail, steps_executed, bus));
+                            }
+                        }
+                    } else {
+                        self.dispatch(&path, &body_step.tool_name, rendered, &scope)
+                            .await
+                            .map_err(|e| {
+                                let fail = match e {
+                                    super::DispatchError::Aborted => BodyFail::Aborted,
+                                    super::DispatchError::Failed(m) => BodyFail::Tool(format!(
+                                        "{label} step {} ({}): {m}",
+                                        body_step.id, body_step.tool_name
+                                    )),
+                                };
+                                BodyError::fail(fail, steps_executed, bus.clone())
+                            })?
+                    };
                     steps_executed += 1;
                     bus.push(BusEntry {
                         source: format!("{step_id}/{bus_path}/{}", body_step.id),
@@ -288,6 +349,64 @@ impl Pipeline {
                 })
             }
         }
+    }
+}
+
+impl Pipeline {
+    /// Evaluate an `exit` step inside a body, with the same event envelope
+    /// the top-level exit path emits. The exit's `step` is the full body
+    /// path (e.g. `E4/then/bail`).
+    async fn eval_body_exit(
+        &self,
+        path: &super::StepPath,
+        rendered: &Value,
+        label: &str,
+    ) -> Result<super::exit::ExitEval, BodyFail> {
+        let path_text = path.to_string();
+        self.events
+            .step_started(&self.call_stack, &path_text, EXIT_TOOL, rendered);
+        self.events.tool_started(EXIT_TOOL, rendered);
+        let started = std::time::Instant::now();
+        let eval = super::exit::evaluate(&path_text, rendered, &self.router).await;
+        match &eval {
+            Ok(super::exit::ExitEval::Passed(value)) => {
+                self.events
+                    .tool_finished(EXIT_TOOL, started.elapsed(), false);
+                self.events.step_finished(
+                    &self.call_stack,
+                    &path_text,
+                    EXIT_TOOL,
+                    value,
+                    false,
+                    started.elapsed(),
+                );
+            }
+            Ok(super::exit::ExitEval::Exited(exit)) => {
+                self.events
+                    .tool_finished(EXIT_TOOL, started.elapsed(), false);
+                self.events.step_finished(
+                    &self.call_stack,
+                    &path_text,
+                    EXIT_TOOL,
+                    &serde_json::to_value(exit).unwrap_or_default(),
+                    false,
+                    started.elapsed(),
+                );
+            }
+            Err(message) => {
+                self.events
+                    .tool_finished(EXIT_TOOL, started.elapsed(), true);
+                self.events.step_finished(
+                    &self.call_stack,
+                    &path_text,
+                    EXIT_TOOL,
+                    &json!({"error": message}),
+                    true,
+                    started.elapsed(),
+                );
+            }
+        }
+        eval.map_err(|message| BodyFail::Tool(format!("{label} (exit): {message}")))
     }
 }
 
@@ -310,18 +429,38 @@ mod tests {
 
     #[test]
     fn nested_control_tools_are_rejected() {
-        for tool in ["exit", "decide", "map", "reduce"] {
-            let mut problems = Vec::new();
-            check_body_tool("do", tool, "E1", &mut problems);
-            assert!(
-                problems.iter().any(|p| p.contains("cannot nest")),
-                "{tool}: {problems:?}"
-            );
+        for tool in ["decide", "map", "reduce"] {
+            for allow_exit in [false, true] {
+                let mut problems = Vec::new();
+                check_body_tool("do", tool, "E1", allow_exit, &mut problems);
+                assert!(
+                    problems.iter().any(|p| p.contains("cannot nest")),
+                    "{tool}: {problems:?}"
+                );
+            }
         }
         let mut problems = Vec::new();
-        check_body_tool("do", "plan__inner", "E1", &mut problems);
-        check_body_tool("do", "plan_and_execute", "E1", &mut problems);
-        check_body_tool("do", "t__search", "E1", &mut problems);
+        check_body_tool("do", "plan__inner", "E1", false, &mut problems);
+        check_body_tool("do", "plan_and_execute", "E1", false, &mut problems);
+        check_body_tool("do", "t__search", "E1", false, &mut problems);
         assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    #[test]
+    fn exit_is_allowed_only_where_the_body_says_so() {
+        // Decide branches allow it…
+        let mut problems = Vec::new();
+        check_body_tool("then", "exit", "E1", true, &mut problems);
+        assert!(problems.is_empty(), "{problems:?}");
+
+        // …iteration bodies don't.
+        let mut problems = Vec::new();
+        check_body_tool("do", "exit", "E1", false, &mut problems);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("only") && p.contains("decide branches")),
+            "{problems:?}"
+        );
     }
 }

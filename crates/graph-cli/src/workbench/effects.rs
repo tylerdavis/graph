@@ -3,9 +3,10 @@
 
 use super::app::{Effect, Msg};
 use super::runner::{DebugControls, UiGate};
+use super::tools::DraftState;
 use graph_core::pipeline::doc::PlanDoc;
 use graph_core::pipeline::Pipeline;
-use graph_core::{Agent, Store, ToolRegistry};
+use graph_core::{Agent, AgentError, Store, ToolRegistry};
 use graph_llm::types::ChatMessage;
 use serde_json::Map;
 use std::path::PathBuf;
@@ -21,7 +22,7 @@ pub struct WorkbenchContext {
     /// with the turn task.
     pub history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
     /// The draft plan, shared with [`super::tools::WorkbenchTools`].
-    pub draft: Arc<std::sync::Mutex<Option<PlanDoc>>>,
+    pub draft: Arc<std::sync::Mutex<DraftState>>,
     /// The agent's full catalog — the context pane shows what the planner
     /// and agent can call.
     pub catalog: Arc<dyn ToolRegistry>,
@@ -80,7 +81,7 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                     model: ctx.agent.model.clone(),
                     temperature: ctx.agent.temperature,
                     system_prompt: turn_system_prompt(&ctx.agent.system_prompt, &{
-                        ctx.draft.lock().unwrap().clone()
+                        ctx.draft.lock().unwrap().doc.clone()
                     }),
                     max_iterations: ctx.agent.max_iterations,
                 };
@@ -88,9 +89,14 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                 let pre_len = history.len();
                 history.push(ChatMessage::User { content: message });
                 let result = agent.run_turn(&mut history).await;
-                if result.is_err() {
-                    // Drop the failed turn's messages so a retry starts clean.
-                    history.truncate(pre_len);
+                if let Err(error) = &result {
+                    // Drop the failed turn's messages so a retry starts
+                    // clean — except when the turn hit the iteration cap:
+                    // that history is a valid prefix of real tool work,
+                    // and keeping it lets "continue" resume the turn.
+                    if !keep_partial_history(error) {
+                        history.truncate(pre_len);
+                    }
                 }
                 tracing::debug!(
                     target: "workbench",
@@ -99,14 +105,16 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                     history.len()
                 );
                 let _ = ctx.tx.send(Msg::TurnFinished(
-                    result.map(|_| ()).map_err(|e| e.to_string()),
+                    result
+                        .map(|outcome| outcome.text)
+                        .map_err(turn_failure_message),
                 ));
             });
         }
 
         Effect::StartRun { gated, input } => {
             tokio::spawn(async move {
-                let doc = { ctx.draft.lock().unwrap().clone() };
+                let doc = { ctx.draft.lock().unwrap().doc.clone() };
                 let Some(doc) = doc else {
                     let _ = ctx.tx.send(Msg::RunFinished {
                         headline: "no plan to run".to_string(),
@@ -143,7 +151,7 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
         }
 
         Effect::Validate => {
-            let problems = match &*ctx.draft.lock().unwrap() {
+            let problems = match &ctx.draft.lock().unwrap().doc {
                 Some(doc) => {
                     let mut problems = ctx
                         .pipeline
@@ -178,17 +186,51 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
             let result = save_draft(&ctx.draft, ctx.plans_dir.as_deref());
             let _ = ctx.tx.send(Msg::Saved(result));
         }
+
+        Effect::RestoreDraft => {
+            let restored = ctx.draft.lock().unwrap().restore();
+            match restored {
+                Some((doc, dirty)) => {
+                    let _ = ctx.tx.send(Msg::DraftReplaced {
+                        doc: Box::new(doc),
+                        dirty,
+                    });
+                }
+                None => {
+                    let _ = ctx.tx.send(Msg::Status(
+                        "nothing to restore — the draft has not been replaced yet".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// MaxIterations is real progress — the history ends cleanly in tool
+/// results, so the next message can build on it. Every other turn error
+/// leaves the exchange broken mid-turn and must be rolled back.
+fn keep_partial_history(error: &AgentError) -> bool {
+    matches!(error, AgentError::MaxIterations(_))
+}
+
+fn turn_failure_message(error: AgentError) -> String {
+    match error {
+        AgentError::MaxIterations(n) => format!(
+            "stopped after {n} tool iterations — progress is kept, send \
+             \"continue\" to resume (or raise max_agent_iterations in config)"
+        ),
+        other => other.to_string(),
     }
 }
 
 /// Write the draft to disk: back to its source file, or into the plans
 /// directory for new drafts. Shared by Ctrl+S and `workbench__save_plan`.
 pub fn save_draft(
-    draft: &std::sync::Mutex<Option<PlanDoc>>,
+    draft: &std::sync::Mutex<DraftState>,
     plans_dir: Option<&std::path::Path>,
 ) -> Result<String, String> {
     let mut guard = draft.lock().unwrap();
-    let Some(doc) = guard.as_mut() else {
+    let Some(doc) = guard.doc.as_mut() else {
         return Err("no draft".to_string());
     };
     let path = match &doc.path {
@@ -228,6 +270,7 @@ pub fn save_draft(
     }
     std::fs::write(&path, yaml).map_err(|e| e.to_string())?;
     doc.path = Some(path.clone());
+    guard.dirty = false;
     Ok(path.display().to_string())
 }
 
@@ -265,5 +308,19 @@ steps:
 
         let empty = turn_system_prompt("BASE", &None);
         assert!(empty.contains("none yet"));
+    }
+
+    #[test]
+    fn max_iterations_keeps_history_and_says_how_to_continue() {
+        assert!(keep_partial_history(&AgentError::MaxIterations(15)));
+        assert!(!keep_partial_history(&AgentError::IncompleteStream));
+
+        let message = turn_failure_message(AgentError::MaxIterations(15));
+        assert!(message.contains("15"), "{message}");
+        assert!(message.contains("continue"), "{message}");
+        assert!(message.contains("max_agent_iterations"), "{message}");
+
+        let other = turn_failure_message(AgentError::IncompleteStream);
+        assert!(other.contains("stream ended"), "{other}");
     }
 }

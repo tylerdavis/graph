@@ -682,6 +682,59 @@ async fn decide_else_branch_runs_and_poisoned_then_is_never_rendered() {
 }
 
 #[tokio::test]
+async fn decide_branch_exit_ends_the_plan() {
+    let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
+    let (pipeline, provider) = pipeline(vec![], registry.clone(), 1);
+    // Gate fires (1 > 0); the then-branch does one call, then exits the
+    // whole plan.
+    let plan = decide_plan(
+        json!([
+            {"id": "note", "toolName": "t__issues", "input": {"q": "safe"}},
+            {"id": "bail", "toolName": "exit",
+             "input": {"status": "success", "message": "done early"}},
+        ]),
+        None,
+    );
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let exit = outcome.exit.expect("exited from the branch");
+    assert_eq!(exit.status, crate::pipeline::ExitStatus::Success);
+    assert_eq!(exit.message, "done early");
+    assert_eq!(exit.step, "E1/then/bail");
+    assert!(provider.requests.lock().unwrap().is_empty(), "no LLM calls");
+}
+
+#[tokio::test]
+async fn decide_branch_exit_gate_passes_and_branch_continues() {
+    let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    // The branch's exit gate does NOT fire (1 > 100 is false), so the
+    // branch continues to its next step and the plan completes normally.
+    let plan = decide_plan(
+        json!([
+            {"id": "bail", "toolName": "exit", "input": {
+                "when": {"value": "{{E0.values.length}}", "op": "gt", "to": 100},
+                "status": "error", "message": "too many"
+            }},
+            {"id": "note", "toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}},
+        ]),
+        None,
+    );
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    assert!(outcome.exit.is_none(), "gate passed — no exit");
+    let decision = &outcome.state.results["E1"];
+    assert_eq!(decision["branch"], json!("then"));
+    assert_eq!(decision["result"], json!({"got": {"q": "team-1"}}));
+}
+
+#[tokio::test]
 async fn decide_poisoned_else_is_never_rendered() {
     let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
     let (pipeline, _) = pipeline(vec![], registry, 1);
@@ -1043,12 +1096,13 @@ output:
 }
 
 #[test]
-fn decide_doc_rejects_exit_in_branch() {
+fn decide_doc_accepts_exit_in_branch_but_not_nested_control() {
+    // Exit in a branch is a supported pattern (it ends the whole plan)…
     let doc: crate::pipeline::doc::PlanDoc = serde_yaml::from_str(
         r#"
-identifier: bad
-name: Bad
-description: exit nested in branch
+identifier: ok
+name: Ok
+description: exit in a branch
 steps:
   - id: E0
     tool_name: decide
@@ -1057,6 +1111,25 @@ steps:
       then:
         tool_name: exit
         input: { status: success }
+"#,
+    )
+    .unwrap();
+    crate::pipeline::doc::validate_doc(&doc).unwrap();
+
+    // …nested decide/map/reduce still are not.
+    let doc: crate::pipeline::doc::PlanDoc = serde_yaml::from_str(
+        r#"
+identifier: bad
+name: Bad
+description: map nested in branch
+steps:
+  - id: E0
+    tool_name: decide
+    input:
+      if: { value: 1, op: eq, to: 1 }
+      then:
+        tool_name: map
+        input: {}
 "#,
     )
     .unwrap();

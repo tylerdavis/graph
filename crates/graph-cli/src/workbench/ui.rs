@@ -3,12 +3,13 @@
 
 use super::app::{App, ChatEntry, Focus, GateKind, GatePrompt, Mode};
 use super::editor::EditorContext;
-use super::plan_ws::{PlanWorkspace, RowKey, RunLine, StepStatus, WsTab};
+use super::plan_ws::{PlanWorkspace, RowKey, RunLine, StepRow, StepStatus, WsTab};
+use graph_core::pipeline::{DECIDE_TOOL, EXIT_TOOL, MAP_TOOL, REDUCE_TOOL};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+    Block, Clear, List, ListItem, ListState, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
     ScrollbarState, Tabs, Wrap,
 };
 use ratatui::Frame;
@@ -56,11 +57,18 @@ fn pane_block(title: &str, focused: bool) -> Block<'_> {
 // ── Chat pane ────────────────────────────────────────────────────────────
 
 fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
-    let block = pane_block(" chat ", app.focus == Focus::Chat);
+    let block = pane_block(" chat ", app.focus == Focus::Chat).padding(Padding::horizontal(1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // Soft-wrap the input first: the box grows with its wrapped rows
+    // (within bounds), so the layout depends on the wrap.
+    let input_width = inner.width.saturating_sub(2).max(1) as usize;
+    let (input_rows, cursor) =
+        wrap_input(app.chat.input.lines(), app.chat.input.cursor(), input_width);
+    let input_height = (input_rows.len() as u16).clamp(2, 6) + 2;
     let [scrollback, input] =
-        *Layout::vertical([Constraint::Min(1), Constraint::Length(4)]).split(inner)
+        *Layout::vertical([Constraint::Min(1), Constraint::Length(input_height)]).split(inner)
     else {
         return;
     };
@@ -95,7 +103,7 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::default());
     }
     if matches!(app.mode, Mode::Chatting) {
-        lines.push(Line::styled("…", DIM));
+        lines.push(Line::styled(spinner_frame(app.tick), DIM));
     }
 
     let height = scrollback.height as usize;
@@ -116,13 +124,208 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
         );
     }
 
-    let mut input_widget = app.chat.input.clone();
-    input_widget.set_block(
-        Block::bordered()
-            .border_style(DIM)
-            .title(" Enter send · Alt+Enter newline "),
-    );
-    frame.render_widget(&input_widget, input);
+    // Rendered by hand instead of the TextArea widget: tui-textarea has no
+    // soft wrap, so long lines would run off the edge. The TextArea still
+    // owns all editing state; this is a display of its lines and cursor.
+    let input_block = Block::bordered()
+        .border_style(DIM)
+        .title(" Enter send · Alt+Enter newline ");
+    let input_inner = input_block.inner(input);
+    frame.render_widget(input_block, input);
+    let empty = input_rows.len() == 1 && input_rows[0].is_empty();
+    let text: Vec<Line> = if empty {
+        vec![Line::styled(app.chat.input.placeholder_text(), DIM)]
+    } else {
+        input_rows.into_iter().map(Line::from).collect()
+    };
+    let visible = input_inner.height.max(1) as usize;
+    let scroll = cursor.0.saturating_sub(visible - 1);
+    frame.render_widget(Paragraph::new(text).scroll((scroll as u16, 0)), input_inner);
+    if app.focus == Focus::Chat && !matches!(app.mode, Mode::Editing(_)) && !app.show_help {
+        frame.set_cursor_position((
+            input_inner.x + cursor.1 as u16,
+            input_inner.y + (cursor.0 - scroll) as u16,
+        ));
+    }
+}
+
+/// Per-branch pipe color. Deliberately distinct from the status palette
+/// (green=ok, red=error, yellow=running, magenta glyph=skipped) so a pipe
+/// never reads as an outcome.
+fn branch_color(body: &str) -> Color {
+    match body {
+        "then" => Color::Blue,
+        "else" => Color::Magenta,
+        // "do" — map/reduce bodies
+        _ => Color::Cyan,
+    }
+}
+
+/// The junction icon for a control-flow tool, with its color: the icon
+/// takes the color of what flows out of it.
+fn control_icon(tool: &str) -> Option<(&'static str, Color)> {
+    match tool {
+        DECIDE_TOOL => Some(("⑂", Color::Blue)),
+        MAP_TOOL => Some(("⟳", Color::Cyan)),
+        REDUCE_TOOL => Some(("∑", Color::Cyan)),
+        EXIT_TOOL => Some(("⎋", Color::Magenta)),
+        "plan_and_execute" => Some(("ƒ", Color::White)),
+        tool if tool.starts_with("plan__") => Some(("ƒ", Color::White)),
+        _ => None,
+    }
+}
+
+/// Tree piping for one row, `tree`-style: trunk connectors in structural
+/// gray, decide's named branches and map/reduce bodies piping down in
+/// their branch color, control icons fused into the junction cell (├─⑂).
+/// Also returns whether the row's id column should render — branch heads
+/// and single-call bodies carry their label inside the piping instead.
+fn tree_spans(rows: &[StepRow], index: usize) -> (Vec<Span<'static>>, bool) {
+    let row = &rows[index];
+    let is_top = |key: &RowKey| matches!(key, RowKey::Step(_) | RowKey::Finish);
+    match &row.key {
+        RowKey::Root => (Vec::new(), false),
+        RowKey::Step(_) | RowKey::Finish => {
+            let last_top = !rows[index + 1..].iter().any(|r| is_top(&r.key));
+            let elbow = if last_top { "└─" } else { "├─" };
+            match control_icon(&row.tool) {
+                Some((icon, color)) => (
+                    vec![
+                        Span::styled(elbow, DIM),
+                        Span::styled(
+                            format!("{icon} "),
+                            Style::new().fg(color).add_modifier(Modifier::BOLD),
+                        ),
+                    ],
+                    true,
+                ),
+                None => (vec![Span::styled(format!("{elbow}─ "), DIM)], true),
+            }
+        }
+        RowKey::BranchHead { step, body } => {
+            let color = branch_color(body);
+            let elbow = if later_branch(rows, index, step, body) {
+                "├── "
+            } else {
+                "└── "
+            };
+            (
+                vec![
+                    trunk_cont(rows, index),
+                    Span::styled(elbow, Style::new().fg(color)),
+                    Span::styled(
+                        row.id.clone(),
+                        Style::new().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                ],
+                false,
+            )
+        }
+        RowKey::Body {
+            step,
+            body,
+            body_step,
+        } => {
+            let color = branch_color(body);
+            let last_in_group = !rows[index + 1..].iter().any(|r| {
+                matches!(&r.key, RowKey::Body { step: s, body: b, .. } if s == step && b == body)
+            });
+            let mut spans = vec![trunk_cont(rows, index)];
+            // Under a branch head, the head's own guide continues.
+            let has_head = rows[..index].iter().any(|r| {
+                matches!(&r.key, RowKey::BranchHead { step: s, body: b } if s == step && b == body)
+            });
+            if has_head {
+                let guide = if later_branch(rows, index, step, body) {
+                    "│   "
+                } else {
+                    "    "
+                };
+                spans.push(Span::styled(guide, Style::new().fg(color)));
+            }
+            let elbow = if last_in_group { "└─" } else { "├─" };
+            match control_icon(&row.tool) {
+                Some((icon, icon_color)) => {
+                    spans.push(Span::styled(elbow, Style::new().fg(color)));
+                    spans.push(Span::styled(
+                        format!("{icon} "),
+                        Style::new().fg(icon_color).add_modifier(Modifier::BOLD),
+                    ));
+                }
+                None => spans.push(Span::styled(format!("{elbow}─ "), Style::new().fg(color))),
+            }
+            let show_id = if body_step.is_none() {
+                // Single-call body: the branch label rides the piping.
+                spans.push(Span::styled(
+                    format!("{body} "),
+                    Style::new().fg(color).add_modifier(Modifier::BOLD),
+                ));
+                false
+            } else {
+                true
+            };
+            (spans, show_id)
+        }
+    }
+}
+
+/// The trunk continuation for rows nested under a control step: a │ while
+/// later top-level rows exist, blank once the owner is the trunk's last.
+fn trunk_cont(rows: &[StepRow], index: usize) -> Span<'static> {
+    let later_top = rows[index + 1..]
+        .iter()
+        .any(|r| matches!(&r.key, RowKey::Step(_) | RowKey::Finish));
+    Span::styled(if later_top { "│  " } else { "   " }, DIM)
+}
+
+/// Whether another branch group of the same control step follows this
+/// row — i.e. this branch's guide must keep flowing past its subtree.
+/// Counts branch heads and body rows alike, so a single-call `else`
+/// (which has no head row) still holds the `then` guide open.
+fn later_branch(rows: &[StepRow], index: usize, step: &str, body: &str) -> bool {
+    rows[index + 1..].iter().any(|r| match &r.key {
+        RowKey::BranchHead { step: s, body: b } => s == step && b != body,
+        RowKey::Body {
+            step: s, body: b, ..
+        } => s == step && b != body,
+        _ => false,
+    })
+}
+
+/// Character-level soft wrap for the input box: each logical line becomes
+/// ceil(len/width) visual rows (at least one), and the cursor maps to its
+/// (visual_row, x). A cursor sitting exactly at the end of a full row gets
+/// an empty continuation row so it stays inside the box.
+fn wrap_input(
+    lines: &[String],
+    cursor: (usize, usize),
+    width: usize,
+) -> (Vec<String>, (usize, usize)) {
+    let width = width.max(1);
+    let mut rows: Vec<String> = Vec::new();
+    let mut cursor_pos = (0, 0);
+    for (i, line) in lines.iter().enumerate() {
+        let chars: Vec<char> = line.chars().collect();
+        let start = rows.len();
+        if chars.is_empty() {
+            rows.push(String::new());
+        } else {
+            for chunk in chars.chunks(width) {
+                rows.push(chunk.iter().collect());
+            }
+        }
+        if i == cursor.0 {
+            let vrow = start + cursor.1 / width;
+            cursor_pos = (vrow, cursor.1 % width);
+            while rows.len() <= vrow {
+                rows.push(String::new());
+            }
+        }
+    }
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+    (rows, cursor_pos)
 }
 
 // ── Workspace pane ───────────────────────────────────────────────────────
@@ -259,8 +462,10 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
         header,
     );
 
-    // Step list: breakpoint gutter · status glyph · id · tool, with body
-    // sub-steps indented under their control step. The paused row's id
+    // Step list, tree-style: breakpoint gutter · status glyph · piping ·
+    // id · tool. The plan identifier is the root; steps fork off a gray
+    // trunk; control steps fuse their icon into the junction (├─⑂) and
+    // their subtrees pipe down in the branch's color. The paused row's id
     // renders yellow-bold; running rows animate.
     let paused_row = paused_prompt(app)
         .filter(|p| p.call_stack.is_empty())
@@ -295,13 +500,26 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::new().add_modifier(Modifier::BOLD)
             };
-            ListItem::new(Line::from(vec![
-                gutter,
-                Span::raw("  ".repeat(row.depth as usize)),
-                Span::styled(format!("{glyph} "), style),
-                Span::styled(format!("{:4} ", row.id), id_style),
-                Span::raw(row.tool.clone()),
-            ]))
+            // Structural rows (root, branch heads) never run: no glyph.
+            let structural = matches!(row.key, RowKey::Root | RowKey::BranchHead { .. });
+            let mut spans = vec![gutter];
+            if structural {
+                spans.push(Span::raw("  "));
+            } else {
+                spans.push(Span::styled(format!("{glyph} "), style));
+            }
+            let (tree, show_id) = tree_spans(&ws.steps, index);
+            spans.extend(tree);
+            if matches!(row.key, RowKey::Root) {
+                spans.push(Span::styled(
+                    row.id.clone(),
+                    Style::new().add_modifier(Modifier::BOLD),
+                ));
+            } else if show_id {
+                spans.push(Span::styled(format!("{:4} ", row.id), id_style));
+            }
+            spans.push(Span::raw(row.tool.clone()));
+            ListItem::new(Line::from(spans))
         })
         .collect();
     let list = List::new(items)
@@ -495,6 +713,9 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw(" "),
     ];
     // The live indicator: what's executing right now, with elapsed time.
+    // A turn with no tool in flight is the model thinking — without this,
+    // a slow completion (or a silent rate-limit backoff inside it) is
+    // indistinguishable from a hang.
     if app.wants_tick() {
         if let Some(in_flight) = &app.in_flight {
             spans.push(Span::styled(
@@ -504,6 +725,15 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     in_flight.path,
                     in_flight.tool,
                     in_flight.started.elapsed().as_secs_f32()
+                ),
+                Style::new().fg(Color::Yellow),
+            ));
+        } else if let Some(started) = &app.turn_started {
+            spans.push(Span::styled(
+                format!(
+                    "{} thinking {:.0}s ",
+                    spinner_frame(app.tick),
+                    started.elapsed().as_secs_f32()
                 ),
                 Style::new().fg(Color::Yellow),
             ));
@@ -697,6 +927,7 @@ fn draw_help(frame: &mut Frame, app: &App) {
             "paused: skip / inject (on error: replace the failed result)",
         ),
         ("a", "paused: abort the run"),
+        ("u", "undo the last draft replacement (again to redo)"),
         ("Ctrl+S", "save the draft to the plans directory"),
         ("Ctrl+C, q", "quit (while paused: abort the run)"),
     ];
@@ -771,4 +1002,120 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
         out.push(String::new());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{branch_color, wrap_input};
+
+    fn s(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn wrap_input_chunks_lines_and_maps_the_cursor() {
+        // Short line: untouched, cursor passes through.
+        let (rows, cursor) = wrap_input(&s(&["hello"]), (0, 3), 10);
+        assert_eq!(rows, s(&["hello"]));
+        assert_eq!(cursor, (0, 3));
+
+        // A long line wraps at the width; the cursor lands mid-chunk.
+        let (rows, cursor) = wrap_input(&s(&["abcdefghij"]), (0, 7), 4);
+        assert_eq!(rows, s(&["abcd", "efgh", "ij"]));
+        assert_eq!(cursor, (1, 3));
+
+        // Multiple logical lines: visual rows accumulate.
+        let (rows, cursor) = wrap_input(&s(&["abcdef", "xy"]), (1, 2), 4);
+        assert_eq!(rows, s(&["abcd", "ef", "xy"]));
+        assert_eq!(cursor, (2, 2));
+    }
+
+    #[test]
+    fn branch_colors_are_distinct() {
+        let colors = [
+            branch_color("then"),
+            branch_color("else"),
+            branch_color("do"),
+        ];
+        assert_ne!(colors[0], colors[1]);
+        assert_ne!(colors[1], colors[2]);
+        assert_ne!(colors[0], colors[2]);
+    }
+
+    fn tree_texts(doc_yaml: &str) -> Vec<String> {
+        let doc: graph_core::pipeline::doc::PlanDoc = serde_yaml::from_str(doc_yaml).unwrap();
+        let mut ws = super::super::plan_ws::PlanWorkspace::default();
+        ws.set_doc(doc);
+        (0..ws.steps.len())
+            .map(|index| {
+                let (spans, _) = super::tree_spans(&ws.steps, index);
+                spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tree_piping_forks_branches_and_closes_the_trunk() {
+        let texts = tree_texts(
+            r#"
+identifier: demo
+name: Demo
+description: d
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: x }
+  - id: E1
+    tool_name: decide
+    input:
+      if: { value: 1, op: gt, to: 0 }
+      then:
+        - { id: warn, tool_name: t__notify, input: {} }
+        - { id: bail, tool_name: exit, input: { status: error } }
+      else:
+        tool_name: t__log
+        input: {}
+  - id: E2
+    tool_name: map
+    input:
+      over: "{{E0.values}}"
+      do:
+        - { id: note, tool_name: t__notify, input: {} }
+solver:
+  queryToAnswer: "q"
+"#,
+        );
+        assert_eq!(
+            texts,
+            vec![
+                "".to_string(),             // root
+                "├── ".to_string(),         // E0
+                "├─⑂ ".to_string(),         // E1 decide — icon in the junction
+                "│  ├── then".to_string(),  // branch head, trunk continuing
+                "│  │   ├── ".to_string(),  // warn
+                "│  │   └─⎋ ".to_string(),  // bail — exit terminates the line
+                "│  └── else ".to_string(), // single-call branch label rides the piping
+                "├─⟳ ".to_string(),         // E2 map
+                "│  └── ".to_string(),      // note — anonymous body, no head
+                "└── ".to_string(),         // solver closes the trunk
+            ]
+        );
+    }
+
+    #[test]
+    fn wrap_input_edges() {
+        // Empty input: one empty row, cursor at origin.
+        let (rows, cursor) = wrap_input(&s(&[""]), (0, 0), 8);
+        assert_eq!(rows, s(&[""]));
+        assert_eq!(cursor, (0, 0));
+
+        // Cursor exactly at the end of a full row wraps to an empty
+        // continuation row instead of the border column.
+        let (rows, cursor) = wrap_input(&s(&["abcd"]), (0, 4), 4);
+        assert_eq!(rows, s(&["abcd", ""]));
+        assert_eq!(cursor, (1, 0));
+    }
 }

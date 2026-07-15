@@ -239,6 +239,61 @@ async fn pack_tools_serve_under_builtin_namespace() {
     assert!(matches!(err, ToolError::Unknown(_)));
 }
 
+#[tokio::test]
+async fn llm_pack_infer_returns_text_or_caller_structured_output() {
+    let docs = load_pack_tools(&["llm".to_string()]).unwrap();
+    assert_eq!(docs.len(), 1);
+    let registry = UserToolRegistry::builtins(docs, router());
+
+    // No output_schema in the call: plain text.
+    let outcome = registry
+        .invoke("builtin__infer", json!({"instruction": "Summarize X"}))
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    assert_eq!(outcome.result, json!({"text": "echo: Summarize X"}));
+
+    // With an output_schema: structured, validated JSON.
+    let outcome = registry
+        .invoke(
+            "builtin__infer",
+            json!({
+                "instruction": "Classify X",
+                "output_schema": {
+                    "type": "object",
+                    "properties": {"category": {"type": "string"}},
+                    "required": ["category"],
+                },
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    assert_eq!(outcome.result, json!({"category": "bug"}));
+}
+
+#[tokio::test]
+async fn caller_output_schema_requires_opt_in() {
+    // A plain prompt tool ignores output_schema in the input — the schema
+    // surface is the doc's unless the tool sets caller_output_schema.
+    let tool = doc(r#"
+name: summarize
+description: summarize text
+kind: prompt
+prompt: "Summarize: {{input.text}}"
+"#);
+    let registry = registry(vec![tool]);
+    let outcome = registry
+        .invoke(
+            "user__summarize",
+            json!({"text": "hi", "output_schema": {"type": "object"}}),
+        )
+        .await
+        .unwrap();
+    assert!(!outcome.is_error);
+    assert_eq!(outcome.result, json!({"text": "echo: Summarize: hi"}));
+}
+
 // ── Prompt-tool output_schema enforcement ────────────────────────────────
 
 /// Router whose chat role returns `chat_value` and repair role `repair_value`.

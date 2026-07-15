@@ -183,7 +183,9 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
             && step.tool_name != super::REDUCE_TOOL
         {
             return Err(format!(
-                "step {} tool '{}' is not a namespaced tool name",
+                "step {} tool '{}' is not a namespaced tool name (like \
+                 linear__list_issues) or one of the control steps: \
+                 exit, decide, map, reduce, plan_and_execute",
                 step.id, step.tool_name
             ));
         }
@@ -418,6 +420,16 @@ solver:
         assert!(doc_from(&malformed)
             .unwrap_err()
             .contains("must be an identifier"));
+    }
+
+    #[test]
+    fn unknown_bare_tool_name_error_lists_the_control_steps() {
+        let err = doc_from(&DOC.replace("linear__list_issues", "gate")).unwrap_err();
+        assert!(err.contains("'gate'"), "{err}");
+        assert!(
+            err.contains("exit, decide, map, reduce, plan_and_execute"),
+            "{err}"
+        );
     }
 
     #[test]

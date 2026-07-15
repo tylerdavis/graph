@@ -1,0 +1,28 @@
+# llm pack: generic inference — the prompt-tool machinery exposed as one
+# callable tool. Plain text out by default; validated structured JSON when
+# the call supplies an output_schema.
+name: infer
+description: >
+  Run an LLM inference over an instruction. Returns {text: ...} by default;
+  pass output_schema (a JSON Schema object) to instead get structured JSON
+  validated against it — every declared field is guaranteed present, so
+  downstream template references like {{Ex.score}} are safe. The
+  instruction must be self-contained: interpolate any data to analyze
+  directly into it with templates.
+kind: prompt
+prompt: "{{input.instruction}}"
+caller_output_schema: true
+input_schema:
+  type: object
+  required: [instruction]
+  properties:
+    instruction:
+      type: string
+      description: >
+        Complete, self-contained instruction, including the data to analyze
+        (reference earlier step results with {{Ex...}} templates).
+    output_schema:
+      type: object
+      description: >
+        Optional JSON Schema for the result. When present, the output is
+        structured JSON matching this schema instead of {text: ...}.

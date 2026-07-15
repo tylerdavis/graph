@@ -24,7 +24,10 @@ where
         match op().await {
             Err(error) if attempt + 1 < MAX_ATTEMPTS && is_transient(&error) => {
                 let delay = delay_for(attempt, retry_after_secs(&error));
-                tracing::info!(
+                // WARN so default filters surface it: a Retry-After backoff
+                // can stall a turn for a minute, which reads as a hang if
+                // the operator can't see the retry.
+                tracing::warn!(
                     attempt = attempt + 1,
                     delay_ms = delay.as_millis() as u64,
                     error = %error,

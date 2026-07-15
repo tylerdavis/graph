@@ -135,6 +135,9 @@ pub struct App {
     pub tick: u8,
     /// The call currently executing, for the status-bar indicator.
     pub in_flight: Option<InFlight>,
+    /// When the current agent turn started — the status bar's liveness
+    /// indicator while the model (not a tool) is what's running.
+    pub turn_started: Option<std::time::Instant>,
     /// The help overlay — independent of `mode`, so it works while paused
     /// without touching the parked gate reply. Any key closes it.
     pub show_help: bool,
@@ -160,6 +163,7 @@ impl App {
             breakpoints: HashSet::new(),
             tick: 0,
             in_flight: None,
+            turn_started: None,
             show_help: false,
             log_path: None,
             should_quit: false,
@@ -199,7 +203,9 @@ pub enum Msg {
         name: String,
         is_error: bool,
     },
-    TurnFinished(Result<(), String>),
+    /// Ok carries the turn's final assistant text — the completed
+    /// response is canonical; deltas are just its live preview.
+    TurnFinished(Result<String, String>),
     // Draft changes published by the workbench tools; `dirty` is false
     // when the draft came straight from disk (load), true for edits.
     DraftReplaced {
@@ -252,6 +258,8 @@ pub enum Msg {
         shapes: Vec<ToolShape>,
     },
     Saved(Result<String, String>),
+    /// A one-line status from the effect executor (e.g. an undo miss).
+    Status(String),
 }
 
 impl Msg {
@@ -283,7 +291,7 @@ impl Msg {
                 )
             }
             Msg::TurnFinished(result) => match result {
-                Ok(()) => "agent turn finished".to_string(),
+                Ok(text) => format!("agent turn finished ({} chars)", text.len()),
                 Err(error) => format!("agent turn failed: {error}"),
             },
             Msg::DraftReplaced { doc, dirty } => format!(
@@ -334,6 +342,7 @@ impl Msg {
                 Ok(path) => format!("saved to {path}"),
                 Err(error) => format!("save failed: {error}"),
             },
+            Msg::Status(text) => format!("status: {text}"),
         };
         Some((Level::DEBUG, line))
     }
@@ -353,6 +362,8 @@ pub enum Effect {
     Validate,
     LoadContext,
     SavePlan,
+    /// One-level undo of the last draft replacement (again to redo).
+    RestoreDraft,
     /// Mirror the display breakpoints into the shared debug controls.
     SyncDebug {
         breakpoints: HashSet<String>,
@@ -369,6 +380,7 @@ impl Effect {
             Effect::Validate => "validate",
             Effect::LoadContext => "load-context",
             Effect::SavePlan => "save-plan",
+            Effect::RestoreDraft => "restore-draft",
             Effect::SyncDebug { .. } => "sync-debug",
         }
     }
@@ -410,10 +422,13 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             app.mode = Mode::Idle;
             app.turn_in_flight = false;
             app.in_flight = None;
-            if let Err(error) = result {
-                app.chat
+            app.turn_started = None;
+            match result {
+                Ok(text) => finish_turn_text(app, text),
+                Err(error) => app
+                    .chat
                     .entries
-                    .push(ChatEntry::Activity(format!("error: {error}")));
+                    .push(ChatEntry::Activity(format!("error: {error}"))),
             }
             Vec::new()
         }
@@ -582,6 +597,36 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             }
             Vec::new()
         }
+        Msg::Status(text) => {
+            app.status = text;
+            Vec::new()
+        }
+    }
+}
+
+/// Reconcile the chat pane with the turn's final assistant text. Normally
+/// the streamed deltas already rendered exactly this text; when they never
+/// arrived (provider delivered the answer only in the completed payload),
+/// the answer would silently vanish — show it, and call out a turn that
+/// produced nothing at all.
+fn finish_turn_text(app: &mut App, text: String) {
+    if text.is_empty() {
+        if !matches!(app.chat.entries.last(), Some(ChatEntry::Assistant(_))) {
+            app.chat.entries.push(ChatEntry::Activity(
+                "agent returned no output — try rephrasing".to_string(),
+            ));
+        }
+        return;
+    }
+    match app.chat.entries.last_mut() {
+        Some(ChatEntry::Assistant(buffer)) if *buffer == text => {}
+        // Deltas drifted from (or never became) the final text — the
+        // completed response wins.
+        Some(ChatEntry::Assistant(buffer)) => *buffer = text,
+        _ => {
+            app.chat.entries.push(ChatEntry::Assistant(text));
+            app.chat.scroll.set(0);
+        }
     }
 }
 
@@ -688,10 +733,11 @@ fn toggle_breakpoint(app: &mut App) -> Vec<Effect> {
     let Some(row) = app.ws.steps.get(app.ws.selected) else {
         return Vec::new();
     };
-    // Breakpoints are top-level step ids: on a body sub-step, break on the
-    // owning control step (which pauses each of its body calls).
+    // Breakpoints are top-level step ids: on a body sub-step or branch
+    // head, break on the owning control step (which pauses each of its
+    // body calls).
     let Some(id) = row.key.top_step().map(str::to_string) else {
-        app.status = "no breakpoints on the finish stage".to_string();
+        app.status = "no breakpoint on this row".to_string();
         return Vec::new();
     };
     if app.breakpoints.remove(&id) {
@@ -755,6 +801,7 @@ fn on_chat_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
             app.chat.scroll.set(0);
             app.mode = Mode::Chatting;
             app.turn_in_flight = true;
+            app.turn_started = Some(std::time::Instant::now());
             vec![Effect::RunAgentTurn { message }]
         }
         // PgUp/PgDn is THE scroll binding: with chat focus it scrolls
@@ -785,6 +832,13 @@ fn on_workspace_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
         }
         KeyCode::Char('r') => start_run(app, false),
         KeyCode::Char('g') => start_run(app, true),
+        KeyCode::Char('u') => {
+            if matches!(app.mode, Mode::Idle) {
+                vec![Effect::RestoreDraft]
+            } else {
+                Vec::new()
+            }
+        }
         KeyCode::Char('q') => {
             if matches!(app.mode, Mode::Idle) {
                 request_quit(app)
@@ -1109,8 +1163,35 @@ steps:
         assert!(update(&mut app, key(KeyCode::Enter)).is_empty());
 
         // Turn completion returns to idle.
-        update(&mut app, Msg::TurnFinished(Ok(())));
+        update(&mut app, Msg::TurnFinished(Ok("done".to_string())));
         assert!(matches!(app.mode, Mode::Idle));
+        assert!(app.turn_started.is_none());
+    }
+
+    #[test]
+    fn turn_finished_renders_unstreamed_text_and_flags_empty_turns() {
+        // Nothing streamed: the final text is appended.
+        let mut app = App::new(None);
+        update(&mut app, Msg::TurnFinished(Ok("the answer".to_string())));
+        assert!(
+            matches!(app.chat.entries.last(), Some(ChatEntry::Assistant(t)) if t == "the answer")
+        );
+
+        // Streamed already: no duplicate entry.
+        let before = app.chat.entries.len();
+        update(&mut app, Msg::TurnFinished(Ok("the answer".to_string())));
+        assert_eq!(app.chat.entries.len(), before);
+
+        // Deltas drifted: the completed response wins.
+        update(&mut app, Msg::TurnFinished(Ok("revised".to_string())));
+        assert!(matches!(app.chat.entries.last(), Some(ChatEntry::Assistant(t)) if t == "revised"));
+
+        // Empty text with nothing streamed: an explicit no-output line.
+        let mut app = App::new(None);
+        update(&mut app, Msg::TurnFinished(Ok(String::new())));
+        assert!(
+            matches!(app.chat.entries.last(), Some(ChatEntry::Activity(t)) if t.contains("no output"))
+        );
     }
 
     #[test]
@@ -1125,8 +1206,8 @@ steps:
         );
         assert_eq!(effects, vec![Effect::Validate]);
         assert!(app.dirty);
-        assert_eq!(app.ws.steps.len(), 2);
-        assert!(matches!(app.ws.steps[0].status, StepStatus::Pending));
+        assert_eq!(app.ws.steps.len(), 3, "root + two steps");
+        assert!(matches!(app.ws.steps[1].status, StepStatus::Pending));
     }
 
     #[test]
@@ -1140,7 +1221,7 @@ steps:
             },
         );
         assert!(!app.dirty, "a freshly loaded plan has no unsaved changes");
-        assert_eq!(app.ws.steps.len(), 2);
+        assert_eq!(app.ws.steps.len(), 3, "root + two steps");
         assert!(app.status.contains("loaded plan 'demo'"), "{}", app.status);
     }
 
@@ -1168,7 +1249,7 @@ steps:
                 in_plan: true,
             },
         );
-        assert!(matches!(app.ws.steps[0].status, StepStatus::Running));
+        assert!(matches!(app.ws.steps[1].status, StepStatus::Running));
         assert!(app.in_flight.as_ref().is_some_and(|f| f.path == "E0"));
 
         update(
@@ -1180,8 +1261,8 @@ steps:
                 in_plan: true,
             },
         );
-        assert!(matches!(app.ws.steps[0].status, StepStatus::Ok));
-        assert_eq!(app.ws.steps[0].result, Some(json!({"values": []})));
+        assert!(matches!(app.ws.steps[1].status, StepStatus::Ok));
+        assert_eq!(app.ws.steps[1].result, Some(json!({"values": []})));
         assert!(app.in_flight.is_none());
 
         update(
@@ -1229,7 +1310,7 @@ steps:
     fn breakpoint_toggle_emits_sync_and_ignores_other_tabs() {
         let mut app = App::new(Some(two_step_doc()));
         app.focus = Focus::Workspace;
-        app.ws.selected = 1;
+        app.ws.selected = 2; // root, E0, E1
         let effects = update(&mut app, key(KeyCode::Char('b')));
         assert_eq!(
             effects,
@@ -1254,6 +1335,25 @@ steps:
     }
 
     #[test]
+    fn u_key_restores_only_when_idle_with_workspace_focus() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.focus = Focus::Workspace;
+        assert_eq!(
+            update(&mut app, key(KeyCode::Char('u'))),
+            vec![Effect::RestoreDraft]
+        );
+
+        // Busy: no restore while an agent turn runs.
+        app.mode = Mode::Chatting;
+        assert!(update(&mut app, key(KeyCode::Char('u'))).is_empty());
+
+        // Chat focus: 'u' is ordinary typing.
+        let mut app = App::new(Some(two_step_doc()));
+        assert!(update(&mut app, key(KeyCode::Char('u'))).is_empty());
+        assert_eq!(app.chat.input.lines().join(""), "u");
+    }
+
+    #[test]
     fn gate_ask_is_non_modal_and_navigation_keeps_the_prompt() {
         let mut app = App::new(Some(two_step_doc()));
         app.mode = Mode::Running { gated: true };
@@ -1262,12 +1362,12 @@ steps:
         update(&mut app, msg);
         assert!(matches!(app.mode, Mode::Paused(_)));
         assert_eq!(app.ws.tab, WsTab::Plan, "pause switches to the plan tab");
-        assert_eq!(app.ws.selected, 1, "paused step auto-selected");
+        assert_eq!(app.ws.selected, 2, "paused step auto-selected");
 
         // Navigation while paused: selection moves, tabs switch, the
         // prompt (and its reply) stay intact.
         update(&mut app, key(KeyCode::Char('k')));
-        assert_eq!(app.ws.selected, 0);
+        assert_eq!(app.ws.selected, 1);
         update(&mut app, key(KeyCode::Char('2')));
         assert_eq!(app.ws.tab, WsTab::Context);
         assert!(matches!(app.mode, Mode::Paused(_)));
@@ -1407,7 +1507,7 @@ steps:
         }
         // The row is NOT marked skipped — the engine's step_finished with
         // the replacement will mark it Ok.
-        assert!(!matches!(app.ws.steps[0].status, StepStatus::Skipped));
+        assert!(!matches!(app.ws.steps[1].status, StepStatus::Skipped));
 
         update(
             &mut app,
@@ -1418,7 +1518,7 @@ steps:
                 in_plan: true,
             },
         );
-        assert!(matches!(app.ws.steps[0].status, StepStatus::Ok));
+        assert!(matches!(app.ws.steps[1].status, StepStatus::Ok));
     }
 
     #[test]
@@ -1436,7 +1536,7 @@ steps:
             UiDecision::Skip { result } => assert_eq!(result, json!({"values": []})),
             other => panic!("expected Skip, got {other:?}"),
         }
-        assert!(matches!(app.ws.steps[0].status, StepStatus::Skipped));
+        assert!(matches!(app.ws.steps[1].status, StepStatus::Skipped));
     }
 
     #[test]
@@ -1479,7 +1579,7 @@ steps:
             },
         );
         assert!(matches!(app.mode, Mode::Chatting));
-        update(&mut app, Msg::TurnFinished(Ok(())));
+        update(&mut app, Msg::TurnFinished(Ok("done".to_string())));
         assert!(matches!(app.mode, Mode::Idle));
     }
 

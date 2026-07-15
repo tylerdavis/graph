@@ -30,6 +30,25 @@ logic-less template language:
    comments. Value substitution and iteration only.
 </templating_rules>"#;
 
+/// Control-step usage rules, shared verbatim between the draft_plan
+/// planner prompt and the workbench chat agent's system prompt so the two
+/// cannot drift.
+pub const CONTROL_STEP_RULES: &str = r#"### Early Exits
+- Use the `exit` tool to end the plan gracefully instead of proceeding with empty or meaningless data: exit with status "success" and a clear message when there is nothing to do, or "error" to assert a failure condition the user should see. Gate it with `when` (a template condition) or `infer` (an LLM judgment) so the plan continues when the gate does not hold; ungated it always exits.
+
+### Branching
+- Use the `decide` tool when the correct next call depends on a prior result: it runs `then` when the gate holds, otherwise `else` (or just continues when `else` is omitted). `decide` chooses between actions; `exit` ends the plan.
+- Gate it with exactly one of `if` or `infer`. A branch is a single tool call ({"toolName": …, "input": …}) or a list of steps; branch step ids must not reuse top-level step ids.
+- Later steps reference only the decide step's id — {{Ex.result}} for the chosen branch's output, {{Ex.branch}} for which side ran. Branch-internal step ids are invisible outside the branch.
+- Branches may contain `exit` steps — a fired exit ends the WHOLE plan from inside the branch (e.g. then: post a comment and exit success). Branches must not contain `decide`, `map`, or `reduce`; use a plan__* call inside the branch for nested control flow.
+
+### Iteration
+- Use the `map` tool to run the same body once per element of a list, and `reduce` to fold a list into a single value. `over` must resolve to an array — usually a whole-list reference like {{E0.issues}}.
+- Inside a `map` body, {{item}} is the current element and {{index}} its 0-based position. A `reduce` body also gets {{accumulator}} (the running value, starting at `initial`), and each run's result becomes the next {{accumulator}}.
+- Later steps reference only the step's id — {{Ex.results}} for map's per-item outputs (input order) and {{Ex.count}}, or {{Ex.result}} for reduce's final accumulator. Body-internal step ids are invisible outside the body.
+- `map` accepts `concurrency` (default 1) to run independent items in parallel. `reduce` is always sequential — for parallel per-item work, map first, then reduce over {{Ex.results}}.
+- Bodies must not contain `exit`, `decide`, `map`, or `reduce`; use a plan__* call inside the body for nested control flow."#;
+
 pub struct PlannerPromptArgs<'a> {
     pub current_date: &'a str,
     pub last_error: Option<&'a str>,
@@ -125,21 +144,7 @@ Classify the request before planning and note it in step reasoning:
 ### Identity Handling
 - Do not filter by missing values or placeholders; skip a filter when the data for it is unavailable.
 
-### Early Exits
-- Use the `exit` tool to end the plan gracefully instead of proceeding with empty or meaningless data: exit with status "success" and a clear message when there is nothing to do, or "error" to assert a failure condition the user should see.
-
-### Branching
-- Use the `decide` tool when the correct next call depends on a prior result: it runs `then` when the gate holds, otherwise `else` (or just continues when `else` is omitted). `decide` chooses between actions; `exit` ends the plan.
-- Gate it with exactly one of `if` or `infer`. A branch is a single tool call ({{"toolName": …, "input": …}}) or a list of steps; branch step ids must not reuse top-level step ids.
-- Later steps reference only the decide step's id — {{{{Ex.result}}}} for the chosen branch's output, {{{{Ex.branch}}}} for which side ran. Branch-internal step ids are invisible outside the branch.
-- Branches must not contain `exit`, `decide`, `map`, or `reduce`; use a plan__* call inside the branch for nested control flow.
-
-### Iteration
-- Use the `map` tool to run the same body once per element of a list, and `reduce` to fold a list into a single value. `over` must resolve to an array — usually a whole-list reference like {{{{E0.issues}}}}.
-- Inside a `map` body, {{{{item}}}} is the current element and {{{{index}}}} its 0-based position. A `reduce` body also gets {{{{accumulator}}}} (the running value, starting at `initial`), and each run's result becomes the next {{{{accumulator}}}}.
-- Later steps reference only the step's id — {{{{Ex.results}}}} for map's per-item outputs (input order) and {{{{Ex.count}}}}, or {{{{Ex.result}}}} for reduce's final accumulator. Body-internal step ids are invisible outside the body.
-- `map` accepts `concurrency` (default 1) to run independent items in parallel. `reduce` is always sequential — for parallel per-item work, map first, then reduce over {{{{Ex.results}}}}.
-- Bodies must not contain `exit`, `decide`, `map`, or `reduce`; use a plan__* call inside the body for nested control flow.
+{control_step_rules}
 "#,
         current_date = args.current_date,
         last_error = last_error,
@@ -150,6 +155,7 @@ Classify the request before planning and note it in step reasoning:
         draft_section = draft_section,
         existing_plan = args.existing_plan,
         step_schema = args.step_schema,
+        control_step_rules = CONTROL_STEP_RULES,
     )
 }
 
