@@ -31,7 +31,7 @@ Every draft change shows up in the plan pane immediately and is validated automa
 
 | Tab | Contents |
 |---|---|
-| `1` plan | header (identifier, finish mode, validation state), the step list with live status glyphs (`○` pending · `◐` running · `✓` ok · `✗` error · `⊘` skipped), and a detail pane showing the selected step's reasoning, input template, and — after a run — its rendered input and result JSON |
+| `1` plan | header (identifier, finish mode, validation state), the step list with live status glyphs (`○` pending · `◐` running · `✓` ok · `✗` error · `⊘` skipped), and a detail pane showing the selected step's reasoning, input template, and — after a run — its rendered input and result JSON. The list shows the whole plan: `decide`/`map`/`reduce` body sub-steps indent beneath their control step (map iterations all land on the one structural row — the last item's status and result stick), and plans that finish with a solver or rendered output get a final `solver`/`output` row that runs live during synthesis and carries the streamed answer as its result |
 | `2` context | the tool catalog and observed output shapes, exactly what the planner sees when drafting |
 | `3` run | the live transcript: step events, the streamed solver answer, and the final outcome |
 
@@ -49,9 +49,9 @@ Plans with a required `input_schema` open a prefilled JSON editor before the run
 
 A debug run (`g`) works like a debugger over plan execution. Pauses are **non-modal**: the workspace stays fully navigable — switch tabs, browse steps and their results with `j`/`k` — while the run waits.
 
-**Breakpoints.** `b` toggles a breakpoint on the selected step (a red `●` in the gutter), any time, including mid-run. With breakpoints set, `g` runs freely until one is hit; with none, it pauses before the first call. A breakpoint on a `map`/`decide` step also pauses each of its body calls (like a breakpoint on a loop line); nested plans have their own step namespace — breakpoint the `plan__*` step to pause before entering, then step through its calls.
+**Breakpoints.** `b` toggles a breakpoint on the selected step (a red `●` in the gutter), any time, including mid-run. With breakpoints set, `g` runs freely until one is hit; with none, it pauses before the first call. A breakpoint on a `map`/`decide` step also pauses each of its body calls (like a breakpoint on a loop line) — pressing `b` on a body sub-step row sets exactly that, on the owning control step; nested plans have their own step namespace — breakpoint the `plan__*` step to pause before entering, then step through its calls.
 
-**The debug panel.** At a pause, the plan tab auto-selects the paused step and the detail pane shows the debugger's view: the paused position and call stack, the fully rendered input about to be sent, and the **scope** — everything a template can read at this point: `input`, every prior step result, and inside `map`/`reduce`/`decide` bodies the `item`/`index`/`accumulator` pseudo-roots. One compact line per root; select any step row for its full JSON.
+**The debug panel.** At a pause, the plan tab auto-selects the paused call's row — the body sub-step itself when the pause is inside a `decide`/`map`/`reduce` — and the detail pane shows the debugger's view: the paused position and call stack, the fully rendered input about to be sent, and the **scope** — everything a template can read at this point: `input`, every prior step result, and inside `map`/`reduce`/`decide` bodies the `item`/`index`/`accumulator` pseudo-roots. One compact line per root; select any step row for its full JSON.
 
 **Decisions** (shown in the panel title):
 

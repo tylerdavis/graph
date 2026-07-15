@@ -220,13 +220,15 @@ pub enum Msg {
         path: String,
         tool: String,
         input: Value,
-        top_level: bool,
+        /// True when the event belongs to the plan being run (empty call
+        /// stack) — body sub-steps included; nested plans excluded.
+        in_plan: bool,
     },
     StepFinished {
         path: String,
         result: Value,
         is_error: bool,
-        top_level: bool,
+        in_plan: bool,
     },
     SolverDelta(String),
     GateAsk {
@@ -450,6 +452,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
         }
         Msg::Synthesizing => {
             app.ws.run_log_info("synthesizing…");
+            app.ws.synthesizing();
             app.in_flight = Some(InFlight {
                 path: "synthesizing".to_string(),
                 tool: String::new(),
@@ -461,7 +464,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             path,
             tool,
             input,
-            top_level,
+            in_plan,
         } => {
             app.ws.run_log_info(&format!("▸ {path} {tool}"));
             app.in_flight = Some(InFlight {
@@ -469,7 +472,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
                 tool: tool.clone(),
                 started: std::time::Instant::now(),
             });
-            if top_level {
+            if in_plan {
                 app.ws.step_started(&path, input);
             }
             Vec::new()
@@ -478,7 +481,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             path,
             result,
             is_error,
-            top_level,
+            in_plan,
         } => {
             if is_error {
                 app.ws.run_log_error(&format!("✗ {path} failed"));
@@ -490,7 +493,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             if app.in_flight.as_ref().is_some_and(|f| f.path == path) {
                 app.in_flight = None;
             }
-            if top_level {
+            if in_plan {
                 app.ws.step_finished(&path, result, is_error);
             }
             Vec::new()
@@ -519,8 +522,8 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
                 scope,
                 reply: Some(reply),
             };
-            if let Some(step) = prompt.top_level_step() {
-                app.ws.select_step(step);
+            if prompt.call_stack.is_empty() {
+                app.ws.select_path(&prompt.path);
             }
             match &prompt.kind {
                 GateKind::BeforeCall => {
@@ -685,7 +688,12 @@ fn toggle_breakpoint(app: &mut App) -> Vec<Effect> {
     let Some(row) = app.ws.steps.get(app.ws.selected) else {
         return Vec::new();
     };
-    let id = row.id.clone();
+    // Breakpoints are top-level step ids: on a body sub-step, break on the
+    // owning control step (which pauses each of its body calls).
+    let Some(id) = row.key.top_step().map(str::to_string) else {
+        app.status = "no breakpoints on the finish stage".to_string();
+        return Vec::new();
+    };
     if app.breakpoints.remove(&id) {
         app.status = format!("breakpoint cleared from {id}");
     } else {
@@ -1157,7 +1165,7 @@ steps:
                 path: "E0".into(),
                 tool: "t__search".into(),
                 input: json!({"query": "x"}),
-                top_level: true,
+                in_plan: true,
             },
         );
         assert!(matches!(app.ws.steps[0].status, StepStatus::Running));
@@ -1169,7 +1177,7 @@ steps:
                 path: "E0".into(),
                 result: json!({"values": []}),
                 is_error: false,
-                top_level: true,
+                in_plan: true,
             },
         );
         assert!(matches!(app.ws.steps[0].status, StepStatus::Ok));
@@ -1407,7 +1415,7 @@ steps:
                 path: "E0".into(),
                 result: json!({"patched": true}),
                 is_error: false,
-                top_level: true,
+                in_plan: true,
             },
         );
         assert!(matches!(app.ws.steps[0].status, StepStatus::Ok));
@@ -1488,7 +1496,7 @@ steps:
                 path: "E0".into(),
                 tool: "t__search".into(),
                 input: json!({}),
-                top_level: true,
+                in_plan: true,
             },
         );
         // A finish for a different path must not clear the indicator.
@@ -1498,7 +1506,7 @@ steps:
                 path: "E9".into(),
                 result: json!(null),
                 is_error: false,
-                top_level: false,
+                in_plan: false,
             },
         );
         assert!(app.in_flight.is_some());
@@ -1549,7 +1557,7 @@ steps:
             path: "E3/do.2/E10".into(),
             tool: "user__echo".into(),
             input: json!({}),
-            top_level: false,
+            in_plan: false,
         }
         .log_line()
         .unwrap();
