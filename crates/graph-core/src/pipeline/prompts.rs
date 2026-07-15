@@ -90,7 +90,7 @@ Each step must conform to:
 </step>
 
 When adding new steps:
-1. Continue the step ID sequence: your first new step must have ID {next_step_id}.
+1. Step IDs are identifiers (letters, digits, _; not starting with a digit), unique across the plan, and never `input`, `item`, `index`, `accumulator`, or `length`. Continue the E-sequence: your first new step should have ID {next_step_id}.
 2. Ensure logical flow from the existing plan and reference its results where useful.
 3. Interpret user responses literally, without expansion.
 

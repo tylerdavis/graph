@@ -1,7 +1,7 @@
 //! Plan documents: user-authored YAML plans, exposed to the agent as tools
 //! and runnable directly via `graph plan run`.
 
-use super::plan::{step_number, Plan, SolverData};
+use super::plan::{check_step_id, Plan, SolverData};
 use super::Finish;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -122,8 +122,9 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
     let all_ids: Vec<&str> = doc.steps.iter().map(|s| s.id.as_str()).collect();
     let mut seen: Vec<&str> = vec!["input"];
     for step in &doc.steps {
-        if step_number(&step.id).is_none() {
-            return Err(format!("step id '{}' must look like E0, E1, …", step.id));
+        check_step_id(&step.id)?;
+        if seen.contains(&step.id.as_str()) {
+            return Err(format!("duplicate step id '{}'", step.id));
         }
         if !step.tool_name.contains("__")
             && step.tool_name != "plan_and_execute"
@@ -201,9 +202,10 @@ fn check_value_templates(value: &Value, available: &[&str], step_id: &str) -> Re
             let roots =
                 crate::template::referenced_roots(s).map_err(|e| format!("step {step_id}: {e}"))?;
             for root in roots {
-                if step_number(&root).is_some() && !available.contains(&root.as_str()) {
+                if !available.contains(&root.as_str()) {
                     return Err(format!(
-                        "step {step_id} references {root}, which is not an earlier step"
+                        "step {step_id} references {root}, which is not `input` \
+                         or an earlier step"
                     ));
                 }
             }
@@ -339,6 +341,41 @@ solver:
         std::fs::write(&path, bad).unwrap();
         let err = load_plan_doc(&path).unwrap_err();
         assert!(err.to_string().contains("E5"));
+    }
+
+    fn doc_from(yaml: &str) -> Result<PlanDoc, String> {
+        let doc: PlanDoc = serde_yaml::from_str(yaml).map_err(|e| e.to_string())?;
+        validate_doc(&doc).map(|()| doc)
+    }
+
+    #[test]
+    fn accepts_descriptive_step_ids() {
+        let doc = doc_from(&DOC.replace("E0", "find_team").replace("E1", "team_issues")).unwrap();
+        assert_eq!(doc.steps[1].id, "team_issues");
+    }
+
+    #[test]
+    fn rejects_duplicate_reserved_and_malformed_ids() {
+        let dup = DOC.replace("id: E1", "id: E0");
+        assert!(doc_from(&dup).unwrap_err().contains("duplicate step id"));
+
+        // Reserved template roots can't be shadowed — E1 references would
+        // dangle, so rename them too.
+        let reserved = DOC.replace("E1", "item");
+        assert!(doc_from(&reserved).unwrap_err().contains("reserved"));
+
+        let malformed = DOC.replace("id: E1", "id: 2fast");
+        assert!(doc_from(&malformed)
+            .unwrap_err()
+            .contains("must be an identifier"));
+    }
+
+    #[test]
+    fn rejects_references_to_unknown_roots() {
+        let typo = DOC.replace("{{E0.values.0.id}}", "{{find_team.values.0.id}}");
+        let err = doc_from(&typo).unwrap_err();
+        assert!(err.contains("find_team"), "{err}");
+        assert!(err.contains("not `input` or an earlier step"), "{err}");
     }
 
     #[test]

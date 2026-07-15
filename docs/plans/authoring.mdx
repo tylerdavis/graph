@@ -43,9 +43,11 @@ Missing required inputs are handled for you: `plan run` exits with code 3 and pr
 
 Steps run **sequentially**; each input may reference plan inputs and any earlier step. Tool names are namespaced catalog names, plus five bare reserved ones: `plan_and_execute`, [`exit`](/plans/escape-hatch), [`decide`](/plans/branching), and [`map`/`reduce`](/plans/iteration).
 
+Step ids are identifiers — letters, digits, and `_`, not starting with a digit — unique across the plan (body sub-steps included). The planner's `E0`, `E1`, … convention and descriptive names like `fetch_project` are equally valid. Ids may not shadow the reserved template roots `input`, `item`, `index`, `accumulator`, or `length`.
+
 ```yaml
 steps:
-  - id: E0                                        # ids are E0, E1, … in order
+  - id: E0                                        # any unique identifier — E0-style or descriptive (fetch_project)
     tool_name: linear__list_projects
     input: { query: "{{input.project}}", limit: 5 }
     reasoning: Find the project and its metadata.  # optional, shown in traces
@@ -97,6 +99,6 @@ graph plan validate project_status
 graph plan run project_status '{"project":"New Relic"}'
 ```
 
-Validation catches structural problems at load time: template syntax errors, references to steps that haven't run yet (`E2` referencing `E5`), bad ids, unknown fields. What it *can't* catch — a path that doesn't exist in a tool's real output — surfaces at run time as a typed error with the available keys listed. See [Errors & replanning](/plans/errors-and-replanning).
+Validation catches structural problems at load time: template syntax errors, references to roots that aren't `input` or an earlier step (forward references and typos alike), duplicate or reserved ids, unknown fields. What it *can't* catch — a path that doesn't exist in a tool's real output — surfaces at run time as a typed error with the available keys listed. See [Errors & replanning](/plans/errors-and-replanning).
 
 For interactive authoring, the [plan workbench](/using/plan-workbench) wraps this whole loop in a TUI: the chat agent drafts into a side pane, validation runs on every change, and a gated run pauses before each tool call so you can test a plan before its writes are trustworthy.

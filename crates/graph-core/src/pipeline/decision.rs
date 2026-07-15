@@ -114,9 +114,17 @@ pub fn validate_decide_input(
     if let Some(infer) = &spec.infer {
         super::check_templates(&Value::String(infer.clone()), seen, step_id, problems);
     }
-    validate_body("then", &spec.then, seen, all_plan_ids, step_id, problems);
+    validate_body(
+        "then",
+        &spec.then,
+        seen,
+        &[],
+        all_plan_ids,
+        step_id,
+        problems,
+    );
     if let Some(else_) = &spec.else_ {
-        validate_body("else", else_, seen, all_plan_ids, step_id, problems);
+        validate_body("else", else_, seen, &[], all_plan_ids, step_id, problems);
     }
 }
 
