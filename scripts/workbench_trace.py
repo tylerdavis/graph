@@ -98,20 +98,23 @@ def render(session, width, color):
     out = []
     start = session[0]["ts"]
 
-    def rel(ev):
-        return (ev["ts"] - start).total_seconds()
+    def clk(ev_or_ts):
+        # Left column is the wall-clock time the span STARTED.
+        ts = ev_or_ts["ts"] if isinstance(ev_or_ts, dict) else ev_or_ts
+        return ts.strftime("%H:%M:%S")
 
     ver = SESSION.search(session[0]["body"]).group(1)
-    clock = start.strftime("%H:%M:%S")
-    out.append(c("bold", f"┏━ session {clock}  ·  graph {ver}"))
+    out.append(c("bold", f"┏━ session {clk(start)}  ·  graph {ver}"))
 
-    pending_invoke = None  # (tool, input) awaiting its finished line
+    pending_invoke = None  # (tool, input, ts) awaiting its finished line
     in_turn = False
+    turn_start_ts = None  # start of the current turn (outline duration baseline)
     drafting_started = False  # emit the drafting-phase header once per draft
+    step_open = None  # (start_ts, summary) of the draft step awaiting its finish
 
     for ev in session[1:]:
         b = ev["body"]
-        t = f"{rel(ev):6.1f}s"
+        t = clk(ev)
 
         m = CONTEXT.search(b)
         if m:
@@ -121,6 +124,7 @@ def render(session, width, color):
         m = TURN_START.search(b)
         if m:
             in_turn = True
+            turn_start_ts = ev["ts"]
             out.append(f"┃ {c('dim', t)}  {c('cyan', '▸ turn')} {c('dim', f'({m.group(1)} chars in)')}")
             continue
 
@@ -138,7 +142,7 @@ def render(session, width, color):
 
         m = INVOKED.search(b)
         if m:
-            pending_invoke = (m.group(1), m.group(2))
+            pending_invoke = (m.group(1), m.group(2), ev["ts"])
             continue
 
         m = TOOL_FIN.search(b)
@@ -148,11 +152,15 @@ def render(session, width, color):
             glyph = c("red", "✗") if err else c("green", "✓")
             name = c("mag", tool.replace("workbench__", ""))
             inp = ""
-            if pending_invoke and pending_invoke[0] == tool and width:
-                raw_in = pending_invoke[1]
-                if raw_in.strip() not in ("{}", ""):
-                    inp = c("dim", "  ← " + clip(raw_in, width))
-            line = f"┃ {c('dim', t)}  {glyph} {name} {c('dim', fmt_dur(dur))}{inp}"
+            # Left column is the invoked (start) clock when we saw it.
+            start_t = t
+            if pending_invoke and pending_invoke[0] == tool:
+                start_t = clk(pending_invoke[2])
+                if width:
+                    raw_in = pending_invoke[1]
+                    if raw_in.strip() not in ("{}", ""):
+                        inp = c("dim", "  ← " + clip(raw_in, width))
+            line = f"┃ {c('dim', start_t)}  {glyph} {name} {c('dim', fmt_dur(dur))}{inp}"
             out.append(line)
             if err and result and width:
                 out.append(f"┃         {c('red', '  ' + clip(result, width * 2 or 999))}")
@@ -162,9 +170,14 @@ def render(session, width, color):
         m = DRAFT_OUTLINE.search(b)
         if m:
             # A new outline begins a fresh draft; the drafting phase (a
-            # separate, sibling phase) hasn't started yet.
+            # separate, sibling phase) hasn't started yet. The outline is a
+            # one-shot call — its cost is the gap since the turn started.
             drafting_started = False
-            out.append(f"┃ {c('dim', t)}    {c('yellow', f'✎ draft outline — {m.group(1)} stages')}")
+            out_t = clk(turn_start_ts) if turn_start_ts else t
+            dur = ""
+            if turn_start_ts:
+                dur = c("dim", fmt_dur((ev["ts"] - turn_start_ts).total_seconds()))
+            out.append(f"┃ {c('dim', out_t)}    {c('yellow', f'✎ draft outline — {m.group(1)} stages')}  {dur}")
             continue
 
         m = DRAFT_STEP_START.search(b)
@@ -174,7 +187,9 @@ def render(session, width, color):
                 # sibling of the outline (same indent), not nested under it.
                 out.append(f"┃ {c('dim', t)}    {c('blue', '✍ drafting plan — step-by-step')}")
                 drafting_started = True
-            out.append(f"┃ {c('dim', t)}      {c('yellow', f'step {m.group(1)}')} {c('dim', clip(m.group(2), width))}")
+            # Fold start+finish into one row: stash the start ts and summary,
+            # emit on the matching finish with a real duration.
+            step_open = (ev["ts"], m.group(2))
             continue
 
         m = DRAFT_STEP_FIN.search(b)
@@ -182,8 +197,21 @@ def render(session, width, color):
             step, attempt, probs = m.groups()
             ok = probs == "0"
             glyph = c("green", "✓") if ok else c("yellow", "↻")
-            note = "accepted" if ok else f"attempt {attempt}: {probs} problem(s)"
-            out.append(f"┃ {c('dim', t)}      {glyph} {c('dim', note)}")
+            start_ts, summary = step_open or (ev["ts"], "")
+            step_t = clk(start_ts)
+            dur = c("dim", fmt_dur((ev["ts"] - start_ts).total_seconds()))
+            if ok:
+                label = f"{c('yellow', f'step {step}')} {c('dim', clip(summary, width))}"
+                out.append(f"┃ {c('dim', step_t)}      {glyph} {label}  {dur}")
+                step_open = None
+            else:
+                # A rejected attempt; the step keeps drafting. Show it, then
+                # rebase the start clock so the retry's duration counts from
+                # this finish (the next attempt began here).
+                note = f"attempt {attempt}: {probs} problem(s)"
+                label = f"{c('yellow', f'step {step}')} {c('dim', clip(summary, width))}"
+                out.append(f"┃ {c('dim', step_t)}      {glyph} {label} {c('dim', note)}  {dur}")
+                step_open = (ev["ts"], summary)
             continue
 
         m = DRAFT_REPLACED.search(b)
