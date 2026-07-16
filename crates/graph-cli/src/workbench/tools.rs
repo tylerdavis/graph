@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use graph_core::pipeline::doc::{
     apply_schema_defaults, load_plan_doc, validate_doc, validate_input, PlanDoc,
 };
-use graph_core::pipeline::{Pipeline, PlannerOutput, Step};
+use graph_core::pipeline::{Pipeline, PlannerOutput, SolverData, Step};
 use graph_core::{template, ToolDef, ToolError, ToolOutcome, ToolRegistry};
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
@@ -564,7 +564,8 @@ impl WorkbenchTools {
         }
     }
 
-    /// Patch the draft's metadata: identifier, name, description, exemplars.
+    /// Patch the draft's plan-level fields: identifier, name, description,
+    /// exemplars, and/or the finish type (solver ⇄ output).
     fn update_metadata(&self, input: &Value) -> ToolOutcome {
         self.edit_draft(|doc| {
             let mut changed = false;
@@ -595,10 +596,40 @@ impl WorkbenchTools {
                     .collect();
                 changed = true;
             }
+            if let Some(finish) = input.get("finish") {
+                let has_solver = finish.get("solver").is_some();
+                let has_output = finish.get("output").is_some();
+                match (has_solver, has_output) {
+                    (true, true) => {
+                        return Err(
+                            json!({"error": "finish: pass 'solver' OR 'output', not both"}),
+                        );
+                    }
+                    (false, false) => {
+                        return Err(json!({"error": "finish requires 'solver' {queryToAnswer, systemPrompt?} or 'output' {<template map>}"}));
+                    }
+                    (true, false) => {
+                        let solver_val = finish.get("solver").unwrap();
+                        let solver: SolverData = serde_json::from_value(solver_val.clone())
+                            .map_err(|error| json!({"error": format!("invalid solver: {error}")}))?;
+                        doc.solver = Some(solver);
+                        doc.output = None;
+                        changed = true;
+                    }
+                    (false, true) => {
+                        let output_val = finish.get("output").unwrap();
+                        let output: Map<String, Value> = serde_json::from_value(output_val.clone())
+                            .map_err(|error| json!({"error": format!("invalid output: expected a template map — {error}")}))?;
+                        doc.output = Some(output);
+                        doc.solver = None;
+                        changed = true;
+                    }
+                }
+            }
             if !changed {
                 return Err(json!({
                     "error": "update_metadata needs at least one of \
-                              identifier, name, description, exemplars"
+                              identifier, name, description, exemplars, finish"
                 }));
             }
             Ok(json!({"ok": true, "identifier": doc.identifier, "name": doc.name}))
@@ -1027,10 +1058,13 @@ impl ToolRegistry for WorkbenchTools {
             },
             ToolDef {
                 name: UPDATE_METADATA.to_string(),
-                description: "Update the draft's metadata: identifier, name, description, \
-                              and/or exemplars. Changing the identifier makes it a new \
-                              plan — the next save writes a new file instead of the one \
-                              it was loaded from."
+                description: "Update the draft's plan-level fields: identifier, name, \
+                              description, exemplars, and/or the finish type. `finish` sets \
+                              how the plan produces its result — {solver: {queryToAnswer, \
+                              systemPrompt?}} for LLM synthesis of the step results, or \
+                              {output: {<template map>}} for a structured templated result — \
+                              solver and output are mutually exclusive. Changing the \
+                              identifier makes it a new plan."
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -1038,7 +1072,15 @@ impl ToolRegistry for WorkbenchTools {
                         "identifier": {"type": "string", "description": "Tool-name-safe identifier (letters, digits, _, -). Changing it detaches the draft from its loaded file."},
                         "name": {"type": "string", "description": "Human-readable display name."},
                         "description": {"type": "string", "description": "What the plan does — shown in the catalog and used for routing."},
-                        "exemplars": {"type": "array", "items": {"type": "string"}, "description": "Example requests the plan should handle; replaces the current list."}
+                        "exemplars": {"type": "array", "items": {"type": "string"}, "description": "Example requests the plan should handle; replaces the current list."},
+                        "finish": {
+                            "type": "object",
+                            "description": "Set the plan's finish type. Provide EITHER 'solver' {queryToAnswer: string, systemPrompt?: string} for LLM synthesis, OR 'output' {a map of key -> template string} for a structured result. Mutually exclusive.",
+                            "properties": {
+                                "solver": {"type": "object", "properties": {"queryToAnswer": {"type": "string"}, "systemPrompt": {"type": "string"}}},
+                                "output": {"type": "object", "description": "Map of output key to template string, e.g. {\"summary\": \"{{E3.text}}\"}."}
+                            }
+                        }
                     }
                 }),
                 output_schema: None,
@@ -1629,6 +1671,52 @@ solver:
         let outcome = tools.update_metadata(&json!({}));
         assert!(outcome.is_error);
         assert!(rx.try_recv().is_err(), "nothing should have been published");
+    }
+
+    #[test]
+    fn update_metadata_switches_finish_type_both_directions() {
+        // referencing_doc finishes with solver; switch it to output.
+        let (tools, draft, mut rx) = editing_tools(Some(referencing_doc()));
+        let outcome =
+            tools.update_metadata(&json!({"finish": {"output": {"summary": "{{E0.text}}"}}}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        let doc = draft.lock().unwrap().doc.clone().unwrap();
+        assert!(doc.solver.is_none(), "solver should be cleared");
+        let output = doc.output.expect("output should be set");
+        assert!(output.contains_key("summary"));
+        assert_dirty_publish(&mut rx);
+
+        // Reverse: from an output finish back to a solver.
+        let outcome =
+            tools.update_metadata(&json!({"finish": {"solver": {"queryToAnswer": "answer it"}}}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        let doc = draft.lock().unwrap().doc.clone().unwrap();
+        assert!(doc.output.is_none(), "output should be cleared");
+        let solver = doc.solver.expect("solver should be set");
+        assert_eq!(solver.query_to_answer, "answer it");
+    }
+
+    #[test]
+    fn update_metadata_finish_rejects_both_and_neither() {
+        let (tools, _draft, _rx) = editing_tools(Some(referencing_doc()));
+
+        let both = tools.update_metadata(&json!({
+            "finish": {"solver": {"queryToAnswer": "x"}, "output": {"k": "v"}}
+        }));
+        assert!(both.is_error);
+        assert!(
+            both.result["error"].as_str().unwrap().contains("not both"),
+            "{:?}",
+            both.result
+        );
+
+        let neither = tools.update_metadata(&json!({"finish": {}}));
+        assert!(neither.is_error);
+        let message = neither.result["error"].as_str().unwrap();
+        assert!(
+            message.contains("solver") && message.contains("output"),
+            "{message}"
+        );
     }
 
     #[test]

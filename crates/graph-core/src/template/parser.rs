@@ -130,7 +130,11 @@ pub fn parse_path(raw: &str) -> Result<Path, RenderError> {
     let mut segs = Vec::new();
     for part in raw.split('.') {
         if part.is_empty() {
-            return Err(RenderError::Parse(format!("empty segment in path '{raw}'")));
+            return Err(RenderError::Parse(format!(
+                "empty segment in path '{raw}' — a '.' has nothing on one side \
+                 (you likely wrote a trailing dot like '{{{{E0.}}}}', a leading dot, \
+                 or a double dot); remove the stray dot"
+            )));
         }
         if part == "length" {
             segs.push(Seg::Length);
