@@ -5,11 +5,16 @@
 use super::editor::{EditorContext, EditorState};
 use super::plan_ws::{OutlineRow, PlanWorkspace, WsTab};
 use super::runner::UiDecision;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use super::ui::Regions;
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use graph_core::pipeline::doc::PlanDoc;
 use graph_core::pipeline::MAX_STEP_ATTEMPTS;
 use graph_core::{ToolDef, ToolShape};
+use ratatui::layout::{Position, Rect};
 use serde_json::{Map, Value};
+use std::cell::RefCell;
 use std::collections::HashSet;
 use tokio::sync::oneshot;
 use tui_textarea::TextArea;
@@ -145,6 +150,10 @@ pub struct App {
     /// Where the debug log is being written, shown in the help overlay.
     pub log_path: Option<std::path::PathBuf>,
     pub should_quit: bool,
+    /// Interactive geometry captured by the last `ui::draw`, for mouse
+    /// hit-testing. Written by `draw` (which holds `&App`), read by the
+    /// reducer. Empty until the first frame — clicks then safely no-op.
+    pub regions: RefCell<Regions>,
 }
 
 impl App {
@@ -168,6 +177,7 @@ impl App {
             show_help: false,
             log_path: None,
             should_quit: false,
+            regions: RefCell::new(Regions::default()),
         }
     }
 
@@ -710,6 +720,7 @@ fn on_terminal_event(app: &mut App, event: Event) -> Vec<Effect> {
     let key = match event {
         Event::Key(key) => key,
         Event::Paste(text) => return on_paste(app, text),
+        Event::Mouse(mouse) => return on_mouse(app, mouse),
         _ => return Vec::new(),
     };
     if key.kind != KeyEventKind::Press {
@@ -768,6 +779,85 @@ fn on_paste(app: &mut App, text: String) -> Vec<Effect> {
         }
     }
     Vec::new()
+}
+
+/// Is (col, row) inside `rect`? Ratatui bounds are half-open, so the zero
+/// rect (regions before the first frame) contains nothing.
+fn hit(rect: Rect, col: u16, row: u16) -> bool {
+    rect.contains(Position { x: col, y: row })
+}
+
+/// Mouse input: click-to-focus a pane, click a workspace tab or list row,
+/// wheel to scroll the pane under the cursor. Hit-tested against the
+/// geometry the last frame recorded in `app.regions`.
+fn on_mouse(app: &mut App, mouse: MouseEvent) -> Vec<Effect> {
+    // The editor is a true modal drawn over the recorded panes — swallow
+    // mouse so a click can't reach a pane behind it.
+    if matches!(app.mode, Mode::Editing(_)) {
+        return Vec::new();
+    }
+    // Regions is Copy: take a snapshot and drop the borrow before mutating.
+    let regions = *app.regions.borrow();
+    let (col, row) = (mouse.column, mouse.row);
+
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            // Help swallows one click and closes, mirroring "any key closes".
+            if app.show_help {
+                app.show_help = false;
+                return Vec::new();
+            }
+            // Inner regions first: a tab label sits inside the workspace pane.
+            for (i, tab) in regions.tabs.iter().enumerate() {
+                if hit(*tab, col, row) {
+                    app.focus = Focus::Workspace;
+                    app.ws.tab = tab_for((b'1' + i as u8) as char);
+                    return Vec::new();
+                }
+            }
+            // A list row: map the click to a selectable index, accounting
+            // for the border and the list's internal scroll offset.
+            if hit(regions.ws_list, col, row) {
+                app.focus = Focus::Workspace;
+                let inner_top = regions.ws_list.y.saturating_add(1); // border
+                if row >= inner_top {
+                    let clicked = regions.ws_list_offset as usize + (row - inner_top) as usize;
+                    app.ws.select_to(clicked); // guards past the list end
+                }
+                return Vec::new();
+            }
+            if hit(regions.chat, col, row) {
+                app.focus = Focus::Chat;
+            } else if hit(regions.workspace, col, row) {
+                app.focus = Focus::Workspace;
+            }
+            Vec::new()
+        }
+        MouseEventKind::ScrollUp => {
+            if app.show_help {
+                return Vec::new();
+            }
+            if hit(regions.chat_scrollback, col, row) {
+                // Offset from the bottom: scrolling up moves into history.
+                app.chat.scroll.set(app.chat.scroll.get().saturating_add(3));
+            } else if hit(regions.ws_body, col, row) {
+                app.ws.scroll_by(true, 3);
+            }
+            Vec::new()
+        }
+        MouseEventKind::ScrollDown => {
+            if app.show_help {
+                return Vec::new();
+            }
+            if hit(regions.chat_scrollback, col, row) {
+                app.chat.scroll.set(app.chat.scroll.get().saturating_sub(3));
+            } else if hit(regions.ws_body, col, row) {
+                app.ws.scroll_by(false, 3);
+            }
+            Vec::new()
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Navigation shared by normal and paused states: focus, tabs, selection,
@@ -1209,6 +1299,51 @@ mod tests {
             KeyCode::Char(c),
             KeyModifiers::CONTROL,
         )))
+    }
+
+    fn mouse(kind: MouseEventKind, col: u16, row: u16) -> Msg {
+        Msg::Term(Event::Mouse(MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }))
+    }
+
+    fn click(col: u16, row: u16) -> Msg {
+        mouse(MouseEventKind::Down(MouseButton::Left), col, row)
+    }
+
+    /// Regions are only populated by `ui::draw`, which tests don't run — so
+    /// seed known geometry directly. Panes are laid out like the real frame:
+    /// chat on the left, workspace on the right with a tab strip on top.
+    fn seed_regions(app: &App, r: Regions) {
+        *app.regions.borrow_mut() = r;
+    }
+
+    fn rect(x: u16, y: u16, w: u16, h: u16) -> Rect {
+        Rect {
+            x,
+            y,
+            width: w,
+            height: h,
+        }
+    }
+
+    /// A plausible layout: 40-wide chat | 40-wide workspace, tab strip at the
+    /// workspace's top row, a list below it, body below that.
+    fn demo_regions() -> Regions {
+        Regions {
+            chat: rect(0, 0, 40, 24),
+            chat_scrollback: rect(1, 1, 38, 18),
+            workspace: rect(40, 0, 40, 24),
+            // Tabs laid out as " 1 plan " " 2 context " " 3 run " with a
+            // divider between — matching draw_workspace's recording.
+            tabs: [rect(41, 1, 8, 1), rect(50, 1, 11, 1), rect(62, 1, 7, 1)],
+            ws_list: rect(41, 2, 38, 10),
+            ws_list_offset: 0,
+            ws_body: rect(41, 12, 38, 11),
+        }
     }
 
     fn doc(yaml: &str) -> PlanDoc {
@@ -2007,5 +2142,104 @@ steps:
             ))),
         );
         assert_eq!(app.ws.tab, WsTab::Run);
+    }
+
+    #[test]
+    fn click_focuses_the_pane_under_the_cursor() {
+        let mut app = App::new(None);
+        seed_regions(&app, demo_regions());
+        assert_eq!(app.focus, Focus::Chat);
+
+        // Click the workspace body → focus workspace.
+        update(&mut app, click(50, 15));
+        assert_eq!(app.focus, Focus::Workspace);
+
+        // Click the chat pane → focus chat.
+        update(&mut app, click(10, 10));
+        assert_eq!(app.focus, Focus::Chat);
+    }
+
+    #[test]
+    fn click_a_tab_switches_it_and_focuses_workspace() {
+        let mut app = App::new(None);
+        seed_regions(&app, demo_regions());
+        assert_eq!(app.ws.tab, WsTab::Plan);
+
+        update(&mut app, click(52, 1)); // "2 context" label
+        assert_eq!(app.ws.tab, WsTab::Context);
+        assert_eq!(app.focus, Focus::Workspace);
+
+        update(&mut app, click(63, 1)); // "3 run" label
+        assert_eq!(app.ws.tab, WsTab::Run);
+    }
+
+    #[test]
+    fn click_a_list_row_selects_it() {
+        let mut app = App::new(Some(two_step_doc()));
+        seed_regions(&app, demo_regions());
+        // ws_list at y=2, border → rows start at y=3. Root row is index 0,
+        // so the second visible row (y=4) is index 1.
+        update(&mut app, click(45, 4));
+        assert_eq!(app.ws.selected, 1);
+        assert_eq!(app.focus, Focus::Workspace);
+    }
+
+    #[test]
+    fn click_respects_the_list_scroll_offset() {
+        let mut app = App::new(Some(two_step_doc()));
+        let mut regions = demo_regions();
+        regions.ws_list_offset = 1; // list scrolled so row 1 is the first visible
+        seed_regions(&app, regions);
+        // First inner row (y=3) now maps to index offset(1) + 0 = 1.
+        update(&mut app, click(45, 3));
+        assert_eq!(app.ws.selected, 1);
+    }
+
+    #[test]
+    fn click_past_the_list_end_is_ignored() {
+        let mut app = App::new(Some(two_step_doc()));
+        seed_regions(&app, demo_regions());
+        let before = app.ws.selected;
+        // Far below the last real row but still inside ws_list.
+        update(&mut app, click(45, 11));
+        assert_eq!(app.ws.selected, before);
+    }
+
+    #[test]
+    fn scroll_wheel_routes_to_the_pane_under_the_cursor() {
+        let mut app = App::new(Some(two_step_doc()));
+        seed_regions(&app, demo_regions());
+
+        // Over chat scrollback: scroll offset is from the bottom, up = +.
+        assert_eq!(app.chat.scroll.get(), 0);
+        update(&mut app, mouse(MouseEventKind::ScrollUp, 10, 5));
+        assert_eq!(app.chat.scroll.get(), 3);
+        update(&mut app, mouse(MouseEventKind::ScrollDown, 10, 5));
+        assert_eq!(app.chat.scroll.get(), 0);
+
+        // Over the workspace body on the plan tab: detail scroll from the top.
+        assert_eq!(app.ws.detail_scroll.get(), 0);
+        update(&mut app, mouse(MouseEventKind::ScrollDown, 50, 15));
+        assert_eq!(app.ws.detail_scroll.get(), 3);
+    }
+
+    #[test]
+    fn left_click_dismisses_help() {
+        let mut app = App::new(None);
+        seed_regions(&app, demo_regions());
+        app.show_help = true;
+        // A click closes help and does nothing else.
+        update(&mut app, click(50, 15));
+        assert!(!app.show_help);
+        assert_eq!(app.focus, Focus::Chat, "the click only closed help");
+    }
+
+    #[test]
+    fn edit_mode_swallows_mouse() {
+        let mut app = App::new(None);
+        seed_regions(&app, demo_regions());
+        app.mode = Mode::Editing(Box::new(EditorState::confirm_quit("test")));
+        update(&mut app, click(50, 15));
+        assert_eq!(app.focus, Focus::Chat, "mouse ignored while editing");
     }
 }
