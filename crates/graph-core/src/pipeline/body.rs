@@ -222,7 +222,9 @@ pub(super) enum BodyFail {
     /// Pre-formatted message naming the body, inner step, and tool.
     Tool(String),
     /// The execution gate aborted the run — hard stop, never replans.
-    Aborted,
+    /// Carries the failing tool's error result when the abort was
+    /// triggered by a tool error (`None` for a plain breakpoint abort).
+    Aborted(Option<Value>),
     /// An `exit` step in the body fired. Not a failure — it rides the
     /// error channel so the accounting (steps run, bus entries) travels
     /// with it; decide maps it to `ExecutionEnd::Exited`, ending the
@@ -285,7 +287,7 @@ impl Pipeline {
                     .await
                     .map_err(|e| {
                         let fail = match e {
-                            super::DispatchError::Aborted => BodyFail::Aborted,
+                            super::DispatchError::Aborted { error } => BodyFail::Aborted(error),
                             super::DispatchError::Failed(m) => {
                                 BodyFail::Tool(format!("{label} ({}): {m}", call.tool_name))
                             }
@@ -328,7 +330,9 @@ impl Pipeline {
                             .await
                             .map_err(|e| {
                                 let fail = match e {
-                                    super::DispatchError::Aborted => BodyFail::Aborted,
+                                    super::DispatchError::Aborted { error } => {
+                                        BodyFail::Aborted(error)
+                                    }
                                     super::DispatchError::Failed(m) => BodyFail::Tool(format!(
                                         "{label} step {} ({}): {m}",
                                         body_step.id, body_step.tool_name

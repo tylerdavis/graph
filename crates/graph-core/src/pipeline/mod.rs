@@ -101,7 +101,14 @@ pub enum PipelineError {
     /// results collected before the abort — so interactive callers can
     /// render what happened. Never replans, never degrades.
     #[error("run aborted at step {step}")]
-    Aborted { step: String, state: Box<RunState> },
+    Aborted {
+        step: String,
+        /// The failing tool's error result when the abort was triggered by a
+        /// tool error (`None` for a plain breakpoint/continue abort). Lets
+        /// interactive callers surface why the step failed.
+        error: Option<Value>,
+        state: Box<RunState>,
+    },
     /// Incremental drafting could not produce a valid step within its
     /// budget. Carries the valid partial draft — everything accepted
     /// before the failure — so interactive callers can salvage it
@@ -182,6 +189,9 @@ enum ExecutionEnd {
     /// An [`ExecutionGate`] ended the run — hard stop, never replans.
     Aborted {
         step: String,
+        /// The failing tool's error result when the abort was triggered by a
+        /// tool error (`None` for a plain breakpoint/continue abort).
+        error: Option<Value>,
     },
 }
 
@@ -189,8 +199,10 @@ enum ExecutionEnd {
 enum DispatchError {
     /// Tool failure — the (truncated) failure message.
     Failed(String),
-    /// The gate aborted the run.
-    Aborted,
+    /// The gate aborted the run. Carries the failing tool's error result
+    /// (when the abort was triggered by a tool error) so interactive
+    /// callers can show *why* the step failed, not just that it aborted.
+    Aborted { error: Option<Value> },
 }
 
 impl Pipeline {
@@ -238,9 +250,10 @@ impl Pipeline {
                     state.push_bus(&step, BusKind::EmptyData, message);
                     return self.solve(state).await;
                 }
-                ExecutionEnd::Aborted { step } => {
+                ExecutionEnd::Aborted { step, error } => {
                     return Err(PipelineError::Aborted {
                         step,
+                        error,
                         state: Box::new(state),
                     })
                 }
@@ -306,8 +319,9 @@ impl Pipeline {
                     Err(PipelineError::EmptyData { step, message })
                 }
             },
-            ExecutionEnd::Aborted { step } => Err(PipelineError::Aborted {
+            ExecutionEnd::Aborted { step, error } => Err(PipelineError::Aborted {
                 step,
+                error,
                 state: Box::new(state),
             }),
             ExecutionEnd::Failed {
@@ -435,9 +449,10 @@ impl Pipeline {
                     is_error: true,
                     aborted: false,
                 },
-                Err(PipelineError::Aborted { step, .. }) => PlanCall {
+                Err(PipelineError::Aborted { step, error, .. }) => PlanCall {
                     result: json!({
                         "error": format!("plan '{identifier}' aborted at step {step}"),
+                        "cause": error,
                     }),
                     is_error: true,
                     aborted: true,
@@ -470,9 +485,10 @@ impl Pipeline {
                     is_error: false,
                     aborted: false,
                 },
-                Err(PipelineError::Aborted { step, .. }) => PlanCall {
+                Err(PipelineError::Aborted { step, error, .. }) => PlanCall {
                     result: json!({
                         "error": format!("planned run aborted at step {step}"),
+                        "cause": error,
                     }),
                     is_error: true,
                     aborted: true,
@@ -919,9 +935,10 @@ impl Pipeline {
                     state.results.insert(step.id.clone(), result);
                     state.push_bus(&step.id, BusKind::Info, "ok");
                 }
-                Err(DispatchError::Aborted) => {
+                Err(DispatchError::Aborted { error }) => {
                     return ExecutionEnd::Aborted {
                         step: step.id.clone(),
+                        error,
                     }
                 }
                 Err(DispatchError::Failed(message)) => {
@@ -977,7 +994,7 @@ impl Pipeline {
                     );
                     return Ok(result);
                 }
-                GateDecision::Abort => return Err(DispatchError::Aborted),
+                GateDecision::Abort => return Err(DispatchError::Aborted { error: None }),
             }
         }
 
@@ -989,7 +1006,9 @@ impl Pipeline {
             let call = self.call_plan(identifier, rendered).await;
             if call.aborted {
                 // A nested abort is already a gate decision — never re-ask.
-                return Err(DispatchError::Aborted);
+                return Err(DispatchError::Aborted {
+                    error: Some(call.result),
+                });
             }
             ToolOutcome {
                 result: call.result,
@@ -998,7 +1017,9 @@ impl Pipeline {
         } else if tool_name == "plan_and_execute" {
             let call = self.call_planner(&rendered).await;
             if call.aborted {
-                return Err(DispatchError::Aborted);
+                return Err(DispatchError::Aborted {
+                    error: Some(call.result),
+                });
             }
             ToolOutcome {
                 result: call.result,
@@ -1054,7 +1075,9 @@ impl Pipeline {
                             true,
                             started.elapsed(),
                         );
-                        return Err(DispatchError::Aborted);
+                        return Err(DispatchError::Aborted {
+                            error: Some(outcome.result),
+                        });
                     }
                 }
             }

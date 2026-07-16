@@ -165,12 +165,22 @@ pub fn report(result: Result<PipelineOutcome, PipelineError>) -> RunReport {
                 summary,
             }
         }
-        Err(PipelineError::Aborted { step, state }) => RunReport {
-            headline: format!("⊘ aborted at {step}"),
-            is_error: true,
-            summary: json!({"status": "aborted", "step": step}),
-            results: state.results,
-        },
+        Err(PipelineError::Aborted { step, error, state }) => {
+            // When the abort was triggered by a tool error, carry that error
+            // into the agent-facing summary — otherwise the agent driving the
+            // workbench sees only "aborted at <step>" with no way to know why
+            // the step failed or how to troubleshoot it.
+            let headline = match &error {
+                Some(e) => format!("⊘ aborted at {step}: {}", truncate(&e.to_string(), 120)),
+                None => format!("⊘ aborted at {step}"),
+            };
+            RunReport {
+                headline,
+                is_error: true,
+                summary: json!({"status": "aborted", "step": step, "error": error}),
+                results: state.results,
+            }
+        }
         Err(error) => RunReport {
             headline: format!("✗ {error}"),
             is_error: true,
@@ -287,7 +297,41 @@ impl ExecutionGate for UiGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use graph_core::pipeline::RunState;
     use std::sync::Arc;
+
+    #[test]
+    fn aborted_report_carries_the_failing_tool_error_to_the_agent() {
+        // A tool-error abort must put the failing tool's output in the
+        // agent-facing summary — otherwise the agent driving the workbench
+        // sees only "aborted at E3" and cannot troubleshoot.
+        let report = report(Err(PipelineError::Aborted {
+            step: "E3".to_string(),
+            error: Some(json!({"error": "boom", "code": 42})),
+            state: Box::new(RunState::default()),
+        }));
+        assert!(report.is_error);
+        assert_eq!(report.summary["status"], json!("aborted"));
+        assert_eq!(report.summary["step"], json!("E3"));
+        assert_eq!(
+            report.summary["error"],
+            json!({"error": "boom", "code": 42})
+        );
+        assert!(report.headline.contains("boom"), "{}", report.headline);
+    }
+
+    #[test]
+    fn aborted_report_without_tool_error_omits_error_context() {
+        // A plain breakpoint abort has no failing tool — the summary should
+        // say so with a null error rather than inventing one.
+        let report = report(Err(PipelineError::Aborted {
+            step: "E1".to_string(),
+            error: None,
+            state: Box::new(RunState::default()),
+        }));
+        assert_eq!(report.summary["error"], Value::Null);
+        assert_eq!(report.headline, "⊘ aborted at E1");
+    }
 
     fn context<'a>(
         path: &'a StepPath,
