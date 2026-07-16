@@ -329,6 +329,35 @@ model = "m"
     }
 
     #[test]
+    fn planner_draft_strategy_parses_defaults_and_round_trips() {
+        use crate::model::DraftStrategy;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "config.toml",
+            r#"
+            [planner]
+            draft_strategy = "incremental"
+            "#,
+        );
+        let loaded = load_from(&[path]).unwrap();
+        assert_eq!(
+            loaded.config.planner.draft_strategy,
+            DraftStrategy::Incremental
+        );
+
+        // Unset defaults to oneshot.
+        let empty = load_from(&[]).unwrap();
+        assert_eq!(empty.config.planner.draft_strategy, DraftStrategy::Oneshot);
+
+        // Serialize → parse round-trips the setting.
+        let rendered = toml::to_string(&loaded.config).unwrap();
+        let reparsed: Config = toml::from_str(&rendered).unwrap();
+        assert_eq!(reparsed.planner.draft_strategy, DraftStrategy::Incremental);
+    }
+
+    #[test]
     fn tool_packs_parse_and_default_paths_survive() {
         let dir = tempfile::tempdir().unwrap();
         let path = write(
