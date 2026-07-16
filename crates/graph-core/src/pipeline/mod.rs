@@ -18,6 +18,7 @@ pub mod doc;
 pub mod exit;
 pub mod gate;
 pub mod iterate;
+mod outline;
 pub mod plan;
 mod prompts;
 mod state;
@@ -29,6 +30,7 @@ pub use decision::DECIDE_TOOL;
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
 pub use gate::{ErrorDecision, ExecutionGate, GateContext, GateDecision, StepPath};
 pub use iterate::{MAP_TOOL, REDUCE_TOOL};
+pub use outline::{OutlineItem, PlanOutline, StepDraft, MAX_STEP_ATTEMPTS};
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
 pub use prompts::CONTROL_STEP_RULES;
 pub use state::{BusEntry, BusKind, RunState};
@@ -74,6 +76,9 @@ pub struct Pipeline {
     pub user_context: String,
     pub current_date: String,
     pub max_attempts: u32,
+    /// How [`Pipeline::draft_plan`] produces a plan (config-selected;
+    /// defaults to one-shot).
+    pub draft_strategy: graph_config::DraftStrategy,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -97,6 +102,19 @@ pub enum PipelineError {
     /// render what happened. Never replans, never degrades.
     #[error("run aborted at step {step}")]
     Aborted { step: String, state: Box<RunState> },
+    /// Incremental drafting could not produce a valid step within its
+    /// budget. Carries the valid partial draft — everything accepted
+    /// before the failure — so interactive callers can salvage it
+    /// (mirrors `Aborted` carrying the partial run state).
+    #[error("plan drafting stopped at step {step_id}: {}", problems.join("; "))]
+    DraftStepExhausted {
+        step_id: String,
+        /// Failed attempts for the step (0 when the step budget, not the
+        /// per-step retry budget, ran out).
+        attempts: u32,
+        problems: Vec<String>,
+        partial: Box<PlannerOutput>,
+    },
 }
 
 /// Maximum plan-call nesting (cycles are caught by the call stack; this
@@ -521,11 +539,30 @@ impl Pipeline {
 
     // ── Planner ──────────────────────────────────────────────────────────
 
-    /// Ask the planner for a draft — catalog, prompt, one structured LLM
-    /// call. Nothing validates and nothing executes; the caller owns both
-    /// (see [`Pipeline::validate_plan`]). `existing` is a prior draft to
-    /// revise; `last_error` is validation or execution feedback to fix.
+    /// Ask the planner for a draft. Nothing executes; validation is the
+    /// caller's job for the one-shot strategy (see
+    /// [`Pipeline::validate_plan`]), while the incremental strategy
+    /// validates each step as it is drafted. `existing` is a prior draft
+    /// to revise; `last_error` is validation or execution feedback to fix.
     pub async fn draft_plan(
+        &self,
+        query: &str,
+        existing: Option<&PlannerOutput>,
+        last_error: Option<&str>,
+    ) -> Result<PlannerOutput, PipelineError> {
+        match self.draft_strategy {
+            graph_config::DraftStrategy::Oneshot => {
+                self.draft_plan_oneshot(query, existing, last_error).await
+            }
+            graph_config::DraftStrategy::Incremental => {
+                self.draft_plan_incremental(query, existing, last_error)
+                    .await
+            }
+        }
+    }
+
+    /// The one-shot strategy — catalog, prompt, one structured LLM call.
+    async fn draft_plan_oneshot(
         &self,
         query: &str,
         existing: Option<&PlannerOutput>,
@@ -553,18 +590,13 @@ impl Pipeline {
         Ok(output)
     }
 
-    /// The planner's system prompt: tool catalog (registry, control steps,
-    /// callable plans), observed shapes, and templating contract.
-    /// `existing_plan` is executed-and-immutable steps (replan
-    /// continuation), while `draft` is an unexecuted plan under revision
-    /// (workbench) — they are different prompt sections.
-    async fn planner_system(
-        &self,
-        existing_plan: &str,
-        next_step_id: &str,
-        last_error: Option<&str>,
-        draft: Option<&str>,
-    ) -> String {
+    /// Gather the planner-facing tool catalog shared by every system-prompt
+    /// builder: registry tools, the control-step defs (exit/decide/map/
+    /// reduce, in that order), and `plan__*` docs for plans not already on
+    /// the call stack, described against the shape cache (read fresh here so
+    /// each planning attempt sees the latest observed shapes). Returns the
+    /// described-tools text and the pretty-printed step schema.
+    async fn planner_catalog(&self) -> (String, String) {
         let mut tools = self.registry.tools().await.unwrap_or_default();
         tools.push(exit::exit_tool_def());
         tools.push(decision::decide_tool_def());
@@ -598,6 +630,22 @@ impl Pipeline {
             &serde_json::to_value(schemars::schema_for!(Step)).unwrap_or_default(),
         )
         .unwrap_or_default();
+        (tools_text, step_schema)
+    }
+
+    /// The planner's system prompt: tool catalog (registry, control steps,
+    /// callable plans), observed shapes, and templating contract.
+    /// `existing_plan` is executed-and-immutable steps (replan
+    /// continuation), while `draft` is an unexecuted plan under revision
+    /// (workbench) — they are different prompt sections.
+    async fn planner_system(
+        &self,
+        existing_plan: &str,
+        next_step_id: &str,
+        last_error: Option<&str>,
+        draft: Option<&str>,
+    ) -> String {
+        let (tools_text, step_schema) = self.planner_catalog().await;
 
         prompts::planner_prompt(&prompts::PlannerPromptArgs {
             current_date: &self.current_date,

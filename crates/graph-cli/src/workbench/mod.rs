@@ -23,7 +23,7 @@ use crossterm::terminal::{
 use effects::WorkbenchContext;
 use futures::StreamExt;
 use graph_core::pipeline::doc::{load_plan_doc, PlanDoc};
-use graph_core::{CompositeRegistry, EventSink, ToolRegistry};
+use graph_core::{CompositeRegistry, EventSink, ExcludingRegistry, ToolRegistry};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::{IsTerminal, Stdout};
@@ -66,9 +66,9 @@ each edit is validated atomically and rejected only if it would \
 introduce NEW validation problems, so sequential edits are safer than a \
 wholesale re-draft. Pre-existing problems never block an edit — they \
 are reported in the result so you can fix an already-invalid draft \
-step by step.\n\
-- workbench__set_plan: replace the draft with complete YAML (get, modify, \
-set) for wholesale rewrites the precise tools don't cover.\n\
+step by step. update_metadata also switches the plan's finish type via \
+its `finish` field (solver ⇄ output); the finish block is NOT a step — \
+never target it with add_step/update_step/delete_step.\n\
 - workbench__restore_draft: one-level undo of the last draft replacement \
 (again to redo) — use it when you or the user replaced the draft by \
 mistake.\n\
@@ -97,11 +97,14 @@ with side effects unprompted.";
 const CONTROL_STEP_NAMING: &str = "\n\n# Control steps\n\
 Step toolNames are namespaced `server__tool` names from the catalog \
 (e.g. linear__list_issues), plus ONLY these bare control steps: exit, \
-decide, map, reduce, and plan_and_execute. Plan steps may only reference \
+decide, map, and reduce. Plan steps may only reference \
 runtime tool namespaces — the workbench__ tools are yours alone and are \
 never valid as a step's toolName. There is no `gate`, `assert`, \
 or `exit_gate` tool and no `gate:` field. A plan finishes with `solver` \
-(LLM synthesis) OR `output` (a structured template map), never both.\n\n";
+(LLM synthesis) OR `output` (a structured template map), never both. \
+To change the finish type, call workbench__update_metadata with a \
+`finish` field — do not add or edit a step named solver/output (they \
+are plan fields, not steps).\n\n";
 
 pub async fn run(command: WorkbenchCommand, verbosity: u8) -> Result<()> {
     let WorkbenchCommand::Plan { name_or_path } = command;
@@ -199,6 +202,13 @@ async fn run_plan_workbench(
     // The chat agent: normal catalog + the workbench draft tools.
     let agent_sink: Arc<dyn EventSink> = Arc::new(chat::ChannelSink::agent(tx.clone()));
     let toolbox = runtime.toolbox(&store, agent_sink.clone()).await?;
+    // The workbench doesn't yet support open-ended sub-tasks, so hide
+    // `plan_and_execute` from both the chat agent's tool list and the
+    // Context tab's catalog view without removing it from the shared catalog.
+    let visible_catalog: Arc<dyn ToolRegistry> = Arc::new(ExcludingRegistry::new(
+        toolbox.clone() as Arc<dyn ToolRegistry>,
+        vec!["plan_and_execute".to_string()],
+    ));
     let plans_dir = runtime
         .config
         .plans
@@ -218,7 +228,7 @@ async fn run_plan_workbench(
             .context("failed to resolve the workbench project directory")?,
     );
     let registry: Arc<dyn ToolRegistry> = Arc::new(CompositeRegistry::new(vec![
-        toolbox.clone() as Arc<dyn ToolRegistry>,
+        visible_catalog.clone(),
         workbench_tools,
         fs_tools,
     ]));
@@ -242,7 +252,7 @@ async fn run_plan_workbench(
         pipeline,
         history: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         draft,
-        catalog: toolbox as Arc<dyn ToolRegistry>,
+        catalog: visible_catalog,
         store,
         plans_dir,
         debug,

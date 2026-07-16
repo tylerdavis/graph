@@ -17,4 +17,6 @@ mod user_tools_tests;
 
 pub use agent::{Agent, AgentError, EventSink, NullSink, TurnOutcome};
 pub use store::{Store, StoreError, ThreadMeta, ToolShape};
-pub use tools::{CompositeRegistry, ToolDef, ToolError, ToolOutcome, ToolRegistry};
+pub use tools::{
+    CompositeRegistry, ExcludingRegistry, ToolDef, ToolError, ToolOutcome, ToolRegistry,
+};

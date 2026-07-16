@@ -30,6 +30,30 @@ pub struct Config {
     pub prompts: PromptConfig,
     #[serde(default)]
     pub workbench: WorkbenchConfig,
+    #[serde(default)]
+    pub planner: PlannerConfig,
+}
+
+/// Plan-drafting behavior (`Pipeline::draft_plan` and the workbench's
+/// `workbench__draft_plan`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PlannerConfig {
+    /// How drafts are produced. The `GRAPH_DRAFT_STRATEGY` env var wins
+    /// over this setting.
+    pub draft_strategy: DraftStrategy,
+}
+
+/// How `draft_plan` produces a plan.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftStrategy {
+    /// One structured LLM call drafts the whole plan (the default).
+    #[default]
+    Oneshot,
+    /// Draft an outline first, then generate steps one inference at a
+    /// time, statically validating each before accepting it.
+    Incremental,
 }
 
 /// System-prompt overrides. Each field replaces the built-in text

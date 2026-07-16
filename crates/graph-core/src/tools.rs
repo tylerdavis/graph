@@ -79,3 +79,97 @@ impl ToolRegistry for CompositeRegistry {
         Err(ToolError::Unknown(name.to_string()))
     }
 }
+
+/// Wraps a registry and hides a fixed set of tool names from `tools()`,
+/// and refuses to invoke them (returns `ToolError::Unknown`). Used to
+/// scope a tool out of one surface (e.g. the workbench) without removing
+/// it from the shared catalog.
+pub struct ExcludingRegistry {
+    inner: std::sync::Arc<dyn ToolRegistry>,
+    hidden: Vec<String>,
+}
+
+impl ExcludingRegistry {
+    pub fn new(inner: std::sync::Arc<dyn ToolRegistry>, hidden: Vec<String>) -> Self {
+        Self { inner, hidden }
+    }
+}
+
+#[async_trait]
+impl ToolRegistry for ExcludingRegistry {
+    async fn tools(&self) -> Result<Vec<ToolDef>, ToolError> {
+        let mut defs = self.inner.tools().await?;
+        defs.retain(|d| !self.hidden.iter().any(|h| h == &d.name));
+        Ok(defs)
+    }
+    async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
+        if self.hidden.iter().any(|h| h == name) {
+            return Err(ToolError::Unknown(name.to_string()));
+        }
+        self.inner.invoke(name, input).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn def(name: &str) -> ToolDef {
+        ToolDef {
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            output_schema: None,
+            output_example: None,
+            read_only: None,
+        }
+    }
+
+    struct MockRegistry {
+        defs: Vec<ToolDef>,
+    }
+
+    #[async_trait]
+    impl ToolRegistry for MockRegistry {
+        async fn tools(&self) -> Result<Vec<ToolDef>, ToolError> {
+            Ok(self.defs.clone())
+        }
+
+        async fn invoke(&self, name: &str, _input: Value) -> Result<ToolOutcome, ToolError> {
+            if self.defs.iter().any(|d| d.name == name) {
+                Ok(ToolOutcome {
+                    result: Value::String(name.to_string()),
+                    is_error: false,
+                })
+            } else {
+                Err(ToolError::Unknown(name.to_string()))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn excluding_registry_hides_and_refuses() {
+        let inner: std::sync::Arc<dyn ToolRegistry> = std::sync::Arc::new(MockRegistry {
+            defs: vec![def("a"), def("plan_and_execute")],
+        });
+        let reg = ExcludingRegistry::new(inner, vec!["plan_and_execute".to_string()]);
+
+        let names: Vec<String> = reg
+            .tools()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(names, vec!["a".to_string()]);
+
+        let err = reg
+            .invoke("plan_and_execute", Value::Null)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Unknown(name) if name == "plan_and_execute"));
+
+        let outcome = reg.invoke("a", Value::Null).await.unwrap();
+        assert_eq!(outcome.result, Value::String("a".to_string()));
+    }
+}

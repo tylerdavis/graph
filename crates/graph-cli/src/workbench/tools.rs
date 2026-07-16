@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use graph_core::pipeline::doc::{
     apply_schema_defaults, load_plan_doc, validate_doc, validate_input, PlanDoc,
 };
-use graph_core::pipeline::{Pipeline, PlannerOutput, Step};
+use graph_core::pipeline::{Pipeline, PlannerOutput, SolverData, Step};
 use graph_core::{template, ToolDef, ToolError, ToolOutcome, ToolRegistry};
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
@@ -17,7 +17,6 @@ use tokio::sync::mpsc::UnboundedSender;
 
 pub const DRAFT_PLAN: &str = "workbench__draft_plan";
 pub const GET_PLAN: &str = "workbench__get_plan";
-pub const SET_PLAN: &str = "workbench__set_plan";
 pub const LOAD_PLAN: &str = "workbench__load_plan";
 pub const LIST_PLANS: &str = "workbench__list_plans";
 pub const VALIDATE_PLAN: &str = "workbench__validate_plan";
@@ -101,7 +100,7 @@ impl WorkbenchTools {
     }
 
     /// Replace the draft, stashing the displaced doc as the undo snapshot.
-    /// Deliberately unguarded: the edit path (draft_plan, set_plan, the
+    /// Deliberately unguarded: the edit path (draft_plan, the
     /// precise tools) preserves unsaved work by setting dirty=true, and any
     /// bad replacement is one restore away. Only load_plan needs the dirty
     /// guard, and it does its check-and-replace under the same lock.
@@ -146,7 +145,18 @@ impl WorkbenchTools {
                 is_error: true,
             });
         }
-        load_plan_doc(path).map_err(|error| error_outcome(&format!("failed to load plan: {error}")))
+        load_plan_doc(path).map_err(|error| {
+            let mut message = format!("failed to load plan: {error}");
+            if error.to_string().contains("unknown field") {
+                message.push_str(
+                    "\nhint: control flow is not a field — it is a step whose \
+                     toolName is one of the bare control steps exit, decide, map, \
+                     or reduce (there is no gate/assert tool); a plan finishes \
+                     with `solver` OR `output`, never both",
+                );
+            }
+            error_outcome(&message)
+        })
     }
 
     /// Read a plan's YAML without touching the draft — the inspection
@@ -383,6 +393,34 @@ impl WorkbenchTools {
             .await
         {
             Ok(output) => output,
+            // Incremental drafting exhausted its retries: salvage the
+            // valid prefix so the agent finishes it with the edit tools
+            // instead of redrafting from scratch.
+            Err(graph_core::pipeline::PipelineError::DraftStepExhausted {
+                step_id,
+                problems,
+                partial,
+                ..
+            }) => {
+                let doc = merge_planner_output(existing, goal, *partial);
+                let steps = doc.steps.len();
+                self.publish(doc, true);
+                return ToolOutcome {
+                    result: json!({
+                        "error": format!(
+                            "incremental drafting could not produce a valid \
+                             step {step_id}; the valid partial draft \
+                             ({steps} steps) has been published"
+                        ),
+                        "failedStep": step_id,
+                        "problems": problems,
+                        "note": "finish the plan with the editing tools \
+                                 (workbench__add_step, workbench__update_step) \
+                                 instead of redrafting",
+                    }),
+                    is_error: true,
+                };
+            }
             Err(error) => return error_outcome(&format!("planner failed: {error}")),
         };
 
@@ -456,49 +494,6 @@ impl WorkbenchTools {
         }
     }
 
-    fn set_plan(&self, input: &Value) -> ToolOutcome {
-        let Some(yaml) = input.get("yaml").and_then(Value::as_str) else {
-            return error_outcome(
-                "set_plan requires a 'yaml' string with a complete plan document",
-            );
-        };
-        let mut doc: PlanDoc = match serde_yaml::from_str(yaml) {
-            Ok(doc) => doc,
-            Err(error) => {
-                let mut message = format!("invalid plan YAML: {error}");
-                if error.to_string().contains("unknown field") {
-                    message.push_str(
-                        "\nhint: control flow is not a field — it is a step whose \
-                         toolName is one of the bare control steps exit, decide, map, \
-                         or reduce (there is no gate/assert tool); a plan finishes \
-                         with `solver` OR `output`, never both",
-                    );
-                }
-                return error_outcome(&message);
-            }
-        };
-        if let Err(problem) = validate_doc(&doc) {
-            return error_outcome(&format!("invalid plan: {problem}"));
-        }
-        if let Err(problems) = self.pipeline.validate_plan(&doc.steps) {
-            return error_outcome(&format!("invalid plan: {}", problems.join("; ")));
-        }
-        // Keep the on-disk identity of the draft being edited — but only
-        // while it IS the same plan. If the yaml changes the identifier,
-        // this is a different plan now; carrying the old file's path
-        // forward would make the next save overwrite that file.
-        doc.path = self
-            .current()
-            .filter(|prior| prior.identifier == doc.identifier)
-            .and_then(|prior| prior.path);
-        let summary = json!({"ok": true, "identifier": doc.identifier, "steps": doc.steps.len()});
-        self.publish(doc, true);
-        ToolOutcome {
-            result: summary,
-            is_error: false,
-        }
-    }
-
     /// Every validation problem in a doc: plan-level plus document-level.
     fn doc_problems(&self, doc: &PlanDoc) -> Vec<String> {
         let mut problems = self
@@ -569,7 +564,8 @@ impl WorkbenchTools {
         }
     }
 
-    /// Patch the draft's metadata: identifier, name, description, exemplars.
+    /// Patch the draft's plan-level fields: identifier, name, description,
+    /// exemplars, and/or the finish type (solver ⇄ output).
     fn update_metadata(&self, input: &Value) -> ToolOutcome {
         self.edit_draft(|doc| {
             let mut changed = false;
@@ -577,7 +573,8 @@ impl WorkbenchTools {
                 if identifier != doc.identifier {
                     // A new identifier is a different plan: drop the on-disk
                     // identity so the next save creates a new file instead
-                    // of overwriting the old plan (same rule as set_plan).
+                    // of overwriting the old plan — the draft's on-disk
+                    // identity is kept only while the identifier is unchanged.
                     doc.path = None;
                 }
                 doc.identifier = identifier.to_string();
@@ -599,10 +596,40 @@ impl WorkbenchTools {
                     .collect();
                 changed = true;
             }
+            if let Some(finish) = input.get("finish") {
+                let has_solver = finish.get("solver").is_some();
+                let has_output = finish.get("output").is_some();
+                match (has_solver, has_output) {
+                    (true, true) => {
+                        return Err(
+                            json!({"error": "finish: pass 'solver' OR 'output', not both"}),
+                        );
+                    }
+                    (false, false) => {
+                        return Err(json!({"error": "finish requires 'solver' {queryToAnswer, systemPrompt?} or 'output' {<template map>}"}));
+                    }
+                    (true, false) => {
+                        let solver_val = finish.get("solver").unwrap();
+                        let solver: SolverData = serde_json::from_value(solver_val.clone())
+                            .map_err(|error| json!({"error": format!("invalid solver: {error}")}))?;
+                        doc.solver = Some(solver);
+                        doc.output = None;
+                        changed = true;
+                    }
+                    (false, true) => {
+                        let output_val = finish.get("output").unwrap();
+                        let output: Map<String, Value> = serde_json::from_value(output_val.clone())
+                            .map_err(|error| json!({"error": format!("invalid output: expected a template map — {error}")}))?;
+                        doc.output = Some(output);
+                        doc.solver = None;
+                        changed = true;
+                    }
+                }
+            }
             if !changed {
                 return Err(json!({
                     "error": "update_metadata needs at least one of \
-                              identifier, name, description, exemplars"
+                              identifier, name, description, exemplars, finish"
                 }));
             }
             Ok(json!({"ok": true, "identifier": doc.identifier, "name": doc.name}))
@@ -960,7 +987,8 @@ impl ToolRegistry for WorkbenchTools {
             ToolDef {
                 name: GET_PLAN.to_string(),
                 description: "Read the current draft plan as YAML. Call this before making \
-                              targeted edits with workbench__set_plan."
+                              targeted edits with the step tools (add_step, update_step, \
+                              delete_step)."
                     .to_string(),
                 input_schema: json!({"type": "object", "properties": {}}),
                 output_schema: None,
@@ -1029,30 +1057,14 @@ impl ToolRegistry for WorkbenchTools {
                 read_only: None,
             },
             ToolDef {
-                name: SET_PLAN.to_string(),
-                description: "Replace the draft plan with a complete YAML plan document \
-                              (identifier, name, description, steps, and solver/output). \
-                              Invalid documents are rejected with the problems to fix. \
-                              For targeted changes, prefer the precise editing tools \
-                              (update_metadata, add_step, update_step, delete_step)."
-                    .to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "required": ["yaml"],
-                    "properties": {
-                        "yaml": {"type": "string", "description": "The complete plan document as YAML."}
-                    }
-                }),
-                output_schema: None,
-                output_example: None,
-                read_only: None,
-            },
-            ToolDef {
                 name: UPDATE_METADATA.to_string(),
-                description: "Update the draft's metadata: identifier, name, description, \
-                              and/or exemplars. Changing the identifier makes it a new \
-                              plan — the next save writes a new file instead of the one \
-                              it was loaded from."
+                description: "Update the draft's plan-level fields: identifier, name, \
+                              description, exemplars, and/or the finish type. `finish` sets \
+                              how the plan produces its result — {solver: {queryToAnswer, \
+                              systemPrompt?}} for LLM synthesis of the step results, or \
+                              {output: {<template map>}} for a structured templated result — \
+                              solver and output are mutually exclusive. Changing the \
+                              identifier makes it a new plan."
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -1060,7 +1072,15 @@ impl ToolRegistry for WorkbenchTools {
                         "identifier": {"type": "string", "description": "Tool-name-safe identifier (letters, digits, _, -). Changing it detaches the draft from its loaded file."},
                         "name": {"type": "string", "description": "Human-readable display name."},
                         "description": {"type": "string", "description": "What the plan does — shown in the catalog and used for routing."},
-                        "exemplars": {"type": "array", "items": {"type": "string"}, "description": "Example requests the plan should handle; replaces the current list."}
+                        "exemplars": {"type": "array", "items": {"type": "string"}, "description": "Example requests the plan should handle; replaces the current list."},
+                        "finish": {
+                            "type": "object",
+                            "description": "Set the plan's finish type. Provide EITHER 'solver' {queryToAnswer: string, systemPrompt?: string} for LLM synthesis, OR 'output' {a map of key -> template string} for a structured result. Mutually exclusive.",
+                            "properties": {
+                                "solver": {"type": "object", "properties": {"queryToAnswer": {"type": "string"}, "systemPrompt": {"type": "string"}}},
+                                "output": {"type": "object", "description": "Map of output key to template string, e.g. {\"summary\": \"{{E3.text}}\"}."}
+                            }
+                        }
                     }
                 }),
                 output_schema: None,
@@ -1188,8 +1208,8 @@ impl ToolRegistry for WorkbenchTools {
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
         match name {
-            DRAFT_PLAN | GET_PLAN | SET_PLAN | LOAD_PLAN | LIST_PLANS | VALIDATE_PLAN
-            | RUN_PLAN | SAVE_PLAN | UPDATE_METADATA | ADD_STEP | UPDATE_STEP | DELETE_STEP
+            DRAFT_PLAN | GET_PLAN | LOAD_PLAN | LIST_PLANS | VALIDATE_PLAN | RUN_PLAN
+            | SAVE_PLAN | UPDATE_METADATA | ADD_STEP | UPDATE_STEP | DELETE_STEP
             | RESTORE_DRAFT | SHOW_PLAN => {}
             // Not ours: stay silent, or the composite registry's fallthrough
             // (the fs tools are also workbench__*) double-logs the call.
@@ -1198,13 +1218,12 @@ impl ToolRegistry for WorkbenchTools {
         tracing::debug!(
             target: "workbench",
             "agent invoked {name}: {}",
-            super::runner::truncate(&input.to_string(), 300)
+            input.to_string()
         );
         let started = std::time::Instant::now();
         let outcome = match name {
             DRAFT_PLAN => Ok(self.draft_plan(&input).await),
             GET_PLAN => Ok(self.get_plan()),
-            SET_PLAN => Ok(self.set_plan(&input)),
             LOAD_PLAN => Ok(self.load_plan(&input)),
             LIST_PLANS => Ok(self.list_plans()),
             VALIDATE_PLAN => Ok(self.validate_plan()),
@@ -1224,7 +1243,7 @@ impl ToolRegistry for WorkbenchTools {
                 "{name} finished in {:.1}s (is_error={}): {}",
                 started.elapsed().as_secs_f64(),
                 outcome.is_error,
-                super::runner::truncate(&outcome.result.to_string(), 300)
+                outcome.result.to_string()
             );
         }
         outcome
@@ -1251,6 +1270,7 @@ mod tests {
             user_context: String::new(),
             current_date: String::new(),
             max_attempts: 1,
+            draft_strategy: graph_config::DraftStrategy::Oneshot,
         })
     }
 
@@ -1522,37 +1542,6 @@ steps:
     }
 
     #[test]
-    fn set_plan_keeps_the_loaded_path_only_for_the_same_plan() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut loaded = demo_doc();
-        loaded.path = Some(PathBuf::from("/plans/demo.yaml"));
-        let draft: SharedDraft = Arc::new(Mutex::new(DraftState::new(Some(loaded))));
-        let tools = WorkbenchTools::new(
-            draft.clone(),
-            test_pipeline(vec![]),
-            None,
-            Arc::new(DebugControls::default()),
-            tx,
-        );
-
-        // Same identifier: a surgical edit keeps the on-disk identity.
-        let same = serde_yaml::to_string(&demo_doc()).unwrap();
-        assert!(!tools.set_plan(&json!({ "yaml": same })).is_error);
-        assert_eq!(
-            draft.lock().unwrap().doc.as_ref().unwrap().path,
-            Some(PathBuf::from("/plans/demo.yaml"))
-        );
-
-        // Different identifier: this is a different plan now — carrying
-        // the path forward would make the next save overwrite demo.yaml.
-        let mut other = demo_doc();
-        other.identifier = "other_plan".to_string();
-        let other = serde_yaml::to_string(&other).unwrap();
-        assert!(!tools.set_plan(&json!({ "yaml": other })).is_error);
-        assert_eq!(draft.lock().unwrap().doc.as_ref().unwrap().path, None);
-    }
-
-    #[test]
     fn save_refuses_to_overwrite_a_file_holding_another_plan() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("demo.yaml");
@@ -1682,6 +1671,52 @@ solver:
         let outcome = tools.update_metadata(&json!({}));
         assert!(outcome.is_error);
         assert!(rx.try_recv().is_err(), "nothing should have been published");
+    }
+
+    #[test]
+    fn update_metadata_switches_finish_type_both_directions() {
+        // referencing_doc finishes with solver; switch it to output.
+        let (tools, draft, mut rx) = editing_tools(Some(referencing_doc()));
+        let outcome =
+            tools.update_metadata(&json!({"finish": {"output": {"summary": "{{E0.text}}"}}}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        let doc = draft.lock().unwrap().doc.clone().unwrap();
+        assert!(doc.solver.is_none(), "solver should be cleared");
+        let output = doc.output.expect("output should be set");
+        assert!(output.contains_key("summary"));
+        assert_dirty_publish(&mut rx);
+
+        // Reverse: from an output finish back to a solver.
+        let outcome =
+            tools.update_metadata(&json!({"finish": {"solver": {"queryToAnswer": "answer it"}}}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        let doc = draft.lock().unwrap().doc.clone().unwrap();
+        assert!(doc.output.is_none(), "output should be cleared");
+        let solver = doc.solver.expect("solver should be set");
+        assert_eq!(solver.query_to_answer, "answer it");
+    }
+
+    #[test]
+    fn update_metadata_finish_rejects_both_and_neither() {
+        let (tools, _draft, _rx) = editing_tools(Some(referencing_doc()));
+
+        let both = tools.update_metadata(&json!({
+            "finish": {"solver": {"queryToAnswer": "x"}, "output": {"k": "v"}}
+        }));
+        assert!(both.is_error);
+        assert!(
+            both.result["error"].as_str().unwrap().contains("not both"),
+            "{:?}",
+            both.result
+        );
+
+        let neither = tools.update_metadata(&json!({"finish": {}}));
+        assert!(neither.is_error);
+        let message = neither.result["error"].as_str().unwrap();
+        assert!(
+            message.contains("solver") && message.contains("output"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -1958,11 +1993,14 @@ steps:
     }
 
     #[test]
-    fn set_plan_unknown_field_error_includes_a_control_flow_hint() {
-        let (tools, _draft, _rx) = editing_tools(Some(referencing_doc()));
+    fn load_plan_unknown_field_error_includes_a_control_flow_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.yaml");
         let yaml = "identifier: demo\nname: Demo\ndescription: d\nsteps:\n\
                     - id: E0\n  tool_name: t__x\n  input: {}\ngate:\n  condition: true\n";
-        let outcome = tools.set_plan(&json!({ "yaml": yaml }));
+        std::fs::write(&path, yaml).unwrap();
+        let (tools, _draft, _rx) = editing_tools(None);
+        let outcome = tools.load_plan(&json!({ "name_or_path": path.to_str().unwrap() }));
         assert!(outcome.is_error);
         let message = outcome.result["error"].as_str().unwrap();
         assert!(message.contains("unknown field"), "{message}");
@@ -2152,6 +2190,7 @@ steps:
             user_context: String::new(),
             current_date: String::new(),
             max_attempts: 1,
+            draft_strategy: graph_config::DraftStrategy::Oneshot,
         });
         (pipeline, provider)
     }
@@ -2263,5 +2302,101 @@ steps:
         assert_eq!(outcome.result["validation"], json!("ok"));
         assert!(outcome.result.get("repairAttempted").is_none());
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    }
+
+    // ── incremental drafting (scripted LLM) ────────────────────────────
+
+    fn incremental_pipeline(outputs: Vec<Value>) -> (Arc<Pipeline>, Arc<ScriptedProvider>) {
+        let (pipeline, provider) = scripted_pipeline(outputs);
+        let mut pipeline = (*pipeline).clone();
+        pipeline.draft_strategy = graph_config::DraftStrategy::Incremental;
+        (Arc::new(pipeline), provider)
+    }
+
+    fn outline_output() -> Value {
+        json!({
+            "items": [
+                {"summary": "search for x", "expectedTool": "t__search"},
+                {"summary": "report on it", "expectedTool": "t__report"},
+            ],
+            "queryToAnswer": "report on x",
+        })
+    }
+
+    #[tokio::test]
+    async fn incremental_draft_publishes_once_when_complete() {
+        let (pipeline, provider) = incremental_pipeline(vec![
+            outline_output(),
+            json!({"step": {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+                   "planComplete": false}),
+            json!({"step": {"id": "E1", "toolName": "t__report",
+                            "input": {"rows": "{{E0.values}}"}},
+                   "planComplete": true}),
+        ]);
+        let (tools, mut rx) = draft_tools(pipeline);
+
+        let outcome = tools.draft_plan(&json!({"goal": "report on x"})).await;
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert_eq!(outcome.result["validation"], json!("ok"));
+        assert_eq!(outcome.result["steps"], json!(2));
+        assert_eq!(
+            provider.requests.lock().unwrap().len(),
+            3,
+            "outline + one call per step; per-step validation means no repair pass"
+        );
+        // Exactly one publish — partial plans never hit the shared doc.
+        match rx.try_recv().unwrap() {
+            Msg::DraftReplaced { doc, dirty } => {
+                assert!(dirty);
+                assert_eq!(doc.steps.len(), 2);
+                assert_eq!(doc.solver.as_ref().unwrap().query_to_answer, "report on x");
+            }
+            _ => panic!("expected DraftReplaced"),
+        }
+        assert!(rx.try_recv().is_err(), "one publish only");
+    }
+
+    #[tokio::test]
+    async fn incremental_draft_exhaustion_salvages_the_valid_prefix() {
+        let invalid_step = || {
+            json!({"step": {"id": "E1", "toolName": "t__report",
+                            "input": {"rows": "{{E9.values}}"}},
+                   "planComplete": false})
+        };
+        let (pipeline, _) = incremental_pipeline(vec![
+            outline_output(),
+            json!({"step": {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+                   "planComplete": false}),
+            invalid_step(),
+            invalid_step(),
+            invalid_step(),
+        ]);
+        let (tools, mut rx) = draft_tools(pipeline);
+
+        let outcome = tools.draft_plan(&json!({"goal": "report on x"})).await;
+        assert!(outcome.is_error);
+        assert_eq!(outcome.result["failedStep"], json!("E1"));
+        assert!(
+            outcome.result["problems"].to_string().contains("E9"),
+            "{:?}",
+            outcome.result
+        );
+        assert!(
+            outcome.result["note"]
+                .as_str()
+                .unwrap()
+                .contains("editing tools"),
+            "{:?}",
+            outcome.result
+        );
+        // The valid prefix was published (dirty) for the agent to finish.
+        match rx.try_recv().unwrap() {
+            Msg::DraftReplaced { doc, dirty } => {
+                assert!(dirty);
+                assert_eq!(doc.steps.len(), 1);
+                assert_eq!(doc.steps[0].id, "E0");
+            }
+            _ => panic!("expected DraftReplaced"),
+        }
     }
 }

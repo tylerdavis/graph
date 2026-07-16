@@ -120,6 +120,16 @@ backend = "file"        # default: plain files under data_dir
 # backend = "memory"    # ephemeral (CI); or GRAPH_STORAGE=memory
 ```
 
+## `[planner]`
+
+```toml
+[planner]
+draft_strategy = "oneshot"        # default: one call drafts the whole plan
+# draft_strategy = "incremental"  # outline first, then one validated step per call
+```
+
+How `draft_plan` (the plan-without-executing planner entry, behind the workbench's `workbench__draft_plan`) produces a plan. The default `oneshot` drafts the whole plan in one structured LLM call. `incremental` drafts a rough **outline** first (2–8 stages, plus the solver's brief), then generates the real steps one inference at a time — each step sees the outline and every previously accepted step, is statically validated before acceptance, and invalid steps are retried up to 3 times with the validation problems injected as feedback. If retries exhaust, the valid prefix is kept (the workbench publishes it as the draft so the agent can finish it with the editing tools). The `GRAPH_DRAFT_STRATEGY` [environment variable](/reference/environment) overrides this setting.
+
 ## `[user]`
 
 Injected into the agent's and planner's context:
