@@ -26,8 +26,10 @@ Generic LLM inference — the [`prompt` tool kind](/tools/user-defined) exposed 
 | Input | Type |  |
 | --- | --- | --- |
 | `instruction` | string | required — complete, self-contained instruction; interpolate the data to analyze with `{{Ex...}}` templates |
-| `output_schema` | object | optional — JSON Schema for the result; omit for `{ "text": ... }` |
+| `output_schema` | object | optional — an object JSON Schema for the result (top-level `"type": "object"` plus a `properties` map); omit for `{ "text": ... }` |
 | `model` | string | optional — a [named model](/reference/configuration#modelsnamed--named-models) (or role name) to run on; omit for the chat default. When named models are configured, the catalog advertises them on this input with their descriptions, steering the planner toward the smallest adequate model |
+
+The `output_schema` must be an **object** schema — give it an explicit top-level `"type": "object"` and a `properties` map, e.g. `{"type":"object","properties":{"score":{"type":"number"}},"required":["score"]}`. A bare `{properties, required}` with the `type` omitted is coerced to an object rather than rejected, but write it out: the schema is also what the provider validates against.
 
 To analyze each element of a list, call `infer` inside a [`map` body](/plans/iteration#per-item-inference) with `{{item}}` interpolated per call rather than interpolating the whole list into one instruction — small, focused contexts are cheaper and more accurate, and `concurrency` recovers the speed. Interpolate a whole list only for genuinely cross-item questions (ranking, deduplication, aggregation). The tool's description steers the planner the same way.
 

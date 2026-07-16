@@ -298,6 +298,83 @@ prompt: "Summarize: {{input.text}}"
     assert_eq!(outcome.result, json!({"text": "echo: Summarize: hi"}));
 }
 
+#[tokio::test]
+async fn caller_schema_without_type_gets_object_defaulted() {
+    // A caller who authored `output_schema` as just `{properties, required}`
+    // (no top-level `type`) must still get valid structured output — the
+    // provider is handed a schema with `"type": "object"` filled in, not the
+    // invalid one that would 400. Capture what reaches the provider.
+    use std::sync::Mutex;
+    #[derive(Clone)]
+    struct Capture(Arc<Mutex<Option<Value>>>);
+    #[async_trait]
+    impl ChatProvider for Capture {
+        async fn chat(&self, req: ChatRequest) -> Result<ChatResponse, LlmError> {
+            *self.0.lock().unwrap() = req.response_schema.as_ref().map(|s| s.schema.clone());
+            Ok(ChatResponse {
+                content: None,
+                tool_calls: vec![],
+                structured: Some(json!({"pattern": "x", "reason": "y"})),
+                stop_reason: StopReason::EndTurn,
+                usage: Usage::default(),
+            })
+        }
+        async fn chat_stream(&self, _req: ChatRequest) -> Result<EventStream, LlmError> {
+            unimplemented!()
+        }
+    }
+    let seen = Arc::new(Mutex::new(None));
+    let mut providers: HashMap<String, Arc<dyn ChatProvider>> = HashMap::new();
+    providers.insert("mock".into(), Arc::new(Capture(seen.clone())));
+    let router = Arc::new(ModelRouter::with_providers(
+        providers,
+        ModelRoles {
+            default: Some(ModelChoice {
+                provider: "mock".into(),
+                model: "m".into(),
+                temperature: None,
+                dimensions: None,
+                description: None,
+            }),
+            ..Default::default()
+        },
+    ));
+    let tool = doc(r#"
+name: infer
+description: generic inference
+kind: prompt
+prompt: "{{input.instruction}}"
+caller_output_schema: true
+input_schema:
+  type: object
+  required: [instruction]
+  properties:
+    instruction: { type: string }
+    output_schema: { type: object }
+"#);
+    let registry = UserToolRegistry::new(vec![tool], router);
+    let outcome = registry
+        .invoke(
+            "user__infer",
+            json!({
+                "instruction": "classify",
+                // No top-level `type` — exactly the shape that 400'd in the wild.
+                "output_schema": {
+                    "properties": {"pattern": {"type": "string"}, "reason": {"type": "string"}},
+                    "required": ["pattern", "reason"],
+                },
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "result: {:?}", outcome.result);
+    let forwarded = seen.lock().unwrap().clone().expect("schema forwarded");
+    assert_eq!(
+        forwarded["type"], "object",
+        "top-level type must be defaulted before reaching the provider"
+    );
+}
+
 // ── Git-backed pack tools (real git, scratch repo, no network) ───────────
 
 /// One-commit git repo: greeting.txt at the root, src/lib.rs with two fns.
