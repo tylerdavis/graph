@@ -108,9 +108,18 @@ def render(session, width, color):
 
     pending_invoke = None  # (tool, input, ts) awaiting its finished line
     in_turn = False
-    turn_start_ts = None  # start of the current turn (outline duration baseline)
     drafting_started = False  # emit the drafting-phase header once per draft
     step_open = None  # (start_ts, summary) of the draft step awaiting its finish
+
+    # A draft_plan tool call brackets its interior events (outline + steps),
+    # which the log emits between the tool's invoke and finish lines. Buffer
+    # those interior rows so the parent header (at invoke time) prints ABOVE
+    # them in chronological order, instead of the finish line trailing below.
+    draft_invoke_ts = None  # start of the enclosing draft_plan call, if open
+    interior = None  # buffered interior rows while a draft_plan is open
+
+    def emit(line):
+        (interior if interior is not None else out).append(line)
 
     for ev in session[1:]:
         b = ev["body"]
@@ -124,7 +133,6 @@ def render(session, width, color):
         m = TURN_START.search(b)
         if m:
             in_turn = True
-            turn_start_ts = ev["ts"]
             out.append(f"┃ {c('dim', t)}  {c('cyan', '▸ turn')} {c('dim', f'({m.group(1)} chars in)')}")
             continue
 
@@ -143,6 +151,11 @@ def render(session, width, color):
         m = INVOKED.search(b)
         if m:
             pending_invoke = (m.group(1), m.group(2), ev["ts"])
+            if m.group(1).endswith("draft_plan"):
+                # Open the parent span: interior rows buffer until finish.
+                draft_invoke_ts = ev["ts"]
+                interior = []
+                drafting_started = False
             continue
 
         m = TOOL_FIN.search(b)
@@ -160,6 +173,17 @@ def render(session, width, color):
                     raw_in = pending_invoke[1]
                     if raw_in.strip() not in ("{}", ""):
                         inp = c("dim", "  ← " + clip(raw_in, width))
+            if draft_invoke_ts is not None and tool.endswith("draft_plan"):
+                # Close the parent span: header (at invoke clock + duration)
+                # ABOVE its buffered interior rows, in chronological order.
+                out.append(f"┃ {c('dim', start_t)}  {glyph} {name} {c('dim', fmt_dur(dur))}{inp}")
+                if err and result and width:
+                    out.append(f"┃         {c('red', '  ' + clip(result, width * 2 or 999))}")
+                out.extend(interior)
+                interior = None
+                draft_invoke_ts = None
+                pending_invoke = None
+                continue
             line = f"┃ {c('dim', start_t)}  {glyph} {name} {c('dim', fmt_dur(dur))}{inp}"
             out.append(line)
             if err and result and width:
@@ -169,15 +193,15 @@ def render(session, width, color):
 
         m = DRAFT_OUTLINE.search(b)
         if m:
-            # A new outline begins a fresh draft; the drafting phase (a
-            # separate, sibling phase) hasn't started yet. The outline is a
-            # one-shot call — its cost is the gap since the turn started.
+            # The outline is a one-shot call at the start of the enclosing
+            # draft_plan; its cost is the gap since that call was invoked
+            # (NOT the turn start, which is far earlier).
             drafting_started = False
-            out_t = clk(turn_start_ts) if turn_start_ts else t
+            out_t = clk(draft_invoke_ts) if draft_invoke_ts else t
             dur = ""
-            if turn_start_ts:
-                dur = c("dim", fmt_dur((ev["ts"] - turn_start_ts).total_seconds()))
-            out.append(f"┃ {c('dim', out_t)}    {c('yellow', f'✎ draft outline — {m.group(1)} stages')}  {dur}")
+            if draft_invoke_ts:
+                dur = c("dim", fmt_dur((ev["ts"] - draft_invoke_ts).total_seconds()))
+            emit(f"┃ {c('dim', out_t)}    {c('yellow', f'✎ draft outline — {m.group(1)} stages')}  {dur}")
             continue
 
         m = DRAFT_STEP_START.search(b)
@@ -185,7 +209,7 @@ def render(session, width, color):
             if not drafting_started:
                 # First drafting step: open the drafting phase as its own
                 # sibling of the outline (same indent), not nested under it.
-                out.append(f"┃ {c('dim', t)}    {c('blue', '✍ drafting plan — step-by-step')}")
+                emit(f"┃ {c('dim', t)}    {c('blue', '✍ drafting plan — step-by-step')}")
                 drafting_started = True
             # Fold start+finish into one row: stash the start ts and summary,
             # emit on the matching finish with a real duration.
@@ -202,7 +226,7 @@ def render(session, width, color):
             dur = c("dim", fmt_dur((ev["ts"] - start_ts).total_seconds()))
             if ok:
                 label = f"{c('yellow', f'step {step}')} {c('dim', clip(summary, width))}"
-                out.append(f"┃ {c('dim', step_t)}      {glyph} {label}  {dur}")
+                emit(f"┃ {c('dim', step_t)}      {glyph} {label}  {dur}")
                 step_open = None
             else:
                 # A rejected attempt; the step keeps drafting. Show it, then
@@ -210,7 +234,7 @@ def render(session, width, color):
                 # this finish (the next attempt began here).
                 note = f"attempt {attempt}: {probs} problem(s)"
                 label = f"{c('yellow', f'step {step}')} {c('dim', clip(summary, width))}"
-                out.append(f"┃ {c('dim', step_t)}      {glyph} {label} {c('dim', note)}  {dur}")
+                emit(f"┃ {c('dim', step_t)}      {glyph} {label} {c('dim', note)}  {dur}")
                 step_open = (ev["ts"], summary)
             continue
 
