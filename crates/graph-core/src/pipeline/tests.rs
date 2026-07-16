@@ -2854,6 +2854,76 @@ async fn incremental_draft_emits_progress_events() {
 }
 
 #[tokio::test]
+async fn incremental_draft_force_completes_when_outline_is_covered_and_planner_never_signals_done()
+{
+    // A 2-stage outline, then valid steps that NEVER set planComplete. The
+    // loop must cover the outline, allow MAX_OVERFLOW_STEPS extra, then
+    // force-close — not grind to the step budget or error.
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = pipeline(
+        vec![
+            outline_response(),
+            step_draft(search_step("E0"), false), // stage 1
+            step_draft(search_step("E1"), false), // stage 2
+            step_draft(search_step("E2"), false), // overflow 1 (closing)
+            step_draft(search_step("E3"), false), // overflow 2 (closing)
+                                                  // No more responses: the loop must force-close before asking again.
+        ],
+        registry.clone(),
+        1,
+    );
+    let output = incremental(pipeline)
+        .draft_plan("sprint status", None, None)
+        .await
+        .unwrap();
+
+    // 2 stages + MAX_OVERFLOW_STEPS (2) = 4 accepted steps, no more.
+    assert!(
+        output.plan.len() <= 4,
+        "force-close caps the plan at outline + overflow: {}",
+        output.plan.len()
+    );
+    assert_eq!(
+        output.plan.len(),
+        4,
+        "all four scripted steps are accepted before force-close"
+    );
+    assert!(
+        !output.solver_data.data.is_empty(),
+        "solver data is assembled from the drafted plan"
+    );
+    assert!(
+        registry.invocations.lock().unwrap().is_empty(),
+        "drafting must not execute"
+    );
+
+    let requests = provider.requests.lock().unwrap();
+    // outline + 4 steps = 5; well under the old max_draft_steps (8) + 1 budget.
+    assert_eq!(requests.len(), 5, "outline + four steps, then force-close");
+    assert!(
+        requests.len() < 9,
+        "must not grind toward the step budget: {}",
+        requests.len()
+    );
+    // The overflow (closing) calls use the closing wording, not a stale stage.
+    let closing_users: Vec<String> = requests[3]
+        .messages
+        .iter()
+        .chain(requests[4].messages.iter())
+        .filter_map(|message| match message {
+            graph_llm::types::ChatMessage::User { content } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        closing_users
+            .iter()
+            .any(|turn| turn.contains("Every outline stage now has a step")),
+        "closing requests use closing_step_request wording: {closing_users:?}"
+    );
+}
+
+#[tokio::test]
 async fn incremental_draft_rejects_an_empty_outline() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, _) = pipeline(

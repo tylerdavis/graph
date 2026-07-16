@@ -284,6 +284,17 @@ pub fn step_request(next_step_id: &str, stage_number: usize, summary: &str) -> S
     )
 }
 
+/// A closing step request used once every outline stage already has a
+/// step: push the planner to finish rather than re-draft the last stage.
+pub fn closing_step_request(next_step_id: &str) -> String {
+    format!(
+        "Every outline stage now has a step. If the plan is complete, return \
+         step: null with planComplete: true. Only if one concrete additional \
+         step is genuinely required to finish the plan, emit exactly that step \
+         as {next_step_id} and set planComplete: true on it."
+    )
+}
+
 /// Describe tools for the planner: name, description, input schema, and the
 /// best available output shape (declared schema > override > observed).
 pub fn describe_tools(tools: &[ToolDef], shapes: &HashMap<String, ToolShape>) -> String {
@@ -419,5 +430,13 @@ mod tests {
         assert!(request.contains("step E2"));
         assert!(request.contains("stage 3: fetch the issues"));
         assert!(request.contains("planComplete: true"));
+    }
+
+    #[test]
+    fn closing_step_request_pushes_the_planner_to_finish() {
+        let request = closing_step_request("E5");
+        assert!(request.contains("Every outline stage now has a step"));
+        assert!(request.contains("planComplete: true"));
+        assert!(request.contains("E5"));
     }
 }

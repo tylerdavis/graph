@@ -63,6 +63,11 @@ pub struct StepDraft {
 /// the same ceiling without hardcoding it.
 pub const MAX_STEP_ATTEMPTS: u32 = 3;
 
+/// After every outline stage has a step, allow at most this many extra
+/// steps before force-completing — the outline was covered, so the plan
+/// is almost certainly done even if the planner didn't say so.
+const MAX_OVERFLOW_STEPS: usize = 2;
+
 impl Pipeline {
     /// The incremental strategy: outline → one validated step per call.
     /// See the module docs for the conversation discipline.
@@ -106,18 +111,34 @@ impl Pipeline {
         let mut plan: Plan = Vec::new();
         let mut complete = false;
         'stages: for index in 0..max_draft_steps {
-            // Advisory stage mapping: past the outline's end the last
-            // stage's summary carries (steps may outnumber stages).
-            let summary = outline
-                .items
-                .get(index.min(outline.items.len() - 1))
-                .map(|item| item.summary.as_str())
-                .unwrap_or("additional step");
+            if index >= outline.items.len() + MAX_OVERFLOW_STEPS {
+                // Outline fully covered and the planner still hasn't signaled
+                // done; a covered plan is almost certainly complete — close it
+                // rather than fail the whole draft.
+                complete = true;
+                break 'stages;
+            }
+            // Once every outline stage has a step we stop re-feeding the last
+            // stage's summary and instead apply closing pressure.
+            let closing = index >= outline.items.len();
             let next_step_id = next_step_id(&plan);
-            self.events.draft_step_started(index, summary);
-            let request = ChatMessage::User {
-                content: prompts::step_request(&next_step_id, index + 1, summary),
+            let (summary, request) = if closing {
+                (
+                    "finalize the plan",
+                    ChatMessage::User {
+                        content: prompts::closing_step_request(&next_step_id),
+                    },
+                )
+            } else {
+                let summary = outline.items[index].summary.as_str();
+                (
+                    summary,
+                    ChatMessage::User {
+                        content: prompts::step_request(&next_step_id, index + 1, summary),
+                    },
+                )
             };
+            self.events.draft_step_started(index, summary);
 
             // Failed attempts accumulate here and are discarded on
             // acceptance — the persistent history carries only valid work.
