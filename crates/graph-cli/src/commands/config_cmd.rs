@@ -15,6 +15,11 @@ const STARTER_CONFIG: &str = r#"# graph configuration
 # backend = "file"      # default: plain files under data_dir
 # backend = "memory"    # ephemeral (CI jobs); or set GRAPH_STORAGE=memory
 
+# [planner]
+# draft_strategy = "oneshot"        # default: one call drafts the whole plan
+# draft_strategy = "incremental"    # outline first, then one validated step
+#                                   # per call; or set GRAPH_DRAFT_STRATEGY
+
 [providers.anthropic]
 type = "anthropic"
 api_key = "${ANTHROPIC_API_KEY}"

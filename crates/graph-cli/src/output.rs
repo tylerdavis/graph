@@ -103,6 +103,31 @@ impl EventSink for TtySink {
         self.line("✎ planning…");
     }
 
+    fn draft_outline(&self, items: &Value) {
+        let count = items.as_array().map_or(0, Vec::len);
+        self.line(&format!("✎ outline: {count} stages"));
+        if let Some(items) = items.as_array() {
+            for item in items {
+                let summary = item.get("summary").and_then(Value::as_str).unwrap_or("…");
+                self.line(&format!("    {summary}"));
+            }
+        }
+    }
+
+    fn draft_step_started(&self, index: usize, summary: &str) {
+        self.line(&format!("✎ drafting step {}: {summary}", index + 1));
+    }
+
+    fn draft_step_finished(&self, _index: usize, step: &Value, problems: &[String], attempt: u32) {
+        if let Some(problem) = problems.first() {
+            self.line(&format!("↻ step invalid (attempt {attempt}/3): {problem}"));
+        } else {
+            let id = step.get("id").and_then(Value::as_str).unwrap_or("?");
+            let tool = step.get("toolName").and_then(Value::as_str).unwrap_or("");
+            self.line(&format!("✓ {id} {tool}"));
+        }
+    }
+
     fn synthesizing(&self) {
         self.line("✎ synthesizing answer…");
     }
@@ -165,6 +190,23 @@ impl EventSink for JsonlSink {
 
     fn planning(&self) {
         self.emit(serde_json::json!({"event": "planning"}));
+    }
+
+    fn draft_outline(&self, items: &Value) {
+        self.emit(serde_json::json!({"event": "draft_outline", "items": items}));
+    }
+
+    fn draft_step_started(&self, index: usize, summary: &str) {
+        self.emit(serde_json::json!({
+            "event": "draft_step_started", "index": index, "summary": summary,
+        }));
+    }
+
+    fn draft_step_finished(&self, index: usize, step: &Value, problems: &[String], attempt: u32) {
+        self.emit(serde_json::json!({
+            "event": "draft_step_finished", "index": index,
+            "step": step, "problems": problems, "attempt": attempt,
+        }));
     }
 
     fn synthesizing(&self) {

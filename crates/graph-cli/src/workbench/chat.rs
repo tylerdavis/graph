@@ -2,6 +2,7 @@
 //! events into the workbench's message channel.
 
 use super::app::Msg;
+use super::plan_ws::OutlineRow;
 use graph_core::EventSink;
 use serde_json::Value;
 use std::time::Duration;
@@ -75,6 +76,50 @@ impl EventSink for ChannelSink {
     fn planning(&self) {
         if matches!(self.kind, SinkKind::PlanRun) {
             self.send(Msg::Planning);
+        }
+    }
+
+    fn draft_outline(&self, items: &Value) {
+        if matches!(self.kind, SinkKind::PlanRun) {
+            let items = items
+                .as_array()
+                .map(|list| {
+                    list.iter()
+                        .map(|item| OutlineRow {
+                            summary: item
+                                .get("summary")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            expected_tool: item
+                                .get("expectedTool")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.send(Msg::DraftOutline { items });
+        }
+    }
+
+    fn draft_step_started(&self, index: usize, summary: &str) {
+        if matches!(self.kind, SinkKind::PlanRun) {
+            self.send(Msg::DraftStepStarted {
+                index,
+                summary: summary.to_string(),
+            });
+        }
+    }
+
+    fn draft_step_finished(&self, index: usize, step: &Value, problems: &[String], attempt: u32) {
+        if matches!(self.kind, SinkKind::PlanRun) {
+            self.send(Msg::DraftStepFinished {
+                index,
+                step: step.clone(),
+                problems: problems.to_vec(),
+                attempt,
+            });
         }
     }
 

@@ -224,6 +224,7 @@ impl Runtime {
             user_context,
             current_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
             max_attempts: self.config.settings.planning_attempts.max(1),
+            draft_strategy: draft_strategy(&self.config)?,
         }))
     }
 
@@ -253,6 +254,20 @@ fn user_context_text(user: &graph_config::UserConfig) -> String {
         out.push_str("(none provided)");
     }
     out
+}
+
+/// Resolve the plan-drafting strategy: `GRAPH_DRAFT_STRATEGY` env var
+/// (`oneshot` | `incremental`) wins over `[planner].draft_strategy`; the
+/// default is one-shot.
+pub fn draft_strategy(config: &graph_config::Config) -> Result<graph_config::DraftStrategy> {
+    match std::env::var("GRAPH_DRAFT_STRATEGY").ok().as_deref() {
+        Some("oneshot") => Ok(graph_config::DraftStrategy::Oneshot),
+        Some("incremental") => Ok(graph_config::DraftStrategy::Incremental),
+        Some(other) => {
+            anyhow::bail!("GRAPH_DRAFT_STRATEGY must be 'oneshot' or 'incremental', got '{other}'")
+        }
+        None => Ok(config.planner.draft_strategy),
+    }
 }
 
 /// Open the configured runtime-state store. Backend selection:

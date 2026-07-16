@@ -3,8 +3,10 @@
 
 use super::app::{App, ChatEntry, Focus, GateKind, GatePrompt, Mode};
 use super::editor::EditorContext;
-use super::plan_ws::{PlanWorkspace, RowKey, RunLine, StepRow, StepStatus, WsTab};
-use graph_core::pipeline::{DECIDE_TOOL, EXIT_TOOL, MAP_TOOL, REDUCE_TOOL};
+use super::plan_ws::{
+    DraftingProgress, PlanWorkspace, RowKey, RunLine, StepRow, StepStatus, WsTab,
+};
+use graph_core::pipeline::{DECIDE_TOOL, EXIT_TOOL, MAP_TOOL, MAX_STEP_ATTEMPTS, REDUCE_TOOL};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -411,6 +413,12 @@ fn paused_prompt(app: &App) -> Option<&GatePrompt> {
 
 fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
     let ws = &app.ws;
+    // An incremental draft in flight replaces the doc rows: the doc only
+    // changes at the final publish, so live progress renders from events.
+    if let Some(drafting) = &ws.drafting {
+        draw_drafting_view(frame, app, drafting, area);
+        return;
+    }
     let dirty = app.dirty;
     let Some(doc) = &ws.doc else {
         let empty = Paragraph::new(
@@ -583,6 +591,100 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
             .title(" detail ─ PgUp/PgDn scroll "),
         detail,
         &ws.detail_scroll,
+    );
+}
+
+/// The incremental-drafting overlay: accepted steps, the step being
+/// drafted, and the outline's remaining stages as placeholders — reusing
+/// the step-status glyph vocabulary (✓ accepted · ◐ drafting · ○ pending
+/// stage), with the last failed attempt's problems in the detail pane.
+fn draw_drafting_view(frame: &mut Frame, app: &App, drafting: &DraftingProgress, area: Rect) {
+    let [list_area, detail] =
+        *Layout::vertical([Constraint::Percentage(60), Constraint::Min(3)]).split(area)
+    else {
+        return;
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    for row in &drafting.accepted {
+        let mut spans = vec![
+            Span::styled("✓ ", OK),
+            Span::styled(
+                format!("{:4} ", row.id),
+                Style::new().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(row.tool.clone()),
+        ];
+        if let Some(reasoning) = &row.reasoning {
+            spans.push(Span::styled(format!(" — {reasoning}"), DIM));
+        }
+        lines.push(Line::from(spans));
+    }
+    if let Some(current) = &drafting.current {
+        let mut spans = vec![
+            Span::styled(
+                format!("{} ", spinner_frame(app.tick)),
+                Style::new().fg(Color::Yellow),
+            ),
+            Span::styled(
+                format!("drafting: {}", current.summary),
+                Style::new().fg(Color::Yellow),
+            ),
+        ];
+        if current.attempt > 1 {
+            spans.push(Span::styled(
+                format!(" (retry {}/{MAX_STEP_ATTEMPTS})", current.attempt),
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+    // Remaining outline stages as placeholders. The step↔stage mapping is
+    // advisory (steps may merge or split stages), so this just consumes
+    // one stage per accepted step plus the in-flight one, clamped.
+    let consumed = (drafting.accepted.len() + usize::from(drafting.current.is_some()))
+        .min(drafting.outline.len());
+    for stage in &drafting.outline[consumed..] {
+        let mut text = format!("○ {}", stage.summary);
+        if let Some(tool) = &stage.expected_tool {
+            text.push_str(&format!(" [{tool}]"));
+        }
+        lines.push(Line::styled(text, DIM));
+    }
+    let title = format!(
+        " drafting plan — {} of ~{} stages ",
+        drafting.accepted.len(),
+        drafting.outline.len()
+    );
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::bordered().border_style(DIM).title(title))
+            .wrap(Wrap { trim: false }),
+        list_area,
+    );
+
+    // Detail: the failed attempt's problems while retrying, else a hint.
+    let mut detail_lines: Vec<Line> = Vec::new();
+    if let Some(problems) = &drafting.failed {
+        detail_lines.push(Line::styled(
+            "✗ last attempt failed validation:",
+            ERROR.add_modifier(Modifier::BOLD),
+        ));
+        for problem in problems {
+            detail_lines.push(Line::styled(format!("  {problem}"), ERROR));
+        }
+    } else {
+        detail_lines.push(Line::styled(
+            "steps materialize as the planner drafts and validates them",
+            DIM,
+        ));
+    }
+    render_scrolled(
+        frame,
+        detail_lines,
+        Block::bordered().border_style(DIM).title(" detail "),
+        detail,
+        &app.ws.detail_scroll,
     );
 }
 

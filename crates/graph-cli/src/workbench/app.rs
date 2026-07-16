@@ -3,10 +3,11 @@
 //! so the whole interaction model is testable headless.
 
 use super::editor::{EditorContext, EditorState};
-use super::plan_ws::{PlanWorkspace, WsTab};
+use super::plan_ws::{OutlineRow, PlanWorkspace, WsTab};
 use super::runner::UiDecision;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use graph_core::pipeline::doc::PlanDoc;
+use graph_core::pipeline::MAX_STEP_ATTEMPTS;
 use graph_core::{ToolDef, ToolShape};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
@@ -221,6 +222,21 @@ pub enum Msg {
         breakpoints: Option<Vec<String>>,
     },
     Planning,
+    // Incremental drafting progress (workbench__draft_plan under the
+    // incremental strategy); rendered as the plan tab's drafting overlay.
+    DraftOutline {
+        items: Vec<OutlineRow>,
+    },
+    DraftStepStarted {
+        index: usize,
+        summary: String,
+    },
+    DraftStepFinished {
+        index: usize,
+        step: Value,
+        problems: Vec<String>,
+        attempt: u32,
+    },
     Synthesizing,
     StepStarted {
         path: String,
@@ -306,6 +322,20 @@ impl Msg {
                 format!("agent run started (gated={gated}, breakpoints={breakpoints:?})")
             }
             Msg::Planning => "planning…".to_string(),
+            Msg::DraftOutline { items } => format!("draft outline: {} stages", items.len()),
+            Msg::DraftStepStarted { index, summary } => {
+                format!("draft step {} started: {summary}", index + 1)
+            }
+            Msg::DraftStepFinished {
+                index,
+                problems,
+                attempt,
+                ..
+            } => format!(
+                "draft step {} finished (attempt {attempt}, {} problem(s))",
+                index + 1,
+                problems.len()
+            ),
             Msg::Synthesizing => "synthesizing…".to_string(),
             Msg::StepStarted { path, tool, .. } => format!("step started: {path} {tool}"),
             Msg::StepFinished {
@@ -419,6 +449,12 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
                     .entries
                     .push(ChatEntry::Activity(format!("✗ {name} failed")));
             }
+            // Backstop: the drafting overlay must not outlive the draft
+            // call (DraftReplaced normally clears it via set_doc).
+            if name == super::tools::DRAFT_PLAN {
+                app.ws.drafting = None;
+                app.in_flight = None;
+            }
             Vec::new()
         }
         Msg::TurnFinished(result) => {
@@ -426,6 +462,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             app.turn_in_flight = false;
             app.in_flight = None;
             app.turn_started = None;
+            app.ws.drafting = None;
             match result {
                 Ok(text) => finish_turn_text(app, text),
                 Err(error) => app
@@ -466,6 +503,37 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
                 tool: String::new(),
                 started: std::time::Instant::now(),
             });
+            Vec::new()
+        }
+        Msg::DraftOutline { items } => {
+            let count = items.len();
+            app.ws.begin_drafting(items);
+            app.status = format!("drafting: outline ready — {count} stages");
+            Vec::new()
+        }
+        Msg::DraftStepStarted { index, summary } => {
+            app.ws.draft_step_started(index, &summary);
+            app.in_flight = Some(InFlight {
+                path: format!("drafting step {}", index + 1),
+                tool: String::new(),
+                started: std::time::Instant::now(),
+            });
+            Vec::new()
+        }
+        Msg::DraftStepFinished {
+            index,
+            step,
+            problems,
+            attempt,
+        } => {
+            app.status = if problems.is_empty() {
+                let id = step.get("id").and_then(Value::as_str).unwrap_or("?");
+                let tool = step.get("toolName").and_then(Value::as_str).unwrap_or("");
+                format!("✓ drafted step {id} ({tool})")
+            } else {
+                format!("step invalid (attempt {attempt}/{MAX_STEP_ATTEMPTS}) — retrying")
+            };
+            app.ws.draft_step_finished(index, step, &problems, attempt);
             Vec::new()
         }
         Msg::Synthesizing => {
@@ -1713,6 +1781,129 @@ steps:
         update(&mut app, msg);
         assert!(app.in_flight.is_none());
         assert!(!app.wants_tick());
+    }
+
+    fn outline_rows() -> Vec<OutlineRow> {
+        vec![
+            OutlineRow {
+                summary: "search for x".into(),
+                expected_tool: Some("t__search".into()),
+            },
+            OutlineRow {
+                summary: "report on it".into(),
+                expected_tool: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn draft_events_drive_the_drafting_overlay() {
+        let mut app = App::new(None);
+        app.mode = Mode::Chatting;
+        update(
+            &mut app,
+            Msg::DraftOutline {
+                items: outline_rows(),
+            },
+        );
+        let drafting = app.ws.drafting.as_ref().expect("overlay installed");
+        assert_eq!(drafting.outline.len(), 2);
+        assert_eq!(app.ws.tab, WsTab::Plan, "the overlay lives in the plan tab");
+        assert!(app.status.contains("2 stages"), "{}", app.status);
+
+        update(
+            &mut app,
+            Msg::DraftStepStarted {
+                index: 0,
+                summary: "search for x".into(),
+            },
+        );
+        assert!(app
+            .in_flight
+            .as_ref()
+            .is_some_and(|f| f.path == "drafting step 1"));
+
+        // A failed attempt keeps the current row and records the problems.
+        update(
+            &mut app,
+            Msg::DraftStepFinished {
+                index: 0,
+                step: json!({"id": "E0", "toolName": "t__nope", "input": {}}),
+                problems: vec!["step E0 references E9".into()],
+                attempt: 1,
+            },
+        );
+        let drafting = app.ws.drafting.as_ref().unwrap();
+        assert_eq!(drafting.current.as_ref().unwrap().attempt, 2);
+        assert_eq!(drafting.failed.as_ref().unwrap().len(), 1);
+        assert!(app.status.contains("attempt 1/3"), "{}", app.status);
+
+        // Acceptance moves the step to the accepted list.
+        update(
+            &mut app,
+            Msg::DraftStepFinished {
+                index: 0,
+                step: json!({"id": "E0", "toolName": "t__search", "input": {}}),
+                problems: vec![],
+                attempt: 2,
+            },
+        );
+        let drafting = app.ws.drafting.as_ref().unwrap();
+        assert_eq!(drafting.accepted.len(), 1);
+        assert_eq!(drafting.accepted[0].id, "E0");
+        assert!(drafting.current.is_none());
+        assert!(drafting.failed.is_none());
+        assert!(app.status.contains("✓ drafted step E0"), "{}", app.status);
+    }
+
+    #[test]
+    fn drafting_overlay_clears_on_publish_and_backstops() {
+        // The normal path: DraftReplaced installs the doc and clears it.
+        let mut app = App::new(None);
+        update(
+            &mut app,
+            Msg::DraftOutline {
+                items: outline_rows(),
+            },
+        );
+        assert!(app.ws.drafting.is_some());
+        update(
+            &mut app,
+            Msg::DraftReplaced {
+                doc: Box::new(two_step_doc()),
+                dirty: true,
+            },
+        );
+        assert!(app.ws.drafting.is_none(), "set_doc clears the overlay");
+
+        // Backstop 1: the draft tool finishing (e.g. with an error that
+        // never published) clears it.
+        let mut app = App::new(None);
+        update(
+            &mut app,
+            Msg::DraftOutline {
+                items: outline_rows(),
+            },
+        );
+        update(
+            &mut app,
+            Msg::AgentToolFinished {
+                name: super::super::tools::DRAFT_PLAN.to_string(),
+                is_error: true,
+            },
+        );
+        assert!(app.ws.drafting.is_none());
+
+        // Backstop 2: the turn ending clears it.
+        let mut app = App::new(None);
+        update(
+            &mut app,
+            Msg::DraftOutline {
+                items: outline_rows(),
+            },
+        );
+        update(&mut app, Msg::TurnFinished(Ok("done".into())));
+        assert!(app.ws.drafting.is_none());
     }
 
     #[test]

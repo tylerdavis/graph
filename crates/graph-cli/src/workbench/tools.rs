@@ -383,6 +383,34 @@ impl WorkbenchTools {
             .await
         {
             Ok(output) => output,
+            // Incremental drafting exhausted its retries: salvage the
+            // valid prefix so the agent finishes it with the edit tools
+            // instead of redrafting from scratch.
+            Err(graph_core::pipeline::PipelineError::DraftStepExhausted {
+                step_id,
+                problems,
+                partial,
+                ..
+            }) => {
+                let doc = merge_planner_output(existing, goal, *partial);
+                let steps = doc.steps.len();
+                self.publish(doc, true);
+                return ToolOutcome {
+                    result: json!({
+                        "error": format!(
+                            "incremental drafting could not produce a valid \
+                             step {step_id}; the valid partial draft \
+                             ({steps} steps) has been published"
+                        ),
+                        "failedStep": step_id,
+                        "problems": problems,
+                        "note": "finish the plan with the editing tools \
+                                 (workbench__add_step, workbench__update_step) \
+                                 instead of redrafting",
+                    }),
+                    is_error: true,
+                };
+            }
             Err(error) => return error_outcome(&format!("planner failed: {error}")),
         };
 
@@ -1251,6 +1279,7 @@ mod tests {
             user_context: String::new(),
             current_date: String::new(),
             max_attempts: 1,
+            draft_strategy: graph_config::DraftStrategy::Oneshot,
         })
     }
 
@@ -2152,6 +2181,7 @@ steps:
             user_context: String::new(),
             current_date: String::new(),
             max_attempts: 1,
+            draft_strategy: graph_config::DraftStrategy::Oneshot,
         });
         (pipeline, provider)
     }
@@ -2263,5 +2293,101 @@ steps:
         assert_eq!(outcome.result["validation"], json!("ok"));
         assert!(outcome.result.get("repairAttempted").is_none());
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    }
+
+    // ── incremental drafting (scripted LLM) ────────────────────────────
+
+    fn incremental_pipeline(outputs: Vec<Value>) -> (Arc<Pipeline>, Arc<ScriptedProvider>) {
+        let (pipeline, provider) = scripted_pipeline(outputs);
+        let mut pipeline = (*pipeline).clone();
+        pipeline.draft_strategy = graph_config::DraftStrategy::Incremental;
+        (Arc::new(pipeline), provider)
+    }
+
+    fn outline_output() -> Value {
+        json!({
+            "items": [
+                {"summary": "search for x", "expectedTool": "t__search"},
+                {"summary": "report on it", "expectedTool": "t__report"},
+            ],
+            "queryToAnswer": "report on x",
+        })
+    }
+
+    #[tokio::test]
+    async fn incremental_draft_publishes_once_when_complete() {
+        let (pipeline, provider) = incremental_pipeline(vec![
+            outline_output(),
+            json!({"step": {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+                   "planComplete": false}),
+            json!({"step": {"id": "E1", "toolName": "t__report",
+                            "input": {"rows": "{{E0.values}}"}},
+                   "planComplete": true}),
+        ]);
+        let (tools, mut rx) = draft_tools(pipeline);
+
+        let outcome = tools.draft_plan(&json!({"goal": "report on x"})).await;
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert_eq!(outcome.result["validation"], json!("ok"));
+        assert_eq!(outcome.result["steps"], json!(2));
+        assert_eq!(
+            provider.requests.lock().unwrap().len(),
+            3,
+            "outline + one call per step; per-step validation means no repair pass"
+        );
+        // Exactly one publish — partial plans never hit the shared doc.
+        match rx.try_recv().unwrap() {
+            Msg::DraftReplaced { doc, dirty } => {
+                assert!(dirty);
+                assert_eq!(doc.steps.len(), 2);
+                assert_eq!(doc.solver.as_ref().unwrap().query_to_answer, "report on x");
+            }
+            _ => panic!("expected DraftReplaced"),
+        }
+        assert!(rx.try_recv().is_err(), "one publish only");
+    }
+
+    #[tokio::test]
+    async fn incremental_draft_exhaustion_salvages_the_valid_prefix() {
+        let invalid_step = || {
+            json!({"step": {"id": "E1", "toolName": "t__report",
+                            "input": {"rows": "{{E9.values}}"}},
+                   "planComplete": false})
+        };
+        let (pipeline, _) = incremental_pipeline(vec![
+            outline_output(),
+            json!({"step": {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+                   "planComplete": false}),
+            invalid_step(),
+            invalid_step(),
+            invalid_step(),
+        ]);
+        let (tools, mut rx) = draft_tools(pipeline);
+
+        let outcome = tools.draft_plan(&json!({"goal": "report on x"})).await;
+        assert!(outcome.is_error);
+        assert_eq!(outcome.result["failedStep"], json!("E1"));
+        assert!(
+            outcome.result["problems"].to_string().contains("E9"),
+            "{:?}",
+            outcome.result
+        );
+        assert!(
+            outcome.result["note"]
+                .as_str()
+                .unwrap()
+                .contains("editing tools"),
+            "{:?}",
+            outcome.result
+        );
+        // The valid prefix was published (dirty) for the agent to finish.
+        match rx.try_recv().unwrap() {
+            Msg::DraftReplaced { doc, dirty } => {
+                assert!(dirty);
+                assert_eq!(doc.steps.len(), 1);
+                assert_eq!(doc.steps[0].id, "E0");
+            }
+            _ => panic!("expected DraftReplaced"),
+        }
     }
 }
