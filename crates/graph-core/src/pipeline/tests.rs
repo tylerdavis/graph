@@ -139,6 +139,7 @@ fn pipeline(
             user_context: "test user".into(),
             current_date: "2026-07-09".into(),
             max_attempts,
+            draft_strategy: graph_config::DraftStrategy::Oneshot,
         },
         provider,
     )
@@ -1858,9 +1859,11 @@ impl ExecutionGate for ScriptedGate {
 }
 
 /// Sink capturing step_finished events: (path, tool, result, is_error).
+/// Also records the drafting-progress events as (name, detail) pairs.
 #[derive(Default)]
 struct RecordingSink {
     finished: Mutex<Vec<(String, String, Value, bool)>>,
+    drafting: Mutex<Vec<(String, Value)>>,
 }
 
 impl crate::EventSink for RecordingSink {
@@ -1878,6 +1881,34 @@ impl crate::EventSink for RecordingSink {
             tool.to_string(),
             result.clone(),
             is_error,
+        ));
+    }
+
+    fn planning(&self) {
+        self.drafting
+            .lock()
+            .unwrap()
+            .push(("planning".to_string(), Value::Null));
+    }
+
+    fn draft_outline(&self, items: &Value) {
+        self.drafting
+            .lock()
+            .unwrap()
+            .push(("draft_outline".to_string(), items.clone()));
+    }
+
+    fn draft_step_started(&self, index: usize, summary: &str) {
+        self.drafting.lock().unwrap().push((
+            "draft_step_started".to_string(),
+            json!({"index": index, "summary": summary}),
+        ));
+    }
+
+    fn draft_step_finished(&self, index: usize, step: &Value, problems: &[String], attempt: u32) {
+        self.drafting.lock().unwrap().push((
+            "draft_step_finished".to_string(),
+            json!({"index": index, "step": step, "problems": problems, "attempt": attempt}),
         ));
     }
 }
@@ -2523,5 +2554,354 @@ steps:
         *gate.error_consults.lock().unwrap(),
         0,
         "nested aborts are never re-asked as errors"
+    );
+}
+
+// ── Incremental drafting ─────────────────────────────────────────────────
+
+fn incremental(mut pipeline: Pipeline) -> Pipeline {
+    pipeline.draft_strategy = graph_config::DraftStrategy::Incremental;
+    pipeline
+}
+
+fn outline_response() -> ChatResponse {
+    structured(json!({
+        "items": [
+            {"summary": "find the team", "expectedTool": "t__search"},
+            {"summary": "fetch its issues", "expectedTool": "t__issues"},
+        ],
+        "queryToAnswer": "how is the sprint going",
+    }))
+}
+
+fn step_draft(step: Value, plan_complete: bool) -> ChatResponse {
+    structured(json!({"step": step, "planComplete": plan_complete}))
+}
+
+fn search_step(id: &str) -> Value {
+    json!({"id": id, "toolName": "t__search", "input": {"query": "platform"}})
+}
+
+fn issues_step(id: &str, reference: &str) -> Value {
+    json!({"id": id, "toolName": "t__issues", "input": {"teamId": format!("{{{{{reference}}}}}")}})
+}
+
+fn assistant_turns(request: &ChatRequest) -> Vec<String> {
+    request
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            graph_llm::types::ChatMessage::Assistant {
+                content: Some(content),
+                ..
+            } => Some(content.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn incremental_draft_generates_outline_then_steps() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = pipeline(
+        vec![
+            outline_response(),
+            step_draft(search_step("E0"), false),
+            step_draft(issues_step("E1", "E0.values.0.id"), true),
+        ],
+        registry.clone(),
+        1,
+    );
+    let output = incremental(pipeline)
+        .draft_plan("sprint status", None, None)
+        .await
+        .unwrap();
+
+    let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["E0", "E1"]);
+    assert_eq!(
+        output.solver_data.query_to_answer,
+        "how is the sprint going"
+    );
+    assert!(
+        !output.solver_data.data.is_empty(),
+        "default solver data filled from the plan"
+    );
+    assert!(
+        registry.invocations.lock().unwrap().is_empty(),
+        "drafting must not execute"
+    );
+
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3, "outline + one call per step");
+    // The prompt-cache invariant: one byte-identical system prompt.
+    assert!(
+        requests.iter().all(|r| r.system == requests[0].system),
+        "every call must reuse the identical system prompt"
+    );
+    // The last step call sees the outline and the accepted E0 as
+    // Assistant turns in the scratchpad.
+    let assistants = assistant_turns(&requests[2]);
+    assert_eq!(assistants.len(), 2, "outline + accepted E0");
+    assert!(assistants[0].contains("find the team"), "{assistants:?}");
+    assert!(assistants[1].contains("t__search"), "{assistants:?}");
+}
+
+#[tokio::test]
+async fn incremental_draft_retries_invalid_step_with_errors_injected() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = pipeline(
+        vec![
+            outline_response(),
+            step_draft(search_step("E0"), false),
+            step_draft(issues_step("E1", "E9.values"), false), // E9 does not exist
+            step_draft(issues_step("E1", "E0.values.0.id"), false),
+            step_draft(search_step("E2"), true),
+        ],
+        registry,
+        1,
+    );
+    let output = incremental(pipeline)
+        .draft_plan("sprint status", None, None)
+        .await
+        .unwrap();
+    let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["E0", "E1", "E2"]);
+
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 5, "one retry for the invalid step");
+    // The retry request carries the invalid attempt and the problem text.
+    let retry = &requests[3];
+    let assistants = assistant_turns(retry);
+    assert!(
+        assistants.iter().any(|turn| turn.contains("E9")),
+        "the invalid StepDraft is in the retry tail: {assistants:?}"
+    );
+    let users: Vec<String> = retry
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            graph_llm::types::ChatMessage::User { content } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        users
+            .iter()
+            .any(|turn| turn.contains("The step is invalid") && turn.contains("E9")),
+        "the validation problem is injected as feedback: {users:?}"
+    );
+    // After acceptance the failed attempt is dropped from persistent
+    // history: the next step call must not carry it.
+    let after = assistant_turns(&requests[4]);
+    assert!(
+        after.iter().all(|turn| !turn.contains("E9")),
+        "the retry tail must be discarded on acceptance: {after:?}"
+    );
+}
+
+#[tokio::test]
+async fn incremental_draft_exhausted_retries_returns_valid_partial() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(
+        vec![
+            outline_response(),
+            step_draft(search_step("E0"), false),
+            step_draft(issues_step("E1", "E9.values"), false),
+            step_draft(issues_step("E1", "E8.values"), false),
+            step_draft(issues_step("E1", "E7.values"), false),
+        ],
+        registry,
+        1,
+    );
+    let err = incremental(pipeline)
+        .draft_plan("sprint status", None, None)
+        .await
+        .unwrap_err();
+    let PipelineError::DraftStepExhausted {
+        step_id,
+        attempts,
+        problems,
+        partial,
+    } = err
+    else {
+        panic!("expected DraftStepExhausted");
+    };
+    assert_eq!(step_id, "E1");
+    assert_eq!(attempts, 3);
+    assert!(problems.iter().any(|p| p.contains("E7")), "{problems:?}");
+    let ids: Vec<&str> = partial.plan.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["E0"], "the valid prefix is carried out");
+    assert_eq!(
+        partial.solver_data.query_to_answer,
+        "how is the sprint going"
+    );
+}
+
+#[tokio::test]
+async fn incremental_draft_revision_carries_draft_and_feedback_in_system() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = pipeline(
+        vec![outline_response(), step_draft(search_step("E0"), true)],
+        registry,
+        1,
+    );
+    let existing: PlannerOutput = serde_json::from_value(two_step_plan("E0.values.0.id")).unwrap();
+    incremental(pipeline)
+        .draft_plan(
+            "also fetch comments",
+            Some(&existing),
+            Some("E1 references E9, which is not an earlier step"),
+        )
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    let system = &requests[0].system;
+    assert!(system.contains("Draft Under Revision"), "revision section");
+    assert!(system.contains("t__search"), "serialized draft in prompt");
+    assert!(system.contains("E1 references E9"), "last error in prompt");
+    // Constant across the session: the step call sees the same system.
+    assert_eq!(requests[0].system, requests[1].system);
+}
+
+#[tokio::test]
+async fn incremental_draft_accepts_done_early_without_a_step() {
+    // One accepted step, then step: null + planComplete → a 1-step plan.
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = pipeline(
+        vec![
+            outline_response(),
+            step_draft(search_step("E0"), false),
+            structured(json!({"step": null, "planComplete": true})),
+        ],
+        registry.clone(),
+        1,
+    );
+    let output = incremental(pipeline)
+        .draft_plan("sprint status", None, None)
+        .await
+        .unwrap();
+    assert_eq!(output.plan.len(), 1);
+    assert_eq!(output.plan[0].id, "E0");
+    assert_eq!(provider.requests.lock().unwrap().len(), 3);
+
+    // step: null on an EMPTY plan is a defect: retried, never accepted.
+    let (empty_pipeline, provider) = super::tests::pipeline(
+        vec![
+            outline_response(),
+            structured(json!({"step": null, "planComplete": true})),
+            step_draft(search_step("E0"), true),
+        ],
+        registry,
+        1,
+    );
+    let output = incremental(empty_pipeline)
+        .draft_plan("sprint status", None, None)
+        .await
+        .unwrap();
+    assert_eq!(output.plan.len(), 1, "the retry produced the real step");
+    assert_eq!(
+        provider.requests.lock().unwrap().len(),
+        3,
+        "outline + rejected null + retry"
+    );
+}
+
+#[tokio::test]
+async fn incremental_draft_emits_progress_events() {
+    let registry = search_registry(json!({"values": []}));
+    let (mut pipeline, _) = pipeline(
+        vec![
+            outline_response(),
+            step_draft(search_step("E0"), false),
+            step_draft(issues_step("E1", "E9.values"), false), // invalid → retry
+            step_draft(issues_step("E1", "E0.values.0.id"), true),
+        ],
+        registry,
+        1,
+    );
+    let sink = Arc::new(RecordingSink::default());
+    pipeline.events = sink.clone();
+    incremental(pipeline)
+        .draft_plan("sprint status", None, None)
+        .await
+        .unwrap();
+
+    let events = sink.drafting.lock().unwrap();
+    let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "planning",
+            "draft_outline",
+            "draft_step_started",
+            "draft_step_finished", // E0 accepted
+            "draft_step_started",
+            "draft_step_finished", // E1 attempt 1 failed
+            "draft_step_finished", // E1 attempt 2 accepted
+        ]
+    );
+    assert_eq!(events[1].1.as_array().unwrap().len(), 2, "outline items");
+    // The failed attempt carries non-empty problems and its attempt number.
+    let failed = &events[5].1;
+    assert!(!failed["problems"].as_array().unwrap().is_empty());
+    assert_eq!(failed["attempt"], json!(1));
+    // The accepted retry has empty problems and attempt 2.
+    let accepted = &events[6].1;
+    assert!(accepted["problems"].as_array().unwrap().is_empty());
+    assert_eq!(accepted["attempt"], json!(2));
+    assert_eq!(accepted["step"]["id"], json!("E1"));
+}
+
+#[tokio::test]
+async fn incremental_draft_rejects_an_empty_outline() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(
+        vec![structured(json!({"items": [], "queryToAnswer": "q"}))],
+        registry,
+        1,
+    );
+    let err = incremental(pipeline)
+        .draft_plan("sprint status", None, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PipelineError::InvalidPlan(_)), "{err}");
+    assert!(err.to_string().contains("outline has no items"));
+}
+
+#[tokio::test]
+async fn default_strategy_stays_oneshot_with_a_single_request() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = pipeline(
+        vec![structured(two_step_plan("E0.values.0.id"))],
+        registry,
+        1,
+    );
+    assert_eq!(
+        pipeline.draft_strategy,
+        graph_config::DraftStrategy::Oneshot,
+        "the default strategy is one-shot"
+    );
+    pipeline
+        .draft_plan("sprint status", None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        provider.requests.lock().unwrap().len(),
+        1,
+        "one-shot drafting is exactly one planner call"
+    );
+}
+
+#[test]
+fn step_draft_schema_makes_step_nullable() {
+    // Watch-item: `Option<Step>` must schema out as nullable so providers
+    // accept a null/omitted step for the done-early signal.
+    let schema = serde_json::to_value(schemars::schema_for!(super::outline::StepDraft)).unwrap();
+    let step = &schema["properties"]["step"];
+    let text = step.to_string();
+    assert!(
+        text.contains("null") || text.contains("anyOf"),
+        "step must admit null: {text}"
     );
 }

@@ -41,6 +41,24 @@ pub trait EventSink: Send + Sync {
         _elapsed: Duration,
     ) {
     }
+    /// Incremental drafting produced its outline: a JSON array of
+    /// `{summary, expectedTool}` stage items.
+    fn draft_outline(&self, _items: &Value) {}
+    /// Incremental drafting started generating the step for stage `index`
+    /// (0-based), described by `summary`.
+    fn draft_step_started(&self, _index: usize, _summary: &str) {}
+    /// A drafted step finished validation. Empty `problems` means the step
+    /// was accepted; non-empty means this attempt failed and drafting will
+    /// retry (or exhaust). `step` is the step JSON (null when the model
+    /// returned none); `attempt` counts from 1 within the stage.
+    fn draft_step_finished(
+        &self,
+        _index: usize,
+        _step: &Value,
+        _problems: &[String],
+        _attempt: u32,
+    ) {
+    }
 }
 
 /// Discards everything (used by `--json` and tests).
