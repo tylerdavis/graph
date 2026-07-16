@@ -322,19 +322,24 @@ impl Msg {
                 format!("agent run started (gated={gated}, breakpoints={breakpoints:?})")
             }
             Msg::Planning => "planning…".to_string(),
-            Msg::DraftOutline { items } => format!("draft outline: {} stages", items.len()),
+            Msg::DraftOutline { items } => format!(
+                "draft outline: {} stages: {}",
+                items.len(),
+                serde_json::to_string(items).unwrap_or_default()
+            ),
             Msg::DraftStepStarted { index, summary } => {
                 format!("draft step {} started: {summary}", index + 1)
             }
             Msg::DraftStepFinished {
                 index,
+                step,
                 problems,
                 attempt,
-                ..
             } => format!(
-                "draft step {} finished (attempt {attempt}, {} problem(s))",
+                "draft step {} finished (attempt {attempt}, {} problem(s)): {}",
                 index + 1,
-                problems.len()
+                problems.len(),
+                serde_json::json!({ "step": step, "problems": problems })
             ),
             Msg::Synthesizing => "synthesizing…".to_string(),
             Msg::StepStarted { path, tool, .. } => format!("step started: {path} {tool}"),

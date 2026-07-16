@@ -792,6 +792,7 @@ dependencies = [
  "ratatui",
  "reedline",
  "regex",
+ "serde",
  "serde_json",
  "serde_yaml",
  "tempfile",

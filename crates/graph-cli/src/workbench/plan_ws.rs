@@ -110,7 +110,7 @@ pub enum RunLine {
 }
 
 /// One outline stage of an in-flight incremental draft.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct OutlineRow {
     pub summary: String,
     pub expected_tool: Option<String>,

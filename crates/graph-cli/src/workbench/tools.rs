@@ -1218,7 +1218,7 @@ impl ToolRegistry for WorkbenchTools {
         tracing::debug!(
             target: "workbench",
             "agent invoked {name}: {}",
-            super::runner::truncate(&input.to_string(), 300)
+            input.to_string()
         );
         let started = std::time::Instant::now();
         let outcome = match name {
@@ -1243,7 +1243,7 @@ impl ToolRegistry for WorkbenchTools {
                 "{name} finished in {:.1}s (is_error={}): {}",
                 started.elapsed().as_secs_f64(),
                 outcome.is_error,
-                super::runner::truncate(&outcome.result.to_string(), 300)
+                outcome.result.to_string()
             );
         }
         outcome
