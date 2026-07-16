@@ -4,8 +4,10 @@
 The workbench writes a timestamped tracing stream to
 `<data_dir>/workbench.log` (default ~/.local/share/graph/workbench.log).
 This parses it into nested spans — session > turn > tool call, plus the
-incremental-draft loop (outline > step > attempt) — and prints an indented
-timeline with durations, error markers, and (truncated) tool inputs.
+two sibling phases of an incremental draft: a one-shot outline that sketches
+stages, then a separate step-by-step drafting loop that turns each stage into
+a validated step (up to 3 attempts each) — and prints an indented timeline
+with durations, error markers, and (truncated) tool inputs.
 
 Usage:
     workbench_trace.py [--sessions N] [--log PATH] [--no-color] [--width N]
@@ -105,6 +107,7 @@ def render(session, width, color):
 
     pending_invoke = None  # (tool, input) awaiting its finished line
     in_turn = False
+    drafting_started = False  # emit the drafting-phase header once per draft
 
     for ev in session[1:]:
         b = ev["body"]
@@ -158,11 +161,19 @@ def render(session, width, color):
 
         m = DRAFT_OUTLINE.search(b)
         if m:
+            # A new outline begins a fresh draft; the drafting phase (a
+            # separate, sibling phase) hasn't started yet.
+            drafting_started = False
             out.append(f"┃ {c('dim', t)}    {c('yellow', f'✎ draft outline — {m.group(1)} stages')}")
             continue
 
         m = DRAFT_STEP_START.search(b)
         if m:
+            if not drafting_started:
+                # First drafting step: open the drafting phase as its own
+                # sibling of the outline (same indent), not nested under it.
+                out.append(f"┃ {c('dim', t)}    {c('blue', '✍ drafting plan — step-by-step')}")
+                drafting_started = True
             out.append(f"┃ {c('dim', t)}      {c('yellow', f'step {m.group(1)}')} {c('dim', clip(m.group(2), width))}")
             continue
 
