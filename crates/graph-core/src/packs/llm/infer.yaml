@@ -4,7 +4,9 @@
 name: infer
 description: >
   Run an LLM inference over an instruction. Returns {text: ...} by default;
-  pass output_schema (a JSON Schema object) to instead get structured JSON
+  pass output_schema (a JSON Schema object with a top-level "type": "object"
+  and a "properties" map, e.g. {"type":"object","properties":{"score":
+  {"type":"number"}},"required":["score"]}) to instead get structured JSON
   validated against it — every declared field is guaranteed present, so
   downstream template references like {{Ex.score}} are safe. The
   instruction must be self-contained: interpolate the data to analyze
@@ -33,4 +35,7 @@ input_schema:
       type: object
       description: >
         Optional JSON Schema for the result. When present, the output is
-        structured JSON matching this schema instead of {text: ...}.
+        structured JSON matching this schema instead of {text: ...}. Must be
+        an object schema: give it a top-level "type": "object" and a
+        "properties" map (a bare {properties, required} is coerced to object,
+        but write the type explicitly).

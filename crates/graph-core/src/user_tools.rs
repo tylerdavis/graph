@@ -456,14 +456,22 @@ impl UserToolRegistry {
         roots: &Roots<'_>,
     ) -> Result<ToolOutcome, ToolError> {
         // The doc's schema wins; a caller-supplied one applies only when
-        // the tool opted in (see `caller_output_schema`).
-        let schema = doc.output_schema.as_ref().or(caller_schema.as_ref());
+        // the tool opted in (see `caller_output_schema`). Normalize it so a
+        // caller who wrote just `{properties, required}` still gets valid
+        // structured output: the provider (and our own validator) require a
+        // top-level `"type": "object"`, so default it in rather than forward
+        // an invalid schema and fail with a mid-run provider 400.
+        let schema = doc
+            .output_schema
+            .as_ref()
+            .or(caller_schema.as_ref())
+            .map(|schema| normalize_output_schema(schema.clone()));
         let rendered =
             render_str(prompt, roots).map_err(|e| ToolError::Transport(e.to_string()))?;
         let request = ChatRequest {
             system: system.unwrap_or_default().to_string(),
             messages: vec![ChatMessage::User { content: rendered }],
-            response_schema: schema.map(|schema| ResponseSchema {
+            response_schema: schema.as_ref().map(|schema| ResponseSchema {
                 name: doc.name.clone(),
                 schema: schema.clone(),
             }),
@@ -483,7 +491,7 @@ impl UserToolRegistry {
         // output_schema, enforce it here with one repair pass, so plans can
         // rely on every declared field existing (a missing key is a hard
         // template error downstream).
-        let result = match schema {
+        let result = match &schema {
             Some(schema) => self.enforce_schema(result, schema).await?,
             None => result,
         };
@@ -521,6 +529,21 @@ impl UserToolRegistry {
             ))),
         }
     }
+}
+
+/// A structured-output schema authored as just `{ "properties": {...} }`
+/// (or with `required`) is unambiguously an object schema, but Anthropic's
+/// tool `input_schema` and our own JSON Schema validator both demand a
+/// top-level `"type"`. Default it to `"object"` so a caller who omitted it
+/// gets valid structured output instead of a mid-run provider 400. Any
+/// schema that already declares a `type` is returned untouched.
+fn normalize_output_schema(mut schema: Value) -> Value {
+    if let Some(map) = schema.as_object_mut() {
+        if !map.contains_key("type") && map.contains_key("properties") {
+            map.insert("type".to_string(), Value::String("object".to_string()));
+        }
+    }
+    schema
 }
 
 fn expand_env(value: &str) -> Result<String, String> {
