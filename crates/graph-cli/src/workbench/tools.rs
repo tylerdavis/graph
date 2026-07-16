@@ -596,6 +596,27 @@ impl WorkbenchTools {
                     .collect();
                 changed = true;
             }
+            if let Some(servers) = input.get("requires_servers") {
+                let list = servers.as_array().ok_or_else(
+                    || json!({"error": "requires_servers must be an array of server-name strings"}),
+                )?;
+                doc.requires_servers = list
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
+                changed = true;
+            }
+            if let Some(schema) = input.get("input_schema") {
+                if schema.is_null() {
+                    doc.input_schema = None;
+                } else if schema.is_object() {
+                    doc.input_schema = Some(schema.clone());
+                } else {
+                    return Err(json!({"error": "input_schema must be a JSON Schema object (or null to clear)"}));
+                }
+                changed = true;
+            }
             if let Some(finish) = input.get("finish") {
                 let has_solver = finish.get("solver").is_some();
                 let has_output = finish.get("output").is_some();
@@ -606,7 +627,17 @@ impl WorkbenchTools {
                         );
                     }
                     (false, false) => {
-                        return Err(json!({"error": "finish requires 'solver' {queryToAnswer, systemPrompt?} or 'output' {<template map>}"}));
+                        // Empty object or null clears both — a silent
+                        // side-effect plan. A non-empty object lacking both
+                        // keys is malformed.
+                        let is_clear = finish.is_null()
+                            || finish.as_object().map(Map::is_empty).unwrap_or(false);
+                        if !is_clear {
+                            return Err(json!({"error": "finish requires 'solver' {queryToAnswer, systemPrompt?} or 'output' {<template map>}, or {} / null to clear to a silent plan"}));
+                        }
+                        doc.solver = None;
+                        doc.output = None;
+                        changed = true;
                     }
                     (true, false) => {
                         let solver_val = finish.get("solver").unwrap();
@@ -629,7 +660,8 @@ impl WorkbenchTools {
             if !changed {
                 return Err(json!({
                     "error": "update_metadata needs at least one of \
-                              identifier, name, description, exemplars, finish"
+                              identifier, name, description, exemplars, \
+                              requires_servers, input_schema, finish"
                 }));
             }
             Ok(json!({"ok": true, "identifier": doc.identifier, "name": doc.name}))
@@ -1059,12 +1091,15 @@ impl ToolRegistry for WorkbenchTools {
             ToolDef {
                 name: UPDATE_METADATA.to_string(),
                 description: "Update the draft's plan-level fields: identifier, name, \
-                              description, exemplars, and/or the finish type. `finish` sets \
-                              how the plan produces its result — {solver: {queryToAnswer, \
-                              systemPrompt?}} for LLM synthesis of the step results, or \
-                              {output: {<template map>}} for a structured templated result — \
-                              solver and output are mutually exclusive. Changing the \
-                              identifier makes it a new plan."
+                              description, exemplars, input_schema, requires_servers, \
+                              and/or the finish type. `input_schema` declares the plan's \
+                              inputs; `requires_servers` lists the MCP servers it needs. \
+                              `finish` sets how the plan produces its result — {solver: \
+                              {queryToAnswer, systemPrompt?}} for LLM synthesis of the \
+                              step results, or {output: {<template map>}} for a structured \
+                              templated result — solver and output are mutually exclusive, \
+                              and {} / null clears both for a silent side-effect plan. \
+                              Changing the identifier makes it a new plan."
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -1073,6 +1108,8 @@ impl ToolRegistry for WorkbenchTools {
                         "name": {"type": "string", "description": "Human-readable display name."},
                         "description": {"type": "string", "description": "What the plan does — shown in the catalog and used for routing."},
                         "exemplars": {"type": "array", "items": {"type": "string"}, "description": "Example requests the plan should handle; replaces the current list."},
+                        "input_schema": {"type": "object", "description": "Replace the plan's input schema (a JSON Schema object describing the plan's inputs, e.g. {\"type\":\"object\",\"required\":[\"pr\"],\"properties\":{\"pr\":{\"type\":\"integer\"}}}). Pass null to clear it."},
+                        "requires_servers": {"type": "array", "items": {"type": "string"}, "description": "Replace the list of MCP server names the plan requires to be configured (gates catalog visibility). Empty array clears it."},
                         "finish": {
                             "type": "object",
                             "description": "Set the plan's finish type. Provide EITHER 'solver' {queryToAnswer: string, systemPrompt?: string} for LLM synthesis, OR 'output' {a map of key -> template string} for a structured result. Mutually exclusive.",
@@ -1190,7 +1227,7 @@ impl ToolRegistry for WorkbenchTools {
             ToolDef {
                 name: RESTORE_DRAFT.to_string(),
                 description: "One-level undo: put the draft back to what it was before \
-                              the last replacement (load, draft, set, or edit) — use it \
+                              the last replacement (load, draft, or edit) — use it \
                               when you or the user replaced the draft by mistake. \
                               Calling it again redoes."
                     .to_string(),
@@ -1710,13 +1747,84 @@ solver:
             both.result
         );
 
-        let neither = tools.update_metadata(&json!({"finish": {}}));
-        assert!(neither.is_error);
-        let message = neither.result["error"].as_str().unwrap();
+        // A non-empty finish object lacking both keys is malformed.
+        let malformed = tools.update_metadata(&json!({"finish": {"bogus": 1}}));
+        assert!(malformed.is_error);
+        let message = malformed.result["error"].as_str().unwrap();
         assert!(
             message.contains("solver") && message.contains("output"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn update_metadata_clears_finish_to_silent() {
+        // referencing_doc finishes with solver; clear it to a silent plan.
+        let (tools, draft, mut rx) = editing_tools(Some(referencing_doc()));
+        let outcome = tools.update_metadata(&json!({"finish": {}}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        let doc = draft.lock().unwrap().doc.clone().unwrap();
+        assert!(doc.solver.is_none(), "solver should be cleared");
+        assert!(doc.output.is_none(), "output should be cleared");
+        assert_dirty_publish(&mut rx);
+
+        // null clears too — reset a solver first, then clear via null.
+        tools.update_metadata(&json!({"finish": {"solver": {"queryToAnswer": "answer it"}}}));
+        let outcome = tools.update_metadata(&json!({"finish": null}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        let doc = draft.lock().unwrap().doc.clone().unwrap();
+        assert!(doc.solver.is_none() && doc.output.is_none());
+    }
+
+    #[test]
+    fn update_metadata_sets_and_clears_input_schema() {
+        let (tools, draft, _rx) = editing_tools(Some(referencing_doc()));
+        let schema = json!({
+            "type": "object",
+            "required": ["pr"],
+            "properties": {"pr": {"type": "integer"}}
+        });
+        let outcome = tools.update_metadata(&json!({"input_schema": schema.clone()}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert_eq!(
+            draft.lock().unwrap().doc.as_ref().unwrap().input_schema,
+            Some(schema)
+        );
+
+        let outcome = tools.update_metadata(&json!({"input_schema": null}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert_eq!(
+            draft.lock().unwrap().doc.as_ref().unwrap().input_schema,
+            None
+        );
+
+        let bad = tools.update_metadata(&json!({"input_schema": "foo"}));
+        assert!(bad.is_error);
+    }
+
+    #[test]
+    fn update_metadata_edits_requires_servers() {
+        let (tools, draft, _rx) = editing_tools(Some(referencing_doc()));
+        let outcome = tools.update_metadata(&json!({"requires_servers": ["linear", "github"]}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert_eq!(
+            draft.lock().unwrap().doc.as_ref().unwrap().requires_servers,
+            vec!["linear".to_string(), "github".to_string()]
+        );
+
+        let outcome = tools.update_metadata(&json!({"requires_servers": []}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert!(draft
+            .lock()
+            .unwrap()
+            .doc
+            .as_ref()
+            .unwrap()
+            .requires_servers
+            .is_empty());
+
+        let bad = tools.update_metadata(&json!({"requires_servers": "linear"}));
+        assert!(bad.is_error);
     }
 
     #[test]

@@ -66,9 +66,11 @@ each edit is validated atomically and rejected only if it would \
 introduce NEW validation problems, so sequential edits are safer than a \
 wholesale re-draft. Pre-existing problems never block an edit — they \
 are reported in the result so you can fix an already-invalid draft \
-step by step. update_metadata also switches the plan's finish type via \
-its `finish` field (solver ⇄ output); the finish block is NOT a step — \
-never target it with add_step/update_step/delete_step.\n\
+step by step. update_metadata also edits the plan's declared inputs \
+(`input_schema`) and required MCP servers (`requires_servers`), and \
+switches the plan's finish type via its `finish` field (solver ⇄ output, \
+or {} / null for a silent side-effect plan); the finish block is NOT a \
+step — never target it with add_step/update_step/delete_step.\n\
 - workbench__restore_draft: one-level undo of the last draft replacement \
 (again to redo) — use it when you or the user replaced the draft by \
 mistake.\n\
@@ -101,10 +103,11 @@ decide, map, and reduce. Plan steps may only reference \
 runtime tool namespaces — the workbench__ tools are yours alone and are \
 never valid as a step's toolName. There is no `gate`, `assert`, \
 or `exit_gate` tool and no `gate:` field. A plan finishes with `solver` \
-(LLM synthesis) OR `output` (a structured template map), never both. \
-To change the finish type, call workbench__update_metadata with a \
-`finish` field — do not add or edit a step named solver/output (they \
-are plan fields, not steps).\n\n";
+(LLM synthesis) OR `output` (a structured template map) OR neither (a \
+silent side-effect plan), never both solver and output. To change the \
+finish type, call workbench__update_metadata with a `finish` field ({} \
+or null clears both) — do not add or edit a step named solver/output \
+(they are plan fields, not steps).\n\n";
 
 pub async fn run(command: WorkbenchCommand, verbosity: u8) -> Result<()> {
     let WorkbenchCommand::Plan { name_or_path } = command;
