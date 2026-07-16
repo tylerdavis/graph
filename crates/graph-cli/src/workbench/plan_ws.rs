@@ -452,6 +452,15 @@ impl PlanWorkspace {
         self.detail_scroll.set(0);
     }
 
+    /// Select a specific row (from a mouse click); no-op past the list.
+    /// Resets detail scroll, matching keyboard selection.
+    pub fn select_to(&mut self, index: usize) {
+        if index < self.list_len() {
+            self.selected = index;
+            self.detail_scroll.set(0);
+        }
+    }
+
     /// Scroll the pane the current tab shows: the run transcript (offset
     /// from the bottom) or the detail/debug pane (offset from the top).
     pub fn scroll_by(&mut self, up: bool, amount: u16) {
@@ -475,7 +484,7 @@ impl PlanWorkspace {
         }
     }
 
-    fn list_len(&self) -> usize {
+    pub fn list_len(&self) -> usize {
         match self.tab {
             WsTab::Plan => self.steps.len(),
             WsTab::Context => self.tools.len(),

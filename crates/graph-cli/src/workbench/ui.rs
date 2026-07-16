@@ -16,6 +16,27 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
+/// Rendered geometry of the interactive regions, captured each frame so the
+/// reducer can hit-test mouse coordinates against panes it never lays out
+/// itself. All rects default to the zero rect, which `contains` nothing
+/// (ratatui bounds are half-open) — so clicks before the first frame no-op.
+#[derive(Clone, Copy, Default)]
+pub struct Regions {
+    pub chat: Rect,
+    pub chat_scrollback: Rect,
+    pub workspace: Rect,
+    /// One rect per workspace tab label, indexed to match [`WsTab`] order
+    /// (plan, context, run).
+    pub tabs: [Rect; 3],
+    /// The step/tool list, borders included (rows start at `.y + 1`).
+    pub ws_list: Rect,
+    /// The list's internal scroll offset (first visible row index), so a
+    /// click maps to `ws_list_offset + (row - inner_top)`.
+    pub ws_list_offset: u16,
+    /// The scrollable body of the active tab (detail/debug/run).
+    pub ws_body: Rect,
+}
+
 // Faded default foreground rather than `Color::DarkGray`: many dark themes map
 // ANSI bright-black almost onto the background, making DarkGray unreadable.
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
@@ -35,9 +56,17 @@ pub fn draw(frame: &mut Frame, app: &App) {
         return;
     };
 
-    draw_chat(frame, app, chat);
-    draw_workspace(frame, app, workspace);
+    // Record interactive geometry as we lay it out, then commit it for the
+    // reducer's mouse hit-testing. `draw` is the sole writer of app.regions.
+    let mut regions = Regions {
+        chat,
+        workspace,
+        ..Regions::default()
+    };
+    draw_chat(frame, app, chat, &mut regions);
+    draw_workspace(frame, app, workspace, &mut regions);
     draw_status_bar(frame, app, status);
+    *app.regions.borrow_mut() = regions;
 
     // Paused is non-modal — the plan tab renders the debug panel — so the
     // only modal overlay is the editor, plus help on top of anything.
@@ -60,7 +89,7 @@ fn pane_block(title: &str, focused: bool) -> Block<'_> {
 
 // ── Chat pane ────────────────────────────────────────────────────────────
 
-fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_chat(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions) {
     let block = pane_block(" chat ", app.focus == Focus::Chat).padding(Padding::horizontal(1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -76,6 +105,7 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
     else {
         return;
     };
+    regions.chat_scrollback = scrollback;
 
     let width = scrollback.width.max(1) as usize;
     let mut lines: Vec<Line> = Vec::new();
@@ -334,7 +364,7 @@ fn wrap_input(
 
 // ── Workspace pane ───────────────────────────────────────────────────────
 
-fn draw_workspace(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_workspace(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions) {
     let block = pane_block(" workspace ", app.focus == Focus::Workspace);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -343,21 +373,37 @@ fn draw_workspace(frame: &mut Frame, app: &App, area: Rect) {
     else {
         return;
     };
+    regions.ws_body = body;
 
     let selected = match app.ws.tab {
         WsTab::Plan => 0,
         WsTab::Context => 1,
         WsTab::Run => 2,
     };
-    let tabs = Tabs::new(vec!["1 plan", "2 context", "3 run"])
+    let titles = ["1 plan", "2 context", "3 run"];
+    // Mirror how `Tabs` lays labels out (a leading+trailing space of padding
+    // per title, a one-cell divider between) so a click maps to a tab. The
+    // clickable rect covers the padded label, matching what the eye sees.
+    let mut x = tabs_area.x;
+    for (i, title) in titles.iter().enumerate() {
+        let padded = title.chars().count() as u16 + 2; // " title "
+        regions.tabs[i] = Rect {
+            x,
+            y: tabs_area.y,
+            width: padded.min(tabs_area.right().saturating_sub(x)),
+            height: 1,
+        };
+        x = x.saturating_add(padded + 1); // + divider
+    }
+    let tabs = Tabs::new(titles.to_vec())
         .select(selected)
         .style(DIM)
         .highlight_style(ACCENT.add_modifier(Modifier::BOLD));
     frame.render_widget(tabs, tabs_area);
 
     match app.ws.tab {
-        WsTab::Plan => draw_plan_tab(frame, app, body),
-        WsTab::Context => draw_context_tab(frame, &app.ws, body),
+        WsTab::Plan => draw_plan_tab(frame, app, body, regions),
+        WsTab::Context => draw_context_tab(frame, &app.ws, body, regions),
         WsTab::Run => draw_run_tab(frame, &app.ws, body),
     }
 }
@@ -411,7 +457,7 @@ fn paused_prompt(app: &App) -> Option<&GatePrompt> {
     }
 }
 
-fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions) {
     let ws = &app.ws;
     // An incremental draft in flight replaces the doc rows: the doc only
     // changes at the final publish, so live progress renders from events.
@@ -541,6 +587,8 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect) {
         .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
     let mut state = ListState::default().with_selected(Some(ws.selected));
     frame.render_stateful_widget(list, steps_area, &mut state);
+    regions.ws_list = steps_area;
+    regions.ws_list_offset = state.offset() as u16;
 
     // While the selected row is the paused call (or the pause is inside a
     // nested plan), the detail pane becomes the debug panel.
@@ -688,7 +736,7 @@ fn draw_drafting_view(frame: &mut Frame, app: &App, drafting: &DraftingProgress,
     );
 }
 
-fn draw_context_tab(frame: &mut Frame, ws: &PlanWorkspace, area: Rect) {
+fn draw_context_tab(frame: &mut Frame, ws: &PlanWorkspace, area: Rect, regions: &mut Regions) {
     let [list_area, detail] =
         *Layout::vertical([Constraint::Percentage(40), Constraint::Min(3)]).split(area)
     else {
@@ -716,6 +764,8 @@ fn draw_context_tab(frame: &mut Frame, ws: &PlanWorkspace, area: Rect) {
         .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
     let mut state = ListState::default().with_selected(Some(ws.selected));
     frame.render_stateful_widget(list, list_area, &mut state);
+    regions.ws_list = list_area;
+    regions.ws_list_offset = state.offset() as u16;
 
     let mut lines: Vec<Line> = Vec::new();
     if let Some(tool) = ws.tools.get(ws.selected) {

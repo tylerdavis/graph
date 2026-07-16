@@ -16,7 +16,10 @@ use crate::cli::WorkbenchCommand;
 use crate::runtime::Runtime;
 use anyhow::{bail, Context, Result};
 use app::{App, Msg};
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, EventStream};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    EventStream,
+};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -349,7 +352,14 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     let mut stdout = std::io::stdout();
     // Bracketed paste: a multi-line paste arrives as one Event::Paste
     // instead of a stream of keypresses whose Enters would submit mid-paste.
-    crossterm::execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    // Mouse capture routes clicks/scroll to us as Event::Mouse; native
+    // text selection then needs the terminal's modifier (Shift/Option).
+    crossterm::execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
     install_panic_hook();
     Ok(Terminal::new(CrosstermBackend::new(stdout))?)
 }
@@ -358,6 +368,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result
     disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
+        DisableMouseCapture,
         DisableBracketedPaste,
         LeaveAlternateScreen
     )?;
@@ -366,7 +377,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result
 }
 
 /// A panic mid-draw must not leave the user's terminal in raw mode (or
-/// with bracketed paste still on) with no visible error.
+/// with bracketed paste / mouse capture still on) with no visible error.
 fn install_panic_hook() {
     static HOOK: std::sync::Once = std::sync::Once::new();
     HOOK.call_once(|| {
@@ -375,6 +386,7 @@ fn install_panic_hook() {
             let _ = disable_raw_mode();
             let _ = crossterm::execute!(
                 std::io::stdout(),
+                DisableMouseCapture,
                 DisableBracketedPaste,
                 LeaveAlternateScreen
             );
