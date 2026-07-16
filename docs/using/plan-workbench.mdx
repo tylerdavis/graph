@@ -75,7 +75,7 @@ A debug run (`g`) works like a debugger over plan execution. Pauses are **non-mo
 
 Control-step *evaluation* is never gated — `exit`/`decide` gates (including `infer` judge calls) and `map`/`reduce` orchestration are read-only engine computation; their side effects are the body calls, which are. While paused, the exit controls (`q`, `Ctrl+C`) abort the run — press again once it stops to quit; run keys are blocked until the pause is decided, and the chat input is inert. `?` still opens help, and the workspace scrolls and navigates normally.
 
-The agent can drive all of this too: `workbench__run_plan` accepts `breakpoints` (top-level step ids, implies a debug run) — every pause still asks *you*.
+The agent can drive all of this too: `workbench__run_plan` accepts `breakpoints` (top-level step ids, implies a debug run) — every pause still asks *you*. When a run aborts because a tool failed (a break-on-exception pause resolved with `a`), the result the agent receives carries that step's `error` — the failing tool's own output — not just the aborted step id, so the agent can troubleshoot the failure rather than guess at it.
 
 ## Debug logging
 

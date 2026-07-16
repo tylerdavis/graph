@@ -2043,10 +2043,14 @@ async fn gate_abort_is_hard_and_never_replans() {
         .run_planned("sprint status")
         .await
         .unwrap_err();
-    let PipelineError::Aborted { step, state } = err else {
+    let PipelineError::Aborted { step, error, state } = err else {
         panic!("expected Aborted, got {err}");
     };
     assert_eq!(step, "E0");
+    assert!(
+        error.is_none(),
+        "a pre-dispatch breakpoint abort carries no tool error"
+    );
     assert_eq!(state.plan.len(), 2, "partial state carries the plan");
     assert!(registry.invocations.lock().unwrap().is_empty());
     assert_eq!(
@@ -2435,10 +2439,15 @@ async fn on_tool_error_abort_is_hard() {
         .run_planned("sprint status")
         .await
         .unwrap_err();
-    let PipelineError::Aborted { step, .. } = err else {
+    let PipelineError::Aborted { step, error, .. } = err else {
         panic!("expected Aborted, got {err}");
     };
     assert_eq!(step, "E0");
+    assert_eq!(
+        error,
+        Some(json!({"error": "boom"})),
+        "a tool-error abort carries the failing tool's error so the caller can troubleshoot"
+    );
     assert_eq!(
         provider.requests.lock().unwrap().len(),
         1,
