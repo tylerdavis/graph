@@ -17,7 +17,6 @@ use tokio::sync::mpsc::UnboundedSender;
 
 pub const DRAFT_PLAN: &str = "workbench__draft_plan";
 pub const GET_PLAN: &str = "workbench__get_plan";
-pub const SET_PLAN: &str = "workbench__set_plan";
 pub const LOAD_PLAN: &str = "workbench__load_plan";
 pub const LIST_PLANS: &str = "workbench__list_plans";
 pub const VALIDATE_PLAN: &str = "workbench__validate_plan";
@@ -101,7 +100,7 @@ impl WorkbenchTools {
     }
 
     /// Replace the draft, stashing the displaced doc as the undo snapshot.
-    /// Deliberately unguarded: the edit path (draft_plan, set_plan, the
+    /// Deliberately unguarded: the edit path (draft_plan, the
     /// precise tools) preserves unsaved work by setting dirty=true, and any
     /// bad replacement is one restore away. Only load_plan needs the dirty
     /// guard, and it does its check-and-replace under the same lock.
@@ -146,7 +145,18 @@ impl WorkbenchTools {
                 is_error: true,
             });
         }
-        load_plan_doc(path).map_err(|error| error_outcome(&format!("failed to load plan: {error}")))
+        load_plan_doc(path).map_err(|error| {
+            let mut message = format!("failed to load plan: {error}");
+            if error.to_string().contains("unknown field") {
+                message.push_str(
+                    "\nhint: control flow is not a field — it is a step whose \
+                     toolName is one of the bare control steps exit, decide, map, \
+                     or reduce (there is no gate/assert tool); a plan finishes \
+                     with `solver` OR `output`, never both",
+                );
+            }
+            error_outcome(&message)
+        })
     }
 
     /// Read a plan's YAML without touching the draft — the inspection
@@ -484,49 +494,6 @@ impl WorkbenchTools {
         }
     }
 
-    fn set_plan(&self, input: &Value) -> ToolOutcome {
-        let Some(yaml) = input.get("yaml").and_then(Value::as_str) else {
-            return error_outcome(
-                "set_plan requires a 'yaml' string with a complete plan document",
-            );
-        };
-        let mut doc: PlanDoc = match serde_yaml::from_str(yaml) {
-            Ok(doc) => doc,
-            Err(error) => {
-                let mut message = format!("invalid plan YAML: {error}");
-                if error.to_string().contains("unknown field") {
-                    message.push_str(
-                        "\nhint: control flow is not a field — it is a step whose \
-                         toolName is one of the bare control steps exit, decide, map, \
-                         or reduce (there is no gate/assert tool); a plan finishes \
-                         with `solver` OR `output`, never both",
-                    );
-                }
-                return error_outcome(&message);
-            }
-        };
-        if let Err(problem) = validate_doc(&doc) {
-            return error_outcome(&format!("invalid plan: {problem}"));
-        }
-        if let Err(problems) = self.pipeline.validate_plan(&doc.steps) {
-            return error_outcome(&format!("invalid plan: {}", problems.join("; ")));
-        }
-        // Keep the on-disk identity of the draft being edited — but only
-        // while it IS the same plan. If the yaml changes the identifier,
-        // this is a different plan now; carrying the old file's path
-        // forward would make the next save overwrite that file.
-        doc.path = self
-            .current()
-            .filter(|prior| prior.identifier == doc.identifier)
-            .and_then(|prior| prior.path);
-        let summary = json!({"ok": true, "identifier": doc.identifier, "steps": doc.steps.len()});
-        self.publish(doc, true);
-        ToolOutcome {
-            result: summary,
-            is_error: false,
-        }
-    }
-
     /// Every validation problem in a doc: plan-level plus document-level.
     fn doc_problems(&self, doc: &PlanDoc) -> Vec<String> {
         let mut problems = self
@@ -605,7 +572,8 @@ impl WorkbenchTools {
                 if identifier != doc.identifier {
                     // A new identifier is a different plan: drop the on-disk
                     // identity so the next save creates a new file instead
-                    // of overwriting the old plan (same rule as set_plan).
+                    // of overwriting the old plan — the draft's on-disk
+                    // identity is kept only while the identifier is unchanged.
                     doc.path = None;
                 }
                 doc.identifier = identifier.to_string();
@@ -988,7 +956,8 @@ impl ToolRegistry for WorkbenchTools {
             ToolDef {
                 name: GET_PLAN.to_string(),
                 description: "Read the current draft plan as YAML. Call this before making \
-                              targeted edits with workbench__set_plan."
+                              targeted edits with the step tools (add_step, update_step, \
+                              delete_step)."
                     .to_string(),
                 input_schema: json!({"type": "object", "properties": {}}),
                 output_schema: None,
@@ -1054,25 +1023,6 @@ impl ToolRegistry for WorkbenchTools {
                 input_schema: json!({"type": "object", "properties": {}}),
                 output_schema: None,
                 output_example: Some(json!({"savedTo": "./.graph/plans/sprint_report.yaml"})),
-                read_only: None,
-            },
-            ToolDef {
-                name: SET_PLAN.to_string(),
-                description: "Replace the draft plan with a complete YAML plan document \
-                              (identifier, name, description, steps, and solver/output). \
-                              Invalid documents are rejected with the problems to fix. \
-                              For targeted changes, prefer the precise editing tools \
-                              (update_metadata, add_step, update_step, delete_step)."
-                    .to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "required": ["yaml"],
-                    "properties": {
-                        "yaml": {"type": "string", "description": "The complete plan document as YAML."}
-                    }
-                }),
-                output_schema: None,
-                output_example: None,
                 read_only: None,
             },
             ToolDef {
@@ -1216,8 +1166,8 @@ impl ToolRegistry for WorkbenchTools {
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
         match name {
-            DRAFT_PLAN | GET_PLAN | SET_PLAN | LOAD_PLAN | LIST_PLANS | VALIDATE_PLAN
-            | RUN_PLAN | SAVE_PLAN | UPDATE_METADATA | ADD_STEP | UPDATE_STEP | DELETE_STEP
+            DRAFT_PLAN | GET_PLAN | LOAD_PLAN | LIST_PLANS | VALIDATE_PLAN | RUN_PLAN
+            | SAVE_PLAN | UPDATE_METADATA | ADD_STEP | UPDATE_STEP | DELETE_STEP
             | RESTORE_DRAFT | SHOW_PLAN => {}
             // Not ours: stay silent, or the composite registry's fallthrough
             // (the fs tools are also workbench__*) double-logs the call.
@@ -1232,7 +1182,6 @@ impl ToolRegistry for WorkbenchTools {
         let outcome = match name {
             DRAFT_PLAN => Ok(self.draft_plan(&input).await),
             GET_PLAN => Ok(self.get_plan()),
-            SET_PLAN => Ok(self.set_plan(&input)),
             LOAD_PLAN => Ok(self.load_plan(&input)),
             LIST_PLANS => Ok(self.list_plans()),
             VALIDATE_PLAN => Ok(self.validate_plan()),
@@ -1548,37 +1497,6 @@ steps:
         assert!(!outcome.is_error, "{:?}", outcome.result);
         assert!(dir.path().join("demo.yaml").exists());
         assert!(matches!(rx.try_recv().unwrap(), Msg::Saved(Ok(_))));
-    }
-
-    #[test]
-    fn set_plan_keeps_the_loaded_path_only_for_the_same_plan() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut loaded = demo_doc();
-        loaded.path = Some(PathBuf::from("/plans/demo.yaml"));
-        let draft: SharedDraft = Arc::new(Mutex::new(DraftState::new(Some(loaded))));
-        let tools = WorkbenchTools::new(
-            draft.clone(),
-            test_pipeline(vec![]),
-            None,
-            Arc::new(DebugControls::default()),
-            tx,
-        );
-
-        // Same identifier: a surgical edit keeps the on-disk identity.
-        let same = serde_yaml::to_string(&demo_doc()).unwrap();
-        assert!(!tools.set_plan(&json!({ "yaml": same })).is_error);
-        assert_eq!(
-            draft.lock().unwrap().doc.as_ref().unwrap().path,
-            Some(PathBuf::from("/plans/demo.yaml"))
-        );
-
-        // Different identifier: this is a different plan now — carrying
-        // the path forward would make the next save overwrite demo.yaml.
-        let mut other = demo_doc();
-        other.identifier = "other_plan".to_string();
-        let other = serde_yaml::to_string(&other).unwrap();
-        assert!(!tools.set_plan(&json!({ "yaml": other })).is_error);
-        assert_eq!(draft.lock().unwrap().doc.as_ref().unwrap().path, None);
     }
 
     #[test]
@@ -1987,11 +1905,14 @@ steps:
     }
 
     #[test]
-    fn set_plan_unknown_field_error_includes_a_control_flow_hint() {
-        let (tools, _draft, _rx) = editing_tools(Some(referencing_doc()));
+    fn load_plan_unknown_field_error_includes_a_control_flow_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.yaml");
         let yaml = "identifier: demo\nname: Demo\ndescription: d\nsteps:\n\
                     - id: E0\n  tool_name: t__x\n  input: {}\ngate:\n  condition: true\n";
-        let outcome = tools.set_plan(&json!({ "yaml": yaml }));
+        std::fs::write(&path, yaml).unwrap();
+        let (tools, _draft, _rx) = editing_tools(None);
+        let outcome = tools.load_plan(&json!({ "name_or_path": path.to_str().unwrap() }));
         assert!(outcome.is_error);
         let message = outcome.result["error"].as_str().unwrap();
         assert!(message.contains("unknown field"), "{message}");
