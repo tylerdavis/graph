@@ -32,6 +32,10 @@ All `workbench__` tools are agent-side only — they are not runtime tools, and 
 
 Every draft change shows up in the plan pane immediately and is validated automatically. Multi-line pastes land in the chat input (or an open editor) as literal text — newlines stay newlines, and nothing submits until you press Enter. Workbench chats are scratch sessions — they are not persisted as threads.
 
+### Incremental drafting
+
+With [`[planner].draft_strategy = "incremental"`](/reference/configuration#planner) (or `GRAPH_DRAFT_STRATEGY=incremental`), `workbench__draft_plan` articulates its progress live in the plan tab instead of a single planning spinner. The outline appears first as dimmed `○` placeholder rows (each stage's summary, with the expected tool when the planner named one); steps then materialize one at a time — a `◐` animated row for the step being drafted, turning into a `✓` row with its id and tool once it passes static validation. An invalid step shows a `(retry n/3)` suffix on the drafting row with the validation problems listed in the detail pane, and the corrected attempt takes its place. The draft itself is published exactly once, when drafting completes — and if a step exhausts its retries, the valid prefix is published as the draft (marked unsaved) and the agent is told to finish it with the editing tools instead of redrafting.
+
 **Workspace (right)** has three tabs:
 
 | Tab | Contents |
