@@ -29,6 +29,24 @@ pub const DELETE_STEP: &str = "workbench__delete_step";
 pub const RESTORE_DRAFT: &str = "workbench__restore_draft";
 pub const SHOW_PLAN: &str = "workbench__show_plan";
 
+/// The mutating edit tools — a successful call to one is genuine forward
+/// progress on the draft. The agent loop resets its iteration budget on these
+/// (see `Agent::progress_tools`) so a long fix-forward session (edit, validate,
+/// run, repeat) isn't starved mid-repair.
+pub fn progress_tools() -> Vec<String> {
+    [
+        DRAFT_PLAN,
+        UPDATE_METADATA,
+        ADD_STEP,
+        UPDATE_STEP,
+        DELETE_STEP,
+        RESTORE_DRAFT,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 /// Appended to every workbench__ tool description surfaced to the chat
 /// agent: these are agent-side tools, not runtime tools, so a plan step
 /// referencing one only fails at run time. Descriptions are routing

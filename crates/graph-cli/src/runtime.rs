@@ -70,6 +70,10 @@ impl Runtime {
                 self.config.prompts.chat.as_deref(),
             ),
             max_iterations: self.config.settings.max_agent_iterations,
+            // `ask`/`chat` have no edit-then-verify loop to protect, so the
+            // budget is a plain hard cap. The workbench opts into progress
+            // resetting when it rebuilds the agent (see workbench effects).
+            progress_tools: Vec::new(),
         })
     }
 

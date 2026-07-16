@@ -22,6 +22,13 @@ pub struct Agent {
     pub temperature: Option<f32>,
     pub system_prompt: String,
     pub max_iterations: u32,
+    /// Tool names that count as genuine progress. When a batch executes one
+    /// of these successfully, the iteration budget resets: `max_iterations`
+    /// then bounds *consecutive non-progress* iterations rather than the whole
+    /// turn. Empty (the `ask`/`chat` default) keeps the plain hard cap. The
+    /// workbench sets it to its mutating edit tools so a long fix-forward loop
+    /// — edit, validate, run, repeat — isn't starved mid-repair.
+    pub progress_tools: Vec<String>,
 }
 
 /// Failures of the agent loop (`ask`/`chat`/workbench turns). The plan
@@ -66,11 +73,22 @@ impl Agent {
         let mut usage = Usage::default();
         let mut tool_calls_made = 0u32;
         let mut tools_used: Vec<String> = Vec::new();
+        // `max_iterations` bounds *consecutive non-progress* iterations, not
+        // the whole turn: a successful progress-tool call resets `stall` (see
+        // `progress_tools`). With no progress tools configured, nothing ever
+        // resets it and this is exactly the old hard cap. `iteration` stays a
+        // monotonic count for the event sink's UI.
+        let mut stall = 0u32;
+        let mut iteration = 0u32;
 
-        for iteration in 0..self.max_iterations {
+        loop {
+            if stall >= self.max_iterations {
+                return Err(AgentError::MaxIterations(self.max_iterations));
+            }
             if iteration > 0 {
                 self.events.iteration(iteration);
             }
+            iteration += 1;
             let response = self.stream_once(messages, &tools).await?;
             usage.input_tokens += response.usage.input_tokens;
             usage.output_tokens += response.usage.output_tokens;
@@ -103,9 +121,15 @@ impl Agent {
                 }
             }
             let results = self.execute_calls(&response.tool_calls).await;
+            // A successful progress-tool call in this batch refreshes the
+            // budget; otherwise the stall counter advances toward the cap.
+            let made_progress = !self.progress_tools.is_empty()
+                && response.tool_calls.iter().zip(&results).any(|(call, msg)| {
+                    self.progress_tools.contains(&call.name) && !is_error_result(msg)
+                });
+            stall = if made_progress { 0 } else { stall + 1 };
             messages.extend(results);
         }
-        Err(AgentError::MaxIterations(self.max_iterations))
     }
 
     async fn tool_specs(&self) -> Vec<ToolSpec> {
@@ -173,6 +197,13 @@ impl Agent {
         });
         futures::future::join_all(futures).await
     }
+}
+
+/// True when a tool-result message carried an error. `execute_calls` returns
+/// results in call order, so this reads the flag per call for progress
+/// accounting.
+fn is_error_result(message: &ChatMessage) -> bool {
+    matches!(message, ChatMessage::ToolResult { is_error, .. } if *is_error)
 }
 
 #[cfg(test)]
@@ -248,6 +279,14 @@ mod tests {
     }
 
     fn agent(responses: Vec<ChatResponse>, error_mode: bool) -> (Agent, Arc<EchoRegistry>) {
+        agent_with_progress(responses, error_mode, Vec::new())
+    }
+
+    fn agent_with_progress(
+        responses: Vec<ChatResponse>,
+        error_mode: bool,
+        progress_tools: Vec<String>,
+    ) -> (Agent, Arc<EchoRegistry>) {
         let registry = Arc::new(EchoRegistry {
             invocations: Mutex::new(Vec::new()),
             error_mode,
@@ -260,6 +299,7 @@ mod tests {
             temperature: None,
             system_prompt: "test".into(),
             max_iterations: 3,
+            progress_tools,
         };
         (agent, registry)
     }
@@ -431,6 +471,46 @@ mod tests {
             .map(|_| tool_response(vec![("test__echo", json!({}))]))
             .collect();
         let (agent, _) = agent(responses, false);
+        let mut messages = vec![ChatMessage::User {
+            content: "go".into(),
+        }];
+        let err = agent.run_turn(&mut messages).await.unwrap_err();
+        assert!(matches!(err, AgentError::MaxIterations(3)));
+    }
+
+    #[tokio::test]
+    async fn a_successful_progress_call_resets_the_iteration_budget() {
+        // max_iterations is 3, but a fix-forward loop that keeps landing a
+        // successful edit should run well past that. Interleave a progress
+        // call every third round; the run reaches its final answer at round 7,
+        // which a plain hard cap would have cut off at round 3.
+        let mut responses = Vec::new();
+        for i in 0..7 {
+            let tool = if i % 3 == 2 {
+                "test__edit"
+            } else {
+                "test__echo"
+            };
+            responses.push(tool_response(vec![(tool, json!({}))]));
+        }
+        responses.push(text_response("shipped"));
+        let (agent, _) = agent_with_progress(responses, false, vec!["test__edit".to_string()]);
+        let mut messages = vec![ChatMessage::User {
+            content: "go".into(),
+        }];
+        let outcome = agent.run_turn(&mut messages).await.unwrap();
+        assert_eq!(outcome.text, "shipped");
+        assert_eq!(outcome.tool_calls_made, 7);
+    }
+
+    #[tokio::test]
+    async fn a_failing_progress_call_does_not_reset_the_budget() {
+        // The edit tool is named a progress tool, but every call errors, so it
+        // is not real progress: the stall counter still trips the cap.
+        let responses = (0..3)
+            .map(|_| tool_response(vec![("test__edit", json!({}))]))
+            .collect();
+        let (agent, _) = agent_with_progress(responses, true, vec!["test__edit".to_string()]);
         let mut messages = vec![ChatMessage::User {
             content: "go".into(),
         }];

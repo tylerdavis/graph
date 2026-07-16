@@ -84,6 +84,10 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                         ctx.draft.lock().unwrap().doc.clone()
                     }),
                     max_iterations: ctx.agent.max_iterations,
+                    // Reset the iteration budget on each successful edit, so a
+                    // long fix-forward loop (draft → validate → run → patch)
+                    // isn't cut off mid-repair the way a plain hard cap does.
+                    progress_tools: super::tools::progress_tools(),
                 };
                 let mut history = ctx.history.lock().await;
                 let pre_len = history.len();
@@ -204,8 +208,9 @@ fn keep_partial_history(error: &AgentError) -> bool {
 fn turn_failure_message(error: AgentError) -> String {
     match error {
         AgentError::MaxIterations(n) => format!(
-            "stopped after {n} tool iterations — progress is kept, send \
-             \"continue\" to resume (or raise max_agent_iterations in config)"
+            "stopped after {n} tool iterations with no successful edit — \
+             progress is kept, send \"continue\" to resume (or raise \
+             max_agent_iterations in config)"
         ),
         other => other.to_string(),
     }
