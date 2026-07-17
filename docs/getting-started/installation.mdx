@@ -1,44 +1,46 @@
 ---
 title: "Installation"
-description: "From source, release binaries, or the container image"
+description: "Release binaries and the container image"
 icon: "download"
 ---
 
-Build from source for development; grab a release binary or the container image to just run it. For source builds, tooling (Rust, pkg-config) is managed with [mise](https://mise.jdx.dev); OpenSSL can come from any source (nix, Homebrew, …) as long as `pkg-config` can resolve it.
-
-<Steps>
-  <Step title="Clone and set up the toolchain">
-    ```bash
-    git clone https://github.com/tylerdavis/graph
-    cd graph
-    mise trust
-    mise install
-    ```
-  </Step>
-  <Step title="Build and install">
-    ```bash
-    mise run install
-    ```
-    This builds the release binary and installs `graph` onto your PATH (`~/.cargo/bin`). Plain `cargo build` works too.
-  </Step>
-  <Step title="Verify">
-    ```bash
-    graph --help
-    ```
-    <Info>
-    The very first run of a freshly built binary pauses ~1s while macOS scans it (Gatekeeper). Every run after that is instant, until the next rebuild.
-    </Info>
-  </Step>
-</Steps>
+graph ships as a single binary and a container image — grab whichever fits. Current release: **{{release_version}}**.
 
 ## Release binaries
 
-Tagged releases publish binaries for macOS (arm64) and Linux (x86_64) with SHA-256 checksums:
+Tagged releases publish binaries for macOS (arm64) and Linux (x86_64) with SHA-256 checksums.
 
-```bash
-curl -fsSLO "https://github.com/tylerdavis/graph/releases/download/v0.4.1/graph-v0.4.1-x86_64-unknown-linux-gnu.tar.gz"
-tar xzf graph-v0.4.1-x86_64-unknown-linux-gnu.tar.gz && install -m 0755 graph ~/.local/bin/
-```
+<CardGroup cols={2}>
+  <Card title="macOS (arm64)" icon="apple" href="https://github.com/tylerdavis/graph/releases/download/{{release_version}}/graph-{{release_version}}-macos-arm64.tar.gz">
+    Download graph-{{release_version}}-macos-arm64.tar.gz
+  </Card>
+  <Card title="Linux (x86_64)" icon="linux" href="https://github.com/tylerdavis/graph/releases/download/{{release_version}}/graph-{{release_version}}-linux-x86_64.tar.gz">
+    Download graph-{{release_version}}-linux-x86_64.tar.gz
+  </Card>
+</CardGroup>
+
+Or from the command line:
+
+<Tabs>
+  <Tab title="macOS (arm64)">
+    ```bash
+    curl -fsSLO "https://github.com/tylerdavis/graph/releases/download/{{release_version}}/graph-{{release_version}}-macos-arm64.tar.gz"
+    tar xzf graph-*.tar.gz && install -m 0755 graph ~/.local/bin/
+    graph --help
+    ```
+  </Tab>
+  <Tab title="Linux (x86_64)">
+    ```bash
+    curl -fsSLO "https://github.com/tylerdavis/graph/releases/download/{{release_version}}/graph-{{release_version}}-linux-x86_64.tar.gz"
+    tar xzf graph-*.tar.gz && install -m 0755 graph ~/.local/bin/
+    graph --help
+    ```
+  </Tab>
+</Tabs>
+
+<Info>
+On macOS, the first run of a freshly downloaded binary pauses ~1s while Gatekeeper scans it. Every run after that is instant.
+</Info>
 
 ## Container image
 
@@ -46,7 +48,7 @@ Each release also publishes `ghcr.io/tylerdavis/graph` (tags `vX.Y.Z`, `X.Y`, `l
 
 ```bash
 docker run --rm -e ANTHROPIC_API_KEY -e GRAPH_STORAGE=memory \
-  -v "$PWD:/work" -w /work ghcr.io/tylerdavis/graph:latest plan list
+  -v "$PWD:/work" -w /work ghcr.io/tylerdavis/graph:{{release_version}} plan list
 ```
 
 While the repository is private the image is too — `docker login ghcr.io` with a token that has `read:packages` first (CI jobs use the workflow's `GITHUB_TOKEN`).
@@ -55,9 +57,7 @@ While the repository is private the image is too — `docker login ghcr.io` with
 
 | Requirement | Notes |
 |---|---|
-| Rust 1.94+ | installed by `mise install` |
-| pkg-config | installed by `mise install` |
-| OpenSSL | from nix, Homebrew, or system — must be visible to `pkg-config` |
+| macOS (arm64) or Linux (x86_64) | the platforms release binaries are published for |
 | An LLM provider key | e.g. `ANTHROPIC_API_KEY` — see [Quickstart](/getting-started/quickstart) |
 
 ## First-run notes

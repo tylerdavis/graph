@@ -1,15 +1,62 @@
 ---
 title: "Quickstart"
-description: "From zero to a working agent in ten minutes"
+description: "Install, scaffold a project, run your first plan"
 icon: "rocket"
 ---
+import BinaryDownloads from "/shared/binary_downloads.mdx";
+
+The fastest path: grab a binary, scaffold a project, and hand the setup to your coding agent. A [skill](#let-your-agent-finish-the-setup) walks the agent through wiring a provider, adding tools, and getting a first plan running against your own data. Prefer to do it by hand? The [manual path](#manual-setup) is right below.
 
 <Steps>
-  <Step title="Create a config">
+  <Step title="Install graph">
+    Grab the latest release binary — macOS (arm64) or Linux (x86_64). Each release publishes version-pinned tarballs with SHA-256 checksums:
+
+    {BinaryDownloads}
+  </Step>
+
+  <Step title="Scaffold a project">
+    From your project directory:
+
     ```bash
     graph config init
     ```
-    This writes a commented starter to `./.graph/config.toml` in the current directory (`--global` targets `~/.config/graph/config.toml` for settings you want everywhere, like providers). The minimal working config is a provider, a default model, and one MCP server:
+
+    This writes a commented starter to `./.graph/config.toml`. That directory is where a project's config, plans, and tools live — checked into the repo, reviewed like any other code.
+  </Step>
+
+  <Step title="Let your agent finish the setup">
+    Install the setup skill, then ask your coding agent to run it:
+
+    ```bash
+    npx skills add tylerdavis/graph
+    ```
+
+    This installs [`/graph-project-setup`](https://github.com/tylerdavis/graph/blob/main/skills/graph-project-setup/SKILL.md) for Claude Code, Cursor, Codex, and most other agents. Point your agent at it — "set up graph in this project" — and it asks a few questions, then picks a provider and models, finds and connects the MCP servers or tools you want, scaffolds a first plan against your real data, and runs it end to end. It reads the live docs and example plans as it goes, so the result matches the current release.
+
+    <Tip>
+    Setting up graph as a **GitHub Actions check** instead? The same `npx skills add` command also installs [`/graph-github-actions-setup`](/cookbook/ci-checks), which scaffolds a merge gate or PR reviewer as a plan.
+    </Tip>
+  </Step>
+
+  <Step title="Run your first plan">
+    A plan runs the same steps in the same order every time, for 0–1 LLM calls no matter how many steps it has:
+
+    ```bash
+    graph plan list
+    graph plan run project_status '{"project":"New Relic"}'
+    ```
+
+    The deliverable goes to stdout; tool activity streams dimmed to stderr. That plan is a file under `./.graph/plans/` — open it, tweak it, re-run it.
+  </Step>
+</Steps>
+
+## Manual setup
+
+Not using an agent? The whole path is a few commands.
+
+<Steps>
+  <Step title="Write a minimal config">
+    A working config is a provider, a default model, and whatever tools your plan needs. Here it's one MCP server:
 
     ```toml
     [providers.anthropic]
@@ -28,7 +75,8 @@ icon: "rocket"
     `${VAR}` references fail loudly when the variable is unset — misconfigured secrets never silently send empty strings.
     </Tip>
   </Step>
-  <Step title="Test the MCP connection">
+
+  <Step title="Check your tools are live">
     ```bash
     graph mcp test linear
     # ok: 'linear' initialized in 1.7s — 57 tools (0 declare output schemas)
@@ -36,29 +84,20 @@ icon: "rocket"
     graph tools list
     ```
   </Step>
-  <Step title="Ask something">
+
+  <Step title="Probe with the workbench">
+    `graph ask` runs an agent loop over your whole tool catalog — the fast way to see what a tool returns and prototype a workflow before you freeze it into a plan:
+
     ```bash
     graph ask "What are the urgent issues in Linear right now?"
+    graph ask "Which of those touches production?" --thread   # continue the thread
     ```
-    Tool activity streams to stderr (dim), the answer to stdout. The thread persists:
-    ```bash
-    graph ask "Which of those touches production?" --thread
-    ```
-    Every tool call here also teaches graph what that tool's output looks like (the [shape cache](/tools/shape-cache)) — exploration is never wasted.
+
+    Every call here also teaches graph what each tool's output looks like (the [shape cache](/tools/shape-cache)), so exploration is never wasted. Details in [Chat & ask](/using/chat-and-ask).
   </Step>
-  <Step title="Go interactive">
-    ```bash
-    graph chat
-    ```
-    A REPL with the same tools and persistent history. `/thread` shows the current thread id, `/quit` exits, and the closing hint tells you how to resume.
-  </Step>
+
   <Step title="Freeze it into a plan">
-    Once an answer is worth repeating, capture the workflow as a plan — a YAML file that runs the same steps in the same order for 0–1 LLM calls:
-    ```bash
-    graph plan list
-    graph plan run project_status '{"project":"New Relic"}'
-    ```
-    [Authoring plans](/plans/authoring) walks through building one from scratch.
+    Once an answer is worth repeating, capture it as a plan. [Authoring plans](/plans/authoring) walks through building one from scratch.
   </Step>
 </Steps>
 
@@ -74,6 +113,7 @@ icon: "rocket"
 
 ## Next
 
+- [Core concepts](/getting-started/concepts) — plans, the tool catalog, the shape cache, and what a run costs.
 - [Author your first plan](/plans/authoring) — freeze a workflow into a repeatable file.
 - [Add your own tools](/tools/user-defined) — wrap a CLI, a query, or an inline LLM prompt.
 - [Wire it into CI](/cookbook/ci-checks) — exit codes, JSON output, ephemeral storage.

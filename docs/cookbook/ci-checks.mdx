@@ -23,7 +23,7 @@ jobs:
   docs-drift:
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/tylerdavis/graph:v0.6.0      # graph + git/jq/gh baked in
+      image: ghcr.io/tylerdavis/graph:{{release_version}}      # graph + git/jq/gh baked in
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
