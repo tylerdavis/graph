@@ -2,6 +2,37 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
+## v0.8.0 — 2026-07-17
+
+
+### Added
+
+- write the built-in system prompts into the config init starter (#44)
+- steer check plans to explicit exits and list inference to map (#45)
+- named models selectable from prompt tools and builtin__infer (#46)
+- marker-keyed PR comments, ticket extraction, and file/grep at a ref (#47)
+- catalog-aware tool resolution before any step runs (#49)
+- incremental draft strategy — outline, then one validated step per inference (#50)
+- edit input_schema, requires_servers, and silent finish via update_metadata (#51)
+- mouse support — click to focus, switch tabs, select rows, wheel-scroll (#55)
+- add data pack with builtin__reshape for shape projection (#58)
+- optional per-gate model override on exit/decide infer (#59)
+
+### Documentation
+
+- add graph-github-actions-setup skill for coding agents (#42)
+
+### Fixed
+
+- render sub-text and borders with the terminal's dim modifier (#43)
+- PR reviewer no longer emits absence false positives on truncated diffs (#40)
+- paste literally, edit invalid drafts, repair bad drafts, fence agent-only tools (#48)
+- separate outline and drafting phases in workbench trace (#52)
+- show span start time on the left and duration on the right; surface outline call duration (#53)
+- order trace chronologically so draft_plan brackets its phases; fix outline duration origin (#54)
+- carry failing tool error into aborted run result (#56)
+- default output_schema type + reset workbench iteration budget on progress (#57)
+
 ## v0.7.0 — 2026-07-15
 
 
