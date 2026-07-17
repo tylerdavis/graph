@@ -840,6 +840,11 @@ fn on_mouse(app: &mut App, mouse: MouseEvent) -> Vec<Effect> {
             if hit(regions.chat_scrollback, col, row) {
                 // Offset from the bottom: scrolling up moves into history.
                 app.chat.scroll.set(app.chat.scroll.get().saturating_add(3));
+            } else if hit(regions.ws_list, col, row) {
+                // The list sits inside ws_body; test it first so the wheel
+                // moves the selection instead of scrolling the detail pane.
+                app.focus = Focus::Workspace;
+                app.ws.select_previous();
             } else if hit(regions.ws_body, col, row) {
                 app.ws.scroll_by(true, 3);
             }
@@ -851,6 +856,9 @@ fn on_mouse(app: &mut App, mouse: MouseEvent) -> Vec<Effect> {
             }
             if hit(regions.chat_scrollback, col, row) {
                 app.chat.scroll.set(app.chat.scroll.get().saturating_sub(3));
+            } else if hit(regions.ws_list, col, row) {
+                app.focus = Focus::Workspace;
+                app.ws.select_next();
             } else if hit(regions.ws_body, col, row) {
                 app.ws.scroll_by(false, 3);
             }
@@ -2221,6 +2229,27 @@ steps:
         assert_eq!(app.ws.detail_scroll.get(), 0);
         update(&mut app, mouse(MouseEventKind::ScrollDown, 50, 15));
         assert_eq!(app.ws.detail_scroll.get(), 3);
+    }
+
+    #[test]
+    fn scroll_wheel_over_the_steps_list_moves_the_selection() {
+        let mut app = App::new(Some(two_step_doc()));
+        seed_regions(&app, demo_regions());
+        app.focus = Focus::Chat;
+
+        // ws_list is y 2..12; a wheel there selects, not scrolls detail.
+        assert_eq!(app.ws.selected, 0);
+        update(&mut app, mouse(MouseEventKind::ScrollDown, 45, 5));
+        assert_eq!(app.ws.selected, 1, "wheel down advances the selection");
+        assert_eq!(app.focus, Focus::Workspace, "the wheel focuses the pane");
+        assert_eq!(
+            app.ws.detail_scroll.get(),
+            0,
+            "the detail pane did not scroll"
+        );
+
+        update(&mut app, mouse(MouseEventKind::ScrollUp, 45, 5));
+        assert_eq!(app.ws.selected, 0, "wheel up moves the selection back");
     }
 
     #[test]
