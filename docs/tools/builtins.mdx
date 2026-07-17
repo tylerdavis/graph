@@ -35,6 +35,32 @@ To analyze each element of a list, call `infer` inside a [`map` body](/plans/ite
 
 For a *fixed* inference step you reuse across plans (a classifier, a reviewer), still prefer a dedicated `user__` prompt tool — its prompt and schema live in one reviewed file instead of being repeated in every plan.
 
+## The `data` pack (always on)
+
+### `builtin__reshape`
+
+Build a value in a target JSON shape — the [`reshape` tool kind](/tools/user-defined#reshape--project-data-into-a-new-shape) exposed as one callable tool, so a plan can remap keys without authoring a tool YAML or shelling out to `jq`. Pure: no process, no LLM, no side effects. Read-only.
+
+| Input | Type |  |
+| --- | --- | --- |
+| `shape` | object | required — the output shape; keys are literal, each leaf string is a template over the step's data |
+
+The `shape` is a JSON object whose keys are literal and whose leaf strings are [templates](/plans/template-language) over the surrounding step's data — an earlier result as `{{Ex.field}}`, the current [`map`](/plans/iteration) element as `{{item}}`, a plan input as `{{input.x}}` — exactly like any other step input. The pipeline renders it once (like a `map`'s `over`), so the result is that shape with every template resolved, with the same [typed splice](/plans/template-language#typed-splice): a leaf that is *exactly one tag* keeps the source value's type (numbers stay numbers, arrays stay arrays); mixed text like `"PR #{{item.number}}"` renders to a string.
+
+```yaml
+- id: E2
+  tool_name: builtin__reshape
+  input:
+    shape:
+      base_sha: "{{E1.baseRefOid}}"   # rename a key from an earlier result
+      pr: "{{E1.number}}"             # keep the number type
+      title: "PR #{{E1.number}}"      # interpolate a string
+```
+
+It **only moves data** — rename, pick, nest, flatten, interpolate. It is logic-less by construction (the [template dialect](/plans/template-language) has no computation), so it can't derive values (sums, casing, conditionals); wrap those in a `user__` [`exec` tool](/tools/user-defined). A shape referencing a field the data lacks is a tool error, not a silent empty — the same contract as an `exec` that exits non-zero.
+
+To reshape every element of a list, call `reshape` inside a [`map` body](/plans/iteration) over the list and reference `{{item}}` in the shape.
+
 ## The `github` pack
 
 Building blocks for PR-shaped plans — see the [CI checks cookbook](/cookbook/ci-checks) for them in use.

@@ -1,0 +1,33 @@
+# data pack: shape projection — build a value in a target JSON shape whose
+# leaf strings are templates over the step's inputs. Pure: no LLM, no
+# process. The mapping is authored per call by the planner.
+name: reshape
+description: >
+  Build a value in a target JSON shape without an LLM or a shell — the
+  deterministic way to remap keys, pick a subset, nest or flatten, and
+  interpolate strings. Pass a `shape`: a JSON object whose keys are literal
+  and whose leaf strings are templates over the surrounding step's data,
+  referenced the same way any step input is (an earlier result as
+  {{Ex.field}}, the current map element as {{item}}, a plan input as
+  {{input.x}}). The result is that shape with every template resolved. A
+  leaf that is exactly one tag keeps the source type (numbers stay numbers,
+  arrays stay arrays); mixed text like "PR #{{item.number}}" renders to a
+  string. Example: over a raw PR {"baseRefOid":"abc","number":12}, shape
+  {"base_sha":"{{item.baseRefOid}}","pr":"{{item.number}}"} yields
+  {"base_sha":"abc","pr":12}. It only moves data — it cannot compute derived
+  values (sums, casing, conditionals); wrap those in a user `exec` tool. To
+  reshape every element of a list, call this inside a `map` body over the
+  list and reference {{item}} in the shape.
+kind: reshape
+caller_shape: true
+input_schema:
+  type: object
+  required: [shape]
+  properties:
+    shape:
+      type: object
+      description: >
+        The output shape. Keys are literal; each leaf string is a template
+        over the step's data (earlier results as {{Ex.field}}, the current
+        map element as {{item}}, plan inputs as {{input.x}}), e.g.
+        {"pr":"{{item.number}}","label":"issue-{{item.number}}"}.

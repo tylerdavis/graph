@@ -110,7 +110,7 @@ paths = ["./.graph/tools", "~/.config/graph/tools"]
 packs = []              # bundled tool packs to enable, e.g. ["github"]
 ```
 
-`packs` enables [built-in tool packs](/tools/builtins) — tool definitions that ship inside the binary, served under the `builtin__` namespace.
+`packs` enables the opt-in [built-in tool packs](/tools/builtins) — tool definitions that ship inside the binary, served under the `builtin__` namespace. The `llm` and `data` packs are always on; `packs` adds the rest (e.g. `github`).
 
 ## `[storage]`
 
