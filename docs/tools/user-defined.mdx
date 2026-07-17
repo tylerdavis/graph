@@ -59,6 +59,30 @@ output_schema:               # optional → enforced structured output
 
 With an `output_schema`, the result is validated JSON; without one, `{"text": …}`. Useful as a cheap sub-task inside plans — classify, extract, reword — with `model` controlling cost: a [role name](/reference/configuration#models--per-role-assignment) (`chat` default, with the usual fallback to `default`) or a [named model](/reference/configuration#modelsnamed--named-models) like `nano`. An unknown name fails the call with the configured names listed.
 
+## `reshape` — project data into a new shape
+
+```yaml
+name: pr_shape
+description: Normalize PR metadata into our internal shape.
+kind: reshape
+read_only: true              # implied — reshape is always pure
+shape:
+  base_sha: "{{input.baseRefOid}}"   # rename a key
+  pr: "{{input.number}}"             # exact tag keeps the number type
+  title: "PR #{{input.number}}"      # mixed text renders to a string
+input_schema:
+  type: object
+  properties:
+    baseRefOid: { type: string }
+    number: { type: integer }
+```
+
+A `reshape` tool renders its `shape` — a JSON tree whose leaf strings are templates — with the same [typed splice](/plans/template-language#typed-splice) as step inputs: an exact-tag leaf keeps the source value's type, mixed text interpolates to a string. No process, no LLM, no side effects, so it's `read_only` by default. It moves data — rename, pick, nest, flatten — but is [logic-less](/plans/template-language), so it can't derive values (sums, casing, conditionals); use `exec` for those.
+
+The shape renders against the tool's own `input` root, so a fixed doc `shape` references its fields as `{{input.*}}`. Inside a plan the pipeline renders the step input first (against `item`, `E0…`, `input`), so a shape authored as `{{item.number}}` reaches the tool already resolved and passes through unchanged — one effective render either way, like a `map`'s `over`.
+
+Set `caller_shape: true` instead of a fixed `shape` to take the shape from each call's `shape` input — the generic [`builtin__reshape`](/tools/builtins#builtin-reshape) path, where the planner authors the mapping per step referencing the surrounding step's roots. Fixed-shape leaves are validated at load time; caller shapes at render time (a bad path is a tool error). One of `shape` or `caller_shape` is required.
+
 ## Built-in packs
 
 The same YAML format also powers [**built-in tools**](/tools/builtins): packs compiled into the binary and served under the `builtin__` namespace (enable with `[tools] packs = ["github"]`). To customize one, copy its YAML into a tools directory and reference your `user__` copy from plans.

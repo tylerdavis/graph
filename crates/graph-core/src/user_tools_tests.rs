@@ -276,6 +276,160 @@ async fn llm_pack_infer_returns_text_or_caller_structured_output() {
     assert_eq!(outcome.result, json!({"category": "bug"}));
 }
 
+// ── Reshape (data pack) ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn data_pack_reshape_projects_a_new_shape() {
+    let docs = load_pack_tools(&["data".to_string()]).unwrap();
+    assert_eq!(docs.len(), 1);
+    let registry = UserToolRegistry::builtins(docs, router());
+
+    // Standalone (no plan-level render), the shape's leaves reference the
+    // tool's own `input` root. Rename keys, splice typed values, interpolate.
+    let outcome = registry
+        .invoke(
+            "builtin__reshape",
+            json!({
+                "baseRefOid": "abc",
+                "number": 12,
+                "labels": ["bug"],
+                "shape": {
+                    "base_sha": "{{input.baseRefOid}}",
+                    "pr": "{{input.number}}",
+                    "tags": "{{input.labels}}",
+                    "title": "PR #{{input.number}}",
+                },
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    assert_eq!(
+        outcome.result,
+        json!({
+            "base_sha": "abc",
+            "pr": 12,            // exact tag keeps the number type
+            "tags": ["bug"],     // exact tag keeps the array type
+            "title": "PR #12",   // mixed text renders to a string
+        })
+    );
+}
+
+#[tokio::test]
+async fn reshape_already_rendered_shape_passes_through() {
+    // Inside a plan the pipeline renders the step input first, so the shape
+    // reaches the tool as concrete literals (no templates left). The tool's
+    // render is then a no-op that returns the object verbatim.
+    let docs = load_pack_tools(&["data".to_string()]).unwrap();
+    let registry = UserToolRegistry::builtins(docs, router());
+    let outcome = registry
+        .invoke(
+            "builtin__reshape",
+            json!({"shape": {"base_sha": "abc", "pr": 12, "tags": ["bug"]}}),
+        )
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    assert_eq!(
+        outcome.result,
+        json!({"base_sha": "abc", "pr": 12, "tags": ["bug"]})
+    );
+}
+
+#[tokio::test]
+async fn reshape_read_only_and_bad_path_is_a_tool_error() {
+    let docs = load_pack_tools(&["data".to_string()]).unwrap();
+    let registry = UserToolRegistry::builtins(docs, router());
+
+    // Pure transform: advertised read-only.
+    let read_only = registry
+        .tools()
+        .await
+        .unwrap()
+        .iter()
+        .find(|d| d.name == "builtin__reshape")
+        .unwrap()
+        .read_only;
+    assert_eq!(read_only, Some(true));
+
+    // A shape referencing a field the input doesn't have is a tool error,
+    // not a panic — the same contract as an exec that exits non-zero.
+    let outcome = registry
+        .invoke(
+            "builtin__reshape",
+            json!({
+                "id": 1,
+                "shape": {"missing": "{{input.nope}}"},
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(outcome.is_error, "{:?}", outcome.result);
+    assert!(outcome.result["error"]
+        .as_str()
+        .unwrap()
+        .contains("reshape failed"));
+}
+
+#[test]
+fn reshape_validation_needs_a_shape_and_rejects_non_input_roots() {
+    // A fixed-shape reshape tool with no shape and no caller_shape is invalid.
+    let no_shape: UserToolDoc = serde_yaml::from_str(
+        r#"
+name: bad
+description: x
+kind: reshape
+"#,
+    )
+    .unwrap();
+    assert!(validate_tool(&no_shape)
+        .unwrap_err()
+        .contains("caller_shape"));
+
+    // Fixed-shape leaves are validated at load time: only {{input.*}}.
+    let bad_root: UserToolDoc = serde_yaml::from_str(
+        r#"
+name: bad
+description: x
+kind: reshape
+shape:
+  x: "{{E0.value}}"
+"#,
+    )
+    .unwrap();
+    assert!(validate_tool(&bad_root).unwrap_err().contains("E0"));
+
+    // A fixed shape that only references input passes.
+    let ok = doc(r#"
+name: fixed
+description: fixed projection
+kind: reshape
+shape:
+  sha: "{{input.baseRefOid}}"
+"#);
+    let registry = registry(vec![ok]);
+    let _ = &registry;
+}
+
+#[tokio::test]
+async fn reshape_fixed_shape_renders_against_input() {
+    let tool = doc(r#"
+name: fixed
+description: fixed projection
+kind: reshape
+shape:
+  sha: "{{input.baseRefOid}}"
+  n: "{{input.number}}"
+"#);
+    let registry = registry(vec![tool]);
+    let outcome = registry
+        .invoke("user__fixed", json!({"baseRefOid": "abc", "number": 7}))
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    assert_eq!(outcome.result, json!({"sha": "abc", "n": 7}));
+}
+
 #[tokio::test]
 async fn caller_output_schema_requires_opt_in() {
     // A plain prompt tool ignores output_schema in the input — the schema

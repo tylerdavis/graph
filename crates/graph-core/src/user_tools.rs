@@ -2,12 +2,14 @@
 //! registered under the `user__` namespace, visible to the agent, the
 //! planner, and plan steps alike.
 //!
-//! Two kinds:
+//! Three kinds:
 //! - `exec` — run a command; args/env are templated from the input.
 //!   Arbitrary code execution by design; the user authors these.
 //! - `prompt` — a templated LLM call, optionally with structured output.
+//! - `reshape` — project the input into a new JSON shape whose leaf
+//!   strings are `{{input.*}}` templates; pure, no side effects, no LLM.
 
-use crate::template::{render_str, Roots};
+use crate::template::{render_input, render_str, Roots};
 use crate::tools::{ToolDef, ToolError, ToolOutcome, ToolRegistry};
 use async_trait::async_trait;
 use graph_llm::types::{ChatMessage, ChatRequest, ResponseSchema};
@@ -82,6 +84,36 @@ pub enum ToolKind {
         #[serde(default)]
         caller_model: bool,
     },
+    /// Project the input into a new JSON shape. The `shape` is a JSON tree
+    /// whose leaf strings are templates rendered with the same typed-splice
+    /// engine as step inputs: a leaf that is exactly one tag keeps the
+    /// source value's type, mixed text interpolates. Pure — no process, no
+    /// LLM, no side effects — so it's `read_only` by default. Logic-less by
+    /// construction: it renames, picks, nests, and splices, but cannot
+    /// compute derived values (wrap richer transforms in `exec`).
+    ///
+    /// The shape renders against the tool's own `input` root. Standalone,
+    /// its leaves reference `{{input.*}}`. Inside a plan the pipeline
+    /// renders the step input first (against plan roots — `item`, `E0…`,
+    /// `input`), so a planner writes leaves like `{{item.number}}` and the
+    /// shape reaches the tool already resolved; the tool's render is then a
+    /// no-op that returns the concrete object. Either way, one effective
+    /// render — like a `map`'s `over`.
+    ///
+    /// The shape is either fixed in the doc (`shape:`), or — the generic
+    /// `builtin__reshape` path — taken from the call's `shape` input when
+    /// `caller_shape` is set, so the planner authors the mapping per step.
+    Reshape {
+        /// Fixed output shape; each leaf string is a template over `input`.
+        /// Ignored when `caller_shape` is set.
+        #[serde(default)]
+        shape: Option<Value>,
+        /// Take `shape` from the call's `shape` input instead of the doc —
+        /// the generic `builtin__reshape` path. Caller shapes are validated
+        /// at render time (a bad path is a tool error, not a load error).
+        #[serde(default)]
+        caller_shape: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,12 +145,14 @@ const PACKS: &[(&str, &[&str])] = &[
         ],
     ),
     ("llm", &[include_str!("packs/llm/infer.yaml")]),
+    ("data", &[include_str!("packs/data/reshape.yaml")]),
 ];
 
 /// Packs loaded whether or not `[tools].packs` names them — core
-/// capabilities every catalog should have (currently just `llm`, whose
-/// `builtin__infer` gives plans a generic string-or-structured LLM step).
-pub const DEFAULT_PACKS: &[&str] = &["llm"];
+/// capabilities every catalog should have: `llm` (`builtin__infer`, a
+/// generic string-or-structured LLM step) and `data` (`builtin__reshape`,
+/// a pure JSON shape projection).
+pub const DEFAULT_PACKS: &[&str] = &["llm", "data"];
 
 pub fn available_packs() -> Vec<&'static str> {
     PACKS.iter().map(|(name, _)| *name).collect()
@@ -223,8 +257,37 @@ pub fn validate_tool(doc: &UserToolDoc) -> Result<(), String> {
             }
         }
         ToolKind::Prompt { prompt, .. } => check_template(prompt, "prompt")?,
+        ToolKind::Reshape {
+            shape,
+            caller_shape,
+        } => match (shape, caller_shape) {
+            (Some(shape), _) => check_shape_templates(shape, &check_template)?,
+            (None, true) => {} // caller-supplied; validated at render time
+            (None, false) => {
+                return Err("reshape tool needs a `shape` or `caller_shape: true`".to_string())
+            }
+        },
     }
     Ok(())
+}
+
+/// Walk every string leaf of a reshape `shape` and validate its templates.
+/// Shape keys are literal (not rendered), so only string *values* are
+/// checked — the same `{{input.*}}`-only rule the other kinds enforce.
+fn check_shape_templates(
+    shape: &Value,
+    check_template: &impl Fn(&str, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    match shape {
+        Value::String(s) => check_template(s, "shape"),
+        Value::Array(items) => items
+            .iter()
+            .try_for_each(|item| check_shape_templates(item, check_template)),
+        Value::Object(map) => map
+            .values()
+            .try_for_each(|value| check_shape_templates(value, check_template)),
+        _ => Ok(()),
+    }
 }
 
 // ── Registry ─────────────────────────────────────────────────────────────
@@ -294,6 +357,21 @@ impl UserToolRegistry {
                 .map(str::to_string),
             _ => None,
         };
+        // A reshape tool's shape is either fixed in the doc or supplied by
+        // the call (`caller_shape`). Resolve it before `input` is consumed
+        // into the render roots; the effective shape is then rendered
+        // against the tool's own `input` root.
+        let reshape_shape = match &doc.kind {
+            ToolKind::Reshape {
+                shape,
+                caller_shape,
+            } => Some(if *caller_shape {
+                input.get("shape").cloned().unwrap_or(Value::Null)
+            } else {
+                shape.clone().unwrap_or(Value::Null)
+            }),
+            _ => None,
+        };
         let mut roots = Map::new();
         roots.insert("input".to_string(), input);
         let roots = Roots::new(&roots);
@@ -329,6 +407,26 @@ impl UserToolRegistry {
                 self.run_prompt(doc, prompt, system.as_deref(), model, caller_schema, &roots)
                     .await
             }
+            ToolKind::Reshape { .. } => {
+                let shape = reshape_shape.expect("reshape shape resolved above");
+                self.run_reshape(&shape, &roots)
+            }
+        }
+    }
+
+    /// Render the reshape `shape` against the `input` root. A template
+    /// failure (missing/bad path) is a tool error, not a panic — the same
+    /// contract as an `exec` that exits non-zero.
+    fn run_reshape(&self, shape: &Value, roots: &Roots<'_>) -> Result<ToolOutcome, ToolError> {
+        match render_input(shape, roots) {
+            Ok(result) => Ok(ToolOutcome {
+                result,
+                is_error: false,
+            }),
+            Err(e) => Ok(ToolOutcome {
+                result: json!({"error": format!("reshape failed: {e}")}),
+                is_error: true,
+            }),
         }
     }
 
@@ -592,7 +690,7 @@ impl ToolRegistry for UserToolRegistry {
                     output_schema: doc.output_schema.clone(),
                     output_example: None,
                     read_only: doc.read_only.or(match &doc.kind {
-                        ToolKind::Prompt { .. } => Some(true),
+                        ToolKind::Prompt { .. } | ToolKind::Reshape { .. } => Some(true),
                         ToolKind::Exec { .. } => None,
                     }),
                 }
