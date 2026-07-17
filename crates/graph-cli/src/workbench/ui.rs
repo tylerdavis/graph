@@ -585,7 +585,20 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions
                 .title(" steps ─ j/k select · b breakpoint · v validate · r run · g debug "),
         )
         .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
-    let mut state = ListState::default().with_selected(Some(ws.selected));
+    let visible = (steps_area.height.saturating_sub(2) as usize).max(1);
+    ws.list_view_rows.set(visible);
+    let len = ws.steps.len();
+    let max_off = len.saturating_sub(visible);
+    let off = ws.list_scroll.get().min(max_off);
+    ws.list_scroll.set(off);
+    // ratatui forces the selected row into view, so clamp the widget's
+    // selection into our wheel-chosen window; the offset wins for scrolling.
+    let sel = ws.selected.clamp(
+        off,
+        (off + visible).saturating_sub(1).min(len.saturating_sub(1)),
+    );
+    let mut state = ListState::default().with_selected(Some(sel));
+    *state.offset_mut() = off;
     frame.render_stateful_widget(list, steps_area, &mut state);
     regions.ws_list = steps_area;
     regions.ws_list_offset = state.offset() as u16;
@@ -768,7 +781,18 @@ fn draw_context_tab(frame: &mut Frame, ws: &PlanWorkspace, area: Rect, regions: 
             ws.tools.len()
         )))
         .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
-    let mut state = ListState::default().with_selected(Some(ws.selected));
+    let visible = (list_area.height.saturating_sub(2) as usize).max(1);
+    ws.list_view_rows.set(visible);
+    let len = ws.tools.len();
+    let max_off = len.saturating_sub(visible);
+    let off = ws.list_scroll.get().min(max_off);
+    ws.list_scroll.set(off);
+    let sel = ws.selected.clamp(
+        off,
+        (off + visible).saturating_sub(1).min(len.saturating_sub(1)),
+    );
+    let mut state = ListState::default().with_selected(Some(sel));
+    *state.offset_mut() = off;
     frame.render_stateful_widget(list, list_area, &mut state);
     regions.ws_list = list_area;
     regions.ws_list_offset = state.offset() as u16;
