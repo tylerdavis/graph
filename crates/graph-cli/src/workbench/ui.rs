@@ -614,21 +614,27 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions
         lines.push(Line::default());
     }
     if let Some(row) = ws.steps.get(ws.selected) {
-        lines.push(Line::from(vec![
-            Span::styled(&row.id, ACCENT.add_modifier(Modifier::BOLD)),
-            Span::raw(" "),
-            Span::raw(&row.tool),
-        ]));
-        if let Some(reasoning) = &row.reasoning {
-            lines.push(Line::styled(reasoning.clone(), DIM));
-        }
-        lines.push(Line::default());
-        push_json_section(&mut lines, "input template", &row.input_template);
-        if let Some(rendered) = &row.rendered_input {
-            push_json_section(&mut lines, "rendered input", rendered);
-        }
-        if let Some(result) = &row.result {
-            push_json_section(&mut lines, "result", result);
+        if matches!(row.key, RowKey::Root) {
+            // The plan node: metadata prose, then the declared input schema
+            // and the finish (output) contract — not a step's I/O.
+            push_plan_detail(&mut lines, doc);
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(&row.id, ACCENT.add_modifier(Modifier::BOLD)),
+                Span::raw(" "),
+                Span::raw(&row.tool),
+            ]));
+            if let Some(reasoning) = &row.reasoning {
+                lines.push(Line::styled(reasoning.clone(), DIM));
+            }
+            lines.push(Line::default());
+            push_json_section(&mut lines, "input template", &row.input_template);
+            if let Some(rendered) = &row.rendered_input {
+                push_json_section(&mut lines, "rendered input", rendered);
+            }
+            if let Some(result) = &row.result {
+                push_json_section(&mut lines, "result", result);
+            }
         }
     }
     render_scrolled(
@@ -1117,6 +1123,66 @@ fn push_json_section(lines: &mut Vec<Line>, title: &str, value: &serde_json::Val
     lines.push(Line::default());
 }
 
+/// The plan-node detail: identity and metadata prose, the declared input
+/// schema, and the finish (output) contract — a solver query, a structured
+/// output template, or a silent side-effect plan.
+fn push_plan_detail(lines: &mut Vec<Line>, doc: &graph_core::pipeline::doc::PlanDoc) {
+    lines.push(Line::from(vec![
+        Span::styled(doc.identifier.clone(), ACCENT.add_modifier(Modifier::BOLD)),
+        Span::raw(" — "),
+        Span::raw(doc.name.clone()),
+    ]));
+    if !doc.description.is_empty() {
+        lines.push(Line::styled(doc.description.clone(), DIM));
+    }
+    lines.push(Line::default());
+
+    if !doc.exemplars.is_empty() {
+        lines.push(Line::styled("exemplars:", DIM));
+        for exemplar in &doc.exemplars {
+            lines.push(Line::from(format!("  • {exemplar}")));
+        }
+        lines.push(Line::default());
+    }
+    if !doc.requires_servers.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("requires servers: ", DIM),
+            Span::raw(doc.requires_servers.join(", ")),
+        ]));
+        lines.push(Line::default());
+    }
+
+    match &doc.input_schema {
+        Some(schema) => push_json_section(lines, "input schema", schema),
+        None => {
+            lines.push(Line::styled("input schema:", DIM));
+            lines.push(Line::styled("  (none — takes no input)", DIM));
+            lines.push(Line::default());
+        }
+    }
+
+    if let Some(solver) = &doc.solver {
+        lines.push(Line::styled("output: solver report", DIM));
+        for raw in solver.query_to_answer.lines() {
+            lines.push(Line::from(raw.to_string()));
+        }
+        lines.push(Line::default());
+    } else if let Some(output) = &doc.output {
+        push_json_section(
+            lines,
+            "output schema",
+            &serde_json::Value::Object(output.clone()),
+        );
+    } else {
+        lines.push(Line::styled("output:", DIM));
+        lines.push(Line::styled(
+            "  (silent — runs for side effects, no output)",
+            DIM,
+        ));
+        lines.push(Line::default());
+    }
+}
+
 /// Greedy word wrap; long unbreakable words split at the width boundary.
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
     let width = width.max(8);
@@ -1209,6 +1275,93 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    fn plan_detail_text(doc_yaml: &str) -> String {
+        let doc: graph_core::pipeline::doc::PlanDoc = serde_yaml::from_str(doc_yaml).unwrap();
+        let mut lines: Vec<super::Line> = Vec::new();
+        super::push_plan_detail(&mut lines, &doc);
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn plan_detail_shows_metadata_input_and_output() {
+        // Solver finish with a declared input schema.
+        let text = plan_detail_text(
+            r#"
+identifier: project_status
+name: Project Status
+description: Status report for a Linear project.
+exemplars:
+  - "How is the migration going?"
+requires_servers: [linear]
+input_schema:
+  type: object
+  required: [project]
+  properties:
+    project: { type: string }
+steps:
+  - id: E0
+    tool_name: linear__list_projects
+    input: { query: "{{input.project}}" }
+solver:
+  queryToAnswer: "Write a status report."
+"#,
+        );
+        assert!(text.contains("project_status — Project Status"));
+        assert!(text.contains("Status report for a Linear project."));
+        assert!(text.contains("How is the migration going?"));
+        assert!(text.contains("requires servers: linear"));
+        assert!(text.contains("input schema:"));
+        assert!(text.contains("\"required\""));
+        assert!(text.contains("output: solver report"));
+        assert!(text.contains("Write a status report."));
+        // The old label must not leak onto the plan node.
+        assert!(!text.contains("input template"));
+    }
+
+    #[test]
+    fn plan_detail_covers_output_and_silent_finishes() {
+        // Structured-output finish, no declared input.
+        let output = plan_detail_text(
+            r#"
+identifier: dump
+name: Dump
+description: ""
+steps:
+  - id: E0
+    tool_name: t__fetch
+    input: {}
+output:
+  count: "{{E0.total}}"
+"#,
+        );
+        assert!(output.contains("(none — takes no input)"));
+        assert!(output.contains("output schema:"));
+        assert!(output.contains("count"));
+
+        // Silent side-effect finish.
+        let silent = plan_detail_text(
+            r#"
+identifier: notify
+name: Notify
+description: ""
+steps:
+  - id: E0
+    tool_name: t__notify
+    input: {}
+"#,
+        );
+        assert!(silent.contains("silent — runs for side effects"));
     }
 
     #[test]
