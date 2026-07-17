@@ -211,6 +211,24 @@ fn github_pack_loads_and_validates() {
 }
 
 #[test]
+fn gh_pr_ticket_default_pattern_requires_a_separator() {
+    // Regression: the original default `[A-Za-z]{2,6}[- ]?[0-9]+` matched
+    // glued technical words (arm64, utf8, sha256), so ticket-free PRs came
+    // back `found: true` with a bogus ID. The separator between letters and
+    // digits must be mandatory, not optional, so those words don't match.
+    let docs = load_pack_tools(&["github".to_string()]).unwrap();
+    let ticket = docs.iter().find(|d| d.name == "gh_pr_ticket").unwrap();
+    let default = ticket.input_schema.as_ref().unwrap()["properties"]["pattern"]["default"]
+        .as_str()
+        .unwrap();
+    assert_eq!(default, r"\b[A-Za-z]{2,6}[- ][0-9]+\b");
+    assert!(
+        !default.contains("[- ]?"),
+        "default pattern must require a separator, not make it optional: {default}"
+    );
+}
+
+#[test]
 fn unknown_pack_errors_with_available_list() {
     let err = load_pack_tools(&["gitlab".to_string()]).unwrap_err();
     assert!(err.contains("gitlab"), "{err}");

@@ -1,9 +1,11 @@
 # github pack: ticket ID from PR metadata, deterministically (regex, zero
 # LLM calls). Scans the head branch name, then the title, then the body;
 # the first pattern match wins and is normalized to uppercase-with-dash
-# (ln1234, LN 1234, ln-1234 → LN-1234). Every output field is always
-# present so template references never dangle; no match is {found: false},
-# not an error.
+# (LN 1234, ln-1234 → LN-1234). The default pattern REQUIRES a separator
+# (dash or space) between the letters and digits so it doesn't false-match
+# ordinary technical words like arm64, utf8, or sha256. Every output field
+# is always present so template references never dangle; no match is
+# {found: false}, not an error.
 name: gh_pr_ticket
 description: >
   Extract a ticket identifier (e.g. LN-1234) from a pull request's head
@@ -49,10 +51,14 @@ input_schema:
     pr: { type: integer, description: Pull request number }
     pattern:
       type: string
-      default: "[A-Za-z]{2,6}[- ]?[0-9]+"
+      default: "\\b[A-Za-z]{2,6}[- ][0-9]+\\b"
       description: >
         POSIX extended regex the ticket ID must match; the default matches
-        common tracker forms like LN-1234, ln1234, and "LN 1234".
+        common tracker forms like LN-1234 and "LN 1234". A separator (dash
+        or space) is required between letters and digits, so glued words
+        like arm64, utf8, and sha256 do not false-match. Override with a
+        project-specific prefix (e.g. "PROJ-[0-9]+") for tighter matching,
+        or drop the separator if your tracker uses a glued form.
 output_schema:
   type: object
   properties:

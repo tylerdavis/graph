@@ -100,12 +100,14 @@ When two plans post summary comments to the same PR under one token, the markerl
 
 ### `builtin__gh_pr_ticket`
 
-Ticket identifier (e.g. `LN-1234`) from a PR's metadata — deterministic regex extraction, zero LLM calls, so plans don't burn an inference on what a pattern match can do. Scans the head branch name, then the title, then the body; first match wins and is normalized to uppercase-with-dash form (`ln1234`, `LN 1234`, `ln-1234` → `LN-1234`). Read-only.
+Ticket identifier (e.g. `LN-1234`) from a PR's metadata — deterministic regex extraction, zero LLM calls, so plans don't burn an inference on what a pattern match can do. Scans the head branch name, then the title, then the body; first match wins and is normalized to uppercase-with-dash form (`LN 1234`, `ln-1234` → `LN-1234`). Read-only.
+
+The default pattern **requires a separator** (dash or space) between the letters and digits, so glued technical words like `arm64`, `utf8`, and `sha256` don't false-match as tickets. If your tracker uses a glued form (`ln1234`), override `pattern` accordingly.
 
 | Input | Type |  |
 | --- | --- | --- |
 | `pr` | integer | required |
-| `pattern` | string | optional — POSIX extended regex the ID must match; default `[A-Za-z]{2,6}[- ]?[0-9]+` covers common tracker forms |
+| `pattern` | string | optional — POSIX extended regex the ID must match; default `\b[A-Za-z]{2,6}[- ][0-9]+\b` covers common tracker forms like `LN-1234` and `LN 1234` |
 
 | Output | Type |  |
 | --- | --- | --- |
