@@ -4,20 +4,15 @@ description: "Release binaries and the container image"
 icon: "download"
 ---
 
+import BinaryDownloads from "/shared/binary_downloads.mdx";
+
 graph ships as a single binary and a container image — grab whichever fits. Current release: **{{release_version}}**.
 
 ## Release binaries
 
 Tagged releases publish binaries for macOS (arm64) and Linux (x86_64) with SHA-256 checksums.
 
-<CardGroup cols={2}>
-  <Card title="macOS (arm64)" icon="apple" href="https://github.com/tylerdavis/graph/releases/download/{{release_version}}/graph-{{release_version}}-macos-arm64.tar.gz">
-    Download graph-{{release_version}}-macos-arm64.tar.gz
-  </Card>
-  <Card title="Linux (x86_64)" icon="linux" href="https://github.com/tylerdavis/graph/releases/download/{{release_version}}/graph-{{release_version}}-linux-x86_64.tar.gz">
-    Download graph-{{release_version}}-linux-x86_64.tar.gz
-  </Card>
-</CardGroup>
+<BinaryDownloads />
 
 Or from the command line:
 

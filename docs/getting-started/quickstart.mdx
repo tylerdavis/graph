@@ -5,13 +5,15 @@ icon: "rocket"
 ---
 import BinaryDownloads from "/shared/binary_downloads.mdx";
 
-The fastest path: grab a binary, scaffold a project, and hand the setup to your coding agent. A [skill](#let-your-agent-finish-the-setup) walks the agent through wiring a provider, adding tools, and getting a first plan running against your own data. Prefer to do it by hand? The [manual path](#manual-setup) is right below.
+## The fastest path
+
+Grab a binary, scaffold a project, and hand the setup to your coding agent. A [skill](#let-your-agent-finish-the-setup) walks the agent through wiring a provider, adding tools, and getting a first plan running against your own data. Prefer to do it by hand? The [manual path](#manual-setup) is right below.
 
 <Steps>
   <Step title="Install graph">
     Grab the latest release binary — macOS (arm64) or Linux (x86_64). Each release publishes version-pinned tarballs with SHA-256 checksums:
 
-    {BinaryDownloads}
+    <BinaryDownloads />
   </Step>
 
   <Step title="Scaffold a project">
@@ -34,7 +36,7 @@ The fastest path: grab a binary, scaffold a project, and hand the setup to your 
     This installs [`/graph-project-setup`](https://github.com/tylerdavis/graph/blob/main/skills/graph-project-setup/SKILL.md) for Claude Code, Cursor, Codex, and most other agents. Point your agent at it — "set up graph in this project" — and it asks a few questions, then picks a provider and models, finds and connects the MCP servers or tools you want, scaffolds a first plan against your real data, and runs it end to end. It reads the live docs and example plans as it goes, so the result matches the current release.
 
     <Tip>
-    Setting up graph as a **GitHub Actions check** instead? The same `npx skills add` command also installs [`/graph-github-actions-setup`](/cookbook/ci-checks), which scaffolds a merge gate or PR reviewer as a plan.
+    Setting up graph for **GitHub Actions** as well? The same `npx skills add` command also installs [`/graph-github-actions-setup`](/cookbook/ci-checks), which scaffolds a merge gate or PR reviewer as a plan.
     </Tip>
   </Step>
 
