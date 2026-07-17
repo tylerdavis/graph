@@ -63,6 +63,18 @@ A yes/no question judged by the `judge` model role (falls back to `default` — 
 
 The judgment is a forced-schema call returning `{verdict, reason}`; the gate fires only on a yes, the model's reason is appended to the message and carried in the envelope, and a no leaves `{passed: true, verdict: false, reason}` as the step result for downstream reference. One cheap inference, only when the gate is reached.
 
+Add `model:` to override the model for this verdict — a `[models.named]` entry, a role name, or `default`. It defaults to the `judge` role. Use it to pin a specific gate to a cheaper or stronger model without changing the global `judge` role:
+
+```yaml
+      infer: |
+        Does this status update indicate the project is blocked?
+
+        {{E2.statusUpdates.0.body}}
+      model: fast
+```
+
+`model:` is ignored without `infer`.
+
 For reusable or complex judgments, the composition form keeps reasoning as first-class data: a [prompt tool](/tools/user-defined#prompt-an-llm-call-as-a-tool) step returning a verdict, followed by a logical `exit when {{Ex.verdict}} eq true`.
 
 ## Exit semantics

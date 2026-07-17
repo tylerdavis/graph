@@ -29,6 +29,11 @@ pub struct DecideSpec {
     /// Inferred gate: a yes/no question answered by the `judge` model role.
     #[serde(default)]
     pub infer: Option<String>,
+    /// Model for the `infer` verdict: a role name, `default`, or a
+    /// `[models.named]` entry. Defaults to the `judge` role. Ignored
+    /// without `infer`.
+    #[serde(default)]
+    pub model: Option<String>,
     /// Branch taken when the gate holds.
     pub then: Value,
     /// Branch taken otherwise; absent means the plan just continues.
@@ -67,6 +72,7 @@ pub fn decide_tool_def() -> crate::tools::ToolDef {
                     }
                 },
                 "infer": {"type": "string", "description": "A yes/no question about prior results; runs `then` on yes."},
+                "model": {"type": "string", "description": "Model for the `infer` verdict (a named model or role); defaults to the judge role."},
                 "then": branch_schema.clone(),
                 "else": branch_schema
             }
@@ -114,6 +120,9 @@ pub fn validate_decide_input(
     }
     if let Some(infer) = &spec.infer {
         super::check_templates(&Value::String(infer.clone()), seen, step_id, problems);
+    }
+    if let Some(model) = &spec.model {
+        super::check_templates(&Value::String(model.clone()), seen, step_id, problems);
     }
     validate_body(
         "then",
@@ -191,11 +200,25 @@ impl Pipeline {
             }
             None => None,
         };
+        let model = match &spec.model {
+            Some(model) => {
+                let rendered = render_str(model, &roots).map_err(render_end)?;
+                gate_payload.insert("model".to_string(), json!(rendered));
+                Some(rendered)
+            }
+            None => None,
+        };
 
         self.events
             .tool_started(DECIDE_TOOL, &Value::Object(gate_payload));
         let started = std::time::Instant::now();
-        let eval = evaluate_gate(condition.as_ref(), infer.as_deref(), &self.router).await;
+        let eval = evaluate_gate(
+            condition.as_ref(),
+            infer.as_deref(),
+            model.as_deref(),
+            &self.router,
+        )
+        .await;
         self.events
             .tool_finished(DECIDE_TOOL, started.elapsed(), eval.is_err());
         let (triggered, reason) = eval.map_err(|e| failed(format!("decide step: {e}")))?;

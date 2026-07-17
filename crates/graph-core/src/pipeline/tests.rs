@@ -108,6 +108,19 @@ fn pipeline(
     registry: Arc<MockRegistry>,
     max_attempts: u32,
 ) -> (Pipeline, Arc<ScriptedProvider>) {
+    pipeline_with_named(responses, registry, max_attempts, Default::default())
+}
+
+/// Like [`pipeline`], but seeds `[models.named]` entries so gate-model
+/// overrides can be exercised. Each named entry maps to the same mock
+/// provider but a distinct model string, which the scripted provider
+/// records on the request.
+fn pipeline_with_named(
+    responses: Vec<ChatResponse>,
+    registry: Arc<MockRegistry>,
+    max_attempts: u32,
+    named: std::collections::BTreeMap<String, ModelChoice>,
+) -> (Pipeline, Arc<ScriptedProvider>) {
     let provider = Arc::new(ScriptedProvider {
         responses: Mutex::new(responses),
         requests: Mutex::new(Vec::new()),
@@ -123,6 +136,7 @@ fn pipeline(
             dimensions: None,
             description: None,
         }),
+        named,
         ..Default::default()
     };
     let router = Arc::new(graph_llm::ModelRouter::with_providers(providers, roles));
@@ -655,6 +669,75 @@ async fn inferred_exit_uses_judge_verdict() {
         &requests[0].messages[0],
         graph_llm::types::ChatMessage::User { content } if content.contains("\"id\"")
     ));
+}
+
+fn named_model(model: &str) -> std::collections::BTreeMap<String, ModelChoice> {
+    let mut named = std::collections::BTreeMap::new();
+    named.insert(
+        "fast".to_string(),
+        ModelChoice {
+            provider: "mock".to_string(),
+            model: model.to_string(),
+            temperature: None,
+            dimensions: None,
+            description: None,
+        },
+    );
+    named
+}
+
+#[tokio::test]
+async fn inferred_exit_model_override_selects_named_model() {
+    let registry = search_registry(json!({"values": [{"id": 1}]}));
+    let (pipeline, provider) = pipeline_with_named(
+        vec![structured(json!({"verdict": true, "reason": "ok"}))],
+        registry,
+        1,
+        named_model("haiku-fast"),
+    );
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "exit", "input": {
+            "infer": "Is this blocked? {{E0.values}}",
+            "model": "fast",
+            "status": "error",
+            "message": "Blocked",
+        }}
+    ]))
+    .unwrap();
+    pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    // The verdict call used the named model, not the judge/default.
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests[0].model, "haiku-fast");
+}
+
+#[tokio::test]
+async fn inferred_decide_model_override_selects_named_model() {
+    let registry = search_registry(json!({"values": [{"id": 1}]}));
+    let (pipeline, provider) = pipeline_with_named(
+        vec![structured(json!({"verdict": false, "reason": "no"}))],
+        registry,
+        1,
+        named_model("haiku-fast"),
+    );
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "decide", "input": {
+            "infer": "Is this urgent? {{E0.values}}",
+            "model": "fast",
+            "then": {"toolName": "t__search", "input": {"query": "y"}},
+        }}
+    ]))
+    .unwrap();
+    pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests[0].model, "haiku-fast");
 }
 
 #[tokio::test]

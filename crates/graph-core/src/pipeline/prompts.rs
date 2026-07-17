@@ -36,6 +36,7 @@ logic-less template language:
 pub const CONTROL_STEP_RULES: &str = r#"### Early Exits
 - Use the `exit` tool to end the plan gracefully instead of proceeding with empty or meaningless data: exit with status "success" and a clear message when there is nothing to do, or "error" to assert a failure condition the user should see. Gate it with `when` (a template condition) or `infer` (an LLM judgment) so the plan continues when the gate does not hold; ungated it always exits.
 - When the plan is a check or assertion (a CI gate, a validation, drift detection), make the verdict explicit: end with gated `exit` steps — status "error" asserting the failure condition, status "success" when there is nothing to flag — instead of leaving pass/fail to the final answer's prose.
+- An `infer` gate (on `exit` or `decide`) uses the `judge` model role by default; add `model` (a named model or role) alongside `infer` to pin that one verdict to a cheaper or stronger model.
 
 ### Branching
 - Use the `decide` tool when the correct next call depends on a prior result: it runs `then` when the gate holds, otherwise `else` (or just continues when `else` is omitted). `decide` chooses between actions; `exit` ends the plan.

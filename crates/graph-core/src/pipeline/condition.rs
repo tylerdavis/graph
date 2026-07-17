@@ -42,17 +42,21 @@ pub struct Verdict {
 
 /// Evaluate a gate: `(triggered, reason)`, the reason present for inferred
 /// gates. Callers enforce their own arity rules on top — `exit` treats
-/// neither gate as unconditional, `decide` requires exactly one.
+/// neither gate as unconditional, `decide` requires exactly one. `model`
+/// overrides the model used for an inferred verdict (a role name, `default`,
+/// or a `[models.named]` entry); `None` uses the `judge` role.
 pub async fn evaluate_gate(
     when: Option<&Condition>,
     infer: Option<&str>,
+    model: Option<&str>,
     router: &ModelRouter,
 ) -> Result<(bool, Option<String>), String> {
     match (when, infer) {
         (Some(condition), None) => Ok((eval_condition(condition)?, None)),
         (None, Some(question)) => {
             let verdict: Verdict = router
-                .get_structured(
+                .get_structured_named(
+                    model,
                     Role::Judge,
                     "You answer a single yes/no question about the provided data, \
                      honestly and conservatively. Answer yes only when the data \
