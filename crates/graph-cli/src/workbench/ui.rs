@@ -591,13 +591,14 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions
     let max_off = len.saturating_sub(visible);
     let off = ws.list_scroll.get().min(max_off);
     ws.list_scroll.set(off);
-    // ratatui forces the selected row into view, so clamp the widget's
-    // selection into our wheel-chosen window; the offset wins for scrolling.
-    let sel = ws.selected.clamp(
-        off,
-        (off + visible).saturating_sub(1).min(len.saturating_sub(1)),
-    );
-    let mut state = ListState::default().with_selected(Some(sel));
+    // Highlight the selection only while it's within the wheel-scrolled
+    // window; when the view scrolls past it, show no highlight rather than
+    // pinning a phantom one to the edge row. ratatui would force the
+    // selected row back into view, so pass None while it's off-screen.
+    let sel = (off..off + visible)
+        .contains(&ws.selected)
+        .then_some(ws.selected);
+    let mut state = ListState::default().with_selected(sel);
     *state.offset_mut() = off;
     frame.render_stateful_widget(list, steps_area, &mut state);
     regions.ws_list = steps_area;
@@ -787,11 +788,13 @@ fn draw_context_tab(frame: &mut Frame, ws: &PlanWorkspace, area: Rect, regions: 
     let max_off = len.saturating_sub(visible);
     let off = ws.list_scroll.get().min(max_off);
     ws.list_scroll.set(off);
-    let sel = ws.selected.clamp(
-        off,
-        (off + visible).saturating_sub(1).min(len.saturating_sub(1)),
-    );
-    let mut state = ListState::default().with_selected(Some(sel));
+    // Highlight only while the selection is inside the wheel-scrolled window;
+    // pass None otherwise so ratatui shows no phantom highlight and honors the
+    // wheel offset instead of snapping the selection back into view.
+    let sel = (off..off + visible)
+        .contains(&ws.selected)
+        .then_some(ws.selected);
+    let mut state = ListState::default().with_selected(sel);
     *state.offset_mut() = off;
     frame.render_stateful_widget(list, list_area, &mut state);
     regions.ws_list = list_area;
