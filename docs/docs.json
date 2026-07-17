@@ -53,9 +53,7 @@
       },
       {
         "group": "Automation",
-        "pages": [
-          "automation/scripting"
-        ]
+        "pages": ["automation/scripting"]
       },
       {
         "group": "Chat workbench",
@@ -76,10 +74,7 @@
       },
       {
         "group": "Architecture",
-        "pages": [
-          "architecture/execution-model",
-          "architecture/storage"
-        ]
+        "pages": ["architecture/execution-model", "architecture/storage"]
       }
     ]
   },
@@ -104,5 +99,8 @@
   ],
   "navbar": {
     "links": []
+  },
+  "variables": {
+    "release_version": "v0.8.1"
   }
 }

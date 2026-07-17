@@ -10,6 +10,9 @@
 rust = { version = "1.94", components = "rustfmt,clippy" }
 "ubi:orhun/git-cliff" = "latest"
 
+"node" = "lts"
+"npm:mint" = "latest"
+
 [tasks.build]
 description = "Build the whole workspace"
 run = "cargo build"
@@ -53,3 +56,7 @@ run = "scripts/release.sh minor"
 [tasks."release:major"]
 description = "Cut a major release"
 run = "scripts/release.sh major"
+
+[tasks.docs]
+description = "Run docs preview"
+run = "cd docs && mint dev"

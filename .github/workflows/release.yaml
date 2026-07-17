@@ -32,8 +32,10 @@ jobs:
         include:
           - os: macos-15
             target: aarch64-apple-darwin
+            asset: macos-arm64
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            asset: linux-x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -56,13 +58,13 @@ jobs:
       - name: Package
         run: |
           cd target/release
-          tar czf "graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" graph
-          shasum -a 256 "graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" > "graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256"
+          tar czf "graph-${{ github.ref_name }}-${{ matrix.asset }}.tar.gz" graph
+          shasum -a 256 "graph-${{ github.ref_name }}-${{ matrix.asset }}.tar.gz" > "graph-${{ github.ref_name }}-${{ matrix.asset }}.tar.gz.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: graph-${{ matrix.target }}
-          path: target/release/graph-${{ github.ref_name }}-${{ matrix.target }}.tar.gz*
+          name: graph-${{ matrix.asset }}
+          path: target/release/graph-${{ github.ref_name }}-${{ matrix.asset }}.tar.gz*
           if-no-files-found: error
 
   # Releases are immutable once published (assets can never be added or
@@ -100,7 +102,7 @@ jobs:
 
       - name: Fetch release binary
         run: |
-          asset="graph-$TAG-x86_64-unknown-linux-gnu.tar.gz"
+          asset="graph-$TAG-linux-x86_64.tar.gz"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset*"
           shasum -a 256 -c "$asset.sha256"
           tar xzf "$asset"
