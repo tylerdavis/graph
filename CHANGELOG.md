@@ -2,6 +2,20 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
+## v0.8.1 — 2026-07-17
+
+
+### Added
+
+- show plan metadata, input schema, and finish on the root node (#61)
+
+### Fixed
+
+- wheel over steps/tool list moves selection (#60)
+- gh_pr_ticket default pattern requires a separator (#62)
+- wheel scrolls the steps/tool list view (#63)
+- hide list highlight when selection scrolls out of view (#64)
+
 ## v0.8.0 — 2026-07-17
 
 
