@@ -7,7 +7,7 @@ import BinaryDownloads from "/shared/binary_downloads.mdx";
 
 ## The fastest path
 
-Grab a binary, scaffold a project, and hand the setup to your coding agent. A [skill](#let-your-agent-finish-the-setup) walks the agent through wiring a provider, adding tools, and getting a first plan running against your own data. Prefer to do it by hand? The [manual path](#manual-setup) is right below.
+Grab a binary, scaffold a project, and hand the setup to your coding agent. A [skill](#let-your-agent-finish-the-setup) walks the agent through wiring a provider, adding tools, and drafting a first plan against your own data — then you review it in the [workbench](/using/plan-workbench) and run it. Prefer to do it by hand? The [manual path](#manual-setup) is right below.
 
 <Steps>
   <Step title="Install graph">
@@ -40,15 +40,25 @@ Grab a binary, scaffold a project, and hand the setup to your coding agent. A [s
     </Tip>
   </Step>
 
+  <Step title="Open it in the workbench">
+    Before you commit the plan, open it in the [workbench](/using/plan-workbench) — a dual-pane TUI for reviewing, tweaking, and test-running plans:
+
+    ```bash
+    graph workbench plan project_status   # alias: graph wb plan
+    ```
+
+    The plan renders as a flowchart on the right, an agent sits on the left. Read each step, `v` to validate, `r` to run it, or `g` to step through with a debugger that pauses on every tool call and shows the exact input and result. Ask the agent to change a step in plain English — "add a step that filters to open issues" — and watch the draft update and re-validate. `Ctrl+S` writes it back to `./.graph/plans/`.
+  </Step>
+
   <Step title="Run your first plan">
-    A plan runs the same steps in the same order every time, for 0–1 LLM calls no matter how many steps it has:
+    Once it's right, run it headless — the same steps in the same order every time, for 0–1 LLM calls no matter how many steps it has:
 
     ```bash
     graph plan list
     graph plan run project_status '{"project":"New Relic"}'
     ```
 
-    The deliverable goes to stdout; tool activity streams dimmed to stderr. That plan is a file under `./.graph/plans/` — open it, tweak it, re-run it.
+    The deliverable goes to stdout; tool activity streams dimmed to stderr. This is the form you schedule on cron or wire into CI.
   </Step>
 </Steps>
 
@@ -113,7 +123,7 @@ Not using an agent? The whole path is a few commands.
 | `./.graph/tools/` | your [user-defined tools](/tools/user-defined) (`~/.config/graph/tools/` for global ones) |
 | `~/.local/share/graph/` | threads and learned tool shapes, as plain files |
 
-## Next
+## What's next
 
 - [Core concepts](/getting-started/concepts) — plans, the tool catalog, the shape cache, and what a run costs.
 - [Author your first plan](/plans/authoring) — freeze a workflow into a repeatable file.
