@@ -54,7 +54,7 @@ An inferred fork routes on judgment where no single comparison would do — here
         input: { entry: "on track" }
 ```
 
-The judgment is a forced-schema call returning `{verdict, reason}`; `then` runs only on a yes, and the model's reasoning is carried in the step result — `{{E2.reason}}` — for downstream steps and the finish to use. Point the `judge` role at a cheap model; it falls back to `default`.
+The judgment is a forced-schema call returning `{verdict, reason}`; `then` runs only on a yes, and the model's reasoning is carried in the step result — `{{E2.reason}}` — for downstream steps and the finish to use. Point the `judge` role at a cheap model; it falls back to `default`. Add `model:` alongside `infer` to override the model for this one verdict — a `[models.named]` entry, a role name, or `default` (it may itself be a template); ignored without `infer`.
 
 ## Branches
 

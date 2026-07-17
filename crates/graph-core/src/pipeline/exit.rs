@@ -43,6 +43,11 @@ pub struct ExitSpec {
     /// Inferred gate: a yes/no question answered by the `judge` model
     /// role with a structured verdict.
     pub infer: Option<String>,
+    /// Model for the `infer` verdict: a role name, `default`, or a
+    /// `[models.named]` entry. Defaults to the `judge` role. Ignored
+    /// without `infer`.
+    #[serde(default)]
+    pub model: Option<String>,
     pub status: ExitStatus,
     #[serde(default)]
     pub message: Option<String>,
@@ -77,7 +82,8 @@ pub fn exit_tool_def() -> crate::tools::ToolDef {
                         "to": {"description": "Comparison operand (omit for empty/not_empty)"}
                     }
                 },
-                "infer": {"type": "string", "description": "A yes/no question about prior results; exits when the answer is yes."}
+                "infer": {"type": "string", "description": "A yes/no question about prior results; exits when the answer is yes."},
+                "model": {"type": "string", "description": "Model for the `infer` verdict (a named model or role); defaults to the judge role."}
             }
         }),
         output_schema: None,
@@ -105,9 +111,14 @@ pub async fn evaluate(
 
     let (triggered, reason) = match (&spec.when, &spec.infer) {
         (None, None) => (true, None), // unconditional
-        (when, infer) => evaluate_gate(when.as_ref(), infer.as_deref(), router)
-            .await
-            .map_err(|e| format!("exit step: {e}"))?,
+        (when, infer) => evaluate_gate(
+            when.as_ref(),
+            infer.as_deref(),
+            spec.model.as_deref(),
+            router,
+        )
+        .await
+        .map_err(|e| format!("exit step: {e}"))?,
     };
 
     if !triggered {
