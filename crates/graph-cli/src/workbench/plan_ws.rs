@@ -158,6 +158,14 @@ pub struct PlanWorkspace {
     pub detail_scroll: Cell<u16>,
     /// Run-transcript scroll offset in lines from the BOTTOM; 0 follows.
     pub run_scroll: Cell<u16>,
+    /// The steps/tool list's view scroll offset (index of the first visible
+    /// row). Driven by the wheel independently of `selected`; `Cell` so the
+    /// renderer can reconcile it with the selection and the visible height.
+    pub list_scroll: Cell<usize>,
+    /// The steps/tool list's last-rendered visible row count. Written each
+    /// render so keyboard/click selection can scroll the view to follow the
+    /// cursor without knowing the layout at input time.
+    pub list_view_rows: Cell<usize>,
     pub tools: Vec<ToolDef>,
     pub shapes: HashMap<String, ToolShape>,
     pub run_log: Vec<RunLine>,
@@ -444,12 +452,14 @@ impl PlanWorkspace {
         if len > 0 {
             self.selected = (self.selected + 1).min(len - 1);
             self.detail_scroll.set(0);
+            self.follow_selection();
         }
     }
 
     pub fn select_previous(&mut self) {
         self.selected = self.selected.saturating_sub(1);
         self.detail_scroll.set(0);
+        self.follow_selection();
     }
 
     /// Select a specific row (from a mouse click); no-op past the list.
@@ -458,6 +468,33 @@ impl PlanWorkspace {
         if index < self.list_len() {
             self.selected = index;
             self.detail_scroll.set(0);
+            self.follow_selection();
+        }
+    }
+
+    /// Scroll the steps/tool list view by `amount` rows. Moves the view only;
+    /// the selection stays put and may leave the viewport, matching normal
+    /// list scrolling. The renderer clamps the offset to the content.
+    pub fn scroll_list(&self, up: bool, amount: usize) {
+        let current = self.list_scroll.get();
+        self.list_scroll.set(if up {
+            current.saturating_sub(amount)
+        } else {
+            current.saturating_add(amount)
+        });
+    }
+
+    /// Scroll the list view just enough to keep `selected` inside the last
+    /// rendered window. Called after keyboard/click selection so the cursor
+    /// stays visible; the wheel does not call this, so wheel scrolling can
+    /// carry the selection off-screen.
+    fn follow_selection(&self) {
+        let rows = self.list_view_rows.get().max(1);
+        let off = self.list_scroll.get();
+        if self.selected < off {
+            self.list_scroll.set(self.selected);
+        } else if self.selected >= off + rows {
+            self.list_scroll.set(self.selected + 1 - rows);
         }
     }
 

@@ -842,9 +842,9 @@ fn on_mouse(app: &mut App, mouse: MouseEvent) -> Vec<Effect> {
                 app.chat.scroll.set(app.chat.scroll.get().saturating_add(3));
             } else if hit(regions.ws_list, col, row) {
                 // The list sits inside ws_body; test it first so the wheel
-                // moves the selection instead of scrolling the detail pane.
+                // scrolls the list view instead of the detail pane.
                 app.focus = Focus::Workspace;
-                app.ws.select_previous();
+                app.ws.scroll_list(true, 3);
             } else if hit(regions.ws_body, col, row) {
                 app.ws.scroll_by(true, 3);
             }
@@ -858,7 +858,7 @@ fn on_mouse(app: &mut App, mouse: MouseEvent) -> Vec<Effect> {
                 app.chat.scroll.set(app.chat.scroll.get().saturating_sub(3));
             } else if hit(regions.ws_list, col, row) {
                 app.focus = Focus::Workspace;
-                app.ws.select_next();
+                app.ws.scroll_list(false, 3);
             } else if hit(regions.ws_body, col, row) {
                 app.ws.scroll_by(false, 3);
             }
@@ -1370,6 +1370,36 @@ steps:
   - id: E1
     tool_name: t__issues
     input: { team: "{{E0.values.0.id}}" }
+"#)
+    }
+
+    /// A plan with enough top-level steps that the list can scroll: the root
+    /// row plus six steps gives seven rows, more than the 3-row window the
+    /// follow-selection test simulates.
+    fn many_step_doc() -> PlanDoc {
+        doc(r#"
+identifier: demo
+name: Demo
+description: demo plan
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: a }
+  - id: E1
+    tool_name: t__search
+    input: { query: b }
+  - id: E2
+    tool_name: t__search
+    input: { query: c }
+  - id: E3
+    tool_name: t__search
+    input: { query: d }
+  - id: E4
+    tool_name: t__search
+    input: { query: e }
+  - id: E5
+    tool_name: t__search
+    input: { query: f }
 "#)
     }
 
@@ -2232,15 +2262,22 @@ steps:
     }
 
     #[test]
-    fn scroll_wheel_over_the_steps_list_moves_the_selection() {
+    fn scroll_wheel_over_the_steps_list_scrolls_the_view() {
         let mut app = App::new(Some(two_step_doc()));
         seed_regions(&app, demo_regions());
         app.focus = Focus::Chat;
 
-        // ws_list is y 2..12; a wheel there selects, not scrolls detail.
-        assert_eq!(app.ws.selected, 0);
+        // ws_list is y 2..12; a wheel there scrolls the list view, moving the
+        // offset directly and leaving the selection put. scroll_list has no
+        // clamp of its own, so the offset moves regardless of content height.
+        let before_sel = app.ws.selected;
+        assert_eq!(app.ws.list_scroll.get(), 0);
         update(&mut app, mouse(MouseEventKind::ScrollDown, 45, 5));
-        assert_eq!(app.ws.selected, 1, "wheel down advances the selection");
+        assert_eq!(app.ws.list_scroll.get(), 3, "wheel down scrolls the view");
+        assert_eq!(
+            app.ws.selected, before_sel,
+            "the wheel does not move the selection"
+        );
         assert_eq!(app.focus, Focus::Workspace, "the wheel focuses the pane");
         assert_eq!(
             app.ws.detail_scroll.get(),
@@ -2249,7 +2286,29 @@ steps:
         );
 
         update(&mut app, mouse(MouseEventKind::ScrollUp, 45, 5));
-        assert_eq!(app.ws.selected, 0, "wheel up moves the selection back");
+        assert_eq!(app.ws.list_scroll.get(), 0, "wheel up scrolls back");
+        assert_eq!(
+            app.ws.selected, before_sel,
+            "the selection is still unchanged"
+        );
+    }
+
+    #[test]
+    fn keyboard_selection_scrolls_the_list_to_follow() {
+        let mut app = App::new(Some(many_step_doc()));
+        seed_regions(&app, demo_regions());
+        app.focus = Focus::Workspace;
+        // Simulate a rendered window of 3 visible rows (tests don't render).
+        app.ws.list_view_rows.set(3);
+        app.ws.list_scroll.set(0);
+        app.ws.selected = 0;
+        // Move selection down past the bottom of the 3-row window.
+        for _ in 0..4 {
+            app.ws.select_next();
+        }
+        assert_eq!(app.ws.selected, 4);
+        // Window is 3 rows; selected=4 must have pulled the offset to 2.
+        assert_eq!(app.ws.list_scroll.get(), 2);
     }
 
     #[test]
