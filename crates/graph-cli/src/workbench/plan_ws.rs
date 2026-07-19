@@ -350,7 +350,13 @@ impl PlanWorkspace {
         });
     }
 
-    pub fn run_finished(&mut self, headline: &str, is_error: bool, results: Map<String, Value>) {
+    pub fn run_finished(
+        &mut self,
+        headline: &str,
+        is_error: bool,
+        exited: bool,
+        results: Map<String, Value>,
+    ) {
         // Backfill results the events may have missed (e.g. cached rows
         // after a draft change mid-session). Only top-level rows: body
         // results are scoped and never enter the results map.
@@ -365,10 +371,23 @@ impl PlanWorkspace {
                 }
             }
         }
+        // A fired exit skipped everything that never ran — the remaining
+        // steps and the finish show ⊘, not ✓ (the solver did NOT run).
+        if exited {
+            for row in &mut self.steps {
+                if matches!(row.key, RowKey::Step(_) | RowKey::Finish)
+                    && matches!(row.status, StepStatus::Pending)
+                {
+                    row.status = StepStatus::Skipped;
+                }
+            }
+        }
         // Settle the finish row: a successful run means the solver/output
         // stage completed; on failure it errored only if it had started.
         if let Some(row) = self.steps.iter_mut().find(|row| row.key == RowKey::Finish) {
-            if !is_error {
+            if exited {
+                // Settled above: a fired exit pre-empts the finish stage.
+            } else if !is_error {
                 row.status = StepStatus::Ok;
                 if !self.solver_text.is_empty() {
                     row.result = Some(Value::String(self.solver_text.clone()));
@@ -899,17 +918,39 @@ solver:
         ws.synthesizing();
         assert_eq!(ws.steps[7].status, StepStatus::Running);
         ws.solver_text = "the answer".to_string();
-        ws.run_finished("done", false, Map::new());
+        ws.run_finished("done", false, false, Map::new());
         assert_eq!(ws.steps[7].status, StepStatus::Ok);
         assert_eq!(ws.steps[7].result, Some(json!("the answer")));
 
         // A failed run marks a started finish as errored, not an idle one.
         let mut ws = workspace(control_doc());
-        ws.run_finished("boom", true, Map::new());
+        ws.run_finished("boom", true, false, Map::new());
         assert_eq!(ws.steps[7].status, StepStatus::Pending);
         let mut ws = workspace(control_doc());
         ws.synthesizing();
-        ws.run_finished("boom", true, Map::new());
+        ws.run_finished("boom", true, false, Map::new());
         assert_eq!(ws.steps[7].status, StepStatus::Err);
+    }
+
+    #[test]
+    fn a_fired_exit_marks_never_run_steps_and_the_finish_skipped() {
+        // Fired exits skip the remaining steps AND the solver — the pane
+        // must show ⊘ for what never ran, never a completed ✓.
+        let mut ws = workspace(control_doc());
+        ws.steps[1].status = StepStatus::Ok;
+        ws.run_finished("✓ exited: nothing to do", false, true, Map::new());
+        assert_eq!(ws.steps[1].status, StepStatus::Ok, "executed steps keep ✓");
+        for row in &ws.steps {
+            if matches!(row.key, RowKey::Step(_) | RowKey::Finish)
+                && !std::ptr::eq(row, &ws.steps[1])
+            {
+                assert_eq!(
+                    row.status,
+                    StepStatus::Skipped,
+                    "{} shows ⊘ after a fired exit",
+                    row.id
+                );
+            }
+        }
     }
 }

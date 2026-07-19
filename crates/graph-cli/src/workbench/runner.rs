@@ -105,6 +105,9 @@ impl DebugControls {
 pub struct RunReport {
     pub headline: String,
     pub is_error: bool,
+    /// A fired `exit` ended the run early: the never-run steps and the
+    /// finish were skipped, not completed.
+    pub exited: bool,
     /// Step id → result, for backfilling the plan pane.
     pub results: Map<String, Value>,
     /// A structured summary suitable as a tool result.
@@ -116,6 +119,7 @@ impl RunReport {
         Msg::RunFinished {
             headline: self.headline.clone(),
             is_error: self.is_error,
+            exited: self.exited,
             results: self.results.clone(),
         }
     }
@@ -161,6 +165,7 @@ pub fn report(result: Result<PipelineOutcome, PipelineError>) -> RunReport {
             RunReport {
                 headline,
                 is_error: exited_error,
+                exited: outcome.exit.is_some(),
                 results: outcome.state.results,
                 summary,
             }
@@ -177,6 +182,7 @@ pub fn report(result: Result<PipelineOutcome, PipelineError>) -> RunReport {
             RunReport {
                 headline,
                 is_error: true,
+                exited: false,
                 summary: json!({"status": "aborted", "step": step, "error": error}),
                 results: state.results,
             }
@@ -184,6 +190,7 @@ pub fn report(result: Result<PipelineOutcome, PipelineError>) -> RunReport {
         Err(error) => RunReport {
             headline: format!("✗ {error}"),
             is_error: true,
+            exited: false,
             results: Map::new(),
             summary: json!({"status": "failed", "error": error.to_string()}),
         },
