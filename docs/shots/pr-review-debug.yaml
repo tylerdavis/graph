@@ -1,0 +1,80 @@
+# Scenario: a gated pr_review run paused at the breakpoint before the
+# inline comments post — the debugger screenshot for the workbench docs.
+#
+# This is executed, not staged: the harness (graph-cli workbench/shots.rs)
+# types the chat message through the real reducer, the scripted agent
+# calls the real workbench__run_plan tool, and the real pipeline runs
+# E0–E4 (template rendering, the E2X exit gate, catalog resolution
+# included) until the real UiGate pauses at E5. Only the LLM responses
+# and tool outcomes below are scripted, and each outcome is validated
+# against the tool's declared output schema at generation time.
+name: pr-review-debug
+title: graph workbench — debugging pr_review
+plan: .graph/plans/pr_review.yaml
+grid: { cols: 120, rows: 36 }
+
+chat: "run it against PR #61, but pause before anything posts to GitHub"
+
+llm:
+  - text: >-
+      Starting a debug run with a breakpoint on E5 — the pipeline will
+      fetch the PR, review the diff, and pause before the inline comments
+      post so you can inspect what would be sent.
+    call: workbench__run_plan
+    input:
+      gated: true
+      breakpoints: [E5]
+      input: { pr: 61 }
+
+tools:
+  builtin__gh_pr_meta:
+    - title: "fix(store): tolerate concurrent shape-cache writes"
+      body: >-
+        Shape writes are last-writer-wins; seen_count stays advisory.
+        Whole-file writes now go through temp-file+rename.
+      base_sha: a586a8b
+      head_sha: 9f31c02
+  builtin__git_changed_files:
+    - files:
+        - crates/graph-store/src/file.rs
+        - crates/graph-store/src/lib.rs
+        - docs/architecture/storage.mdx
+      count: 3
+  builtin__git_diff:
+    - text: |
+        diff --git a/crates/graph-store/src/file.rs b/crates/graph-store/src/file.rs
+        @@ -142,9 +142,14 @@ impl FileStore {
+        -    fs::write(&path, payload)?;
+        +    let tmp = path.with_extension("tmp");
+        +    fs::write(&tmp, payload)?;
+        +    fs::rename(&tmp, &path)?;
+  user__review_graph_pr:
+    - summary: "2 findings — worst warn; atomic rename closes the torn-write window."
+      findings:
+        - file: docs/architecture/storage.mdx
+          invariant: docs-parity
+          severity: warn
+          finding: "temp-file+rename write path undocumented in `storage.mdx`"
+          suggestion: "document the atomic-rename contract"
+        - file: crates/graph-store/src/file.rs
+          line: 146
+          invariant: test-parity
+          severity: nit
+          finding: "`fs::rename` fallback path has no failure test"
+          suggestion: "add a rename-failure test"
+  user__findings_to_review_comments:
+    - comments:
+        - file: crates/graph-store/src/file.rs
+          path: crates/graph-store/src/file.rs
+          line: 146
+          severity: nit
+          invariant: test-parity
+          finding: "`fs::rename` fallback path has no failure test"
+          suggestion: "add a rename-failure test"
+          body: >-
+            **nit · test-parity** — `fs::rename` fallback path has no
+            failure test. Suggestion: add a rename-failure test.
+
+capture:
+  pause_at: E5
+  turn_seconds: 4

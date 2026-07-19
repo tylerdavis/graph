@@ -1,0 +1,31 @@
+# Docs-screenshot demo plan (docs/shots/run-tab.yaml): a solver-finish
+# run whose streamed answer fills the workbench run tab. Not shipped to
+# users.
+identifier: change_summary
+name: Change summary
+description: Summarizes a commit range for a standup note.
+input_schema:
+  type: object
+  required: [base, head]
+  properties:
+    base: { type: string, description: Base ref }
+    head: { type: string, description: Head ref }
+steps:
+  - id: E0
+    tool_name: builtin__git_changed_files
+    input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "" }
+    reasoning: The changed-file list grounds the summary.
+  - id: E1
+    tool_name: builtin__git_diff
+    input:
+      base: "{{input.base}}"
+      head: "{{input.head}}"
+      paths: "."
+      exclude: "Cargo.lock"
+      max_bytes: 200000
+    reasoning: The full diff, within token budget.
+solver:
+  query_to_answer: Summarize what changed between {{input.base}} and {{input.head}} and why it matters.
+  data:
+    files: "{{E0.files}}"
+    diff: "{{E1.text}}"

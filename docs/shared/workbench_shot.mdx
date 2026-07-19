@@ -1,0 +1,10 @@
+{/* One workbench screenshot, consistently framed. Usage:
+      import WorkbenchShot from "/shared/workbench_shot.mdx";
+      <WorkbenchShot shot="pr-review-debug" caption="…" />
+    `shot` names an SVG in docs/images/workbench/, generated from the
+    matching docs/shots/<shot>.yaml scenario by `mise run shots` —
+    screenshots are executed sessions, never hand-staged. */}
+
+<Frame caption={caption}>
+  <img src={`/images/workbench/${shot}.svg`} alt={caption} />
+</Frame>

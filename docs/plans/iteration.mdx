@@ -4,6 +4,8 @@ description: "Run a body of steps once per item of a list with map and reduce"
 icon: "repeat"
 ---
 
+import WorkbenchShot from "/shared/workbench_shot.mdx";
+
 A `map` step runs the same body once per item of a list; a `reduce` step folds a list into a single value. Both take `over` (anything that renders to an array) and `do` (the same body grammar as a [`decide` branch](/plans/branching#branches): a single tool call or an inline step list). Where `decide` answers "which action is correct next?", `map` and `reduce` answer "do this for each of these" — update every stale issue, summarize each incident, roll a page of results into one report.
 
 ```yaml
@@ -34,6 +36,13 @@ steps:
     tool_name: user__log
     input: { entry: "updated {{E1.count}}: {{E2.result}}" }
 ```
+
+In the [workbench](/using/plan-workbench), a map renders as a `⟳` junction with one cyan body row — every iteration lands on that row, like a breakpoint on a loop line:
+
+<WorkbenchShot
+  shot="iteration-map"
+  caption="A map paused mid-run by a loop-line breakpoint: the first iteration done, the second awaiting the debugger's decision on the one structural body row."
+/>
 
 ## The body and its scope
 

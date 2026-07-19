@@ -4,6 +4,8 @@ description: "End a plan early with a success or error state"
 icon: "door-open"
 ---
 
+import WorkbenchShot from "/shared/workbench_shot.mdx";
+
 An `exit` step is a plan's escape hatch: a gate that ends execution early with an explicit **success** or **error** state — skipping every remaining step *and the solver*. Gates make plans CI-shaped: guard clauses, assertions, and judgment calls live in the plan instead of in shell scripting around it. Check-shaped plans (CI gates, validations, drift detection) should always end in explicit gated exits — error asserting the failure condition, success when there is nothing to flag — rather than leaving the verdict to solver prose; the planner is instructed to draft them that way.
 
 ```yaml
@@ -76,6 +78,13 @@ Add `model:` to override the model for this verdict — a `[models.named]` entry
 `model:` is ignored without `infer`.
 
 For reusable or complex judgments, the composition form keeps reasoning as first-class data: a [prompt tool](/tools/user-defined#prompt-an-llm-call-as-a-tool) step returning a verdict, followed by a logical `exit when {{Ex.verdict}} eq true`.
+
+In the [workbench](/using/plan-workbench), a fired gate is visible at a glance — everything it pre-empted shows `⊘` skipped:
+
+<WorkbenchShot
+  shot="exit-gate"
+  caption="A fired success exit: the gate held, so the diff step and the solver never ran — and the pane says so."
+/>
 
 ## Exit semantics
 

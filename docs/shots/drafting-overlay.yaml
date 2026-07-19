@@ -1,0 +1,52 @@
+# The incremental drafting overlay: two steps accepted, the third being
+# drafted, the outline's remaining stage pending. Used in
+# using/plan-workbench.mdx's Incremental drafting section.
+name: drafting-overlay
+title: graph workbench — incremental drafting
+grid: { cols: 120, rows: 36 }
+draft_strategy: incremental
+
+chat: "draft a plan that reviews a PR and posts findings as comments"
+
+llm:
+  - call: workbench__draft_plan
+    input:
+      goal: >-
+        Review a pull request against the repo rubric and post the
+        findings as inline comments
+      fresh: true
+  # The planner's outline (structured), then one structured step draft
+  # per stage — the capture fires while stage 3 is being drafted.
+  - structured:
+      items:
+        - summary: Fetch the PR metadata and shas
+          expectedTool: builtin__gh_pr_meta
+        - summary: Pull the full diff for review
+          expectedTool: builtin__git_diff
+        - summary: Review the diff against the repo rubric
+          expectedTool: user__review_graph_pr
+        - summary: Post findings as inline comments
+          expectedTool: builtin__gh_pr_inline_comments
+  - structured:
+      step:
+        id: E0
+        toolName: builtin__gh_pr_meta
+        input: { pr: 61 }
+        reasoning: Title, body, and the shas to diff.
+      planComplete: false
+  - structured:
+      step:
+        id: E1
+        toolName: builtin__git_diff
+        input:
+          base: "{{E0.base_sha}}"
+          head: "{{E0.head_sha}}"
+          paths: "."
+          exclude: "Cargo.lock"
+          max_bytes: 200000
+        reasoning: The full change, within token budget.
+      planComplete: false
+
+capture:
+  draft_step: 2
+  turn_seconds: 6

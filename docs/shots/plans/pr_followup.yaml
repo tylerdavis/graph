@@ -1,0 +1,48 @@
+# Docs-screenshot demo plan (docs/shots/branching-decide.yaml): a decide
+# fork rendered in the workbench step tree. Not shipped to users — it
+# exists so the branching docs can show real then/else piping. Validated
+# against the real catalog like any plan.
+identifier: pr_followup
+name: PR follow-up
+description: >
+  Nudges open PRs with a status comment; records the merged PR's ticket
+  reference otherwise.
+input_schema:
+  type: object
+  required: [pr]
+  properties:
+    pr: { type: integer, description: Pull request number }
+steps:
+  - id: E0
+    tool_name: builtin__gh_pr_meta
+    input: { pr: "{{input.pr}}" }
+    reasoning: The PR state decides the branch.
+  - id: E1
+    tool_name: builtin__git_changed_files
+    input: { base: "{{E0.base_sha}}", head: "{{E0.head_sha}}", prefix: "" }
+    reasoning: Change count for the nudge comment.
+  - id: E2
+    tool_name: decide
+    input:
+      if: { value: "{{E0.state}}", op: eq, to: open }
+      then:
+        - id: E10
+          tool_name: builtin__git_diff
+          input:
+            base: "{{E0.base_sha}}"
+            head: "{{E0.head_sha}}"
+            paths: "."
+            exclude: ""
+            max_bytes: 100000
+          reasoning: Confirm the change is still reviewable in one pass.
+        - id: E11
+          tool_name: builtin__gh_pr_comment
+          input:
+            pr: "{{input.pr}}"
+            body: "Reviewer nudge — still open with {{E1.count}} changed files."
+          reasoning: The nudge itself.
+      else:
+        tool_name: builtin__gh_pr_ticket
+        input: { pr: "{{input.pr}}" }
+        reasoning: Merged or closed — record the ticket reference.
+    reasoning: Open PRs get a nudge; anything else gets its ticket logged.

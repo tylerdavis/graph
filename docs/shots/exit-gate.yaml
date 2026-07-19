@@ -1,0 +1,26 @@
+# A fired exit gate — the workspace crop for plans/escape-hatch.mdx:
+# the ⎋ gate stopped the plan before the diff and the solver ran.
+name: exit-gate
+title: graph workbench — a fired exit gate
+plan: docs/shots/plans/nightly_diff_report.yaml
+grid: { cols: 120, rows: 36 }
+
+chat: "run the nightly report against v0.8.1"
+
+llm:
+  - call: workbench__run_plan
+    input:
+      input: { base: v0.8.1 }
+  - text: >-
+      Quiet night — no changes since v0.8.1, so the gate exited the plan
+      before the diff or the summary ran. No comment, no LLM spend.
+
+tools:
+  builtin__git_changed_files:
+    - files: []
+      count: 0
+
+capture:
+  at: finished
+  keys: [tab, "1", j, j]
+  crop: workspace

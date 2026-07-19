@@ -60,3 +60,7 @@ run = "scripts/release.sh major"
 [tasks.docs]
 description = "Run docs preview"
 run = "cd docs && mint dev"
+
+[tasks.shots]
+description = "Regenerate the workbench docs screenshots from docs/shots/ scenarios"
+run = "cargo test -p graph-cli shots -- --nocapture"
