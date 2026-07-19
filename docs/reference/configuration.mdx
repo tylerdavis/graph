@@ -65,6 +65,28 @@ repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
 
 A common cost setup: strong model for `chat`/`planner`, fast model for `solver`/`repair`.
 
+### `fallbacks` — provider failover
+
+Any model entry (a role or a named model) can carry an ordered list of failover candidates, used when its provider is having an outage:
+
+```toml
+[models.chat]
+provider = "anthropic"
+model = "claude-sonnet-5"
+fallbacks = [
+    { provider = "openai", model = "gpt-5" },
+    { provider = "local", model = "llama3", temperature = 0.3 },
+]
+```
+
+Each candidate names its own provider **and** model (model names rarely carry across providers); `temperature` optionally overrides the request's temperature — otherwise the primary's effective temperature carries over. Every referenced provider must exist under `[providers]`; startup fails otherwise, so a typo'd fallback surfaces immediately rather than mid-outage.
+
+Failover semantics:
+
+- A call moves to the next candidate only on **outage-shaped errors** — the same transient class the retry layer recognizes (429, 5xx, connection failures, timeouts) — and only after the failing provider's own retries (up to 3 attempts with backoff) are exhausted. Permanent errors (4xx, parse/schema failures) propagate immediately: a bad request would fail everywhere, and a fallback would only mask it.
+- Streaming follows the same contract as retries: failover happens only while the stream is being established. Once tokens flow, a mid-stream error surfaces as-is.
+- Fallbacks apply wherever the entry resolves — the `chat` agent loop, pipeline roles (planner/solver/repair/judge), structured output, and named-model calls. Each failover is logged as a warning on stderr.
+
 ## `[models.named]` — named models
 
 Beyond the fixed roles, any number of **named models** — referenceable wherever a model name is accepted: a [prompt tool](/tools/user-defined)'s `model` field, or [`builtin__infer`](/tools/builtins#builtin-infer)'s `model` input.

@@ -10,7 +10,7 @@ pub use load::{
     expand_tilde, global_config_path, load, load_from, project_config_path, LoadedConfig,
 };
 pub use model::{
-    Config, DraftStrategy, McpServerConfig, ModelChoice, ModelRoles, PlanPaths, PlannerConfig,
-    PromptConfig, ProviderConfig, ProviderKind, Role, Settings, StorageBackend, StorageConfig,
-    ToolOverride, ToolPaths, UserConfig, WorkbenchConfig, RESERVED_MODEL_NAMES,
+    Config, DraftStrategy, FallbackChoice, McpServerConfig, ModelChoice, ModelRoles, PlanPaths,
+    PlannerConfig, PromptConfig, ProviderConfig, ProviderKind, Role, Settings, StorageBackend,
+    StorageConfig, ToolOverride, ToolPaths, UserConfig, WorkbenchConfig, RESERVED_MODEL_NAMES,
 };

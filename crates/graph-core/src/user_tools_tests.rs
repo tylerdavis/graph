@@ -48,6 +48,7 @@ fn router() -> Arc<ModelRouter> {
                 temperature: None,
                 dimensions: None,
                 description: None,
+                fallbacks: Vec::new(),
             }),
             ..Default::default()
         },
@@ -507,6 +508,7 @@ async fn caller_schema_without_type_gets_object_defaulted() {
                 temperature: None,
                 dimensions: None,
                 description: None,
+                fallbacks: Vec::new(),
             }),
             ..Default::default()
         },
@@ -728,6 +730,7 @@ fn schema_router(chat_value: Value, repair_value: Value) -> Arc<ModelRouter> {
         temperature: None,
         dimensions: None,
         description: None,
+        fallbacks: Vec::new(),
     };
     Arc::new(ModelRouter::with_providers(
         providers,
@@ -826,6 +829,7 @@ fn named_model_router() -> Arc<ModelRouter> {
         temperature: None,
         dimensions: None,
         description: description.map(str::to_string),
+        fallbacks: Vec::new(),
     };
     let mut named = std::collections::BTreeMap::new();
     named.insert(

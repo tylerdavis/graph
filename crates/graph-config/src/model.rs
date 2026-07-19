@@ -155,6 +155,23 @@ pub struct ModelChoice {
     /// signal wherever named models are selectable (e.g. `builtin__infer`'s
     /// `model` input), so write it for that audience.
     pub description: Option<String>,
+    /// Failover candidates, tried in order when this model's provider is
+    /// down (transient errors after its own retries are exhausted).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallbacks: Vec<FallbackChoice>,
+}
+
+/// One failover candidate for a [`ModelChoice`]. Deliberately narrower than
+/// `ModelChoice`: no description (never planner-routed on its own) and no
+/// nested fallbacks (one flat chain per entry).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FallbackChoice {
+    pub provider: String,
+    pub model: String,
+    /// Overrides the request temperature when set; otherwise the primary's
+    /// effective temperature carries over.
+    pub temperature: Option<f32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -230,6 +247,24 @@ impl ModelRoles {
             Role::Judge => &self.judge,
         };
         specific.as_ref().or(self.default.as_ref())
+    }
+
+    /// Every configured choice — the role slots plus `[models.named]`
+    /// entries — for whole-config validation passes.
+    pub fn all_choices(&self) -> impl Iterator<Item = &ModelChoice> {
+        [
+            &self.default,
+            &self.chat,
+            &self.planner,
+            &self.solver,
+            &self.use_case_solver,
+            &self.repair,
+            &self.embedder,
+            &self.judge,
+        ]
+        .into_iter()
+        .filter_map(Option::as_ref)
+        .chain(self.named.values())
     }
 
     /// Resolve a model *name*: a role name (with its fallback to

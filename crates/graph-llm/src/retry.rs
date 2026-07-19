@@ -41,7 +41,9 @@ where
     }
 }
 
-fn is_transient(error: &LlmError) -> bool {
+/// Outage-shaped errors: worth retrying here and worth failing over to a
+/// fallback provider once retries are exhausted (see `failover`).
+pub(crate) fn is_transient(error: &LlmError) -> bool {
     match error {
         LlmError::Api { status, .. } => {
             matches!(status, 429 | 500 | 502 | 503 | 504 | 529)
