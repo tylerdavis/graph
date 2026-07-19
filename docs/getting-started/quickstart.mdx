@@ -4,7 +4,6 @@ description: "Install, scaffold a project, run your first plan"
 icon: "rocket"
 ---
 import BinaryDownloads from "/shared/binary_downloads.mdx";
-import WorkbenchShot from "/shared/workbench_shot.mdx";
 
 ## The fastest path
 
@@ -50,10 +49,9 @@ Grab a binary, scaffold a project, and hand the setup to your coding agent. A [s
 
     The plan renders as a flowchart on the right, an agent sits on the left. Read each step, `v` to validate, `r` to run it, or `g` to step through with a debugger that pauses on every tool call and shows the exact input and result. Ask the agent to change a step in plain English — "add a step that filters to open issues" — and watch the draft update and re-validate. `Ctrl+S` writes it back to `./.graph/plans/`.
 
-    <WorkbenchShot
-      shot="workbench-overview"
-      caption="A loaded plan in the workbench: chat agent left, step tree and detail right."
-    />
+    <Frame caption="A loaded plan in the workbench: chat agent left, step tree and detail right.">
+      <img src="/images/workbench/workbench-overview.svg" alt="A loaded plan in the workbench: chat agent left, step tree and detail right." />
+    </Frame>
   </Step>
 
   <Step title="Run your first plan">

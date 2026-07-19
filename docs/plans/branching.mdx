@@ -4,7 +4,6 @@ description: "Fork a plan into one of two branches with a decide step"
 icon: "code-branch"
 ---
 
-import WorkbenchShot from "/shared/workbench_shot.mdx";
 
 A `decide` step forks the plan: it evaluates a gate — the same gate grammar as an [exit gate](/plans/escape-hatch), spelled `if`/`infer` — and runs the `then` branch when it holds, the `else` branch otherwise. Execution then rejoins the plan's normal step sequence. Where `exit` answers "should this plan stop?", `decide` answers "which action is correct next?" — update or create, escalate or summarize, notify or stay quiet.
 
@@ -36,10 +35,9 @@ steps:
 
 In the [workbench](/using/plan-workbench), a decide step renders as a `⑂` junction — the chosen branch's steps run under its colored guide, the other stays untouched:
 
-<WorkbenchShot
-  shot="branching-decide"
-  caption="A decide fork after a run down its then branch: the inline step list nests under the blue then head; the single-call else was never rendered."
-/>
+<Frame caption="A decide fork after a run down its then branch: the inline step list nests under the blue then head; the single-call else was never rendered.">
+  <img src="/images/workbench/branching-decide.svg" alt="A decide fork after a run down its then branch: the inline step list nests under the blue then head; the single-call else was never rendered." />
+</Frame>
 
 ## Gates
 

@@ -4,7 +4,6 @@ description: "From blank file to running plan"
 icon: "pen-to-square"
 ---
 
-import WorkbenchShot from "/shared/workbench_shot.mdx";
 
 This walkthrough builds `project_status` — a real plan — from scratch. The workflow generalizes: **probe the tools, chain the steps, shape the finish.**
 
@@ -109,7 +108,6 @@ A plan that fails validation is skipped from the catalog with a warning rather t
 
 For interactive authoring, the [plan workbench](/using/plan-workbench) wraps this whole loop in a TUI: the chat agent drafts into a side pane, validation runs on every change, and a gated run pauses before each tool call so you can test a plan before its writes are trustworthy.
 
-<WorkbenchShot
-  shot="workbench-overview"
-  caption="The authoring loop in one screen: the draft's step tree, its validation verdict, and the agent that edits it."
-/>
+<Frame caption="The authoring loop in one screen: the draft's step tree, its validation verdict, and the agent that edits it.">
+  <img src="/images/workbench/workbench-overview.svg" alt="The authoring loop in one screen: the draft's step tree, its validation verdict, and the agent that edits it." />
+</Frame>
