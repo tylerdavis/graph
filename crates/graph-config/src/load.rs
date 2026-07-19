@@ -194,6 +194,42 @@ model = "m"
     }
 
     #[test]
+    fn model_fallbacks_parse_and_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "config.toml",
+            r#"
+[models.chat]
+provider = "anthropic"
+model = "claude-sonnet-5"
+fallbacks = [
+    { provider = "openai", model = "gpt-5" },
+    { provider = "local", model = "llama", temperature = 0.1 },
+]
+"#,
+        );
+        let loaded = load_from(&[path]).unwrap();
+        let chat = loaded.config.models.chat.as_ref().unwrap();
+        assert_eq!(chat.fallbacks.len(), 2);
+        assert_eq!(chat.fallbacks[0].provider, "openai");
+        assert_eq!(chat.fallbacks[0].temperature, None);
+        assert_eq!(chat.fallbacks[1].model, "llama");
+        assert_eq!(chat.fallbacks[1].temperature, Some(0.1));
+
+        // Serialize → parse round-trips, and entries without fallbacks
+        // stay backward-compatible (field omitted, defaults to empty).
+        let rendered = toml::to_string(&loaded.config).unwrap();
+        let reparsed: Config = toml::from_str(&rendered).unwrap();
+        assert_eq!(reparsed.models.chat.unwrap().fallbacks.len(), 2);
+        assert!(loaded
+            .config
+            .models
+            .all_choices()
+            .all(|c| c.provider == "anthropic"));
+    }
+
+    #[test]
     fn merges_layers_with_project_overriding_global() {
         let dir = tempfile::tempdir().unwrap();
         let global = write(

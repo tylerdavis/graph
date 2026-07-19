@@ -135,6 +135,7 @@ fn pipeline_with_named(
             temperature: None,
             dimensions: None,
             description: None,
+            fallbacks: Vec::new(),
         }),
         named,
         ..Default::default()
@@ -681,6 +682,7 @@ fn named_model(model: &str) -> std::collections::BTreeMap<String, ModelChoice> {
             temperature: None,
             dimensions: None,
             description: None,
+            fallbacks: Vec::new(),
         },
     );
     named

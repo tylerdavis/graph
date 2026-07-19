@@ -2,6 +2,7 @@
 //! and streaming across Anthropic, OpenAI, OpenAI-compatible, and Bedrock.
 
 mod error;
+mod failover;
 mod provider;
 pub mod providers;
 mod retry;
