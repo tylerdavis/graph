@@ -29,7 +29,7 @@ CI (`.github/workflows/ci.yaml`) runs lint + tests on ubuntu-24.04 and macos-15 
 |---|---|
 | `graph-cli` | binary: clap tree, REPL, sinks (`TtySink`, `JsonlSink`), input resolution, runtime wiring, plan workbench TUI (`src/workbench/`: ratatui dual-pane, pure `update()` reducer, channel-backed sink, `UiGate`) |
 | `graph-core` | agent loop, plan pipeline (incl. `exit` gates, plan composition), template engine, toolbox, user tools + bundled packs (`src/packs/`), Store/ToolRegistry traits, prompts, shape inference |
-| `graph-llm` | ChatProvider trait + anthropic/openai_compat providers, retries with backoff, structured output + repair, ModelRouter (role → model) |
+| `graph-llm` | ChatProvider trait + anthropic/openai_compat providers, retries with backoff, cross-provider failover (`fallbacks` on model entries), structured output + repair, ModelRouter (role → model) |
 | `graph-mcp` | rmcp client manager (stdio + streamable HTTP), `server__tool` namespacing, graceful shutdown |
 | `graph-store` | FileStore (plain JSON/JSONL files, default), MemoryStore (ephemeral/CI), RecordingRegistry (shape cache) |
 | `graph-config` | layered TOML config + serde models (providers, model roles incl. `judge`, storage backends, plan/tool paths, tool packs) |
