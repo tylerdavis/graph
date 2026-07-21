@@ -1,0 +1,119 @@
+---
+title: "Scripting contract"
+description: "Streams, exit codes, JSON envelopes, events, and environment variables"
+icon: "terminal"
+---
+
+graph is built to be piped. This page is the whole machine-facing contract: what lands on which stream, what exit codes mean, the JSON shapes, the event feed, and the environment variables that control it all.
+
+## Streams
+
+| Stream | Carries |
+|---|---|
+| **stdout** | the deliverable only — streamed answer text, an output-mode plan's JSON, or a `--json` envelope. Nothing else. |
+| **stderr** | everything human: tool activity, progress markers (`✎ planning…`, `✎ synthesizing…`, `↻ replanning`), solver streaming in chat, hints |
+
+So `graph plan run report '{"project":"X"}' > report.md` captures a clean report while progress stays visible in the terminal.
+
+One sanctioned exception: under `GRAPH_EVENTS=github`, a *failing* `plan run` prints a `::error::` workflow command to stdout (GitHub Actions only parses annotations from stdout). This happens only on failure paths — the nonzero exit code already tells automation that stdout is not a clean deliverable — so a CI step needs no shell wrapper to surface why a gate fired.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | success |
+| `1` | failure — step/tool error, config error, unresolvable tools, `empty_data` on output/silent plans |
+| `3` | **needs input** — required plan inputs missing/invalid; the input schema prints to stderr so the caller knows what to send |
+| `4` | **assertion fired** — an [exit gate](/plans/exit-gates) ended the plan with an error state; infrastructure is fine, the condition is real |
+
+For assertion-style automation, put the condition *in the plan* as an exit gate and branch on exit 4 — that's how the [CI checks](/cookbook/ci-checks) work.
+
+## JSON envelopes
+
+`--json` on `ask` and `plan run` buffers and emits a machine envelope:
+
+```bash
+graph plan run project_status '{"project":"X"}' --json
+```
+```json
+{
+  "answer": "…solver report…",     // null for output/silent plans
+  "output": { "count": 12, … },    // null for solver plans
+  "plan": "project_status",
+  "steps_executed": 4
+}
+```
+
+A fired exit gate adds `"exit": {status, message, reason?, step}` to the envelope.
+
+```bash
+graph ask "…" --json
+```
+```json
+{
+  "content": "…",
+  "tool_calls_made": 3,
+  "usage": { "input_tokens": 2055, "output_tokens": 100 },
+  "thread_id": "62dac762e251"
+}
+```
+
+Output-mode plans don't need `--json` — their stdout **is** JSON:
+
+```bash
+graph plan run urgent_issues | jq -e '.count > 0' || echo "all clear"
+```
+
+## Inference cost by invocation
+
+| Invocation | LLM calls |
+|---|---|
+| `plan run` (output/silent mode) | **0** |
+| `plan run` (solver mode) | **1** |
+| `ask` → direct tool calls | 2+ (agent rounds) |
+| `ask` → plan tool | 3 (agent, solver, agent) |
+| `ask` → [`plan_and_execute`](/plans/the-planner) | 4+ (agent, planner, solver, agent; +1 per replan) |
+
+For anything scheduled or scripted, prefer `plan run` — determinism and cost move together. The per-construct breakdown (gates, map bodies) is in [Execution model](/architecture/execution-model#cost-table).
+
+## Event feed: `GRAPH_EVENTS=jsonl`
+
+With `GRAPH_EVENTS=jsonl`, stderr switches from human progress to one JSON object per line — the machine-parseable run feed. Answer text still streams to stdout. Events:
+
+| `event` | Payload | Emitted when |
+|---|---|---|
+| `tool_started` | `tool`, `args` | any tool call begins (plan steps, body calls, agent calls) |
+| `tool_finished` | `tool`, `ms`, `is_error` | that call completes |
+| `agent_round` | `n` | the agent loop enters tool round *n* |
+| `planning` | — | the planner starts authoring |
+| `replanning` | `attempt` | a replan attempt begins |
+| `synthesizing` | — | the solver starts writing |
+| `draft_outline` | `items` | incremental drafting produced its outline |
+| `draft_step_started` | `index`, `summary` | incremental drafting begins a step |
+| `draft_step_finished` | `index`, `step`, `problems`, `attempt` | that step was accepted (or retried) |
+
+Token-level solver deltas are deliberately not emitted.
+
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `GRAPH_STORAGE` | `file` \| `memory` — overrides `[storage].backend`. Invalid values error. |
+| `GRAPH_DRAFT_STRATEGY` | `oneshot` \| `incremental` — overrides [`[planner].draft_strategy`](/reference/configuration#planner). Invalid values error. |
+| `GRAPH_EVENTS` | `jsonl` — the event feed above. `github` — failure annotations for GitHub Actions (see Streams). |
+| `GRAPH_LOG` | [tracing filter](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for diagnostics on stderr (e.g. `GRAPH_LOG=debug`, `GRAPH_LOG=graph_mcp=trace`). Overrides `-v` flags. |
+| `GRAPH_WORKBENCH_LOG` | file path for the [workbench's debug log](/workbench/plan-workbench#debug-logging). Overrides `[workbench].log_path` and the `<data_dir>/workbench.log` default. |
+| anything referenced as `${VAR}` in config | provider keys, MCP auth, tool env — resolved at load, required |
+
+## Data locations
+
+| Path | Contents |
+|---|---|
+| `./.graph/` | project config/plans/tools — the default target for `config init` and workbench saves |
+| `~/.config/graph/config.toml` | global config, overridden by project config |
+| `~/.config/graph/plans/`, `~/.config/graph/tools/` | global plans and user tools |
+| `~/.local/share/graph/` | threads and shape cache as plain files — `[settings].data_dir` |
+
+## Concurrency
+
+Concurrent graph processes can share one `data_dir`: file writes are atomic and message appends are serialized per thread. Use `GRAPH_STORAGE=memory` when a job should leave no state behind. See [Storage](/architecture/storage) for the exact guarantees.

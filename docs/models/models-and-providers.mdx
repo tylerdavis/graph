@@ -1,0 +1,89 @@
+---
+title: "Models & providers"
+description: "Providers, model roles, named models, and where each inference call goes"
+icon: "microchip-ai"
+---
+
+Every inference call in graph resolves through one system: a **provider** (who serves the model), a **role** (which job the call is doing), and optionally a **named model** (a specific entry selected at the point of use). Cost tuning is pure config — strong model where judgment lives, fast model where volume lives — and this page is the canonical map of where each call goes. The TOML syntax lives in the [configuration reference](/reference/configuration).
+
+## Providers
+
+```toml
+[providers.anthropic]
+type = "anthropic"
+api_key = "${ANTHROPIC_API_KEY}"
+
+[providers.local]
+type = "openai_compat"
+base_url = "http://localhost:11434/v1"    # Ollama, vLLM, LM Studio…
+```
+
+| `type` | Serves |
+|---|---|
+| `anthropic` | the Anthropic API |
+| `openai` | the OpenAI API |
+| `openai_compat` | any OpenAI-compatible endpoint — Ollama, vLLM, LM Studio, hosted gateways |
+| `bedrock` | AWS Bedrock — **roadmap**; the config key is accepted but the provider is a stub |
+
+Requests retry transient failures (429, 5xx, connection errors, timeouts) up to 3 attempts with backoff. **Structured output** uses each provider's native mechanism — a forced tool on Anthropic, `json_schema` with a `json_object` fallback on OpenAI-compatible servers that reject strict schema mode — and a result that fails to parse or validate gets one `repair`-role fix-up pass before erroring. Anthropic requests retry once without `temperature` when a model rejects the parameter.
+
+## Roles
+
+Each pipeline role resolves to a model, falling back to `default`:
+
+```toml
+[models]
+default = { provider = "anthropic", model = "claude-sonnet-5" }
+solver  = { provider = "anthropic", model = "claude-haiku-4-5", temperature = 0.4 }
+```
+
+| Role | Fires when |
+|---|---|
+| `chat` | every [agent-loop](/using/chat-and-ask) turn in `ask`/`chat` and the [workbench](/workbench/plan-workbench)'s chat pane |
+| `planner` | [`plan_and_execute`](/plans/the-planner) authors or revises a plan, and draft-only planning in the workbench |
+| `solver` | a [solver-mode plan](/plans/finish-modes) synthesizes its report |
+| `repair` | a structured output fails to parse or validate — one fix-up pass |
+| `judge` | an `infer` gate on an [`exit`](/plans/exit-gates) or [`decide`](/plans/branching) step needs a yes/no verdict |
+
+The common cost setup: a strong model for `chat`/`planner` (they do the judgment), a fast model for `solver`/`repair`/`judge` (they do the volume). `graph plan run` on an authored plan touches only `solver` (or nothing) — the [cost table](/reference/scripting-contract#inference-cost-by-invocation) maps invocations to calls.
+
+## Named models
+
+Beyond the fixed roles, `[models.named.<name>]` entries are referenceable **wherever a model name is accepted**. That's exactly three places:
+
+1. a [prompt tool](/tools/user-defined#prompt--an-llm-call-as-a-tool)'s `model` field
+2. [`builtin__infer`](/tools/builtins#builtin-infer)'s `model` input
+3. the `model:` override on an `infer` gate (`exit`/`decide`)
+
+Role names resolve in those same places, with their usual fallback to `default`; names may not shadow role names (config load fails); an unknown name fails the call listing what is configured — never a silent fallback.
+
+```toml
+[models.named.nano]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+description = "fast and cheap; small self-contained tasks like per-item map bodies"
+```
+
+The `description` is a **planner-facing routing signal**: when named models exist, `builtin__infer`'s catalog schema advertises them with guidance to prefer the smallest adequate model, so planner-authored plans route small chunks of work — [per-item map bodies](/plans/iteration#per-item-inference) especially — to cheap models on their own. Write descriptions for that audience.
+
+## Provider failover
+
+Any model entry — a role or a named model — can carry ordered `fallbacks` for outages:
+
+```toml
+[models.chat]
+provider = "anthropic"
+model = "claude-sonnet-5"
+fallbacks = [
+    { provider = "openai", model = "gpt-5" },
+    { provider = "local", model = "llama3", temperature = 0.3 },
+]
+```
+
+Each candidate names its own provider **and** model (model names rarely carry across providers); `temperature` optionally overrides — otherwise the primary's effective temperature carries over. Every referenced provider must exist under `[providers]`, checked at startup so a typo'd fallback surfaces immediately rather than mid-outage.
+
+Semantics:
+
+- A call moves to the next candidate only on **outage-shaped errors** — the transient class the retry layer recognizes — and only after the failing provider's own retries are exhausted. Permanent errors (4xx, parse/schema failures) propagate immediately: a bad request would fail everywhere, and a fallback would only mask it.
+- Streaming fails over only while the stream is being established; once tokens flow, a mid-stream error surfaces as-is.
+- Fallbacks apply wherever the entry resolves — the agent loop, every pipeline role, structured output, and named-model calls. Each failover is logged as a warning on stderr.

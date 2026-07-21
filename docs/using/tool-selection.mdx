@@ -10,7 +10,7 @@ When you ask something, the agent chooses among everything in the catalog: direc
 
 - **Simple lookups** → direct tool calls. "List my urgent issues" is one `linear__list_issues` call; no plan needed.
 - **Queries matching a plan's purpose** → the plan tool. The agent reads each plan's `description` and `exemplars`, so "how's the sprint going?" routes to `plan__sprint_analysis` when those exemplars say exactly that.
-- **Novel multi-step tasks** → `plan_and_execute`, which authors and runs a validated plan with dataflow between steps.
+- **Novel multi-step tasks** → [`plan_and_execute`](/plans/the-planner), which authors and runs a validated plan with dataflow between steps.
 
 The agent also **recovers across layers**: if a plan tool fails (missing inputs, a dead step), it can fall back to direct tool calls and still answer — you'll see that in the tool trace.
 

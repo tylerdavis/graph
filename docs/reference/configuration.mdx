@@ -20,7 +20,6 @@ Config is layered TOML — later wins, tables deep-merge:
 data_dir = "~/.local/share/graph"   # where threads and the shape cache live
 max_agent_iterations = 15           # agent-loop tool rounds per turn
 planning_attempts = 2               # plan_and_execute replan budget
-history_limit = 20                  # conversation trimming
 ```
 
 ## `[providers.*]`
@@ -40,7 +39,7 @@ region = "us-east-1"
 profile = "default"
 ```
 
-Provider notes: structured output uses each provider's native mechanism, with automatic fallback on OpenAI-compatible servers that reject strict JSON-schema mode; Anthropic requests retry once without `temperature` when a model rejects the parameter.
+Provider behavior — structured-output mechanisms, retries, and the `bedrock` roadmap status — is covered in [Models & providers](/models/models-and-providers#providers).
 
 ## `[models]` — per-role assignment
 
@@ -61,9 +60,9 @@ repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
 | `planner` | `plan_and_execute` plan authoring |
 | `solver` | plan report synthesis |
 | `repair` | one-shot JSON repair when structured output fails to parse |
-| `judge` | yes/no verdicts for [inferred exit gates](/plans/escape-hatch) |
+| `judge` | yes/no verdicts for [inferred exit gates](/plans/exit-gates) |
 
-A common cost setup: strong model for `chat`/`planner`, fast model for `solver`/`repair`.
+Where each role fires, and the usual cost setup, are in [Models & providers](/models/models-and-providers#roles).
 
 ### `fallbacks` — provider failover
 
@@ -79,13 +78,7 @@ fallbacks = [
 ]
 ```
 
-Each candidate names its own provider **and** model (model names rarely carry across providers); `temperature` optionally overrides the request's temperature — otherwise the primary's effective temperature carries over. Every referenced provider must exist under `[providers]`; startup fails otherwise, so a typo'd fallback surfaces immediately rather than mid-outage.
-
-Failover semantics:
-
-- A call moves to the next candidate only on **outage-shaped errors** — the same transient class the retry layer recognizes (429, 5xx, connection failures, timeouts) — and only after the failing provider's own retries (up to 3 attempts with backoff) are exhausted. Permanent errors (4xx, parse/schema failures) propagate immediately: a bad request would fail everywhere, and a fallback would only mask it.
-- Streaming follows the same contract as retries: failover happens only while the stream is being established. Once tokens flow, a mid-stream error surfaces as-is.
-- Fallbacks apply wherever the entry resolves — the `chat` agent loop, pipeline roles (planner/solver/repair/judge), structured output, and named-model calls. Each failover is logged as a warning on stderr.
+Each candidate names its own provider **and** model; `temperature` optionally overrides. Every referenced provider must exist under `[providers]` (checked at startup). When failover triggers, what carries over, and where fallbacks apply are in [Models & providers](/models/models-and-providers#provider-failover).
 
 ## `[models.named]` — named models
 
@@ -98,9 +91,7 @@ model = "claude-haiku-4-5"
 description = "fast and cheap; small self-contained tasks like per-item map bodies"
 ```
 
-The `description` is a **planner-facing routing signal**: when any named models are configured, `builtin__infer`'s catalog schema advertises them (name, description, and guidance to prefer the smallest adequate model), so planner-authored plans route small chunks of work — per-item [map bodies](/plans/iteration#per-item-inference) especially — to cheap models on their own. Write descriptions for that audience.
-
-Names may not shadow the role names above (config load fails); role names themselves also resolve wherever a model name is accepted, with their usual fallback to `default`. An unknown name fails the call, listing what is configured — never a silent fallback.
+The `description` is a planner-facing routing signal, and names resolve in exactly three places — the full story, including the no-shadowing and no-silent-fallback rules, is in [Models & providers](/models/models-and-providers#named-models).
 
 ## `[mcp.*]`
 
@@ -119,6 +110,7 @@ exclude_tools = ["…"]    # optional blocklist
 [mcp.<name>.tool_overrides.<tool>]
 description = "…"
 output_schema = { … }    # declare shapes the server omits
+output_example = { … }   # optional worked example, shown to the planner
 ```
 
 ## `[plans]` and `[tools]`
@@ -150,7 +142,7 @@ draft_strategy = "oneshot"        # default: one call drafts the whole plan
 # draft_strategy = "incremental"  # outline first, then one validated step per call
 ```
 
-How `draft_plan` (the plan-without-executing planner entry, behind the workbench's `workbench__draft_plan`) produces a plan. The default `oneshot` drafts the whole plan in one structured LLM call. `incremental` drafts a rough **outline** first (2–8 stages, plus the solver's brief), then generates the real steps one inference at a time — each step sees the outline and every previously accepted step, is statically validated before acceptance, and invalid steps are retried up to 3 times with the validation problems injected as feedback. If retries exhaust, the valid prefix is kept (the workbench publishes it as the draft so the agent can finish it with the editing tools). The `GRAPH_DRAFT_STRATEGY` [environment variable](/reference/environment) overrides this setting.
+How `draft_plan` (the plan-without-executing planner entry, behind the workbench's `workbench__draft_plan`) produces a plan. The default `oneshot` drafts the whole plan in one structured LLM call. `incremental` drafts a rough **outline** first (2–8 stages, plus the solver's brief), then generates the real steps one inference at a time — each step sees the outline and every previously accepted step, is statically validated before acceptance, and invalid steps are retried up to 3 times with the validation problems injected as feedback. If retries exhaust, the valid prefix is kept (the workbench publishes it as the draft so the agent can finish it with the editing tools). The `GRAPH_DRAFT_STRATEGY` [environment variable](/reference/scripting-contract) overrides this setting.
 
 ## `[user]`
 
@@ -194,4 +186,4 @@ The `workbench` override is the agent's only description of the `workbench__*` t
 log_path = "~/logs/graph-workbench.log"   # default: <data_dir>/workbench.log
 ```
 
-Where the [workbench's debug log](/using/plan-workbench#debug-logging) is written (tilde-expanded). The `GRAPH_WORKBENCH_LOG` environment variable overrides both.
+Where the [workbench's debug log](/workbench/plan-workbench#debug-logging) is written (tilde-expanded). The `GRAPH_WORKBENCH_LOG` environment variable overrides both.

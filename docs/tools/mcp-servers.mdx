@@ -71,6 +71,7 @@ exclude_tools = ["create_repository"]      # or hide these
 [mcp.everything.tool_overrides.get-sum]
 description = "Adds two integers."
 output_schema = { type = "object", properties = { text = { type = "string" } } }
+output_example = { text = "12" }     # optional worked example, shown to the planner
 ```
 
 ## Result handling

@@ -47,7 +47,7 @@ Need OR? Use two exit steps. Need more? Use an inferred gate, or compute in a [u
 
 ## Inferred gates: `infer`
 
-A yes/no question judged by the `judge` model role (falls back to `default` — point it at a cheap model):
+A yes/no question judged by the [`judge` model role](/models/models-and-providers#roles) (falls back to `default` — point it at a cheap model):
 
 ```yaml
   - id: E3
@@ -75,7 +75,7 @@ Add `model:` to override the model for this verdict — a `[models.named]` entry
 
 `model:` is ignored without `infer`.
 
-For reusable or complex judgments, the composition form keeps reasoning as first-class data: a [prompt tool](/tools/user-defined#prompt-an-llm-call-as-a-tool) step returning a verdict, followed by a logical `exit when {{Ex.verdict}} eq true`.
+For reusable or complex judgments, the composition form keeps reasoning as first-class data: a [prompt tool](/tools/user-defined#prompt--an-llm-call-as-a-tool) step returning a verdict, followed by a logical `exit when {{Ex.verdict}} eq true`.
 
 ## Exit semantics
 

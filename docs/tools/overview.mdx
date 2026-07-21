@@ -10,8 +10,9 @@ Every capability in graph is a tool in a single catalog, visible to the agent, t
 |---|---|
 | `linear__list_issues` | the `[mcp.linear]` server — [MCP servers](/tools/mcp-servers) |
 | `user__git_log` | a YAML file in `[tools].paths` — [user-defined](/tools/user-defined) |
+| `builtin__infer` | a bundled [tool pack](/tools/builtins) compiled into the binary |
 | `plan__project_status` | a plan document — [plans](/plans/overview) |
-| `plan_and_execute` | built-in: on-the-fly planning |
+| `plan_and_execute` | reserved: [on-the-fly planning](/plans/the-planner) |
 
 ## Inspecting and invoking
 
@@ -31,13 +32,4 @@ graph tools test user__git_log '{"repo":"/path","count":3}'   # direct invocatio
 
 ## Keeping the catalog sharp
 
-The agent reasons over every tool description in the catalog, so curation improves both cost and routing:
-
-```toml
-[mcp.github]
-command = "docker"
-args = ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"]
-env = { GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}" }
-include_tools = ["list_pull_requests", "search_issues"]   # allowlist
-# exclude_tools = ["create_repository"]                   # or blocklist
-```
+The agent and the planner reason over every tool description in the catalog, so curation improves both cost and routing: allowlist or blocklist per-server tools with `include_tools`/`exclude_tools`, and patch weak descriptions or missing output schemas with `tool_overrides` — see [filtering and overrides](/tools/mcp-servers#filtering-and-overrides).

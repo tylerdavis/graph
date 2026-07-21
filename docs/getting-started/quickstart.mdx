@@ -7,7 +7,7 @@ import BinaryDownloads from "/shared/binary_downloads.mdx";
 
 ## The fastest path
 
-Grab a binary, scaffold a project, and hand the setup to your coding agent. A [skill](#let-your-agent-finish-the-setup) walks the agent through wiring a provider, adding tools, and drafting a first plan against your own data — then you review it in the [workbench](/using/plan-workbench) and run it. Prefer to do it by hand? The [manual path](#manual-setup) is right below.
+Grab a binary, scaffold a project, and hand the setup to your coding agent. A [skill](#let-your-agent-finish-the-setup) walks the agent through wiring a provider, adding tools, and drafting a first plan against your own data — then you review it in the [workbench](/workbench/plan-workbench) and run it. Prefer to do it by hand? The [manual path](#manual-setup) is right below.
 
 <Steps>
   <Step title="Install graph">
@@ -41,7 +41,7 @@ Grab a binary, scaffold a project, and hand the setup to your coding agent. A [s
   </Step>
 
   <Step title="Open it in the workbench">
-    Before you commit the plan, open it in the [workbench](/using/plan-workbench) — a dual-pane TUI for reviewing, tweaking, and test-running plans:
+    Before you commit the plan, open it in the [workbench](/workbench/plan-workbench) — a dual-pane TUI for reviewing, tweaking, and test-running plans:
 
     ```bash
     graph workbench plan project_status   # alias: graph wb plan
@@ -97,7 +97,7 @@ Not using an agent? The whole path is a few commands.
     ```
   </Step>
 
-  <Step title="Probe with the workbench">
+  <Step title="Prototype with chat & ask">
     `graph ask` runs an agent loop over your whole tool catalog — the fast way to see what a tool returns and prototype a workflow before you freeze it into a plan:
 
     ```bash

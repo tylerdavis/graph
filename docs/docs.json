@@ -24,22 +24,19 @@
         "pages": [
           "plans/overview",
           "plans/authoring",
+          "plans/inputs",
           "plans/template-language",
           "plans/finish-modes",
-          "plans/inputs",
-          "plans/escape-hatch",
+          "plans/exit-gates",
           "plans/branching",
           "plans/iteration",
+          "plans/the-planner",
           "plans/errors-and-replanning"
         ]
       },
       {
-        "group": "Cookbook",
-        "pages": [
-          "cookbook/ci-checks",
-          "cookbook/reporting",
-          "cookbook/automation"
-        ]
+        "group": "Workbench",
+        "pages": ["workbench/plan-workbench"]
       },
       {
         "group": "Tools",
@@ -52,16 +49,24 @@
         ]
       },
       {
-        "group": "Automation",
-        "pages": ["automation/scripting"]
+        "group": "Models",
+        "pages": ["models/models-and-providers"]
       },
       {
-        "group": "Chat workbench",
+        "group": "Chat & ask",
         "pages": [
           "using/chat-and-ask",
-          "using/plan-workbench",
           "using/threads",
           "using/tool-selection"
+        ]
+      },
+      {
+        "group": "Cookbook",
+        "pages": [
+          "cookbook/ci-checks",
+          "cookbook/bot-identity",
+          "cookbook/reporting",
+          "cookbook/automation"
         ]
       },
       {
@@ -69,7 +74,8 @@
         "pages": [
           "reference/cli",
           "reference/configuration",
-          "reference/environment"
+          "reference/plan-schema",
+          "reference/scripting-contract"
         ]
       },
       {
@@ -95,6 +101,22 @@
     {
       "source": "/automation/ci",
       "destination": "/cookbook/ci-checks"
+    },
+    {
+      "source": "/plans/escape-hatch",
+      "destination": "/plans/exit-gates"
+    },
+    {
+      "source": "/using/plan-workbench",
+      "destination": "/workbench/plan-workbench"
+    },
+    {
+      "source": "/automation/scripting",
+      "destination": "/reference/scripting-contract"
+    },
+    {
+      "source": "/reference/environment",
+      "destination": "/reference/scripting-contract"
     }
   ],
   "navbar": {

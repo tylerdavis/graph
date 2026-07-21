@@ -4,7 +4,7 @@ description: "Every command and flag"
 icon: "square-terminal"
 ---
 
-Global: `-v/-vv/-vvv` raises log verbosity (stderr); `GRAPH_LOG` accepts a tracing filter string. Exception: `graph workbench` logs to `<data_dir>/workbench.log` instead of stderr (the TUI owns the terminal; `[workbench].log_path` or `GRAPH_WORKBENCH_LOG` overrides the path) — see [Plan workbench](/using/plan-workbench#debug-logging).
+Global: `-v/-vv/-vvv` raises log verbosity (stderr); `GRAPH_LOG` accepts a tracing filter string. Exception: `graph workbench` logs to `<data_dir>/workbench.log` instead of stderr (the TUI owns the terminal; `[workbench].log_path` or `GRAPH_WORKBENCH_LOG` overrides the path) — see [Plan workbench](/workbench/plan-workbench#debug-logging).
 
 ## `graph ask`
 
@@ -34,7 +34,7 @@ Interactive REPL. `--thread [<id>]` as above. Slash commands: `/thread`, `/state
 graph workbench plan [<name>|<path>]     # alias: graph wb plan
 ```
 
-Full-screen TUI for drafting, inspecting, and test-running plans — see [Plan workbench](/using/plan-workbench). Opens blank (draft via chat), or with a plan resolved like `plan validate` (file path or identifier). Requires an interactive terminal on stdin and stdout.
+Full-screen TUI for drafting, inspecting, and test-running plans — see [Plan workbench](/workbench/plan-workbench). Opens blank (draft via chat), or with a plan resolved like `plan validate` (file path or identifier). Requires an interactive terminal on stdin and stdout.
 
 ## `graph plan`
 
@@ -82,7 +82,7 @@ graph shapes list [--json]
 graph shapes show <tool>
 ```
 
-Inspect the [observed-shape cache](/tools/shape-cache): `list` prints tool names and seen-counts, `show` prints one tool's cached schema and example. The same data lives as plain files under `<data_dir>/shapes/`.
+Inspect the [shape cache](/tools/shape-cache): `list` prints tool names and seen-counts, `show` prints one tool's cached schema and example. The same data lives as plain files under `<data_dir>/shapes/`.
 
 ## `graph config`
 
@@ -91,5 +91,7 @@ graph config show    # merged effective config
 graph config init    # write a commented starter (./.graph/; --global for ~/.config/graph/)
 graph config path    # config file locations and which exist
 ```
+
+`init` refuses to overwrite an existing config; `--force` overwrites it.
 
 The starter ends with a [`[prompts]` section](/reference/configuration#prompts) carrying the built-in chat and workbench system prompts, written out verbatim so they can be tuned in place — delete a field to fall back to the shipped default.

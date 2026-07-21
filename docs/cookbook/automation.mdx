@@ -1,10 +1,10 @@
 ---
-title: "Scripting & automation"
+title: "Automation recipes"
 description: "Plans as commands: structured output, pipes, and exit codes"
 icon: "gears"
 ---
 
-Plans behave like well-mannered CLI commands — clean stdout, meaningful exit codes, explicit inputs — so shell automation composes around them. The [scripting contract](/automation/scripting) defines the guarantees; these are the recipes.
+Plans behave like well-mannered CLI commands — clean stdout, meaningful exit codes, explicit inputs — so shell automation composes around them. The [scripting contract](/reference/scripting-contract) defines the guarantees; these are the recipes.
 
 ## `urgent_issues` — output mode, zero LLM
 
@@ -37,7 +37,7 @@ graph plan run release_report @ci/base.json --input version="$TAG"
 
 ## Recipe: branch on outcomes
 
-Exit codes separate "the data says act" from "the run broke" ([full table](/automation/scripting#exit-codes)):
+Exit codes separate "the data says act" from "the run broke" ([full table](/reference/scripting-contract#exit-codes)):
 
 ```bash
 graph plan run urgent_issues > urgent.json
@@ -48,7 +48,7 @@ if [ "$count" -gt 0 ]; then …page someone…; fi
 # exit 4 = an exit gate asserted — the plan ran fine and the condition is real
 ```
 
-For assertion-style automation, put the condition *in the plan* as an [exit gate](/plans/escape-hatch) and branch on exit 4 — that's how the [CI checks](/cookbook/ci-checks) work.
+For assertion-style automation, put the condition *in the plan* as an [exit gate](/plans/exit-gates) and branch on exit 4 — that's how the [CI checks](/cookbook/ci-checks) work.
 
 ## Recipe: silent action plan
 

@@ -1,6 +1,6 @@
 //! `graph workbench` — the interactive plan IDE: a dual-pane TUI with the
 //! chat agent on the left and the plan workspace (structure, context, runs)
-//! on the right. See docs/using/plan-workbench.mdx.
+//! on the right. See docs/workbench/plan-workbench.mdx.
 
 mod app;
 mod chat;

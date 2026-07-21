@@ -23,9 +23,9 @@ An agent gives you a different answer every run. A plan is an artifact — versi
 
 The same plan file works in a terminal, a cron job, and a CI pipeline: [finish modes](/plans/finish-modes) for reports, structured JSON, or silent side effects; meaningful exit codes; `${ENV}` secrets that fail loudly; repo-carried config under `./.graph/`. See the [cookbook](/cookbook/ci-checks).
 
-## The workbench
+## Prototype in chat, review in the workbench
 
-`graph ask` and `graph chat` run an agent loop over the same tool catalog. Use it as a workbench: probe a tool's real output, prototype a workflow conversationally, then freeze what works into a plan. Details in [Chat & ask](/using/chat-and-ask).
+`graph ask` and `graph chat` run an agent loop over the same tool catalog — the conversational surface for probing a tool's real output and prototyping a workflow before you freeze it into a plan ([Chat & ask](/using/chat-and-ask)). And plans themselves have a dedicated surface: the **workbench** (`graph wb plan`), a dual-pane TUI where the agent drafts a plan into a side pane and you inspect, validate, and step through it with a debugger ([Workbench](/workbench/plan-workbench)).
 
 ## Where to go next
 
