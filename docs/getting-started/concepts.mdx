@@ -35,9 +35,10 @@ Everything a plan step or the agent can do is a **tool**, and every tool lives i
 | Prefix | Source | Example |
 |---|---|---|
 | `<server>__` | [MCP servers](/tools/mcp-servers) from `[mcp.*]` config | `linear__list_issues` |
-| `user__` | [User-defined tools](/tools/user-defined) (exec / prompt YAML) | `user__git_log` |
+| `user__` | [User-defined tools](/tools/user-defined) (exec / prompt / reshape YAML) | `user__git_log` |
+| `builtin__` | [Bundled tool packs](/tools/builtins) compiled into the binary | `builtin__infer` |
 | `plan__` | One per [plan document](/plans/overview) | `plan__project_status` |
-| — | `plan_and_execute`: on-the-fly planning for novel multi-step tasks | |
+| — | [`plan_and_execute`](/plans/the-planner): on-the-fly planning for novel multi-step tasks | |
 
 This is what makes plans composable: authoring a plan *adds a tool to the catalog*, and a plan's steps draw from that same catalog — including other plans. The [composition rules](/tools/overview#composition-rules) and the commands for inspecting and invoking the catalog live in [The tool catalog](/tools/overview).
 

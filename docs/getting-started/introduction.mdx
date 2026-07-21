@@ -17,7 +17,7 @@ An agent gives you a different answer every run. A plan is an artifact — versi
 - **Deterministic by default.** Steps are plain tool calls with no inference between them. The LLM enters only where you put it: a [prompt tool](/tools/user-defined) as a step (classify, extract, summarize mid-plan) and a [finish](/plans/finish-modes) that is a written report, structured JSON, or nothing at all.
 - **Repeatable and reviewable.** A plan is a file you check into a repo, review in a PR, and share with your team. Your Monday status report is the same report every Monday.
 - **Composable.** Every plan joins the tool catalog as `plan__<name>`, callable like any other tool — from the CLI, from a script, or from inside another plan. And a plan's own steps draw from that same catalog: MCP tools, wrapped CLIs, saved queries, prompt tools, and other plans.
-- **Bring your own models and storage.** Any MCP server; Anthropic, OpenAI, or OpenAI-compatible/local models, assignable per role. A single binary with plain-file storage — or in-memory storage for ephemeral CI runs. Your data stays on your machine.
+- **Bring your own models and storage.** Any MCP server; Anthropic, OpenAI, or OpenAI-compatible/local models, [assignable per role](/models/models-and-providers). A single binary with plain-file storage — or in-memory storage for ephemeral CI runs. Your data stays on your machine.
 
 ## Built for scaled AI Ops
 
@@ -35,7 +35,7 @@ The same plan file works in a terminal, a cron job, and a CI pipeline: [finish m
   </Card>
 
   <Card title="Core concepts" icon="lightbulb" href="/getting-started/concepts">
-    Plans, the tool catalog, the shape cache, and what a run costs.
+    Plans, the tool catalog, the shape cache, the workbench, and what a run costs.
   </Card>
 
   <Card title="Author a plan" icon="pen-to-square" href="/plans/authoring">
