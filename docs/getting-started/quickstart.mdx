@@ -101,19 +101,33 @@ Not using an agent? The whole path is a few commands.
     ```
   </Step>
 
-  <Step title="Prototype with chat & ask">
-    `graph ask` runs an agent loop over your whole tool catalog — the fast way to see what a tool returns and prototype a workflow before you freeze it into a plan:
+  <Step title="Probe the tools you'll build on">
+    Before writing a step, see each tool's input schema and *actual* output shape:
 
     ```bash
-    graph ask "What are the urgent issues in Linear right now?"
-    graph ask "Which of those touches production?" --thread   # continue the thread
+    graph tools show linear__list_issues
+    graph tools test linear__list_issues '{"priority":1,"limit":5}'
     ```
 
-    Every call here also teaches graph what each tool's output looks like (the [shape cache](/tools/shape-cache)), so exploration is never wasted. Details in [Chat & ask](/using/chat-and-ask).
+    Every probe also teaches graph what the tool returns (the [shape cache](/tools/shape-cache)), so the references you write next are grounded in real output — and the workbench's drafting agent gets smarter too.
   </Step>
 
-  <Step title="Freeze it into a plan">
-    Once an answer is worth repeating, capture it as a plan. [Authoring plans](/plans/authoring) walks through building one from scratch.
+  <Step title="Build the plan in the workbench">
+    Open a blank draft and describe the goal — the agent drafts the plan into the side pane, where you inspect, validate, and test-run it:
+
+    ```bash
+    graph workbench plan     # alias: graph wb plan
+    ```
+
+    Prefer to write the YAML yourself? [Authoring plans](/plans/authoring) builds one from scratch. Either way, `Ctrl+S` (or a save in the workbench) writes it to `./.graph/plans/`.
+  </Step>
+
+  <Step title="Run it headless">
+    ```bash
+    graph plan run project_status '{"project":"New Relic"}'
+    ```
+
+    Same contract as the fast path: the deliverable on stdout, progress on stderr, and a file you can commit, schedule, and wire into CI.
   </Step>
 </Steps>
 
