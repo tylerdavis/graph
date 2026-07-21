@@ -49,3 +49,7 @@ A chat turn through `plan_and_execute` is 4+ inference calls: the agent (decidin
 The same planner also powers **draft-only** planning: the [workbench](/workbench/plan-workbench)'s `workbench__draft_plan` produces a plan for you to review instead of executing it, with validation feedback looped back to the planner for one automatic revision.
 
 How a draft is produced is configurable via [`[planner].draft_strategy`](/reference/configuration#planner) (or `GRAPH_DRAFT_STRATEGY`): `oneshot` (default) drafts the whole plan in one structured call; `incremental` drafts an outline first, then generates steps one at a time, each statically validated before acceptance and retried with the problems as feedback.
+
+<Frame caption="The planner drafting incrementally in the workbench: two steps accepted, the third being drafted, the outline's last stage still pending.">
+  <img src="/images/workbench/drafting-overlay.svg" alt="The planner drafting incrementally in the workbench: two steps accepted, the third being drafted, the outline's last stage still pending." />
+</Frame>

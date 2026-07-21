@@ -154,6 +154,12 @@ steps:
         {{/E5.comments}}
 ```
 
+Before trusting a plan like this with write access, step through it on a real PR in the [workbench](/workbench/plan-workbench) — a breakpoint on the posting steps shows exactly what would be sent:
+
+<Frame caption="A gated pr_review run paused at a breakpoint on E5 — steps E0–E4 executed, the debug panel showing the rendered input about to be sent.">
+  <img src="/images/workbench/pr-review-debug.svg" alt="A gated pr_review run paused at a breakpoint on E5 — steps E0–E4 executed, the debug panel showing the rendered input about to be sent." />
+</Frame>
+
 **Lessons:**
 
 - **The rubric is the product.** `review_graph_pr` is a repo-local [prompt tool](/tools/user-defined#prompt--an-llm-call-as-a-tool) whose prompt enumerates _this repo's_ invariants and instructs "empty findings when clean". A focused reviewer beats a generic one precisely because it refuses to comment on everything else. It has caught real bugs in this repo's own PRs — including one in the PR that changed the reviewer itself.
