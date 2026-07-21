@@ -123,6 +123,7 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                     let _ = ctx.tx.send(Msg::RunFinished {
                         headline: "no plan to run".to_string(),
                         is_error: true,
+                        exited: false,
                         results: Map::new(),
                     });
                     return;

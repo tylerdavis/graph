@@ -1,0 +1,31 @@
+# The map step mid-iteration — the step-tree crop for plans/iteration.mdx:
+# the ⟳ junction with its cyan body row, paused on the second item via a
+# loop-line breakpoint (the harness answers the first pause with a real
+# `c` keypress).
+name: iteration-map
+title: graph workbench — map
+plan: docs/shots/plans/file_survey.yaml
+grid: { cols: 120, rows: 26 }
+
+chat: "run it over a586a8b..9f31c02, pausing on each file"
+
+llm:
+  - call: workbench__run_plan
+    input:
+      gated: true
+      breakpoints: [E1]
+      input: { base: a586a8b, head: 9f31c02 }
+
+tools:
+  builtin__git_changed_files:
+    - files:
+        - crates/graph-store/src/file.rs
+        - crates/graph-store/src/lib.rs
+        - docs/architecture/storage.mdx
+      count: 3
+  builtin__git_file:
+    - text: "//! Plain-file storage: whole files write via temp-file+rename …"
+
+capture:
+  pause_at: E1/do.1
+  crop: steps

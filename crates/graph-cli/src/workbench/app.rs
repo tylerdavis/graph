@@ -275,6 +275,9 @@ pub enum Msg {
     RunFinished {
         headline: String,
         is_error: bool,
+        /// A fired `exit` ended the run early — never-run steps and the
+        /// finish were skipped, not completed.
+        exited: bool,
         results: Map<String, Value>,
     },
     // Effect completions
@@ -647,6 +650,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
         Msg::RunFinished {
             headline,
             is_error,
+            exited,
             results,
         } => {
             app.mode = if app.turn_in_flight {
@@ -655,7 +659,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
                 Mode::Idle
             };
             app.in_flight = None;
-            app.ws.run_finished(&headline, is_error, results);
+            app.ws.run_finished(&headline, is_error, exited, results);
             app.status = headline;
             Vec::new()
         }
@@ -1609,6 +1613,7 @@ steps:
             Msg::RunFinished {
                 headline: "done".into(),
                 is_error: false,
+                exited: false,
                 results: Map::new(),
             },
         );
@@ -1914,6 +1919,7 @@ steps:
             Msg::RunFinished {
                 headline: "done".into(),
                 is_error: false,
+                exited: false,
                 results: Map::new(),
             },
         );

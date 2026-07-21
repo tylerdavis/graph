@@ -81,6 +81,12 @@ Add `model:` to override the model for this verdict — a `[models.named]` entry
 
 For reusable or complex judgments, the composition form keeps reasoning as first-class data: a [prompt tool](/tools/user-defined#prompt--an-llm-call-as-a-tool) step returning a verdict, followed by a logical `exit when {{Ex.verdict}} eq true`.
 
+In the [workbench](/workbench/plan-workbench), a fired gate is visible at a glance — everything it pre-empted shows `⊘` skipped:
+
+<Frame caption="A fired success exit: the gate held, so the diff step and the solver never ran — and the pane says so.">
+  <img src="/images/workbench/exit-gate.svg" alt="A fired success exit: the gate held, so the diff step and the solver never ran — and the pane says so." />
+</Frame>
+
 ## Exit semantics
 
 | Surface | success exit | error exit |

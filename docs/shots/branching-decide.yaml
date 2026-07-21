@@ -1,0 +1,38 @@
+# The decide fork, run down its then branch — the step-tree crop for
+# plans/branching.mdx: blue then-piping with body rows, magenta
+# single-call else.
+name: branching-decide
+title: graph workbench — decide
+plan: docs/shots/plans/pr_followup.yaml
+grid: { cols: 120, rows: 36 }
+
+chat: "run it for PR 61"
+
+llm:
+  - call: workbench__run_plan
+    input:
+      input: { pr: 61 }
+  - text: >-
+      Done — PR 61 is still open, so the then branch ran: diff checked,
+      nudge comment posted.
+
+tools:
+  builtin__gh_pr_meta:
+    - title: "fix(store): tolerate concurrent shape-cache writes"
+      state: open
+      base_sha: a586a8b
+      head_sha: 9f31c02
+  builtin__git_changed_files:
+    - files:
+        - crates/graph-store/src/file.rs
+        - docs/architecture/storage.mdx
+      count: 2
+  builtin__git_diff:
+    - text: "diff --git a/crates/graph-store/src/file.rs …"
+  builtin__gh_pr_comment:
+    - url: "https://github.com/tylerdavis/graph/pull/61#issuecomment-1"
+
+capture:
+  at: finished
+  keys: [tab, "1", j, j, j]
+  crop: steps

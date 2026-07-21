@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="624" height="198" viewBox="0 0 624 198" xml:space="preserve" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14px">
+<rect width="624" height="198" rx="10" fill="#11131b"/>
+<rect y="0" width="624" height="188" fill="#171923"/>
+<rect y="178" width="624" height="20" rx="10" fill="#171923"/>
+<rect x="26.4" y="90.0" width="8.4" height="18" fill="#c6cad3"/>
+<rect x="34.8" y="90.0" width="16.8" height="18" fill="#98c379"/>
+<rect x="51.6" y="90.0" width="25.2" height="18" fill="#c6cad3"/>
+<rect x="76.8" y="90.0" width="33.6" height="18" fill="#56b6c2"/>
+<rect x="110.4" y="90.0" width="25.2" height="18" fill="#56b6c2"/>
+<rect x="135.6" y="90.0" width="462.0" height="18" fill="#c6cad3"/>
+<text x="18.0" y="31.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">┌</text>
+<text x="34.8" y="31.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">steps</text>
+<text x="85.2" y="31.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">─</text>
+<text x="102.0" y="31.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">j/k</text>
+<text x="135.6" y="31.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">select</text>
+<text x="194.4" y="31.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
+<text x="211.2" y="31.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">b</text>
+<text x="228.0" y="31.5" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">breakpoint</text>
+<text x="320.4" y="31.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
+<text x="337.2" y="31.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">v</text>
+<text x="354.0" y="31.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">validate</text>
+<text x="429.6" y="31.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
+<text x="446.4" y="31.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">r</text>
+<text x="463.2" y="31.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">run</text>
+<text x="496.8" y="31.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
+<text x="513.6" y="31.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">g</text>
+<text x="530.4" y="31.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">debug</text>
+<text x="580.8" y="31.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">──┐</text>
+<text x="18.0" y="49.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="51.6" y="49.5" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" font-weight="600">file_survey</text>
+<text x="597.6" y="49.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="18.0" y="67.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="34.8" y="67.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#98c379">✓</text>
+<text x="51.6" y="67.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">├──</text>
+<text x="85.2" y="67.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" font-weight="600">E0</text>
+<text x="127.2" y="67.5" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__git_changed_files</text>
+<text x="597.6" y="67.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="18.0" y="85.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="26.4" y="85.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e06c75">●</text>
+<text x="34.8" y="85.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">◐</text>
+<text x="51.6" y="85.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">└─</text>
+<text x="68.4" y="85.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2" font-weight="600">⟳</text>
+<text x="85.2" y="85.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" font-weight="600">E1</text>
+<text x="127.2" y="85.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">map</text>
+<text x="597.6" y="85.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="18.0" y="103.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="34.8" y="103.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#171923">✓</text>
+<text x="76.8" y="103.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#171923">└──</text>
+<text x="110.4" y="103.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#171923" font-weight="600">do</text>
+<text x="135.6" y="103.5" textLength="142.8" lengthAdjust="spacingAndGlyphs" fill="#171923">builtin__git_file</text>
+<text x="597.6" y="103.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="18.0" y="121.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="597.6" y="121.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="18.0" y="139.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="597.6" y="139.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="18.0" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="597.6" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="18.0" y="175.5" textLength="588.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">└────────────────────────────────────────────────────────────────────┘</text>
+</svg>

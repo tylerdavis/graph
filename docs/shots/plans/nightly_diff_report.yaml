@@ -1,0 +1,37 @@
+# Docs-screenshot demo plan (docs/shots/exit-gate.yaml): a fired exit
+# gate — the quiet-night early exit that skips the diff and the solver.
+# Not shipped to users.
+identifier: nightly_diff_report
+name: Nightly diff report
+description: Summarizes the day's changes; exits quietly when there are none.
+input_schema:
+  type: object
+  required: [base]
+  properties:
+    base: { type: string, description: The ref to diff against (yesterday's tag) }
+steps:
+  - id: E0
+    tool_name: builtin__git_changed_files
+    input: { base: "{{input.base}}", head: "HEAD", prefix: "" }
+    reasoning: What changed since the last report.
+  - id: E1
+    tool_name: exit
+    input:
+      when: { value: "{{E0.files}}", op: empty }
+      status: success
+      message: "no changes since {{input.base}} — nothing to report"
+    reasoning: A quiet night needs no diff and no LLM call.
+  - id: E2
+    tool_name: builtin__git_diff
+    input:
+      base: "{{input.base}}"
+      head: "HEAD"
+      paths: "."
+      exclude: "Cargo.lock"
+      max_bytes: 200000
+    reasoning: The full change, within token budget.
+solver:
+  query_to_answer: Summarize what changed since {{input.base}} and why it matters.
+  data:
+    files: "{{E0.files}}"
+    diff: "{{E2.text}}"

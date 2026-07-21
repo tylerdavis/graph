@@ -14,6 +14,10 @@ graph wb plan ./drafts/report.yaml      # open a YAML file directly
 
 The workbench needs an interactive terminal (it refuses to start otherwise); for scripting, use [`graph plan run`](/reference/cli#graph-plan).
 
+<Frame caption="pr_review loaded and valid: the chat agent on the left, the plan's step tree and detail pane on the right.">
+  <img src="/images/workbench/workbench-overview.svg" alt="pr_review loaded and valid: the chat agent on the left, the plan's step tree and detail pane on the right." />
+</Frame>
+
 ## The layout
 
 **Chat (left)** is the same agent as `graph chat`, extended with workbench tools that cover every action on this page — the whole workbench is drivable conversationally. Multi-line pastes land as literal text (newlines stay newlines; nothing submits until you press Enter), and workbench chats are scratch sessions — they are not persisted as [threads](/using/threads).
@@ -25,6 +29,10 @@ The workbench needs an interactive terminal (it refuses to start otherwise); for
 | `1` plan | header (identifier, finish mode, validation state), the step list, and a detail pane showing the selected step's reasoning, input template, and — after a run — its rendered input and result JSON |
 | `2` context | the tool catalog and observed output shapes, exactly what the planner sees when drafting |
 | `3` run | the live transcript: step events, the streamed solver answer, and the final outcome |
+
+<Frame caption="The context tab: the namespaced catalog with read-only markers, and the selected tool's description and schemas in the detail pane.">
+  <img src="/images/workbench/context-tab.svg" alt="The context tab: the namespaced catalog with read-only markers, and the selected tool's description and schemas in the detail pane." />
+</Frame>
 
 The plan tab renders the whole plan as a `tree`-style flowchart: live status glyphs lead each row (`○` pending · `◐` running · `✓` ok · `✗` error · `⊘` skipped), the plan identifier is the root, steps fork off a gray trunk, and control steps carry their icon in the junction (`├─⑂` decide · `├─⟳` map · `├─∑` reduce · `├─ƒ` plan call · `└─⎋` exit). Decide's step-list branches nest under named `then`/`else` heads piping in blue/magenta; map/reduce bodies hang directly in cyan (iterations all land on the one structural row — the last item's status and result stick). Plans that finish with a solver or rendered output get a final `solver`/`output` row that runs live during synthesis and carries the streamed answer as its result.
 
@@ -67,6 +75,10 @@ For changes to an existing draft, the agent prefers the precise editing tools ov
 
 With [`[planner].draft_strategy = "incremental"`](/reference/configuration#planner) (or `GRAPH_DRAFT_STRATEGY=incremental`), drafting articulates its progress live in the plan tab instead of a single planning spinner: the outline appears first as dimmed `○` placeholder rows, steps then materialize one at a time — a `◐` animated row for the step being drafted, turning into a `✓` row once it passes static validation, with a `(retry n/3)` suffix and the problems in the detail pane when it doesn't. The draft publishes exactly once, when drafting completes — and if a step exhausts its retries, the valid prefix is published (marked unsaved) and the agent is told to finish it with the editing tools instead of redrafting.
 
+<Frame caption="Incremental drafting mid-flight: two steps accepted, the third being drafted, the outline's last stage still pending.">
+  <img src="/images/workbench/drafting-overlay.svg" alt="Incremental drafting mid-flight: two steps accepted, the third being drafted, the outline's last stage still pending." />
+</Frame>
+
 ### Workbench tools stay out of plans
 
 All `workbench__` tools are agent-side only — they are not runtime tools, and a plan step can never call one. `validate_plan` resolves every step tool against the runtime catalog the plan will actually execute with, which deliberately excludes the `workbench__*` tools themselves: a plan step naming one is rejected outright. The research tools (`read_file`/`grep`/`glob`) respect `.gitignore`, skip `.git` and binaries, reject paths outside the launch directory, and are deliberately absent from the plan catalog, `graph tools list`, and `graph chat`.
@@ -83,13 +95,21 @@ Every run mode is available from the keyboard or by asking the agent (`run_plan`
 - `r` — full run, exactly like `graph plan run` — including its refusal to start when a step tool doesn't resolve against the catalog.
 - `g` — **debug run**: the debugger described below.
 
-Plans with a required `input_schema` open a prefilled JSON editor before the run starts, and while anything executes the status bar shows a live indicator with the in-flight call and elapsed time — inference steps don't look like dead air.
+Plans with a required `input_schema` open a prefilled JSON editor before the run starts, and while anything executes the status bar shows a live indicator with the in-flight call and elapsed time — inference steps don't look like dead air. When a run ends on a fired [exit gate](/plans/exit-gates), the steps and finish it pre-empted show `⊘` skipped — never a completed `✓` for a solver that didn't run.
+
+<Frame caption="The run tab after a solver plan completes: the step transcript, the streamed answer, and the outcome line.">
+  <img src="/images/workbench/run-tab.svg" alt="The run tab after a solver plan completes: the step transcript, the streamed answer, and the outcome line." />
+</Frame>
 
 The agent can start any of these, and `run_plan` accepts `breakpoints` (top-level step ids, implies a debug run) — but **gated runs always pause for *your* y/s/a decision on every tool call**: the agent starts the run and cannot approve its side effects.
 
 ## Debugging plans
 
 A debug run (`g`) works like a debugger over plan execution. Pauses are **non-modal**: the workspace stays fully navigable — switch tabs, browse steps and their results with `j`/`k` — while the run waits.
+
+<Frame caption="A gated pr_review run paused at a breakpoint on E5 — steps E0–E4 executed, the debug panel showing the rendered input about to be sent.">
+  <img src="/images/workbench/pr-review-debug.svg" alt="A gated pr_review run paused at a breakpoint on E5 — steps E0–E4 executed, the debug panel showing the rendered input about to be sent." />
+</Frame>
 
 **Breakpoints.** `b` toggles a breakpoint on the selected step (a red `●` in the gutter), any time, including mid-run. With breakpoints set, `g` runs freely until one is hit; with none, it pauses before the first call. A breakpoint on a `map`/`decide` step also pauses each of its body calls (like a breakpoint on a loop line) — pressing `b` on a body sub-step row sets exactly that, on the owning control step. Nested plans have their own step namespace — breakpoint the `plan__*` step to pause before entering, then step through its calls.
 

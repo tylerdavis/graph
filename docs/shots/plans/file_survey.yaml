@@ -1,0 +1,25 @@
+# Docs-screenshot demo plan (docs/shots/iteration-map.yaml): a map step
+# rendered in the workbench step tree, captured mid-iteration. Not
+# shipped to users.
+identifier: file_survey
+name: Changed-file survey
+description: Reads each changed file to gauge a commit range's blast radius.
+input_schema:
+  type: object
+  required: [base, head]
+  properties:
+    base: { type: string, description: Base ref }
+    head: { type: string, description: Head ref }
+steps:
+  - id: E0
+    tool_name: builtin__git_changed_files
+    input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "" }
+    reasoning: The list the map iterates over.
+  - id: E1
+    tool_name: map
+    input:
+      over: "{{E0.files}}"
+      do:
+        tool_name: builtin__git_file
+        input: { path: "{{item}}", ref: "{{input.head}}" }
+    reasoning: Fetch each changed file at the head ref.

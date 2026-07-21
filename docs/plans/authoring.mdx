@@ -4,6 +4,7 @@ description: "From blank file to running plan"
 icon: "pen-to-square"
 ---
 
+
 This walkthrough builds `project_status` — a real plan — from scratch. The workflow generalizes: **probe the tools, chain the steps, shape the finish.**
 
 ## 1. Probe the tools you'll use
@@ -102,3 +103,7 @@ graph plan run project_status '{"project":"New Relic"}'
 Validation is layered: structural checks (templates, references, ids) run at every load, and `plan validate` / `plan run` additionally resolve every step tool against what is actually loadable, refusing to start before any step executes when a tool can't resolve. What no static layer can catch — a path that doesn't exist in a tool's real output — surfaces at run time as a typed error with the available keys listed. The full layering, including how `requires_servers` declarations behave, is in [where validation happens](/plans/errors-and-replanning#where-validation-happens).
 
 For interactive authoring, the [plan workbench](/workbench/plan-workbench) wraps this whole loop in a TUI: the chat agent drafts into a side pane, validation runs on every change, and a gated run pauses before each tool call so you can test a plan before its writes are trustworthy.
+
+<Frame caption="The authoring loop in one screen: the draft's step tree, its validation verdict, and the agent that edits it.">
+  <img src="/images/workbench/workbench-overview.svg" alt="The authoring loop in one screen: the draft's step tree, its validation verdict, and the agent that edits it." />
+</Frame>

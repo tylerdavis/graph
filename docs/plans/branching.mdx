@@ -32,6 +32,12 @@ steps:
     input: { entry: "took {{E1.branch}}: {{E1.result}}" }
 ```
 
+In the [workbench](/workbench/plan-workbench), a decide step renders as a `⑂` junction — the chosen branch's steps run under its colored guide, the other stays untouched:
+
+<Frame caption="A decide fork after a run down its then branch: the inline step list nests under the blue then head; the single-call else was never rendered.">
+  <img src="/images/workbench/branching-decide.svg" alt="A decide fork after a run down its then branch: the inline step list nests under the blue then head; the single-call else was never rendered." />
+</Frame>
+
 ## Gates
 
 Exactly one of `if` or `infer` is required — unlike `exit`, where omitting both means "unconditionally". The gate grammar is identical to [exit gates](/plans/exit-gates) — `decide` spells the logical gate `if` where `exit` spells it `when`, because `if … then … else` reads as the fork it is. `if` is a logical comparison (`eq ne gt lt gte lte empty not_empty contains`, with [typed splice](/plans/template-language#typed-splice) keeping numbers numeric); `infer` is a yes/no question judged by the `judge` model role. An `if` gate costs zero inference; an `infer` gate costs one cheap judgment call.

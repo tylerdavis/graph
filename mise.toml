@@ -10,7 +10,9 @@
 rust = { version = "1.94", components = "rustfmt,clippy" }
 "ubi:orhun/git-cliff" = "latest"
 
-"node" = "lts"
+# Pinned to the 24 line, not "lts": mint refuses node >= 25, and the
+# lts alias currently resolves past it.
+"node" = "24"
 "npm:mint" = "latest"
 
 [tasks.build]
@@ -60,3 +62,7 @@ run = "scripts/release.sh major"
 [tasks.docs]
 description = "Run docs preview"
 run = "cd docs && mint dev"
+
+[tasks.shots]
+description = "Regenerate the workbench docs screenshots from docs/shots/ scenarios"
+run = "cargo test -p graph-cli shots -- --nocapture"

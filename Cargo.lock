@@ -789,6 +789,7 @@ dependencies = [
  "graph-mcp",
  "graph-store",
  "ignore",
+ "jsonschema",
  "ratatui",
  "reedline",
  "regex",

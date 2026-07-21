@@ -9,6 +9,10 @@ mod effects;
 mod fs_tools;
 mod plan_ws;
 mod runner;
+#[cfg(test)]
+mod screenshot;
+#[cfg(test)]
+mod shots;
 mod tools;
 mod ui;
 
