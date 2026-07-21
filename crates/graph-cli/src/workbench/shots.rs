@@ -326,6 +326,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
             temperature: None,
             dimensions: None,
             description: None,
+            fallbacks: Vec::new(),
         }),
         ..Default::default()
     };
