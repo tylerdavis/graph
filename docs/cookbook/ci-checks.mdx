@@ -154,6 +154,12 @@ steps:
         {{/E5.comments}}
 ```
 
+Before trusting a plan like this with write access, step through it on a real PR in the [workbench](/workbench/plan-workbench) — a breakpoint on the posting steps shows exactly what would be sent:
+
+<Frame caption="A gated pr_review run paused at a breakpoint on E5 — steps E0–E4 executed, the debug panel showing the rendered input about to be sent.">
+  <img src="/images/workbench/pr-review-debug.svg" alt="A gated pr_review run paused at a breakpoint on E5 — steps E0–E4 executed, the debug panel showing the rendered input about to be sent." />
+</Frame>
+
 **Lessons:**
 
 - **The rubric is the product.** `review_graph_pr` is a repo-local [prompt tool](/tools/user-defined#prompt--an-llm-call-as-a-tool) whose prompt enumerates _this repo's_ invariants and instructs "empty findings when clean". A focused reviewer beats a generic one precisely because it refuses to comment on everything else. It has caught real bugs in this repo's own PRs — including one in the PR that changed the reviewer itself.
@@ -170,37 +176,8 @@ steps:
 The full file is `.github/workflows/graph-checks.yaml`; the notable choices:
 
 - **The release image is the runtime.** `container: ghcr.io/tylerdavis/graph:vX.Y.Z` carries graph plus `git`, `jq`, and `gh` (pinned from official releases — distro packages lag the JSON fields and flags the pack tools use) and the `safe.directory` git config that Actions' foreign-owned workspace mounts require. The image tag is the version pin; `packages: read` plus `GITHUB_TOKEN` credentials pull it while private.
-- **`GRAPH_EVENTS=github`** makes a failing plan annotate the run itself — the one sanctioned case of graph writing non-deliverable output to stdout, failure-paths only ([details](/reference/environment#stream-conventions)).
+- **`GRAPH_EVENTS=github`** makes a failing plan annotate the run itself — the one sanctioned case of graph writing non-deliverable output to stdout, failure-paths only ([details](/reference/scripting-contract#streams)).
 - **Guards are cheap and layered**: drafts skipped, fork PRs skipped (they have no `ANTHROPIC_API_KEY`, and the `${VAR}` reference in the repo config fails loudly as the backstop), one concurrency group per PR with cancel-in-progress.
 - **Cost per PR**: worst case one `judge`-role call (docs-drift) plus one review call; docs-only PRs pay only the review; drafts pay nothing.
 
-## A custom bot identity
-
-By default, comments post as **github-actions\[bot\]**. That identity comes from the workflow's `github.token`, not from graph. The pack tools shell out to `gh`, which acts as whatever `GH_TOKEN` is set in the environment — and exec tools pass the process env through untouched. So giving the reviewer its own name and avatar is just a token swap: mint a GitHub App installation token and hand it to the review step.
-
-**Create the app.** GitHub Settings → Developer settings → GitHub Apps → New GitHub App. The app's name becomes the comment author (as `<name>[bot]`) and its avatar shows on every comment. Disable webhooks. One permission: **Pull requests: Read and write**. Install it on the repository, then collect two values: the **App ID** (on the app's About page) and a **private key** (generate one; it downloads a `.pem`). Store them as repository secrets — say `REVIEW_APP_ID` and `REVIEW_APP_KEY`.
-
-**Mint the token in the job.** The official [`actions/create-github-app-token`](https://github.com/actions/create-github-app-token) action exchanges the app credentials for a short-lived installation token scoped to the repo:
-
-```yaml
-  pr-review:
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/create-github-app-token@v2
-        id: bot
-        with:
-          app-id: ${{ secrets.REVIEW_APP_ID }}
-          private-key: ${{ secrets.REVIEW_APP_KEY }}
-
-      - name: Review and comment
-        run: graph plan run pr_review --input pr="$PR"
-        env:
-          GH_TOKEN: ${{ steps.bot.outputs.token }}
-```
-
-The step-level `env` overrides the workflow-level `GH_TOKEN` for the plan run only — checkout and everything else keep the default token, and jobs that never post (like the docs-drift gate) need no changes.
-
-**What to expect on the switch.** Comment identity is per-token, so the upsert mechanics keep working but don't cross identities: `gh_pr_comment --edit-last` edits the _app's_ most recent comment, and on PRs the old identity already reviewed, its stale summary comment sits until deleted by hand. `gh_pr_inline_comments` deletes by hidden marker rather than author, so it clears the old identity's inline comments too — provided the app's Pull requests write permission lets it moderate them; where it can't, the delete pass skips them silently. Both are one-time transition effects on already-open PRs.
+Want the reviewer to comment under its own name and avatar instead of **github-actions\[bot\]**? That's a token swap — see [A custom bot identity](/cookbook/bot-identity).

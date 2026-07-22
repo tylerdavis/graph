@@ -1,0 +1,43 @@
+# The run tab after a solver run: the step log and the streamed answer.
+# Used in using/plan-workbench.mdx's Running plans section.
+name: run-tab
+title: graph workbench — a completed run
+plan: docs/shots/plans/change_summary.yaml
+grid: { cols: 120, rows: 36 }
+
+chat: "run it from a586a8b to 9f31c02"
+
+llm:
+  - call: workbench__run_plan
+    input:
+      input: { base: a586a8b, head: 9f31c02 }
+  - text: >-
+      The store's whole-file writes moved to a temp-file+rename pattern,
+      closing a torn-write window under concurrent processes. Three files
+      changed: the FileStore write path, its module exports, and the
+      storage architecture doc. Low blast radius — no public API change,
+      and the new rename path is covered by the existing store tests.
+  - text: >-
+      Done — the summary is in the run tab. The change is small and
+      self-contained: an atomicity fix in the file store plus its
+      documentation.
+
+tools:
+  builtin__git_changed_files:
+    - files:
+        - crates/graph-store/src/file.rs
+        - crates/graph-store/src/lib.rs
+        - docs/architecture/storage.mdx
+      count: 3
+  builtin__git_diff:
+    - text: |
+        diff --git a/crates/graph-store/src/file.rs b/crates/graph-store/src/file.rs
+        @@ -142,9 +142,14 @@ impl FileStore {
+        -    fs::write(&path, payload)?;
+        +    let tmp = path.with_extension("tmp");
+        +    fs::write(&tmp, payload)?;
+        +    fs::rename(&tmp, &path)?;
+
+capture:
+  at: finished
+  keys: [tab, "3"]

@@ -6,9 +6,9 @@ icon: "hand-wave"
 
 **graph** is a command-line workflow engine for AI-augmented operations, CI, automation, and ETL. You describe a workflow as a **plan** — a small YAML file that chains tool calls with typed dataflow between steps and LLM inference exactly where you place it. graph runs that plan the same way every time: same steps, same order, on your laptop, on cron, or in CI.
 
-```bash
-graph plan run project_status '{"project":"New Relic to AWS Migration"}'
-```
+<Frame caption="A report plan run end to end in the workbench: an exit gate for the quiet weeks, a per-file map, and the solver's report — the same steps in the same order, every Monday.">
+  <img src="/images/workbench/hero.svg" alt="The workbench after a completed weekly_status run: the chat agent on the left, the fully-executed step tree with exit-gate, map, and solver rows on the right, and the map's dataflow template in the detail pane." />
+</Frame>
 
 An agent gives you a different answer every run. A plan is an artifact — versioned in a repo, reviewed in a PR, and cheap enough to schedule. That is the difference between a demo and a workflow you can run a thousand times.
 
@@ -17,15 +17,15 @@ An agent gives you a different answer every run. A plan is an artifact — versi
 - **Deterministic by default.** Steps are plain tool calls with no inference between them. The LLM enters only where you put it: a [prompt tool](/tools/user-defined) as a step (classify, extract, summarize mid-plan) and a [finish](/plans/finish-modes) that is a written report, structured JSON, or nothing at all.
 - **Repeatable and reviewable.** A plan is a file you check into a repo, review in a PR, and share with your team. Your Monday status report is the same report every Monday.
 - **Composable.** Every plan joins the tool catalog as `plan__<name>`, callable like any other tool — from the CLI, from a script, or from inside another plan. And a plan's own steps draw from that same catalog: MCP tools, wrapped CLIs, saved queries, prompt tools, and other plans.
-- **Bring your own models and storage.** Any MCP server; Anthropic, OpenAI, or OpenAI-compatible/local models, assignable per role. A single binary with plain-file storage — or in-memory storage for ephemeral CI runs. Your data stays on your machine.
+- **Bring your own models and storage.** Any MCP server; Anthropic, OpenAI, or OpenAI-compatible/local models, [assignable per role](/models/models-and-providers). A single binary with plain-file storage — or in-memory storage for ephemeral CI runs. Your data stays on your machine.
 
 ## Built for scaled AI Ops
 
 The same plan file works in a terminal, a cron job, and a CI pipeline: [finish modes](/plans/finish-modes) for reports, structured JSON, or silent side effects; meaningful exit codes; `${ENV}` secrets that fail loudly; repo-carried config under `./.graph/`. See the [cookbook](/cookbook/ci-checks).
 
-## The workbench
+## Prototype in chat, review in the workbench
 
-`graph ask` and `graph chat` run an agent loop over the same tool catalog. Use it as a workbench: probe a tool's real output, prototype a workflow conversationally, then freeze what works into a plan. Details in [Chat & ask](/using/chat-and-ask).
+`graph ask` and `graph chat` run an agent loop over the same tool catalog — the conversational surface for probing a tool's real output and prototyping a workflow before you freeze it into a plan ([Chat & ask](/using/chat-and-ask)). And plans themselves have a dedicated surface: the **workbench** (`graph wb plan`), a dual-pane TUI where the agent drafts a plan into a side pane and you inspect, validate, and step through it with a debugger ([Workbench](/workbench/plan-workbench)).
 
 ## Where to go next
 
@@ -35,7 +35,7 @@ The same plan file works in a terminal, a cron job, and a CI pipeline: [finish m
   </Card>
 
   <Card title="Core concepts" icon="lightbulb" href="/getting-started/concepts">
-    Plans, the tool catalog, the shape cache, and what a run costs.
+    Plans, the tool catalog, the shape cache, the workbench, and what a run costs.
   </Card>
 
   <Card title="Author a plan" icon="pen-to-square" href="/plans/authoring">

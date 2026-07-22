@@ -1,0 +1,103 @@
+---
+title: "Plan file schema"
+description: "Every field of a plan document, in one place"
+icon: "file-code"
+---
+
+The complete field reference for plan YAML files. Concepts and worked examples live in the [Plans](/plans/overview) section; this page is the lookup table.
+
+## Top level
+
+| Field | Required | Type | Notes |
+|---|---|---|---|
+| `identifier` | yes | string | tool-name-safe (`[a-zA-Z0-9_-]+`); becomes `plan__<identifier>` in the catalog |
+| `name` | yes | string | display name |
+| `description` | yes | string | routing signal — what the agent reads when choosing tools |
+| `exemplars` | no | list of string | example user phrasings; folded into the tool description verbatim ([routing](/using/tool-selection)) |
+| `requires_servers` | no | list of string | MCP server dependencies; unconfigured → plan hidden from the catalog, loud error by name ([discovery](/plans/overview#plan-discovery)) |
+| `input_schema` | no | JSON Schema | validates inputs before any step runs; referenced as `{{input.*}}` ([inputs](/plans/inputs)) |
+| `steps` | yes | list of step | run sequentially |
+| `solver` | no | object | LLM-written finish ([finish modes](/plans/finish-modes)) |
+| `output` | no | template map | structured JSON finish, zero LLM |
+
+`solver` and `output` are mutually exclusive; declaring neither makes the plan **silent** (side effects only).
+
+## `solver`
+
+| Field | Required | Notes |
+|---|---|---|
+| `query_to_answer` | yes | instructions for the solver; itself a [template](/plans/template-language), so sections can adapt it to the data |
+| `system_prompt` | no | extra system-level guidance for the solver call, on top of the built-in solver prompt |
+| `data` | yes | template map of what the solver sees — whole results spliced by template; oversized payloads are truncated/sampled |
+
+## Steps
+
+| Field | Required | Notes |
+|---|---|---|
+| `id` | yes | identifier (letters, digits, `_`, not digit-leading), unique across the plan including body sub-steps; may not shadow the reserved roots `input`, `item`, `index`, `accumulator`, `length` |
+| `tool_name` | yes | a catalog tool (`server__*`, `user__*`, `builtin__*`, `plan__*`), `plan_and_execute`, or a control step below. `toolName` is accepted as an alias |
+| `input` | yes | the tool's arguments; string values are [templates](/plans/template-language) over `input` and earlier step results |
+| `reasoning` | no | free text, shown in traces |
+
+## Control steps
+
+Four reserved `tool_name`s are executor-intercepted, never dispatched to a registry. Their `input` is the control grammar:
+
+### `exit` — [end the plan early](/plans/exit-gates)
+
+| Field | Required | Notes |
+|---|---|---|
+| `when` | no | logical gate (below); mutually exclusive with `infer`; **both omitted = unconditional exit** |
+| `infer` | no | yes/no question judged by the `judge` role |
+| `model` | no | model for the `infer` verdict: a role name, `default`, or a [named model](/models/models-and-providers#named-models); ignored without `infer` |
+| `status` | yes | `success` \| `error` — error maps to exit code 4 on `plan run` |
+| `message` | no | shown as the plan's answer / error message; may use templates |
+| `output` | no | template map emitted as the plan's structured output when the exit fires |
+
+### `decide` — [fork into one of two branches](/plans/branching)
+
+| Field | Required | Notes |
+|---|---|---|
+| `if` | exactly one of `if`/`infer` | logical gate (same grammar as `when`) |
+| `infer` | 〃 | yes/no question judged by the `judge` role |
+| `model` | no | as on `exit`; may itself be a template |
+| `then` | yes | body (below), run when the gate holds |
+| `else` | no | body, run otherwise |
+
+### `map` / `reduce` — [run a body per item](/plans/iteration)
+
+| Field | Required | Notes |
+|---|---|---|
+| `over` | yes | template that must render to an array |
+| `do` | yes | body (below), run once per element with `{{item}}`/`{{index}}` in scope (`reduce` adds `{{accumulator}}`) |
+| `concurrency` | no (`map` only) | max items in flight; default 1 (sequential); `results` stays in input order |
+| `initial` | no (`reduce` only) | starting accumulator; default `null` |
+
+## Gate grammar (`when` / `if`)
+
+A single comparison: `{ value, op, to }`, where `value` is usually a template ([typed splice](/plans/template-language#typed-splice) keeps numbers numeric).
+
+| `op` | Meaning |
+|---|---|
+| `eq`, `ne` | equality on any JSON value |
+| `gt`, `lt`, `gte`, `lte` | numeric ordering |
+| `empty`, `not_empty` | arrays, strings, objects, null (`to` omitted) |
+| `contains` | substring, or array membership |
+
+## Body grammar (`then` / `else` / `do`)
+
+Either form:
+
+- **A single tool call** — `{tool_name, input}`, no id. Any catalog tool, including `plan__*` and `plan_and_execute`.
+- **An inline step list** — normal steps with ids, run in order, with same-branch/same-iteration dataflow. Body ids must not reuse top-level ids and are invisible outside the body.
+
+Bodies must not contain `decide`, `map`, or `reduce` (branches may contain `exit`; map/reduce bodies may not). For nested control flow, call a `plan__*` sub-plan — cycles are detected and nesting is capped at 8.
+
+## Step results of control steps
+
+| Step | Result shape |
+|---|---|
+| `exit` (not fired) | `{passed: true, verdict?, reason?}` |
+| `decide` | `{branch, verdict, reason, result}` — `result` is the branch's single-call result or its last step's result |
+| `map` | `{count, results: […]}` in input order |
+| `reduce` | `{count, result}` — the final accumulator |

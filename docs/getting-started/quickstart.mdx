@@ -7,7 +7,7 @@ import BinaryDownloads from "/shared/binary_downloads.mdx";
 
 ## The fastest path
 
-Grab a binary, scaffold a project, and hand the setup to your coding agent. A [skill](#let-your-agent-finish-the-setup) walks the agent through wiring a provider, adding tools, and drafting a first plan against your own data — then you review it in the [workbench](/using/plan-workbench) and run it. Prefer to do it by hand? The [manual path](#manual-setup) is right below.
+Grab a binary, scaffold a project, and hand the setup to your coding agent. A [skill](#let-your-agent-finish-the-setup) walks the agent through wiring a provider, adding tools, and drafting a first plan against your own data — then you review it in the [workbench](/workbench/plan-workbench) and run it. Prefer to do it by hand? The [manual path](#manual-setup) is right below.
 
 <Steps>
   <Step title="Install graph">
@@ -41,13 +41,17 @@ Grab a binary, scaffold a project, and hand the setup to your coding agent. A [s
   </Step>
 
   <Step title="Open it in the workbench">
-    Before you commit the plan, open it in the [workbench](/using/plan-workbench) — a dual-pane TUI for reviewing, tweaking, and test-running plans:
+    Before you commit the plan, open it in the [workbench](/workbench/plan-workbench) — a dual-pane TUI for reviewing, tweaking, and test-running plans:
 
     ```bash
     graph workbench plan project_status   # alias: graph wb plan
     ```
 
     The plan renders as a flowchart on the right, an agent sits on the left. Read each step, `v` to validate, `r` to run it, or `g` to step through with a debugger that pauses on every tool call and shows the exact input and result. Ask the agent to change a step in plain English — "add a step that filters to open issues" — and watch the draft update and re-validate. `Ctrl+S` writes it back to `./.graph/plans/`.
+
+    <Frame caption="A loaded plan in the workbench: chat agent left, step tree and detail right.">
+      <img src="/images/workbench/workbench-overview.svg" alt="A loaded plan in the workbench: chat agent left, step tree and detail right." />
+    </Frame>
   </Step>
 
   <Step title="Run your first plan">
@@ -97,19 +101,33 @@ Not using an agent? The whole path is a few commands.
     ```
   </Step>
 
-  <Step title="Probe with the workbench">
-    `graph ask` runs an agent loop over your whole tool catalog — the fast way to see what a tool returns and prototype a workflow before you freeze it into a plan:
+  <Step title="Probe the tools you'll build on">
+    Before writing a step, see each tool's input schema and *actual* output shape:
 
     ```bash
-    graph ask "What are the urgent issues in Linear right now?"
-    graph ask "Which of those touches production?" --thread   # continue the thread
+    graph tools show linear__list_issues
+    graph tools test linear__list_issues '{"priority":1,"limit":5}'
     ```
 
-    Every call here also teaches graph what each tool's output looks like (the [shape cache](/tools/shape-cache)), so exploration is never wasted. Details in [Chat & ask](/using/chat-and-ask).
+    Every probe also teaches graph what the tool returns (the [shape cache](/tools/shape-cache)), so the references you write next are grounded in real output — and the workbench's drafting agent gets smarter too.
   </Step>
 
-  <Step title="Freeze it into a plan">
-    Once an answer is worth repeating, capture it as a plan. [Authoring plans](/plans/authoring) walks through building one from scratch.
+  <Step title="Build the plan in the workbench">
+    Open a blank draft and describe the goal — the agent drafts the plan into the side pane, where you inspect, validate, and test-run it:
+
+    ```bash
+    graph workbench plan     # alias: graph wb plan
+    ```
+
+    Prefer to write the YAML yourself? [Authoring plans](/plans/authoring) builds one from scratch. Either way, `Ctrl+S` (or a save in the workbench) writes it to `./.graph/plans/`.
+  </Step>
+
+  <Step title="Run it headless">
+    ```bash
+    graph plan run project_status '{"project":"New Relic"}'
+    ```
+
+    Same contract as the fast path: the deliverable on stdout, progress on stderr, and a file you can commit, schedule, and wire into CI.
   </Step>
 </Steps>
 

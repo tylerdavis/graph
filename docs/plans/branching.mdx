@@ -4,7 +4,7 @@ description: "Fork a plan into one of two branches with a decide step"
 icon: "code-branch"
 ---
 
-A `decide` step forks the plan: it evaluates a gate — the same gate grammar as an [exit gate](/plans/escape-hatch), spelled `if`/`infer` — and runs the `then` branch when it holds, the `else` branch otherwise. Execution then rejoins the plan's normal step sequence. Where `exit` answers "should this plan stop?", `decide` answers "which action is correct next?" — update or create, escalate or summarize, notify or stay quiet.
+A `decide` step forks the plan: it evaluates a gate — the same gate grammar as an [exit gate](/plans/exit-gates), spelled `if`/`infer` — and runs the `then` branch when it holds, the `else` branch otherwise. Execution then rejoins the plan's normal step sequence. Where `exit` answers "should this plan stop?", `decide` answers "which action is correct next?" — update or create, escalate or summarize, notify or stay quiet.
 
 ```yaml
 steps:
@@ -32,9 +32,15 @@ steps:
     input: { entry: "took {{E1.branch}}: {{E1.result}}" }
 ```
 
+In the [workbench](/workbench/plan-workbench), a decide step renders as a `⑂` junction — the chosen branch's steps run under its colored guide, the other stays untouched:
+
+<Frame caption="A decide fork after a run down its then branch: the inline step list nests under the blue then head; the single-call else was never rendered.">
+  <img src="/images/workbench/branching-decide.svg" alt="A decide fork after a run down its then branch: the inline step list nests under the blue then head; the single-call else was never rendered." />
+</Frame>
+
 ## Gates
 
-Exactly one of `if` or `infer` is required — unlike `exit`, where omitting both means "unconditionally". The gate grammar is identical to [exit gates](/plans/escape-hatch) — `decide` spells the logical gate `if` where `exit` spells it `when`, because `if … then … else` reads as the fork it is. `if` is a logical comparison (`eq ne gt lt gte lte empty not_empty contains`, with [typed splice](/plans/template-language#typed-splice) keeping numbers numeric); `infer` is a yes/no question judged by the `judge` model role. An `if` gate costs zero inference; an `infer` gate costs one cheap judgment call.
+Exactly one of `if` or `infer` is required — unlike `exit`, where omitting both means "unconditionally". The gate grammar is identical to [exit gates](/plans/exit-gates) — `decide` spells the logical gate `if` where `exit` spells it `when`, because `if … then … else` reads as the fork it is. `if` is a logical comparison (`eq ne gt lt gte lte empty not_empty contains`, with [typed splice](/plans/template-language#typed-splice) keeping numbers numeric); `infer` is a yes/no question judged by the `judge` model role. An `if` gate costs zero inference; an `infer` gate costs one cheap judgment call.
 
 An inferred fork routes on judgment where no single comparison would do — here, whether a status update reads as blocked:
 
@@ -54,7 +60,7 @@ An inferred fork routes on judgment where no single comparison would do — here
         input: { entry: "on track" }
 ```
 
-The judgment is a forced-schema call returning `{verdict, reason}`; `then` runs only on a yes, and the model's reasoning is carried in the step result — `{{E2.reason}}` — for downstream steps and the finish to use. Point the `judge` role at a cheap model; it falls back to `default`. Add `model:` alongside `infer` to override the model for this one verdict — a `[models.named]` entry, a role name, or `default` (it may itself be a template); ignored without `infer`.
+`then` runs only on a yes, and the model's reasoning is carried in the step result — `{{E2.reason}}` — for downstream steps and the finish to use. The verdict mechanics — the forced `{verdict, reason}` schema, the `judge` role, and the per-gate `model:` override (which on `decide` may itself be a template) — are exactly those of [inferred exit gates](/plans/exit-gates#inferred-gates-infer).
 
 ## Branches
 
@@ -63,7 +69,7 @@ The judgment is a forced-schema call returning `{verdict, reason}`; `then` runs 
 - **A single tool call** — `{tool_name, input}`, no id. Any catalog tool works, including `plan__*` and `plan_and_execute`.
 - **An inline step list** — normal steps with ids. They run in authored order, and each may reference plan `input`, any earlier top-level step, and earlier steps *in the same branch*. Branch ids must not reuse top-level ids, and they are invisible outside the branch.
 
-Branches may contain [`exit`](/plans/escape-hatch) steps — a fired exit ends the **whole plan** from inside the branch (its `step` in the outcome carries the body path, e.g. `E4/then/bail`), and a passed gate lets the branch continue to its next step. Branches must not contain `decide`, [`map`, or `reduce`](/plans/iteration). For nested control flow, put it in a plan and call `plan__*` from the branch — cycle detection and the depth cap apply as usual, and an error-exit inside that sub-plan surfaces as a failure of the decide step.
+Branches may contain [`exit`](/plans/exit-gates) steps — a fired exit ends the **whole plan** from inside the branch (its `step` in the outcome carries the body path, e.g. `E4/then/bail`), and a passed gate lets the branch continue to its next step. Branches must not contain `decide`, [`map`, or `reduce`](/plans/iteration). For nested control flow, put it in a plan and call `plan__*` from the branch — cycle detection and the depth cap apply as usual, and an error-exit inside that sub-plan surfaces as a failure of the decide step.
 
 ## The step result
 
@@ -101,7 +107,7 @@ If both branches rendered eagerly, `{{E0.issues.0.id}}` would raise `EmptyData` 
 A failing branch call fails the decide step — attributed as `step E1 (decide)` with the branch and inner tool named in the message. Human-authored plans fail hard as always; planner-authored plans replan with that context.
 
 <Warning>
-Branch step results are scoped to the branch and discarded after the decide step completes. When a planner-authored plan replans past a decide failure, a re-authored decide **re-runs the branch from its first step** — including branch steps that succeeded before the failure. Keep branch steps idempotent (or route side-effecting sequences through a `plan__*` call guarded by its own exit gates) if duplicate execution would be harmful.
+Branch step results are scoped to the branch, so a replan past a decide failure re-runs the branch from its first step. Keep branch steps idempotent — see [the idempotency caveat](/plans/errors-and-replanning#plan_and_execute-replans).
 </Warning>
 
 Branch steps count in `steps_executed` — a decide with a two-step branch reports three executed steps (the decide plus two).

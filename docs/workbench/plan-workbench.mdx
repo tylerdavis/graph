@@ -1,0 +1,177 @@
+---
+title: "Plan workbench"
+description: "A dual-pane TUI for drafting, inspecting, and test-running plans"
+icon: "table-columns"
+---
+
+`graph workbench plan` (alias: `graph wb plan`) opens a full-screen IDE for plans: the chat agent on the left, the plan workspace on the right. Describe what you want in chat and the agent drafts the plan into the side pane; inspect its steps and context; then validate it, run it, or step through it with per-tool-call confirmation — all without leaving the terminal.
+
+```bash
+graph workbench plan                    # blank draft — build it via chat
+graph workbench plan sprint_analysis    # open a known plan by identifier
+graph wb plan ./drafts/report.yaml      # open a YAML file directly
+```
+
+The workbench needs an interactive terminal (it refuses to start otherwise); for scripting, use [`graph plan run`](/reference/cli#graph-plan).
+
+<Frame caption="pr_review loaded and valid: the chat agent on the left, the plan's step tree and detail pane on the right.">
+  <img src="/images/workbench/workbench-overview.svg" alt="pr_review loaded and valid: the chat agent on the left, the plan's step tree and detail pane on the right." />
+</Frame>
+
+## The layout
+
+**Chat (left)** is the same agent as `graph chat`, extended with workbench tools that cover every action on this page — the whole workbench is drivable conversationally. Multi-line pastes land as literal text (newlines stay newlines; nothing submits until you press Enter), and workbench chats are scratch sessions — they are not persisted as [threads](/using/threads).
+
+**Workspace (right)** has three tabs:
+
+| Tab | Contents |
+|---|---|
+| `1` plan | header (identifier, finish mode, validation state), the step list, and a detail pane showing the selected step's reasoning, input template, and — after a run — its rendered input and result JSON |
+| `2` context | the tool catalog and observed output shapes, exactly what the planner sees when drafting |
+| `3` run | the live transcript: step events, the streamed solver answer, and the final outcome |
+
+<Frame caption="The context tab: the namespaced catalog with read-only markers, and the selected tool's description and schemas in the detail pane.">
+  <img src="/images/workbench/context-tab.svg" alt="The context tab: the namespaced catalog with read-only markers, and the selected tool's description and schemas in the detail pane." />
+</Frame>
+
+The plan tab renders the whole plan as a `tree`-style flowchart: live status glyphs lead each row (`○` pending · `◐` running · `✓` ok · `✗` error · `⊘` skipped), the plan identifier is the root, steps fork off a gray trunk, and control steps carry their icon in the junction (`├─⑂` decide · `├─⟳` map · `├─∑` reduce · `├─ƒ` plan call · `└─⎋` exit). Decide's step-list branches nest under named `then`/`else` heads piping in blue/magenta; map/reduce bodies hang directly in cyan (iterations all land on the one structural row — the last item's status and result stick). Plans that finish with a solver or rendered output get a final `solver`/`output` row that runs live during synthesis and carries the streamed answer as its result.
+
+## Driving it from chat
+
+Every action maps to a `workbench__` tool the agent calls on your behalf:
+
+| Ask for… | Tools |
+|---|---|
+| browsing the catalog | `list_plans`, `show_plan` — read any plan's YAML **without touching the draft** |
+| loading a plan | `load_plan` — by identifier or file path; replaces the draft (guarded, below) |
+| drafting from a goal | `draft_plan` — for a fresh start or a wholesale re-draft |
+| precise edits | `update_metadata`, `add_step`, `update_step`, `delete_step` |
+| re-reading the draft | `get_plan` — rarely needed: the current draft is always in the agent's context |
+| validating | `validate_plan` |
+| running | `run_plan` — full or debug runs, with optional `breakpoints` |
+| saving | `save_plan` |
+| undo | `restore_draft` — one level; calling again redoes (same snapshot as the `u` key) |
+| project research | `read_file`, `grep`, `glob` — read-only, over the directory the workbench was started in |
+
+Every draft change shows up in the plan pane immediately and is validated automatically.
+
+### The draft is protected
+
+`load_plan` replaces the draft, so it **fails when the draft has unsaved changes** — the agent must pass an explicit `overwrite_draft: true`, which it may only do after you confirm discarding them. `restore_draft` (or the `u` key) undoes the last draft replacement.
+
+### Edits validate atomically
+
+For changes to an existing draft, the agent prefers the precise editing tools over re-drafting — each edit validates atomically, so sequential edits are the safer operation however complex the change. The rules:
+
+- `update_metadata` patches identifier / name / description / exemplars; steps are inserted appended or anchored `before`/`after` an id.
+- `update_step` patches a step's tool, input, or reasoning; its `newId` renames the step **and rewrites every downstream `{{id.*}}` reference** — templates keep working.
+- An edit is rejected — with the draft untouched — **only when it would introduce new validation problems** (duplicate id, forward reference, deleting a step others still read). Problems the plan already had never block an edit: an already-invalid draft stays editable, each successful edit reports the remaining pre-existing problems, and rejections list the problems the edit introduced separately from the pre-existing ones.
+- These edit top-level steps; `decide`/`map`/`reduce` body steps live inside the control step's input, so update that step.
+- There is no whole-plan replace tool — reshape the draft with the editing tools, or re-draft with `draft_plan`.
+
+### Drafting from a goal
+
+`draft_plan` hands your goal to [the planner](/plans/the-planner), which sees the full tool catalog, observed shapes, and the current draft. A goal that states a name ("named `the_goat`") sets the new draft's identifier and display name; otherwise both derive from the goal text. If the first draft fails validation, the workbench automatically sends it back to the planner once — as a draft under revision, with the problems as feedback; a draft that is still invalid after that is handed over anyway, its problems listed in the result (and still editable, per the rules above). Creating a new plan while an unrelated one is loaded passes `fresh: true`, so the result doesn't inherit the loaded plan's identity.
+
+With [`[planner].draft_strategy = "incremental"`](/reference/configuration#planner) (or `GRAPH_DRAFT_STRATEGY=incremental`), drafting articulates its progress live in the plan tab instead of a single planning spinner: the outline appears first as dimmed `○` placeholder rows, steps then materialize one at a time — a `◐` animated row for the step being drafted, turning into a `✓` row once it passes static validation, with a `(retry n/3)` suffix and the problems in the detail pane when it doesn't. The draft publishes exactly once, when drafting completes — and if a step exhausts its retries, the valid prefix is published (marked unsaved) and the agent is told to finish it with the editing tools instead of redrafting.
+
+<Frame caption="Incremental drafting mid-flight: two steps accepted, the third being drafted, the outline's last stage still pending.">
+  <img src="/images/workbench/drafting-overlay.svg" alt="Incremental drafting mid-flight: two steps accepted, the third being drafted, the outline's last stage still pending." />
+</Frame>
+
+### Workbench tools stay out of plans
+
+All `workbench__` tools are agent-side only — they are not runtime tools, and a plan step can never call one. `validate_plan` resolves every step tool against the runtime catalog the plan will actually execute with, which deliberately excludes the `workbench__*` tools themselves: a plan step naming one is rejected outright. The research tools (`read_file`/`grep`/`glob`) respect `.gitignore`, skip `.git` and binaries, reject paths outside the launch directory, and are deliberately absent from the plan catalog, `graph tools list`, and `graph chat`.
+
+### Long turns don't get cut off mid-repair
+
+A single agent turn is bounded by [`max_agent_iterations`](/reference/configuration), but in the workbench that budget counts **consecutive iterations with no successful edit** rather than the whole turn: each landed edit resets the counter. A long fix-forward loop — draft, validate, run, read the failure, patch, re-run — keeps its budget as long as it's making real changes; a turn that spins without editing anything still stops, keeping the partial work. Send **continue** to resume it.
+
+## Running plans
+
+Every run mode is available from the keyboard or by asking the agent (`run_plan`):
+
+- `v` — validate: full template/reference/control-step checking plus catalog resolution of every step tool, with every problem listed in the plan tab.
+- `r` — full run, exactly like `graph plan run` — including its refusal to start when a step tool doesn't resolve against the catalog.
+- `g` — **debug run**: the debugger described below.
+
+Plans with a required `input_schema` open a prefilled JSON editor before the run starts, and while anything executes the status bar shows a live indicator with the in-flight call and elapsed time — inference steps don't look like dead air. When a run ends on a fired [exit gate](/plans/exit-gates), the steps and finish it pre-empted show `⊘` skipped — never a completed `✓` for a solver that didn't run.
+
+<Frame caption="The run tab after a solver plan completes: the step transcript, the streamed answer, and the outcome line.">
+  <img src="/images/workbench/run-tab.svg" alt="The run tab after a solver plan completes: the step transcript, the streamed answer, and the outcome line." />
+</Frame>
+
+The agent can start any of these, and `run_plan` accepts `breakpoints` (top-level step ids, implies a debug run) — but **gated runs always pause for *your* y/s/a decision on every tool call**: the agent starts the run and cannot approve its side effects.
+
+## Debugging plans
+
+A debug run (`g`) works like a debugger over plan execution. Pauses are **non-modal**: the workspace stays fully navigable — switch tabs, browse steps and their results with `j`/`k` — while the run waits.
+
+<Frame caption="A gated pr_review run paused at a breakpoint on E5 — steps E0–E4 executed, the debug panel showing the rendered input about to be sent.">
+  <img src="/images/workbench/pr-review-debug.svg" alt="A gated pr_review run paused at a breakpoint on E5 — steps E0–E4 executed, the debug panel showing the rendered input about to be sent." />
+</Frame>
+
+**Breakpoints.** `b` toggles a breakpoint on the selected step (a red `●` in the gutter), any time, including mid-run. With breakpoints set, `g` runs freely until one is hit; with none, it pauses before the first call. A breakpoint on a `map`/`decide` step also pauses each of its body calls (like a breakpoint on a loop line) — pressing `b` on a body sub-step row sets exactly that, on the owning control step. Nested plans have their own step namespace — breakpoint the `plan__*` step to pause before entering, then step through its calls.
+
+**The debug panel.** At a pause, the plan tab auto-selects the paused call's row — the body sub-step itself when the pause is inside a `decide`/`map`/`reduce` — and the detail pane shows the debugger's view: the paused position and call stack, the fully rendered input about to be sent, and the **scope** — everything a template can read at this point: `input`, every prior step result, and inside bodies the `item`/`index`/`accumulator` pseudo-roots. One compact line per root; select any step row for its full JSON.
+
+**Decisions** (shown in the panel title):
+
+- `n` / `Enter` — next step: make this call, pause at the next
+- `c` — continue: run to the next breakpoint (or failing call)
+- `s` — skip: a JSON editor opens and the value you submit becomes the step's result, exactly as if the tool had returned it — downstream templates consume it
+- `a` — abort; steps already executed keep their results in the plan tab
+
+**Break on exception.** A failing tool call pauses the run — even mid-continue — showing the error in the debug panel. `s` injects a replacement result and the run continues as if the call had succeeded; `n` lets the error propagate (the run fails as it would have); `a` aborts. When a run aborts this way, the result the agent receives carries that step's `error` — the failing tool's own output — so the agent can troubleshoot the failure rather than guess at it.
+
+**The inject editor** explains itself: a header says what the JSON becomes, where the prefill came from (the tool's declared output example → an observed example → a skeleton synthesized from its `output_schema` → empty), and — the part that matters — **which paths downstream templates read** from this step, so you know exactly what fields the value must contain. `Ctrl+S` submits; `Esc` returns to the pause; the hints stay visible alongside any parse error.
+
+Control-step *evaluation* is never gated — `exit`/`decide` gates (including `infer` judge calls) and `map`/`reduce` orchestration are read-only engine computation; their side effects are the body calls, which are. While paused, the exit controls (`q`, `Ctrl+C`) abort the run — press again once it stops to quit; run keys are blocked until the pause is decided, and the chat input is inert. `?` still opens help, and the workspace scrolls and navigates normally.
+
+## Saving
+
+`Ctrl+S` writes the draft as YAML — back to the file it was loaded from, or to `<first [plans].paths dir>/<identifier>.yaml` for new drafts (it refuses to overwrite a file it didn't load). The loaded-file target is tied to the plan's identity: changing the draft's identifier (via `update_metadata` or a load) drops it, so the next save creates a new file instead of overwriting the old plan — and as a backstop, a save never writes over a file whose `identifier` doesn't match the draft's. The status bar shows an `[unsaved]` marker while the draft is dirty, and quitting with unsaved changes asks first.
+
+## Debug logging
+
+The workbench owns the terminal, so its diagnostics go to a log file instead of stderr: `<data_dir>/workbench.log` by default, append-mode across sessions (set `[workbench].log_path` in [config](/reference/configuration#workbench), or `GRAPH_WORKBENCH_LOG` to override both). The `?` help overlay shows the active path. Tail it from another terminal to watch the workbench think:
+
+```nushell
+tail -f ~/.local/share/graph/workbench.log
+```
+
+Logging is always on, with the default filter (`warn,workbench=debug`) recording the interesting events: engine messages arriving at the UI, reducer effects, mode transitions, gate pauses with the decision taken, breakpoint syncs, and agent tool invocations with durations. `-v` raises the rest of the stack to info; `-vv` adds trace-level workbench noise (every keypress, stream deltas) — the level for debugging key routing; `GRAPH_LOG` (a tracing filter string) overrides the filter entirely, e.g. `GRAPH_LOG=workbench=trace`.
+
+## Keys
+
+| Key | Where | Action |
+|---|---|---|
+| `Tab` | anywhere | toggle focus chat ↔ workspace |
+| `1` / `2` / `3` | workspace | switch tab (`Alt+1/2/3` from anywhere, even mid-typing) |
+| `Enter` | chat | send (`Alt+Enter` inserts a newline; pasted newlines never submit) |
+| `j` / `k` | workspace | select a step or tool |
+| `PgUp` / `PgDn` | — | scroll the focused pane — chat, detail, debug, or run (a scrollbar appears when content overflows) |
+| `v` / `r` / `g` | workspace | validate / run / debug run |
+| `b` | plan tab | toggle breakpoint on the selected step |
+| `u` | workspace | undo the last draft replacement (again to redo) |
+| `n` / `Enter` | paused | next step — proceed this call, pause at the next |
+| `c` | paused | continue to the next breakpoint or failing call |
+| `s` | paused | skip / inject (on error: replace the failed result) |
+| `a` | paused | abort the run |
+| `Ctrl+S` | anywhere | save the draft (in an editor: submit) |
+| `Esc` | editor | cancel (returns to the pause when injecting) |
+| `?` | workspace | help overlay (works while paused too; any key closes it) |
+| `q`, `Ctrl+C` | — | quit (confirms when running or unsaved; while paused: abort the run) |
+
+## Mouse
+
+The workbench also takes the mouse — the reflex actions, mapped to the same state the keys drive:
+
+| Action | Effect |
+|---|---|
+| click a pane | focus it (chat or workspace) |
+| click a workspace tab | switch to it (`1 plan` / `2 context` / `3 run`) |
+| click a step or tool row | select it (and focus the workspace) |
+| scroll wheel | scroll the pane under the cursor — chat scrollback, the steps/tool list view, or the workspace body (the list scrolls the view, leaving the selection put — its highlight disappears while scrolled out of view and returns when `j`/`k` bring it back) |
+
+A left click anywhere closes the help overlay, and the mouse is inert while an editor modal is open (the keyboard owns it). Capturing the mouse means the terminal's own click-drag text selection is suspended — hold **Shift** (or **Option** on macOS) to select and copy text as usual.

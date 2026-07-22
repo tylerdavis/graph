@@ -1,0 +1,21 @@
+# The hero shot: pr_review loaded and valid, the agent describing it.
+# Used at the top of using/plan-workbench.mdx, in the quickstart's
+# "Open it in the workbench" step, and in plans/authoring.mdx.
+name: workbench-overview
+title: graph workbench — pr_review
+plan: .graph/plans/pr_review.yaml
+grid: { cols: 120, rows: 36 }
+
+chat: "what does this plan do?"
+
+llm:
+  - text: >-
+      pr_review is a silent-finish plan in 8 steps: it fetches the PR
+      metadata and full diff, exits early when the diff is empty, runs one
+      rubric'd review call with structured output, then anchors the
+      findings as inline diff comments and posts a summary table linking
+      to them. Repeated runs refresh the same comments in place. Press r
+      to run it, or g for a gated run that pauses before each call.
+
+capture:
+  at: loaded

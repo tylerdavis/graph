@@ -2,7 +2,8 @@
 **/*.rs.bk
 .DS_Store
 # Claude Code session state (worktrees, settings) — local tooling, not code.
-/.claude/
+/.claude/*
+!/.claude/skills/
 # .graph/ carries repo config, plans, and tools for CI; everything else
 # under it (embedded DB state, scratch) stays ignored.
 /.graph/*

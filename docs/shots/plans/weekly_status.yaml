@@ -1,0 +1,49 @@
+# Docs-screenshot demo plan (docs/shots/hero.yaml): the introduction's
+# hero — a report plan run end to end in the workbench, showing an exit
+# gate, a map fan-out, and a solver finish in one tree. Not shipped to
+# users.
+identifier: weekly_status
+name: Weekly status
+description: The Monday status report — same report, every Monday.
+input_schema:
+  type: object
+  required: [since]
+  properties:
+    since: { type: string, description: "The ref to report from (last week's tag)" }
+steps:
+  - id: E0
+    tool_name: builtin__git_changed_files
+    input: { base: "{{input.since}}", head: "HEAD", prefix: "" }
+    reasoning: Everything that changed since the last report.
+  - id: E1
+    tool_name: exit
+    input:
+      when: { value: "{{E0.count}}", op: eq, to: 0 }
+      status: success
+      message: "quiet week — nothing to report since {{input.since}}"
+    reasoning: A quiet week needs no diff and no LLM call.
+  - id: E2
+    tool_name: builtin__git_diff
+    input:
+      base: "{{input.since}}"
+      head: "HEAD"
+      paths: "."
+      exclude: "Cargo.lock"
+      max_bytes: 200000
+    reasoning: The full change, within token budget.
+  - id: E3
+    tool_name: map
+    input:
+      over: "{{E0.files}}"
+      do:
+        tool_name: builtin__git_file
+        input: { path: "{{item}}", ref: "HEAD" }
+    reasoning: Read each changed file — context the diff alone can't give.
+solver:
+  query_to_answer: >-
+    Write the weekly status since {{input.since}}: what shipped, what it
+    means for users, and anything risky. Group by area; keep it honest.
+  data:
+    files: "{{E0.files}}"
+    diff: "{{E2.text}}"
+    contents: "{{E3.results}}"

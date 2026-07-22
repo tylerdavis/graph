@@ -30,4 +30,4 @@ The cache is read fresh at each planning attempt — a shape observed earlier in
 
 ## Backend caveat
 
-The cache lives in the storage backend. With the default `file` backend it accumulates across runs; with `GRAPH_STORAGE=memory` (CI mode) each process starts cold and learns only within its own run — one reason a future centralized backend is attractive for CI fleets. See [Storage](/architecture/storage).
+The cache lives in the storage backend. With the default `file` backend it accumulates across runs; with `GRAPH_STORAGE=memory` (the ephemeral backend for CI) each process starts cold and learns only within its own run — one reason a future centralized backend is attractive for CI fleets. See [Storage](/architecture/storage).

@@ -4,6 +4,7 @@ description: "Run a body of steps once per item of a list with map and reduce"
 icon: "repeat"
 ---
 
+
 A `map` step runs the same body once per item of a list; a `reduce` step folds a list into a single value. Both take `over` (anything that renders to an array) and `do` (the same body grammar as a [`decide` branch](/plans/branching#branches): a single tool call or an inline step list). Where `decide` answers "which action is correct next?", `map` and `reduce` answer "do this for each of these" — update every stale issue, summarize each incident, roll a page of results into one report.
 
 ```yaml
@@ -35,6 +36,12 @@ steps:
     input: { entry: "updated {{E1.count}}: {{E2.result}}" }
 ```
 
+In the [workbench](/workbench/plan-workbench), a map renders as a `⟳` junction with one cyan body row — every iteration lands on that row, like a breakpoint on a loop line:
+
+<Frame caption="A map paused mid-run by a loop-line breakpoint: the first iteration done, the second awaiting the debugger's decision on the one structural body row.">
+  <img src="/images/workbench/iteration-map.svg" alt="A map paused mid-run by a loop-line breakpoint: the first iteration done, the second awaiting the debugger's decision on the one structural body row." />
+</Frame>
+
 ## The body and its scope
 
 Inside `do`, two pseudo-roots exist per item: `{{item}}` (the element) and `{{index}}` (0-based position). A `reduce` body gets a third, `{{accumulator}}` — the running value, starting at `initial` — and each run's result becomes the next `{{accumulator}}`. The body may also reference plan `input` and any earlier top-level step, exactly like a decide branch.
@@ -53,7 +60,7 @@ Bodies must not contain `exit`, `decide`, `map`, or `reduce`. For nested control
 { "count": 3, "result": … }
 ```
 
-An empty `over` array is not an error: `map` yields `{count: 0, results: []}` and `reduce` yields `initial` untouched — the plan continues. Guard with an [`exit` gate](/plans/escape-hatch) when empty input should stop the plan instead. A non-array `over` is a plan defect (hard failure in your plans, replan for the planner).
+An empty `over` array is not an error: `map` yields `{count: 0, results: []}` and `reduce` yields `initial` untouched — the plan continues. Guard with an [`exit` gate](/plans/exit-gates) when empty input should stop the plan instead. A non-array `over` is a plan defect (hard failure in your plans, replan for the planner).
 
 ## Only `over` renders up front
 
@@ -79,7 +86,7 @@ Two things to know when raising `concurrency`:
 A failing item fails the whole step — attributed as `step E1 (map)` with the item index and inner tool named in the message (`` `do` item 3 (linear__update_issue): … ``). Human-authored plans fail hard as always; planner-authored plans replan with that context.
 
 <Warning>
-Item results are scoped to the step and discarded on failure. When a planner-authored plan replans past a map failure, a re-authored map **re-runs from item 0** — including items that succeeded before the failure. Keep bodies idempotent (or route side-effecting sequences through a `plan__*` call guarded by its own exit gates) if duplicate execution would be harmful.
+Item results are scoped to the step, so a replan past a map failure re-runs from item 0. Keep bodies idempotent — see [the idempotency caveat](/plans/errors-and-replanning#plan_and_execute-replans).
 </Warning>
 
 Body steps count in `steps_executed` — a map over 3 items with a two-step body reports seven executed steps (the map plus six).

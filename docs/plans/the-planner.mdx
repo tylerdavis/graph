@@ -1,0 +1,55 @@
+---
+title: "The planner"
+description: "plan_and_execute: LLM-authored plans for novel tasks"
+icon: "wand-magic-sparkles"
+---
+
+`plan_and_execute` is the third way a plan runs: the LLM **planner** authors a plan on the fly for a novel multi-step task, and the same pipeline executes it — same template language, same control steps, same finish modes. It exists so that improvised work still gets plan-shaped execution: typed dataflow between steps instead of the agent eyeballing intermediate results, and a visible artifact you can inspect afterwards.
+
+```
+→ plan_and_execute {"query":"which of last sprint's bugs are still open?"}
+  ✎ planning…
+  → linear__list_cycles …
+  → linear__list_issues …
+  ✎ synthesizing answer…
+```
+
+It appears in the catalog as a bare reserved tool (alongside the namespaced `plan__*` tools), so it's callable from chat, from a plan step, or directly. In chat, the [router](/using/tool-selection) reaches for it when a task is multi-step and no authored plan matches.
+
+## What the planner sees
+
+The `planner`-role model drafts against:
+
+- **The full tool catalog** — every tool's description and input schema. Descriptions and exemplars are routing signals here too: they steer which tools the planner picks.
+- **Output shapes** — a declared output schema when one exists (MCP-provided, a `tool_overrides` entry, or a user tool's `output_schema`), otherwise the [shape cache](/tools/shape-cache)'s observed shape, marked as empirical. The cache is read fresh at every planning attempt, so a shape observed earlier in the same run is already available to the next plan.
+- **Your context** — the `[user]` config section, same as the chat agent.
+
+With no shape at all for a tool, the planner is instructed to use whole-result references (`{{E0}}`) or to stop and continue planning after real results exist — cold caches degrade, they don't break.
+
+## What the planner is instructed to do
+
+The planner has the full step vocabulary — [exit gates](/plans/exit-gates), [decide](/plans/branching), [map/reduce](/plans/iteration), and `plan__*` composition — plus standing instructions that shape its drafts:
+
+- **Exit gracefully rather than fabricate.** When data comes up empty, draft an `exit` with an honest message instead of inventing results.
+- **Gate check-shaped plans.** Validations and assertions end in explicit gated exits, not solver prose.
+- **Infer per item, not per list.** Inference over a list becomes a `map` body calling [`builtin__infer`](/tools/builtins#builtin-infer) with `{{item}}`, and when [named models](/models/models-and-providers#named-models) are configured, their descriptions steer each call to the smallest adequate model.
+
+## Replanning
+
+Planner-authored plans are drafts, so defects trigger a **replan** instead of a hard failure: the error — including, for bad data references, a digest of the keys that actually exist — feeds back to the planner, which revises the plan. Executed steps are preserved and never re-run; only the broken tail is replaced. After the configured attempts (`[settings].planning_attempts`, default 2), it degrades to an honest error summary.
+
+`EmptyData` never triggers a replan — a search that found nothing is an answer, not a defect, and replanning can't conjure data. The full policy, including why *your* plans never replan, is in [Errors & replanning](/plans/errors-and-replanning).
+
+## Cost
+
+A chat turn through `plan_and_execute` is 4+ inference calls: the agent (deciding to plan), the planner, the solver, and the agent again (reading the report) — plus one planner call per replan. The plan's steps themselves are still zero-inference. When the workflow is worth keeping, freeze it: an authored plan runs the same steps for 1 call (solver) or 0 ([output/silent](/plans/finish-modes)), and [never replans](/plans/errors-and-replanning). See the full [cost table](/reference/scripting-contract#inference-cost-by-invocation).
+
+## Drafting without executing
+
+The same planner also powers **draft-only** planning: the [workbench](/workbench/plan-workbench)'s `workbench__draft_plan` produces a plan for you to review instead of executing it, with validation feedback looped back to the planner for one automatic revision.
+
+How a draft is produced is configurable via [`[planner].draft_strategy`](/reference/configuration#planner) (or `GRAPH_DRAFT_STRATEGY`): `oneshot` (default) drafts the whole plan in one structured call; `incremental` drafts an outline first, then generates steps one at a time, each statically validated before acceptance and retried with the problems as feedback.
+
+<Frame caption="The planner drafting incrementally in the workbench: two steps accepted, the third being drafted, the outline's last stage still pending.">
+  <img src="/images/workbench/drafting-overlay.svg" alt="The planner drafting incrementally in the workbench: two steps accepted, the third being drafted, the outline's last stage still pending." />
+</Frame>

@@ -30,9 +30,16 @@ input_schema:
     count: { type: integer }
 ```
 
-- `args` are templated from the input (`{{input.*}}` only — step references don't exist inside a tool).
-- `env` values support `${VAR}` from the parent environment; `cwd` and `timeout_secs` (default 60) are available.
-- `output: json` parses stdout; unparseable output, non-zero exit (with stderr captured), and timeouts all return as structured tool errors.
+| Field | Required | Notes |
+|---|---|---|
+| `command` | yes | the executable |
+| `args` | no | templated from the input (`{{input.*}}` only — step references don't exist inside a tool) |
+| `env` | no | extra environment; values support `${VAR}` from the parent environment |
+| `cwd` | no | working directory for the process |
+| `timeout_secs` | no | kill-after budget; default 60 |
+| `output` | no | `text` (default: stdout wrapped as `{"text": …}`) or `json` (stdout parsed as JSON) |
+
+Unparseable `json` output, non-zero exit (with stderr captured), and timeouts all return as structured tool errors.
 
 <Warning>
 Exec tools are **arbitrary code execution, by design** — you author them, graph runs them. Treat the tools directory like you treat your shell profile.
@@ -57,7 +64,7 @@ output_schema:               # optional → enforced structured output
     keywords: { type: array, items: { type: string } }
 ```
 
-With an `output_schema`, the result is validated JSON; without one, `{"text": …}`. Useful as a cheap sub-task inside plans — classify, extract, reword — with `model` controlling cost: a [role name](/reference/configuration#models--per-role-assignment) (`chat` default, with the usual fallback to `default`) or a [named model](/reference/configuration#modelsnamed--named-models) like `nano`. An unknown name fails the call with the configured names listed.
+With an `output_schema`, the result is validated JSON; without one, `{"text": …}`. Useful as a cheap sub-task inside plans — classify, extract, reword — with `model` controlling cost: a [role name](/models/models-and-providers#roles) (`chat` default, with the usual fallback to `default`) or a [named model](/models/models-and-providers#named-models) like `nano`. An unknown name fails the call with the configured names listed.
 
 ## `reshape` — project data into a new shape
 

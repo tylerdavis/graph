@@ -1,10 +1,10 @@
 ---
 title: "Core concepts"
-description: "Plans, the tool catalog, the shape cache, and threads"
+description: "Plans, the tool catalog, the shape cache, the workbench, and threads"
 icon: "lightbulb"
 ---
 
-Five ideas explain almost everything graph does.
+Six ideas explain almost everything graph does.
 
 ## 1. Plans: the execution engine
 
@@ -22,9 +22,9 @@ steps:
 
 `{{E0.teams.0.name}}` is the [template language](/plans/template-language) — typed dataflow between steps, zero inference. Inference appears only where the plan puts it: a [prompt tool](/tools/user-defined) step for a sub-task, and the [finish](/plans/finish-modes) — a solver report, structured JSON, or nothing.
 
-Control flow lives in four executor-intercepted steps: an [`exit` gate](/plans/escape-hatch) ends the plan early with a success or error state, a [`decide` step](/plans/branching) forks into one of two branches on the same gates — both gated logically (`when` on exit, `if` on decide) or by a cheap model judgment (`infer`) — and [`map`/`reduce` steps](/plans/iteration) run a body once per item of a list, collecting the results or folding them into one value.
+Control flow lives in four executor-intercepted steps: an [`exit` gate](/plans/exit-gates) ends the plan early with a success or error state, a [`decide` step](/plans/branching) forks into one of two branches on the same gates — both gated logically (`when` on exit, `if` on decide) or by a cheap model judgment (`infer`) — and [`map`/`reduce` steps](/plans/iteration) run a body once per item of a list, collecting the results or folding them into one value.
 
-Plans run three ways: directly (`graph plan run`), as a tool anything else can invoke, or authored *by* the LLM planner inside `plan_and_execute`.
+Plans run three ways: directly (`graph plan run`), as a tool anything else can invoke, or authored *by* [the LLM planner](/plans/the-planner) inside `plan_and_execute`.
 
 The key behavioral difference: **human-authored plans never replan**. If a step fails, you get a structured error — the plan you wrote is the plan that runs. `plan_and_execute` plans are LLM-authored, so defects there trigger a replan with the error fed back. Details in [Errors & replanning](/plans/errors-and-replanning).
 
@@ -35,25 +35,28 @@ Everything a plan step or the agent can do is a **tool**, and every tool lives i
 | Prefix | Source | Example |
 |---|---|---|
 | `<server>__` | [MCP servers](/tools/mcp-servers) from `[mcp.*]` config | `linear__list_issues` |
-| `user__` | [User-defined tools](/tools/user-defined) (exec / prompt YAML) | `user__git_log` |
+| `user__` | [User-defined tools](/tools/user-defined) (exec / prompt / reshape YAML) | `user__git_log` |
+| `builtin__` | [Bundled tool packs](/tools/builtins) compiled into the binary | `builtin__infer` |
 | `plan__` | One per [plan document](/plans/overview) | `plan__project_status` |
-| — | `plan_and_execute`: on-the-fly planning for novel multi-step tasks | |
+| — | [`plan_and_execute`](/plans/the-planner): on-the-fly planning for novel multi-step tasks | |
 
-This is what makes plans composable: authoring a plan *adds a tool to the catalog*, and a plan's steps draw from the same catalog — MCP tools, wrapped CLIs, saved queries, prompt tools, **and other plans**. A `plan__*` step invokes a whole sub-plan and receives its output as the step result (cycles are detected; nesting is bounded).
-
-`graph tools list` shows the whole catalog; `graph tools test <name> '{…}'` invokes any tool directly.
+This is what makes plans composable: authoring a plan *adds a tool to the catalog*, and a plan's steps draw from that same catalog — including other plans. The [composition rules](/tools/overview#composition-rules) and the commands for inspecting and invoking the catalog live in [The tool catalog](/tools/overview).
 
 ## 3. The shape cache
 
 MCP tools rarely declare what their output looks like — but the planner needs to know, or it can't write `{{E0.teams.0.name}}`. So graph **learns**: every successful tool call records an inferred schema and example of that tool's output. The planner reads this cache at planning time, which means every probe and every chat turn makes `plan_and_execute` author better plans. See [The shape cache](/tools/shape-cache).
 
-## 4. The agent loop: the workbench
+## 4. The workbench
+
+Plans have a dedicated review surface: `graph workbench plan` (alias `graph wb plan`), a dual-pane TUI. The chat agent drafts and edits the plan in a side pane while you inspect its steps, validate on every change, and run it under a debugger that pauses before each tool call — so you can trust a plan's writes before you commit it. Details in [Workbench](/workbench/plan-workbench).
+
+## 5. The agent loop
 
 `graph ask` and `graph chat` run a standard tool-calling loop over the catalog: your message goes to the model, tool calls execute (in parallel within a round), results feed back, and the loop continues until the model answers in text. Plans are just tools here — the agent calls `plan__sprint_analysis` the same way it calls `linear__list_issues`.
 
-Use it as the workbench: probe tools, prototype a workflow conversationally, seed the shape cache — then freeze what works into a plan for anything you'll run twice.
+Use it to prototype: probe tools, sketch a workflow conversationally, seed the shape cache — then freeze what works into a plan for anything you'll run twice.
 
-## 5. Threads
+## 6. Threads
 
 Every `ask` and `chat` turn persists to a **thread** under the data directory — messages, tool calls, and results.
 

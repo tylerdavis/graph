@@ -1,0 +1,10 @@
+# The context tab: the tool catalog as the planner sees it, with a
+# tool's schema in the detail pane. Used in using/plan-workbench.mdx.
+name: context-tab
+title: graph workbench — the context tab
+plan: .graph/plans/pr_review.yaml
+grid: { cols: 120, rows: 36 }
+
+capture:
+  at: loaded
+  keys: [tab, "2", j, j]
