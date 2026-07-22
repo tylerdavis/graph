@@ -1,0 +1,62 @@
+# The introduction's hero: a report plan run end to end — exit gate
+# passed, map fanned out, solver report streamed — captured on the plan
+# tab with the report in the detail pane. Used at the top of
+# getting-started/introduction.mdx.
+name: hero
+title: graph workbench — weekly_status
+plan: docs/shots/plans/weekly_status.yaml
+grid: { cols: 120, rows: 36 }
+
+chat: "run the weekly status since v0.8.0"
+
+llm:
+  - call: workbench__run_plan
+    input:
+      input: { since: "v0.8.0" }
+  - text: |-
+      # Week of Jul 14 — shipped
+
+      **Storage.** Whole-file writes now go through temp-file+rename, closing
+      a torn-write window under concurrent processes. No API change; covered
+      by the existing store tests.
+
+      **Pipeline.** Step failures now name the step, tool, and available
+      keys — the error a plan author actually needs.
+
+      **Docs & CI.** The storage architecture page matches the new write
+      path, and CI caches rustc output across runs (~40% faster).
+
+      **Risk.** The rename path assumes a local filesystem — NFS data dirs
+      were already unsupported; now documented.
+  - text: >-
+      Done — same steps, same order, every Monday. The gate stayed open
+      (four files changed), the map read every changed file, and the solver
+      wrote the report from the collected data — it's streaming on the run
+      tab. On a quiet week the gate exits before a single LLM call.
+
+tools:
+  builtin__git_changed_files:
+    - files:
+        - crates/graph-store/src/file.rs
+        - crates/graph-core/src/pipeline/mod.rs
+        - docs/architecture/storage.mdx
+        - .github/workflows/ci.yaml
+      count: 4
+  builtin__git_diff:
+    - text: |
+        diff --git a/crates/graph-store/src/file.rs b/crates/graph-store/src/file.rs
+        @@ -142,9 +142,14 @@ impl FileStore {
+        -    fs::write(&path, payload)?;
+        +    let tmp = path.with_extension("tmp");
+        +    fs::write(&tmp, payload)?;
+        +    fs::rename(&tmp, &path)?;
+  builtin__git_file:
+    - text: "//! Plain-file storage: whole files write via temp-file+rename …"
+    - text: "//! The plan pipeline: validate, run steps sequentially, finish …"
+    - text: "# Storage — plain files by default, abstracted for other backends …"
+    - text: "name: ci\non: [push, pull_request]\njobs: …"
+
+capture:
+  at: finished
+  keys: [tab, "1", j, j, j, j]
+  turn_seconds: 9.4

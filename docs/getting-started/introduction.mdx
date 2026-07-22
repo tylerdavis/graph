@@ -6,9 +6,9 @@ icon: "hand-wave"
 
 **graph** is a command-line workflow engine for AI-augmented operations, CI, automation, and ETL. You describe a workflow as a **plan** — a small YAML file that chains tool calls with typed dataflow between steps and LLM inference exactly where you place it. graph runs that plan the same way every time: same steps, same order, on your laptop, on cron, or in CI.
 
-```bash
-graph plan run project_status '{"project":"New Relic to AWS Migration"}'
-```
+<Frame caption="A report plan run end to end in the workbench: an exit gate for the quiet weeks, a per-file map, and the solver's report — the same steps in the same order, every Monday.">
+  <img src="/images/workbench/hero.svg" alt="The workbench after a completed weekly_status run: the chat agent on the left, the fully-executed step tree with exit-gate, map, and solver rows on the right, and the map's dataflow template in the detail pane." />
+</Frame>
 
 An agent gives you a different answer every run. A plan is an artifact — versioned in a repo, reviewed in a PR, and cheap enough to schedule. That is the difference between a demo and a workflow you can run a thousand times.
 

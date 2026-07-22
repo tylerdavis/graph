@@ -25,3 +25,7 @@ are repo documentation, not site pages.
 Regeneration is byte-identical, so a diff in `docs/images/workbench/`
 after `mise run shots` means rendering behavior changed — review it like
 any code change.
+
+For the full authoring guide — spec reference, inspection workflow, and
+the harness's sharp edges — see the repo skill at
+`.claude/skills/workbench-shots/SKILL.md`.
