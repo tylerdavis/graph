@@ -1,13 +1,13 @@
 ---
 title: "CI checks"
-description: "Merge gates and PR review as plans, annotated"
+description: "Adapt and improve your CI pipelines with ease"
 icon: "badge-check"
 ---
 
 This repo dogfoods graph in its own pull-request checks: a **docs-drift gate** (an inferred exit gate as a merge check) and a **specialized reviewer** (structured findings posted as a PR comment by the plan itself). Every piece ships in this repo — the plans in `./.graph/plans/`, the rubric tool in `./.graph/tools/`, the workflow in `.github/workflows/graph-checks.yaml` — and every PR against graph runs them.
 
 <Tip>
-  To replicate this setup in your own repository, hand the work to your coding agent. 
+  To replicate this setup in your own repository, hand the work to your coding agent.
 
   ```shellscript
   npx skills add tylerdavis/graph
@@ -157,7 +157,7 @@ steps:
 Before trusting a plan like this with write access, step through it on a real PR in the [workbench](/workbench/plan-workbench) — a breakpoint on the posting steps shows exactly what would be sent:
 
 <Frame caption="A gated pr_review run paused at a breakpoint on E5 — steps E0–E4 executed, the debug panel showing the rendered input about to be sent.">
-  <img src="/images/workbench/pr-review-debug.svg" alt="A gated pr_review run paused at a breakpoint on E5 — steps E0–E4 executed, the debug panel showing the rendered input about to be sent." />
+  ![A gated pr\_review run paused at a breakpoint on E5 — steps E0–E4 executed, the debug panel showing the rendered input about to be sent.](/images/workbench/pr-review-debug.svg)
 </Frame>
 
 **Lessons:**
@@ -168,7 +168,7 @@ Before trusting a plan like this with write access, step through it on a real PR
 - **Review the whole diff.** The diff is scoped to nothing (`paths: "."`) minus generated files — an early version reviewed only `crates/` and `docs/`, which blinded it to the highest-leverage changes in an infra PR: workflows, plans, and the exec tools they run.
 - **Ground absence claims in the complete file list, never the diff.** The diff is byte-capped and git orders hunks by path, so on a big PR the `docs/` hunks are exactly what falls off the end — an early version reported "docs not updated" false positives on a PR whose docs edits sat past the truncation point. The fix is layered: `git_changed_files` (E1) feeds the reviewer a complete, never-truncated file list; the rubric judges docs-parity and test-parity only from that list; `git_diff` appends a visible `[diff truncated: …]` marker when it cuts; and the prompt bans "not shown in the diff" as evidence — a finding must cite something the reviewer can actually see.
 - **Findings flow through the pipeline, enriched at each step.** The jq transform (E4) adds `path`/`body` to each finding without dropping the original fields; `gh_pr_inline_comments` (E5) passes those extras through and adds `url` where a comment posted. So the summary table (E6) renders from one array — severity and finding from the review, the link from the post — with no join logic, which the [template dialect](/plans/template-language) couldn't express anyway. Findings the LLM couldn't pin to a line (or whose line the API rejects) simply come back without `url`, and the inverted section renders them as plain text.
-- **Repeated runs refresh everything in place.** `gh_pr_comment` uses `--edit-last --create-if-none` for the summary; `gh_pr_inline_comments` embeds a hidden marker in each inline comment and deletes the previous marker's comments before posting. Each push updates the review instead of stacking. One caveat on the summary: `--edit-last` keys on the token identity, so a *second* plan posting its own summary to the same PR would overwrite this one on its next run — when plans share a PR, pass each a distinct `marker` to `gh_pr_comment` and the upsert keys on that instead.
+- **Repeated runs refresh everything in place.** `gh_pr_comment` uses `--edit-last --create-if-none` for the summary; `gh_pr_inline_comments` embeds a hidden marker in each inline comment and deletes the previous marker's comments before posting. Each push updates the review instead of stacking. One caveat on the summary: `--edit-last` keys on the token identity, so a _second_ plan posting its own summary to the same PR would overwrite this one on its next run — when plans share a PR, pass each a distinct `marker` to `gh_pr_comment` and the upsert keys on that instead.
 - **Inline comments stay advisory.** They post as plain review comments, not a `REQUEST_CHANGES` review — they only gate merging on repos with _Require conversation resolution before merging_ enabled.
 
 ## The workflow
