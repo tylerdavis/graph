@@ -18,10 +18,11 @@
 //!   error; the individual tool is still checked at dispatch.
 //! - `workbench__*` is rejected by the static layer before this one runs.
 
+use super::agent::glob_matches;
 use super::body::{parse_branch, Branch};
 use super::doc::PlanDoc;
 use super::plan::Plan;
-use super::{DECIDE_TOOL, EXIT_TOOL, MAP_TOOL, REDUCE_TOOL};
+use super::{AGENT_TOOL, DECIDE_TOOL, EXIT_TOOL, MAP_TOOL, REDUCE_TOOL};
 use std::collections::BTreeSet;
 
 /// Everything loadable a plan step can call, resolvable without
@@ -63,6 +64,15 @@ pub fn resolve_plan_tools(doc: &PlanDoc, catalog: &ToolCatalog) -> CatalogCheck 
     let mut check = CatalogCheck::default();
     for (step_id, tool) in step_tools(&doc.steps) {
         check_tool(&step_id, &tool, &doc.requires_servers, catalog, &mut check);
+    }
+    for (step_id, pattern) in agent_tool_patterns(&doc.steps) {
+        check_pattern(
+            &step_id,
+            &pattern,
+            &doc.requires_servers,
+            catalog,
+            &mut check,
+        );
     }
     check
 }
@@ -106,7 +116,133 @@ pub fn resolve_step_tools(plan: &Plan, catalog: &ToolCatalog) -> Vec<String> {
     for (step_id, tool) in step_tools(plan) {
         check_tool(&step_id, &tool, &[], catalog, &mut check);
     }
+    for (step_id, pattern) in agent_tool_patterns(plan) {
+        check_pattern(&step_id, &pattern, &[], catalog, &mut check);
+    }
     check.errors
+}
+
+/// Every `(step id, pattern)` pair from `agent` steps' `tools:` lists,
+/// control-step bodies included. These are tool *references* even though
+/// they live in input data, so they get resolved like any step tool name.
+fn agent_tool_patterns(plan: &Plan) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    let mut collect = |id: String, input: &serde_json::Map<String, serde_json::Value>| {
+        let Some(serde_json::Value::Array(items)) = input.get("tools") else {
+            return;
+        };
+        for item in items {
+            if let Some(pattern) = item.as_str() {
+                found.push((id.clone(), pattern.to_string()));
+            }
+        }
+    };
+    for step in plan {
+        if step.tool_name == AGENT_TOOL {
+            collect(step.id.clone(), &step.input);
+        }
+        let body_keys: &[&str] = match step.tool_name.as_str() {
+            DECIDE_TOOL => &["then", "else"],
+            MAP_TOOL | REDUCE_TOOL => &["do"],
+            _ => &[],
+        };
+        for key in body_keys {
+            let Some(raw) = step.input.get(*key) else {
+                continue;
+            };
+            match parse_branch(key, raw) {
+                Ok(Branch::Call(call)) if call.tool_name == AGENT_TOOL => {
+                    collect(step.id.clone(), &call.input);
+                }
+                Ok(Branch::Steps(steps)) => {
+                    for body_step in steps {
+                        if body_step.tool_name == AGENT_TOOL {
+                            collect(format!("{}/{}", step.id, body_step.id), &body_step.input);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
+/// Resolve one `tools:` pattern. Mirrors [`check_tool`]'s namespace rules,
+/// with the same MCP constraint: servers resolve, individual tools do not
+/// (listing them would mean connecting).
+fn check_pattern(
+    step_id: &str,
+    pattern: &str,
+    requires_servers: &[String],
+    catalog: &ToolCatalog,
+    check: &mut CatalogCheck,
+) {
+    if pattern.is_empty() {
+        check
+            .errors
+            .push(format!("step {step_id}: `tools` contains an empty pattern"));
+        return;
+    }
+    // `*` alone means "everything", which is what omitting `tools` does.
+    if pattern.chars().all(|c| c == '*') {
+        return;
+    }
+    let Some((namespace, _)) = pattern.split_once("__") else {
+        check.errors.push(format!(
+            "step {step_id}: `tools` pattern '{pattern}' is not a namespaced \
+             tool name or pattern (like linear__* or user__git_log)"
+        ));
+        return;
+    };
+    // A wildcard inside the namespace itself (`*__search`) can't be
+    // resolved to a server without listing everything — leave it to
+    // runtime, which fails on a pattern that matches nothing.
+    if namespace.contains('*') {
+        return;
+    }
+
+    let local: Option<(&BTreeSet<String>, &str)> = match namespace {
+        "builtin" => Some((&catalog.builtin_tools, "builtin tool")),
+        "user" => Some((&catalog.user_tools, "user tool")),
+        _ => None,
+    };
+    if let Some((names, label)) = local {
+        if !names.iter().any(|name| glob_matches(pattern, name)) {
+            check.errors.push(format!(
+                "step {step_id}: `tools` pattern '{pattern}' matches no {label}"
+            ));
+        }
+        return;
+    }
+    if namespace == "plan" {
+        let wanted = &pattern["plan__".len()..];
+        if !catalog
+            .plans
+            .iter()
+            .any(|identifier| glob_matches(wanted, identifier))
+        {
+            check.errors.push(format!(
+                "step {step_id}: `tools` pattern '{pattern}' matches no plan in \
+                 the plan catalog"
+            ));
+        }
+        return;
+    }
+    if catalog.mcp_servers.contains(namespace) {
+        return;
+    }
+    let message = format!(
+        "step {step_id}: `tools` pattern '{pattern}' needs MCP server \
+         '{namespace}', which is not configured under [mcp.{namespace}]"
+    );
+    if requires_servers.iter().any(|s| s == namespace) {
+        check
+            .notes
+            .push(format!("{message} (declared in requires_servers)"));
+    } else {
+        check.errors.push(message);
+    }
 }
 
 fn check_tool(
@@ -117,7 +253,7 @@ fn check_tool(
     check: &mut CatalogCheck,
 ) {
     match tool {
-        EXIT_TOOL | DECIDE_TOOL | MAP_TOOL | REDUCE_TOOL | "plan_and_execute" => {}
+        AGENT_TOOL | EXIT_TOOL | DECIDE_TOOL | MAP_TOOL | REDUCE_TOOL | "plan_and_execute" => {}
         _ if super::plan::workbench_tool_problem(tool).is_some() => {
             // The static layer rejects these with the full explanation;
             // repeat it here so a catalog-only caller still fails.
@@ -386,6 +522,123 @@ steps:
             "{}",
             check.errors[2]
         );
+    }
+
+    #[test]
+    fn agent_tool_patterns_resolve_against_the_catalog() {
+        // The exact case that shipped a "valid" plan that could not run:
+        // linear__* with no [mcp.linear] configured.
+        let d = doc(r#"
+identifier: demo
+name: Demo
+description: d
+steps:
+  - id: E0
+    tool_name: agent
+    input:
+      prompt: hi
+      outputSchema: { type: object, properties: {} }
+      tools: ["linear__*"]
+"#);
+        let mut empty = catalog();
+        empty.mcp_servers = BTreeSet::default();
+        let check = resolve_plan_tools(&d, &empty);
+        assert_eq!(check.errors.len(), 1, "{:?}", check.errors);
+        assert!(check.errors[0].contains("linear__*"), "{}", check.errors[0]);
+        assert!(
+            check.errors[0].contains("[mcp.linear]"),
+            "{}",
+            check.errors[0]
+        );
+
+        // Configured server -> fine.
+        assert!(resolve_plan_tools(&d, &catalog()).is_ok());
+    }
+
+    #[test]
+    fn agent_tool_patterns_resolve_local_namespaces_exactly() {
+        let d = doc(r#"
+identifier: demo
+name: Demo
+description: d
+steps:
+  - id: E0
+    tool_name: agent
+    input:
+      prompt: hi
+      outputSchema: { type: object, properties: {} }
+      tools: ["user__nope", "builtin__*", "plan__ghost", "notnamespaced", "user__git_log"]
+"#);
+        let check = resolve_plan_tools(&d, &catalog());
+        let joined = check.errors.join(" | ");
+        assert!(joined.contains("user__nope"), "{joined}");
+        assert!(joined.contains("plan__ghost"), "{joined}");
+        assert!(joined.contains("notnamespaced"), "{joined}");
+        // builtin__* matches builtin__infer and user__git_log is real, so
+        // neither may be flagged. Match on the quoted pattern form so the
+        // "(like linear__* or user__git_log)" hint text can't false-match.
+        assert!(!joined.contains("'builtin__*'"), "{joined}");
+        assert!(!joined.contains("'user__git_log'"), "{joined}");
+        assert_eq!(check.errors.len(), 3, "{:?}", check.errors);
+    }
+
+    #[test]
+    fn agent_patterns_inside_control_bodies_are_resolved() {
+        let d = doc(r#"
+identifier: demo
+name: Demo
+description: d
+steps:
+  - id: E0
+    tool_name: user__git_log
+    input: {}
+  - id: E1
+    tool_name: map
+    input:
+      over: "{{E0.commits}}"
+      do:
+        toolName: agent
+        input:
+          prompt: "{{item}}"
+          outputSchema: { type: object, properties: {} }
+          tools: ["ghost__thing"]
+  - id: E2
+    tool_name: decide
+    input:
+      if: { value: "{{E0.count}}", op: gt, to: 0 }
+      then:
+        - id: B0
+          toolName: agent
+          input:
+            prompt: x
+            outputSchema: { type: object, properties: {} }
+            tools: ["user__missing"]
+"#);
+        let check = resolve_plan_tools(&d, &catalog());
+        let joined = check.errors.join(" | ");
+        assert!(joined.contains("ghost"), "{joined}");
+        assert!(joined.contains("user__missing"), "{joined}");
+        assert!(joined.contains("E2/B0"), "{joined}");
+    }
+
+    #[test]
+    fn declared_but_unconfigured_server_in_agent_patterns_is_a_note() {
+        let d = doc(r#"
+identifier: demo
+name: Demo
+description: d
+requires_servers: [github]
+steps:
+  - id: E0
+    tool_name: agent
+    input:
+      prompt: hi
+      outputSchema: { type: object, properties: {} }
+      tools: ["github__*"]
+"#);
+        let check = resolve_plan_tools(&d, &catalog());
+        assert!(check.is_ok(), "{:?}", check.errors);
+        assert_eq!(check.notes.len(), 1, "{:?}", check.notes);
     }
 
     #[test]

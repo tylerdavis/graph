@@ -9,7 +9,7 @@
 use super::exit::PlanExit;
 use super::plan::{check_step_id, Step};
 use super::state::{BusEntry, BusKind};
-use super::{Pipeline, EXIT_TOOL};
+use super::{Pipeline, AGENT_TOOL, EXIT_TOOL};
 use crate::template::{render_input, RenderError, Roots};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -65,11 +65,11 @@ pub fn parse_branch(name: &str, raw: &Value) -> Result<Branch, String> {
 pub fn body_schema(allow_exit: bool) -> Value {
     let tool_name_doc = if allow_exit {
         "Exact tool name; may be plan__* for a multi-step body, or exit \
-         (ends the WHOLE plan from inside the branch). Never decide, map, \
-         or reduce."
+         (ends the WHOLE plan from inside the branch). agent is also allowed; \
+         decide, map, and reduce are not."
     } else {
-        "Exact tool name; may be plan__* for a multi-step body. Never \
-         exit, decide, map, or reduce."
+        "Exact tool name; may be plan__* for a multi-step body. agent is also \
+         allowed; exit, decide, map, and reduce are not."
     };
     json!({
         "oneOf": [
@@ -178,6 +178,9 @@ fn check_body_tool(
         }
         return;
     }
+    if tool == super::AGENT_TOOL {
+        return;
+    }
     if let Some(problem) = super::plan::workbench_tool_problem(tool) {
         problems.push(format!("step {step_id}: `{name}` {problem}"));
         return;
@@ -269,6 +272,34 @@ impl Pipeline {
                     render_input(&Value::Object(call.input.clone()), &Roots::new(&scope))
                         .map_err(|e| BodyError::fail(BodyFail::Render(e), 0, Vec::new()))?;
                 let path = super::StepPath::in_body(step_id, bus_path, None);
+                if call.tool_name == AGENT_TOOL {
+                    // An agent in a body is a control step, not a dispatch:
+                    // it renders its own prompt against this body's scope
+                    // (so {{item}}/{{index}}/{{accumulator}} work) and runs
+                    // its loop, with every inner call going through
+                    // dispatch exactly as a body call would.
+                    let raw = call.input.clone();
+                    return match self.run_agent_scoped(&path, &raw, &scope).await {
+                        Ok(run) => Ok(BodyRun {
+                            result: run.result,
+                            steps_executed: 1 + run.tool_calls,
+                            bus: Vec::new(),
+                        }),
+                        Err(super::agent::AgentFail::Empty(message)) => Err(BodyError::fail(
+                            BodyFail::Tool(format!("{label} (agent): {message}")),
+                            0,
+                            Vec::new(),
+                        )),
+                        Err(super::agent::AgentFail::Failed(message)) => Err(BodyError::fail(
+                            BodyFail::Tool(format!("{label} (agent): {message}")),
+                            0,
+                            Vec::new(),
+                        )),
+                        Err(super::agent::AgentFail::Aborted(error)) => {
+                            Err(BodyError::fail(BodyFail::Aborted(error), 0, Vec::new()))
+                        }
+                    };
+                }
                 if call.tool_name == EXIT_TOOL {
                     return match self.eval_body_exit(&path, &rendered, label).await {
                         Ok(super::exit::ExitEval::Passed(value)) => Ok(BodyRun {
@@ -311,7 +342,32 @@ impl Pipeline {
                                 BodyError::fail(BodyFail::Render(e), steps_executed, bus.clone())
                             })?;
                     let path = super::StepPath::in_body(step_id, bus_path, Some(&body_step.id));
-                    let value = if body_step.tool_name == EXIT_TOOL {
+                    let value = if body_step.tool_name == AGENT_TOOL {
+                        match self.run_agent_scoped(&path, &body_step.input, &scope).await {
+                            Ok(run) => {
+                                steps_executed += run.tool_calls;
+                                run.result
+                            }
+                            Err(super::agent::AgentFail::Empty(message))
+                            | Err(super::agent::AgentFail::Failed(message)) => {
+                                return Err(BodyError::fail(
+                                    BodyFail::Tool(format!(
+                                        "{label} step {} (agent): {message}",
+                                        body_step.id
+                                    )),
+                                    steps_executed,
+                                    bus,
+                                ));
+                            }
+                            Err(super::agent::AgentFail::Aborted(error)) => {
+                                return Err(BodyError::fail(
+                                    BodyFail::Aborted(error),
+                                    steps_executed,
+                                    bus,
+                                ));
+                            }
+                        }
+                    } else if body_step.tool_name == EXIT_TOOL {
                         match self.eval_body_exit(&path, &rendered, label).await {
                             Ok(super::exit::ExitEval::Passed(value)) => value,
                             Ok(super::exit::ExitEval::Exited(exit)) => {
@@ -452,6 +508,18 @@ mod tests {
         check_body_tool("do", "plan_and_execute", "E1", false, &mut problems);
         check_body_tool("do", "t__search", "E1", false, &mut problems);
         assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    #[test]
+    fn agent_is_allowed_in_bodies() {
+        for allow_exit in [false, true] {
+            let mut problems = Vec::new();
+            check_body_tool("do", "agent", "E1", allow_exit, &mut problems);
+            assert!(problems.is_empty(), "agent in body: {problems:?}");
+        }
+        let mut problems = Vec::new();
+        check_body_tool("then", "agent", "E1", true, &mut problems);
+        assert!(problems.is_empty(), "agent in decide branch: {problems:?}");
     }
 
     #[test]

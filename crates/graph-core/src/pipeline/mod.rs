@@ -10,6 +10,7 @@
 //!   In both modes, `EmptyData` (plan fine, data ran out) goes straight to
 //!   the solver.
 
+pub mod agent;
 pub mod body;
 pub mod catalog;
 pub mod condition;
@@ -25,6 +26,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 
+pub use agent::{agent_tool_def, AGENT_TOOL};
 pub use catalog::{CatalogCheck, ToolCatalog};
 pub use decision::DECIDE_TOOL;
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
@@ -614,6 +616,7 @@ impl Pipeline {
     /// described-tools text and the pretty-printed step schema.
     async fn planner_catalog(&self) -> (String, String) {
         let mut tools = self.registry.tools().await.unwrap_or_default();
+        tools.push(agent::agent_tool_def());
         tools.push(exit::exit_tool_def());
         tools.push(decision::decide_tool_def());
         tools.push(iterate::map_tool_def());
@@ -753,6 +756,9 @@ impl Pipeline {
             // (same-body ids, per-item pseudo-roots) are legal, so the
             // generic walk below would false-flag them.
             match step.tool_name.as_str() {
+                AGENT_TOOL => {
+                    agent::validate_agent_input(&step.input, &seen, &step.id, &mut problems)
+                }
                 DECIDE_TOOL => decision::validate_decide_input(
                     &step.input,
                     &seen,
@@ -799,6 +805,44 @@ impl Pipeline {
             // (decide) or per item (map/reduce). Their step events carry
             // the raw input for the same reason.
             let control = match step.tool_name.as_str() {
+                AGENT_TOOL => {
+                    self.events.step_started(
+                        &self.call_stack,
+                        &step.id,
+                        &step.tool_name,
+                        &Value::Object(step.input.clone()),
+                    );
+                    let started = std::time::Instant::now();
+                    let run = self.run_agent(&step, state).await;
+                    match &run {
+                        Ok(result) => self.events.step_finished(
+                            &self.call_stack,
+                            &step.id,
+                            &step.tool_name,
+                            result,
+                            false,
+                            started.elapsed(),
+                        ),
+                        Err(ExecutionEnd::Failed { message, .. }) => self.events.step_finished(
+                            &self.call_stack,
+                            &step.id,
+                            &step.tool_name,
+                            &json!({"error": message}),
+                            true,
+                            started.elapsed(),
+                        ),
+                        Err(ExecutionEnd::Empty { message, .. }) => self.events.step_finished(
+                            &self.call_stack,
+                            &step.id,
+                            &step.tool_name,
+                            &json!({"error": message, "emptyData": true}),
+                            true,
+                            started.elapsed(),
+                        ),
+                        Err(_) => {}
+                    }
+                    Some(run)
+                }
                 DECIDE_TOOL | MAP_TOOL | REDUCE_TOOL => {
                     self.events.step_started(
                         &self.call_stack,

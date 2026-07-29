@@ -42,7 +42,7 @@ pub const CONTROL_STEP_RULES: &str = r#"### Early Exits
 - Use the `decide` tool when the correct next call depends on a prior result: it runs `then` when the gate holds, otherwise `else` (or just continues when `else` is omitted). `decide` chooses between actions; `exit` ends the plan.
 - Gate it with exactly one of `if` or `infer`. A branch is a single tool call ({"toolName": …, "input": …}) or a list of steps; branch step ids must not reuse top-level step ids.
 - Later steps reference only the decide step's id — {{Ex.result}} for the chosen branch's output, {{Ex.branch}} for which side ran. Branch-internal step ids are invisible outside the branch.
-- Branches may contain `exit` steps — a fired exit ends the WHOLE plan from inside the branch (e.g. then: post a comment and exit success). Branches must not contain `decide`, `map`, or `reduce`; use a plan__* call inside the branch for nested control flow.
+- Branches may contain `exit` steps — a fired exit ends the WHOLE plan from inside the branch (e.g. then: post a comment and exit success). Branches may contain `agent` steps as well, but must not contain `decide`, `map`, or `reduce`; use a plan__* call inside the branch for nested control flow.
 
 ### Iteration
 - Use the `map` tool to run the same body once per element of a list, and `reduce` to fold a list into a single value. `over` must resolve to an array — usually a whole-list reference like {{E0.issues}}.
@@ -50,7 +50,7 @@ pub const CONTROL_STEP_RULES: &str = r#"### Early Exits
 - Later steps reference only the step's id — {{Ex.results}} for map's per-item outputs (input order) and {{Ex.count}}, or {{Ex.result}} for reduce's final accumulator. Body-internal step ids are invisible outside the body.
 - `map` accepts `concurrency` (default 1) to run independent items in parallel. `reduce` is always sequential — for parallel per-item work, map first, then reduce over {{Ex.results}}.
 - For inference over a list (classify, summarize, or score each element), prefer `map` with a per-item inference call in the body over interpolating the whole list into one instruction: small, focused contexts are cheaper and more accurate, and `concurrency` recovers the speed. Interpolate a whole list into one inference only when the question is genuinely cross-item (ranking, deduplication, aggregation).
-- Bodies must not contain `exit`, `decide`, `map`, or `reduce`; use a plan__* call inside the body for nested control flow."#;
+- Bodies may contain `agent` steps. They must not contain `exit`, `decide`, `map`, or `reduce`; use a plan__* call inside the body for nested control flow."#;
 
 pub struct PlannerPromptArgs<'a> {
     pub current_date: &'a str,
@@ -220,7 +220,7 @@ Each step must conform to:
 Step IDs are identifiers (letters, digits, _; not starting with a digit), unique across the plan, and never `input`, `item`, `index`, `accumulator`, or `length`. Each step request names the ID to use.
 
 ### Incremental Drafting Protocol
-1. First, produce an OUTLINE: 2–8 stages, each a one-sentence `summary` plus `expectedTool` (the exact catalog tool name) when you already know it. A control step (`decide`, `map`, or `reduce`) is ONE stage — its body nests inside that single step's input. The outline also carries `queryToAnswer` and optional `systemPrompt` (see Solver Schema below).
+1. First, produce an OUTLINE: 2–8 stages, each a one-sentence `summary` plus `expectedTool` (the exact catalog tool name) when you already know it. A control step (`agent`, `decide`, `map`, or `reduce`) is ONE stage — its body nests inside that single step's input. The outline also carries `queryToAnswer` and optional `systemPrompt` (see Solver Schema below).
 2. Steps are then requested ONE at a time, each request naming the step id to use. Emit exactly one step per request; you see the outline and every previously accepted step.
 3. The outline is a guide, not a contract: merge, skip, or add stages as the real steps demand.
 4. Set `planComplete` to true on the step that finishes the plan. When the already-accepted steps complete the plan on their own, return `step: null` with `planComplete: true` instead of inventing a filler step.

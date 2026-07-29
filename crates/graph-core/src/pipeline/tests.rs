@@ -3069,3 +3069,399 @@ fn step_draft_schema_makes_step_nullable() {
         "step must admit null: {text}"
     );
 }
+
+// ── agent control step ────────────────────────────────────────────────
+
+fn tool_use(id: &str, name: &str, args: Value) -> ChatResponse {
+    ChatResponse {
+        content: None,
+        tool_calls: vec![graph_llm::types::ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: args,
+        }],
+        structured: None,
+        stop_reason: StopReason::ToolUse,
+        usage: Usage::default(),
+    }
+}
+
+fn agent_step(id: &str, input: Value) -> Value {
+    json!({"id": id, "toolName": "agent", "input": input})
+}
+
+const OUT_SCHEMA: fn() -> Value = || {
+    json!({
+        "type": "object",
+        "required": ["found"],
+        "properties": {"found": {"type": "integer"}}
+    })
+};
+
+#[tokio::test]
+async fn agent_calls_a_tool_then_returns_structured_output() {
+    let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
+    let (pipeline, _) = pipeline(
+        vec![
+            tool_use("c1", "t__search", json!({"query": "x"})),
+            text(r#"{"found": 1}"#),
+        ],
+        registry.clone(),
+        1,
+    );
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({
+            "prompt": "find things",
+            "outputSchema": OUT_SCHEMA(),
+            "tools": ["t__*"]
+        })
+    )]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let result = &outcome.state.results["E0"];
+    assert_eq!(result["output"], json!({"found": 1}));
+    assert_eq!(result["final"], json!(true));
+    assert_eq!(result["iterations"], json!(2));
+    assert_eq!(result["tools_called"][0]["tool"], "t__search");
+
+    // The tool really ran, through the registry.
+    assert_eq!(registry.invocations.lock().unwrap()[0].0, "t__search");
+}
+
+#[tokio::test]
+async fn agent_prompt_renders_against_prior_step_results() {
+    let registry = search_registry(json!({"values": [{"id": "team-7"}]}));
+    let (pipeline, provider) = pipeline(vec![text(r#"{"found": 0}"#)], registry.clone(), 1);
+
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        agent_step(
+            "E1",
+            json!({
+                "prompt": "team is {{E0.values.0.id}}",
+                "outputSchema": OUT_SCHEMA()
+            })
+        )
+    ]))
+    .unwrap();
+
+    pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let requests = provider.requests.lock().unwrap();
+    assert!(
+        requests[0].messages.iter().any(|m| matches!(
+            m, graph_llm::types::ChatMessage::User { content } if content.contains("team-7")
+        )),
+        "prompt must render against prior results"
+    );
+}
+
+#[tokio::test]
+async fn agent_tool_error_returns_into_the_loop_instead_of_failing_the_step() {
+    let registry = Arc::new(MockRegistry {
+        search_result: json!({}),
+        invocations: Mutex::new(Vec::new()),
+        fail_tools: vec!["t__search".to_string()],
+    });
+    let (pipeline, provider) = pipeline(
+        vec![
+            tool_use("c1", "t__search", json!({"query": "x"})),
+            text(r#"{"found": 0}"#),
+        ],
+        registry.clone(),
+        1,
+    );
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({"prompt": "p", "outputSchema": OUT_SCHEMA()})
+    )]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    // Step succeeded despite the tool failing...
+    assert_eq!(outcome.state.results["E0"]["final"], json!(true));
+    // ...and the agent was told about the failure.
+    let requests = provider.requests.lock().unwrap();
+    let saw_error = requests[1].messages.iter().any(|m| {
+        matches!(
+            m,
+            graph_llm::types::ChatMessage::ToolResult { is_error: true, .. }
+        )
+    });
+    assert!(saw_error, "tool error must flow back into the loop");
+}
+
+#[tokio::test]
+async fn agent_exhausting_iterations_reports_not_final() {
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(
+        vec![
+            tool_use("c1", "t__search", json!({})),
+            tool_use("c2", "t__search", json!({})),
+        ],
+        registry.clone(),
+        1,
+    );
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({"prompt": "p", "outputSchema": OUT_SCHEMA(), "maxIterations": 2})
+    )]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let result = &outcome.state.results["E0"];
+    assert_eq!(result["final"], json!(false));
+    // Exactly the budget - not budget+1.
+    assert_eq!(result["iterations"], json!(2));
+    assert_eq!(result["tools_called"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn agent_pattern_matching_no_tool_fails_the_step() {
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({"prompt": "p", "outputSchema": OUT_SCHEMA(), "tools": ["ghost__*"]})
+    )]))
+    .unwrap();
+
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    let text = format!("{err:?}");
+    assert!(text.contains("ghost__*"), "{text}");
+}
+
+#[tokio::test]
+async fn agent_never_offers_plan_and_execute_to_the_model() {
+    let registry = search_registry(json!({}));
+    let (pipeline, provider) = pipeline(vec![text(r#"{"found": 0}"#)], registry.clone(), 1);
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({"prompt": "p", "outputSchema": OUT_SCHEMA()})
+    )]))
+    .unwrap();
+
+    pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let requests = provider.requests.lock().unwrap();
+    assert!(
+        !requests[0]
+            .tools
+            .iter()
+            .any(|t| t.name == "plan_and_execute"),
+        "plan_and_execute must never be offered inside an agent"
+    );
+    assert!(requests[0].tools.iter().any(|t| t.name == "t__search"));
+}
+
+#[tokio::test]
+async fn agent_runs_inside_a_map_body_with_item_scope() {
+    let registry = search_registry(json!({"values": [{"id": "a"}, {"id": "b"}]}));
+    let (pipeline, provider) = pipeline(
+        vec![text(r#"{"found": 1}"#), text(r#"{"found": 2}"#)],
+        registry.clone(),
+        1,
+    );
+
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": {
+                "toolName": "agent",
+                "input": {
+                    "prompt": "handle {{item.id}}",
+                    "outputSchema": OUT_SCHEMA()
+                }
+            }
+        }}
+    ]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let results = &outcome.state.results["E1"]["results"];
+    assert_eq!(results[0]["output"], json!({"found": 1}));
+    assert_eq!(results[1]["output"], json!({"found": 2}));
+
+    // {{item}} really reached the agent prompt.
+    let requests = provider.requests.lock().unwrap();
+    let prompts: Vec<String> = requests
+        .iter()
+        .flat_map(|r| r.messages.iter())
+        .filter_map(|m| match m {
+            graph_llm::types::ChatMessage::User { content } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        prompts.iter().any(|p| p.contains("handle a")),
+        "{prompts:?}"
+    );
+    assert!(
+        prompts.iter().any(|p| p.contains("handle b")),
+        "{prompts:?}"
+    );
+}
+
+#[tokio::test]
+async fn agent_can_call_a_plan_tool_because_inner_calls_go_through_dispatch() {
+    let inner = plan_doc_yaml(
+        r#"
+identifier: inner
+name: Inner
+description: fetch and shape
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: "{{input.q}}" }
+output:
+  found: "{{E0.values}}"
+"#,
+    );
+
+    let registry = search_registry(json!({"values": [{"id": "team-9"}]}));
+    let (mut pipeline, provider) = pipeline(
+        vec![
+            tool_use("c1", "plan__inner", json!({"q": "x"})),
+            text(r#"{"found": 1}"#),
+        ],
+        registry.clone(),
+        1,
+    );
+    pipeline.plans = Arc::new(vec![inner]);
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({"prompt": "p", "outputSchema": OUT_SCHEMA(), "tools": ["plan__*"]})
+    )]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.state.results["E0"]["final"], json!(true));
+
+    // The sub-plan really executed: its step hit the registry...
+    assert_eq!(registry.invocations.lock().unwrap()[0].0, "t__search");
+    // ...and its rendered output came back to the agent as a tool result,
+    // rather than an "unknown tool" error from the registry.
+    let requests = provider.requests.lock().unwrap();
+    let saw_plan_output = requests[1].messages.iter().any(|m| {
+        matches!(
+            m,
+            graph_llm::types::ChatMessage::ToolResult { content, is_error: false, .. }
+                if content.to_string().contains("team-9")
+        )
+    });
+    assert!(
+        saw_plan_output,
+        "plan__* result must flow back into the agent loop"
+    );
+
+    // plan__* is advertised to the model.
+    assert!(requests[0].tools.iter().any(|t| t.name == "plan__inner"));
+}
+
+#[tokio::test]
+async fn agent_writes_one_bus_summary_like_its_peer_control_steps() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(
+        vec![
+            tool_use("c1", "t__search", json!({})),
+            text(r#"{"found": 0}"#),
+        ],
+        registry.clone(),
+        1,
+    );
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({"prompt": "p", "outputSchema": OUT_SCHEMA()})
+    )]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let entries: Vec<&BusEntry> = outcome
+        .state
+        .bus
+        .iter()
+        .filter(|e| e.source == "E0")
+        .collect();
+    assert_eq!(
+        entries.len(),
+        1,
+        "one summary line, not one per round: {entries:?}"
+    );
+    assert_eq!(entries[0].kind, BusKind::Info);
+    assert!(
+        entries[0].content.contains("agent: 2 round(s)"),
+        "{}",
+        entries[0].content
+    );
+    assert!(
+        entries[0].content.contains("1 tool call"),
+        "{}",
+        entries[0].content
+    );
+}
+
+#[tokio::test]
+async fn an_agent_failure_reaches_the_bus_as_a_replan_eligible_error() {
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({"prompt": "p", "outputSchema": OUT_SCHEMA(), "tools": ["ghost__*"]})
+    )]))
+    .unwrap();
+
+    // run_explicit surfaces the failure directly; run_planned is what
+    // consults the bus, so assert the classification the bus would carry.
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    match err {
+        PipelineError::StepFailed { tool, .. } => assert_eq!(tool, "agent"),
+        other => panic!("expected StepFailed, got {other:?}"),
+    }
+}
