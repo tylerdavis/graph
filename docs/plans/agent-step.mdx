@@ -4,7 +4,7 @@ description: "A bounded tool-calling loop inside a plan step, with guaranteed st
 icon: "robot"
 ---
 
-An `agent` step runs a bounded tool-calling loop and returns **structured JSON conforming to a schema you declare**. It is a functional component, not a conversation: a prompt goes in, a validated object comes out.
+An `agent` step runs a bounded tool-calling loop and returns **structured JSON conforming to a schema you declare** — or says it couldn't, via `final: false`. It is a functional component, not a conversation: a prompt goes in, a validated object comes out.
 
 Use it for the one thing plans genuinely can't express — a task where *which* tools to call, and how many times, depends on what earlier calls returned. Everything else belongs in ordinary steps, where dataflow is typed and inference-free.
 
@@ -41,12 +41,16 @@ steps:
 |---|---|---|
 | `prompt` | yes | The task. Renders against prior results like any step input. |
 | `outputSchema` | yes | JSON Schema for the result. Must be `type: object`. |
-| `tools` | no | Names or wildcard patterns to expose. Omit for the whole catalog. |
-| `maxIterations` | no | Tool-calling rounds. Default 8. |
+| `tools` | no | Names or wildcard patterns to expose. Omit for the whole catalog; `[]` is a validation error, not "no tools". |
+| `maxIterations` | no | Inference rounds. Default 8. |
 | `model` | no | Model role or [named model](/reference/configuration). Default: the `chat` role. |
-| `systemPrompt` | no | Extra guidance appended to the built-in system prompt. |
+| `systemPrompt` | no | Extra guidance appended to the built-in system prompt. Renders against the scope, like `prompt`. |
+
+A round is **one model call**, including the one that produces the final answer — so `maxIterations: 1` can answer from the prompt alone but can never call a tool *and* answer. A malformed answer (schema miss, or no text and no tool call) also costs a round; retries and provider failover do not.
 
 Field names are camelCase; the snake_case spellings (`output_schema`, `max_iterations`, `system_prompt`) are accepted as aliases so hand-written YAML reads consistently with `tool_name`.
+
+The whole input is checked at **load time**, wherever the step appears — top level or inside a `decide`/`map`/`reduce` body: unknown fields, a non-string prompt, `outputSchema` that isn't valid object-typed JSON Schema, a `maxIterations` under 1, an empty `tools`, and template references that point forward or at nothing. A malformed agent step never reaches the run.
 
 ## Result
 
@@ -61,7 +65,7 @@ Field names are camelCase; the snake_case spellings (`output_schema`, `max_itera
 
 Later steps reference `{{E1.output.blocked}}` — `output` is the schema-conforming payload; the rest is provenance.
 
-`final` is `false` when the iteration budget ran out before the agent produced conforming output. **Check it**, or gate on it:
+`final` is `false` when the iteration budget ran out before the agent produced conforming output. In that case `output` is `{}` and **does not** conform to `outputSchema` — the guarantee is "conforming output, or `final: false`", never a fabricated result. A later step reaching into `output` then fails as a bad path, so **check it**, or gate on it:
 
 ```yaml
   - id: E2
@@ -85,7 +89,7 @@ which is not configured under [mcp.linear]
 
 `builtin__*`, `user__*`, and `plan__*` resolve exactly. MCP patterns resolve at the *server* level only, because listing a server's tools means connecting to it; the individual tool is still checked at dispatch. A pattern that matches nothing at run time is an error naming that pattern — a typo shrinks the catalogue silently otherwise.
 
-`plan_and_execute` is **never** available inside an agent: nested planning loops have no coherent cost boundary. `plan__*` tools are available and work normally, so compose with plans instead.
+`plan_and_execute` is **never** available inside an agent: nested planning loops have no coherent cost boundary. It is not advertised, and a model that asks for it anyway gets a tool error rather than a nested planner run. `plan__*` tools are available and work normally, so compose with plans instead.
 
 ## What it costs
 
@@ -122,6 +126,6 @@ The other control steps (`exit`, `decide`, `map`, `reduce`) still cannot nest in
 - **Output that doesn't match `outputSchema`** gets one `repair`-role fix-up pass; if that fails, the error goes back to the agent and consumes a round.
 - **Transient LLM errors** retry with backoff and never consume a round.
 - **A gate abort** during an inner tool call is a hard stop, exactly as elsewhere — see [errors and replanning](/plans/errors-and-replanning).
-- **Empty data** while rendering `prompt` degrades rather than failing, consistent with every other step.
+- **Empty data** while rendering `prompt` or `systemPrompt` degrades rather than failing, consistent with every other step — at the top level and inside a body alike.
 
-Every tool call an agent makes goes through the same dispatch path as any other step, so gates, events, the shape cache, and plan-cycle detection all apply at agent depth too.
+Every tool call an agent makes goes through the same dispatch path as any other step, so gates, events, the shape cache, and plan-cycle detection all apply at agent depth too. Inner calls report a nested step path — `E1/agent.2/linear__list_issues` at the top level, `E1/do.3/agent.2/linear__list_issues` for an agent in a map body — so a breakpoint on the agent step pauses each call it makes, and concurrent map items stay distinguishable.

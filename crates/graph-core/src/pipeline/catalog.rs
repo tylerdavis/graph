@@ -18,12 +18,45 @@
 //!   error; the individual tool is still checked at dispatch.
 //! - `workbench__*` is rejected by the static layer before this one runs.
 
-use super::agent::glob_matches;
 use super::body::{parse_branch, Branch};
 use super::doc::PlanDoc;
 use super::plan::Plan;
 use super::{AGENT_TOOL, DECIDE_TOOL, EXIT_TOOL, MAP_TOOL, REDUCE_TOOL};
 use std::collections::BTreeSet;
+
+/// Glob matching over tool names, with `*` as "any run of characters",
+/// supported anywhere in the pattern and any number of times
+/// (`linear__*`, `*__search`, `linear__*_issues`, `*`). Shared by this
+/// layer and the runtime resolution an `agent` step's `tools:` does.
+pub fn glob_matches(pattern: &str, name: &str) -> bool {
+    let segments: Vec<&str> = pattern.split('*').collect();
+    if segments.len() == 1 {
+        return pattern == name;
+    }
+    let mut rest = name;
+    // A leading empty segment means the pattern starts with `*`.
+    if let Some(first) = segments.first() {
+        match rest.strip_prefix(first) {
+            Some(tail) => rest = tail,
+            None => return false,
+        }
+    }
+    let last_index = segments.len() - 1;
+    for (index, segment) in segments.iter().enumerate().skip(1) {
+        if segment.is_empty() {
+            continue;
+        }
+        if index == last_index {
+            // Trailing literal must land at the very end.
+            return rest.len() >= segment.len() && rest.ends_with(segment);
+        }
+        match rest.find(segment) {
+            Some(at) => rest = &rest[at + segment.len()..],
+            None => return false,
+        }
+    }
+    true
+}
 
 /// Everything loadable a plan step can call, resolvable without
 /// connecting to anything. Built from config by the CLI runtime.
@@ -393,6 +426,21 @@ fn collect_plan_refs<'a>(raw: &'a serde_json::Value, refs: &mut Vec<&'a str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glob_matches_wildcards_anywhere() {
+        assert!(glob_matches("linear__*", "linear__list_issues"));
+        assert!(glob_matches("*", "anything"));
+        assert!(glob_matches("*__search", "brave__search"));
+        assert!(glob_matches("linear__*_issues", "linear__list_issues"));
+        assert!(glob_matches("user__git_log", "user__git_log"));
+
+        // A prefix-only implementation gets all of these wrong.
+        assert!(!glob_matches("*__search", "brave__search_web"));
+        assert!(!glob_matches("linear__*_issues", "linear__list_teams"));
+        assert!(!glob_matches("user__git_log", "user__git_log_extra"));
+        assert!(!glob_matches("linear__*", "user__git_log"));
+    }
 
     fn catalog() -> ToolCatalog {
         ToolCatalog {

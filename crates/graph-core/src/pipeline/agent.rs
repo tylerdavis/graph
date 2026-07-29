@@ -3,30 +3,35 @@
 //! tool registry.
 //!
 //! The agent is a functional component: it takes a prompt, calls tools,
-//! reasons over results, and always produces structured output conforming
-//! to a declared schema.
+//! reasons over results, and produces structured output conforming to a
+//! declared schema — or reports `final: false` when its round budget ran
+//! out first. It never invents a conforming result.
 
+use super::catalog::glob_matches;
 use super::gate::StepPath;
 use super::{ExecutionEnd, Pipeline, RunState, Step};
 use crate::template::{render_str, RenderError, Roots};
 use crate::tools::{ToolDef, ToolRegistry};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
-use std::time::Duration;
+use std::collections::BTreeMap;
 
-use graph_llm::types::{ChatMessage, ChatRequest, ChatResponse, StopReason, ToolCall, ToolSpec};
+use graph_llm::types::{ChatMessage, ChatRequest, StopReason, ToolCall, ToolSpec};
 use graph_llm::ModelRouter;
 
 /// Reserved step tool name.
 pub const AGENT_TOOL: &str = "agent";
 
+/// The planner tool, never reachable from inside an agent.
+const PLANNER_TOOL: &str = "plan_and_execute";
+
 /// The agent step's input, parsed from the RAW (unrendered) step input:
-/// the prompt stays a plain value so rendering can be deferred.
+/// `prompt` and `systemPrompt` render against the step's scope when the
+/// loop starts, not at parse time.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentSpec {
-    pub prompt: Value,
+    pub prompt: String,
     #[serde(default)]
     pub model: Option<String>,
     // camelCase is the canonical prompt surface; the snake_case aliases
@@ -82,8 +87,10 @@ pub fn agent_tool_def() -> crate::tools::ToolDef {
         name: AGENT_TOOL.to_string(),
         description: "Run a tool-calling loop that calls tools and reasons over \
                       results to produce structured output. Use when the task \
-                      requires multiple rounds of tool use and reasoning. Always \
-                      produces structured output defined by output_schema. \
+                      requires multiple rounds of tool use and reasoning — when \
+                      WHICH tool to call next depends on what an earlier call \
+                      returned. Returns output conforming to outputSchema, or \
+                      final: false when the round budget ran out first. \
                       plan_and_execute is not available as a tool."
             .to_string(),
         input_schema: json!({
@@ -100,17 +107,18 @@ pub fn agent_tool_def() -> crate::tools::ToolDef {
                 },
                 "systemPrompt": {
                     "type": "string",
-                    "description": "Extra system prompt guidance."
+                    "description": "Extra system prompt guidance. May use templates like the prompt."
                 },
                 "maxIterations": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "Maximum tool-calling rounds. Default: 8."
+                    "description": "Maximum inference rounds — every round is one model call, including the one that produces the final answer. Default: 8."
                 },
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Tool names or wildcard patterns (e.g. linear__*) to expose. Every pattern must resolve to at least one tool. Omit for all available tools."
+                    "minItems": 1,
+                    "description": "Tool names or wildcard patterns (e.g. linear__*) to expose. Every pattern must resolve to at least one tool. Omit for all available tools; an empty list is an error, not 'no tools'."
                 },
                 "outputSchema": {
                     "description": "JSON Schema for the agent's structured output. Must be type object."
@@ -170,19 +178,20 @@ pub async fn resolve_tools(
         return Ok(all_tools);
     }
 
-    let mut matched: HashMap<String, ToolDef> = HashMap::new();
+    // Keyed and ordered by name: overlapping patterns dedupe, and the
+    // catalogue the model sees is byte-identical run to run (prompt
+    // caching, reproducible traces), like every other catalog surface.
+    let mut matched: BTreeMap<String, ToolDef> = BTreeMap::new();
     let mut unmatched: Vec<&str> = Vec::new();
     for pattern in patterns {
-        let before = matched.len();
+        let mut hit = false;
         for tool in &all_tools {
             if glob_matches(pattern, &tool.name) {
                 matched.insert(tool.name.clone(), tool.clone());
+                hit = true;
             }
         }
-        // A pattern that added nothing *and* matched nothing already
-        // present is a dud. Check membership rather than the counter so
-        // overlapping patterns (linear__* then linear__list_issues) pass.
-        if matched.len() == before && !all_tools.iter().any(|t| glob_matches(pattern, &t.name)) {
+        if !hit {
             unmatched.push(pattern);
         }
     }
@@ -195,39 +204,6 @@ pub async fn resolve_tools(
     }
 
     Ok(matched.into_values().collect())
-}
-
-/// Glob matching with `*` as "any run of characters", supported anywhere
-/// in the pattern and any number of times (`linear__*`, `*__search`,
-/// `linear__*_issues`, `*`).
-pub fn glob_matches(pattern: &str, name: &str) -> bool {
-    let segments: Vec<&str> = pattern.split('*').collect();
-    if segments.len() == 1 {
-        return pattern == name;
-    }
-    let mut rest = name;
-    // A leading empty segment means the pattern starts with `*`.
-    if let Some(first) = segments.first() {
-        match rest.strip_prefix(first) {
-            Some(tail) => rest = tail,
-            None => return false,
-        }
-    }
-    let last_index = segments.len() - 1;
-    for (index, segment) in segments.iter().enumerate().skip(1) {
-        if segment.is_empty() {
-            continue;
-        }
-        if index == last_index {
-            // Trailing literal must land at the very end.
-            return rest.len() >= segment.len() && rest.ends_with(segment);
-        }
-        match rest.find(segment) {
-            Some(at) => rest = &rest[at + segment.len()..],
-            None => return false,
-        }
-    }
-    true
 }
 
 // ── Static validation ──────────────────────────────────────────────────────
@@ -250,6 +226,16 @@ pub fn validate_agent_input(
     if spec.max_iterations < 1 {
         problems.push(format!(
             "step {step_id}: `maxIterations` must be at least 1"
+        ));
+    }
+
+    // An explicit empty list reads as "no tools" but would grant the whole
+    // catalogue (an omitted `tools` and an empty one are the same value
+    // downstream). Refuse it rather than pick a meaning.
+    if spec.tools.as_deref().is_some_and(<[String]>::is_empty) {
+        problems.push(format!(
+            "step {step_id}: `tools` is empty — omit it to expose the whole \
+             catalogue, or name at least one tool or pattern"
         ));
     }
 
@@ -276,9 +262,11 @@ pub fn validate_agent_input(
         }
     }
 
-    // Validate template references in prompt
-    let prompt_val = &spec.prompt;
-    super::check_templates(prompt_val, seen, step_id, problems);
+    // Both rendered fields carry templates, so both are reference-checked.
+    super::check_templates(&Value::String(spec.prompt), seen, step_id, problems);
+    if let Some(system) = spec.system_prompt {
+        super::check_templates(&Value::String(system), seen, step_id, problems);
+    }
 }
 
 // ── Agent loop execution ───────────────────────────────────────────────────
@@ -288,7 +276,9 @@ pub fn validate_agent_input(
 pub(super) enum AgentFail {
     Failed(String),
     /// Data ran out while rendering the prompt — degrades, never replans.
-    Empty(String),
+    /// Carries the render error itself so a body can hand it to
+    /// `BodyFail::Render`, which is where that classification lives.
+    Empty(RenderError),
     /// The execution gate aborted an inner tool call. Carries the failing
     /// tool's error when the abort came from `on_tool_error`.
     Aborted(Option<Value>),
@@ -341,9 +331,9 @@ impl Pipeline {
                 );
                 Ok(run.result)
             }
-            Err(AgentFail::Empty(message)) => Err(ExecutionEnd::Empty {
+            Err(AgentFail::Empty(error)) => Err(ExecutionEnd::Empty {
                 step: step.id.clone(),
-                message,
+                message: error.to_string(),
             }),
             Err(AgentFail::Failed(message)) => Err(ExecutionEnd::Failed {
                 step: step.id.clone(),
@@ -375,30 +365,43 @@ impl Pipeline {
             .map_err(|e| AgentFail::Failed(format!("invalid agent input: {e}")))?;
 
         let roots = Roots::new(scope);
-        let prompt_str = spec
-            .prompt
-            .as_str()
-            .ok_or_else(|| AgentFail::Failed("`prompt` must be a string".to_string()))?;
-        let prompt = match render_str(prompt_str, &roots) {
-            Ok(p) => p,
-            Err(e @ RenderError::EmptyData { .. }) => return Err(AgentFail::Empty(e.to_string())),
-            Err(e) => return Err(AgentFail::Failed(e.to_string())),
+        let render = |text: &str| match render_str(text, &roots) {
+            Ok(rendered) => Ok(rendered),
+            Err(e @ RenderError::EmptyData { .. }) => Err(AgentFail::Empty(e)),
+            Err(e) => Err(AgentFail::Failed(e.to_string())),
+        };
+        let prompt = render(&spec.prompt)?;
+        let system = match &spec.system_prompt {
+            Some(extra) => format!("{BUILTIN_SYSTEM_PROMPT}\n\n{}", render(extra)?),
+            None => BUILTIN_SYSTEM_PROMPT.to_string(),
         };
 
-        let tools = resolve_tools(
-            spec.tools.as_deref().unwrap_or(&[]),
-            self.registry.as_ref(),
-            &self.plans,
-        )
-        .await
-        .map_err(AgentFail::Failed)?;
+        // Validation rejects an empty `tools` list, but a plan can reach
+        // the executor unvalidated (a gate-injected draft, a direct API
+        // caller), and "all tools" is the wrong guess to make here.
+        let patterns = match spec.tools.as_deref() {
+            Some([]) => {
+                return Err(AgentFail::Failed(
+                    "`tools` is empty — omit it to expose the whole catalogue, \
+                     or name at least one tool or pattern"
+                        .to_string(),
+                ))
+            }
+            Some(patterns) => patterns,
+            None => &[],
+        };
+        let tools = resolve_tools(patterns, self.registry.as_ref(), &self.plans)
+            .await
+            .map_err(AgentFail::Failed)?;
 
         // `plan_and_execute` is never offered inside an agent: nested
         // planning loops have no coherent cost boundary. `plan__*` stays,
-        // and works, because inner calls go through dispatch.
+        // and works, because inner calls go through dispatch. Advertising
+        // is only half of it — `execute_agent_tools` refuses the name too,
+        // since dispatch would happily route it.
         let tool_specs: Vec<ToolSpec> = tools
             .into_iter()
-            .filter(|t| t.name != "plan_and_execute")
+            .filter(|t| t.name != PLANNER_TOOL)
             .map(|t| ToolSpec {
                 name: t.name,
                 description: t.description,
@@ -406,10 +409,6 @@ impl Pipeline {
             })
             .collect();
 
-        let system = match &spec.system_prompt {
-            Some(extra) => format!("{BUILTIN_SYSTEM_PROMPT}\n\n{extra}"),
-            None => BUILTIN_SYSTEM_PROMPT.to_string(),
-        };
         let model_name = spec.model.as_deref().unwrap_or("chat");
         let max_iterations = spec.max_iterations;
         let output_schema = spec.output_schema;
@@ -421,13 +420,21 @@ impl Pipeline {
         loop {
             if round >= max_iterations {
                 // Budget spent without a conforming answer: report what
-                // happened rather than inventing a result.
+                // happened rather than inventing a result. `output` is `{}`
+                // here and deliberately NOT schema-conforming — `final:
+                // false` is the signal, and downstream steps that reach
+                // into `output` fail as a bad path. Documented as such.
                 return Ok(AgentRun {
                     result: envelope(json!({}), max_iterations, &tools_called, false),
                     tool_calls: tools_called.len(),
                 });
             }
             round += 1;
+            // Same signal the ask/chat loop emits between rounds: a long
+            // agent step is otherwise silent between its step events.
+            if round > 1 {
+                self.events.iteration(round);
+            }
 
             let request = ChatRequest {
                 model: model_name.to_string(),
@@ -437,8 +444,12 @@ impl Pipeline {
                 ..Default::default()
             };
 
+            // Retries and cross-provider failover live in graph-llm, under
+            // every provider call — transparent here, and they never
+            // consume a round.
             let response = self
-                .call_llm_with_retries(model_name, request)
+                .router
+                .chat_named(model_name, request)
                 .await
                 .map_err(|e| AgentFail::Failed(format!("LLM call failed: {e}")))?;
 
@@ -492,45 +503,6 @@ impl Pipeline {
         }
     }
 
-    /// Call the LLM with backoff on transient errors. Retries are
-    /// transparent: they never consume an agent iteration.
-    async fn call_llm_with_retries(
-        &self,
-        model_name: &str,
-        request: ChatRequest,
-    ) -> Result<ChatResponse, graph_llm::LlmError> {
-        let (provider, choice) = self
-            .router
-            .resolve_named(model_name)
-            .map_err(|e| graph_llm::LlmError::NoModelForRole(format!("{e}")))?;
-
-        let mut request = request;
-        request.model = choice.model.clone();
-        request.temperature = request.temperature.or(choice.temperature);
-
-        const MAX_ATTEMPTS: u32 = 3;
-        const BASE_DELAY_MS: u64 = 1000;
-
-        let mut attempt: u32 = 0;
-        loop {
-            match provider.chat(request.clone()).await {
-                Ok(response) => return Ok(response),
-                Err(error) if attempt + 1 < MAX_ATTEMPTS && is_transient(&error) => {
-                    let delay = Duration::from_millis(BASE_DELAY_MS * (1 << attempt));
-                    tracing::warn!(
-                        attempt = attempt + 1,
-                        delay_ms = delay.as_millis() as u64,
-                        error = %error,
-                        "agent LLM transient error; retrying"
-                    );
-                    tokio::time::sleep(delay).await;
-                    attempt += 1;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
     /// Run one round's tool calls in parallel through `Pipeline::dispatch`.
     ///
     /// A tool *error* is not a step failure: it returns into the loop as an
@@ -552,12 +524,24 @@ impl Pipeline {
         }
 
         let futures = calls.iter().map(|call| {
-            let call_path = StepPath::in_body(
-                &path.step,
-                &format!("agent.{round}"),
-                Some(call.name.as_str()),
-            );
+            // Nested, not rebuilt from the step id: an agent inside a map
+            // body must keep its item segment (E1/do.2/agent.3/tool), or
+            // concurrent items report indistinguishable paths.
+            let call_path = path.nested(&format!("agent.{round}"), Some(call.name.as_str()));
             async move {
+                // Advertising `plan_and_execute` is suppressed, but
+                // `dispatch` routes the bare name, so a model that emits it
+                // anyway would get nested planning. Refuse it here, as an
+                // error the agent can recover from.
+                if call.name == PLANNER_TOOL {
+                    return (
+                        call,
+                        Err(super::DispatchError::Failed(format!(
+                            "{PLANNER_TOOL} is not available inside an agent step; \
+                             call a plan (plan__*) instead"
+                        ))),
+                    );
+                }
                 let outcome = self
                     .dispatch(&call_path, &call.name, call.arguments.clone(), scope)
                     .await;
@@ -696,18 +680,6 @@ fn truncate_for_error(text: &str) -> String {
     }
     let cut: String = trimmed.chars().take(200).collect();
     format!("{cut}…")
-}
-
-/// Check if an LLM error is transient (retryable).
-fn is_transient(error: &graph_llm::LlmError) -> bool {
-    use graph_llm::LlmError;
-    match error {
-        LlmError::Api { status, .. } => {
-            matches!(status, 429 | 500 | 502 | 503 | 504 | 529)
-        }
-        LlmError::Http(e) => e.is_connect() || e.is_timeout(),
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -899,6 +871,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolved_tools_come_back_in_a_stable_order() {
+        // The catalogue the model sees must not reorder between runs.
+        let registry = Arc::new(MockRegistry::new(vec![
+            ToolDef {
+                name: "linear__list_teams".into(),
+                description: "d".into(),
+                input_schema: json!({}),
+                output_schema: None,
+                output_example: None,
+                read_only: None,
+            },
+            ToolDef {
+                name: "linear__get_issue".into(),
+                description: "d".into(),
+                input_schema: json!({}),
+                output_schema: None,
+                output_example: None,
+                read_only: None,
+            },
+            ToolDef {
+                name: "linear__add_comment".into(),
+                description: "d".into(),
+                input_schema: json!({}),
+                output_schema: None,
+                output_example: None,
+                read_only: None,
+            },
+        ]));
+
+        let names: Vec<String> = resolve_tools(&["linear__*".to_string()], &*registry, &[])
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "linear__add_comment",
+                "linear__get_issue",
+                "linear__list_teams"
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn excludes_plan_and_execute_from_tools() {
         let registry = Arc::new(MockRegistry::new(vec![
             ToolDef {
@@ -1005,6 +1023,58 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_an_explicitly_empty_tool_list() {
+        // `tools: []` reads as "no tools" but resolves to the whole
+        // catalogue, so it must not be a silent success either way.
+        let input: Map<String, Value> = json!({
+            "prompt": "test",
+            "outputSchema": {"type": "object"},
+            "tools": []
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let mut problems = Vec::new();
+        validate_agent_input(&input, &["input", "E0"], "E1", &mut problems);
+        assert!(
+            problems.iter().any(|p| p.contains("`tools` is empty")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_non_string_prompt_at_parse_time() {
+        let input: Map<String, Value> = json!({
+            "prompt": 12345,
+            "outputSchema": {"type": "object"}
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let mut problems = Vec::new();
+        validate_agent_input(&input, &["input", "E0"], "E1", &mut problems);
+        assert!(
+            problems.iter().any(|p| p.contains("invalid agent input")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn validate_checks_system_prompt_references_too() {
+        let input: Map<String, Value> = json!({
+            "prompt": "fine",
+            "systemPrompt": "context: {{E9.values}}",
+            "outputSchema": {"type": "object"}
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let mut problems = Vec::new();
+        validate_agent_input(&input, &["input", "E0"], "E1", &mut problems);
+        assert!(problems.iter().any(|p| p.contains("E9")), "{problems:?}");
+    }
+
+    #[test]
     fn validate_rejects_unknown_fields() {
         let input: Map<String, Value> = json!({
             "prompt": "test",
@@ -1081,21 +1151,6 @@ mod tests {
         .expect("snake_case aliases must parse");
         assert_eq!(spec.max_iterations, 2);
         assert_eq!(spec.system_prompt.as_deref(), Some("extra"));
-    }
-
-    #[test]
-    fn glob_matches_wildcards_anywhere() {
-        assert!(glob_matches("linear__*", "linear__list_issues"));
-        assert!(glob_matches("*", "anything"));
-        assert!(glob_matches("*__search", "brave__search"));
-        assert!(glob_matches("linear__*_issues", "linear__list_issues"));
-        assert!(glob_matches("user__git_log", "user__git_log"));
-
-        // The old prefix-only implementation got all of these wrong.
-        assert!(!glob_matches("*__search", "brave__search_web"));
-        assert!(!glob_matches("linear__*_issues", "linear__list_teams"));
-        assert!(!glob_matches("user__git_log", "user__git_log_extra"));
-        assert!(!glob_matches("linear__*", "user__git_log"));
     }
 
     #[tokio::test]

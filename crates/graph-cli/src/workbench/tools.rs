@@ -168,9 +168,9 @@ impl WorkbenchTools {
             if error.to_string().contains("unknown field") {
                 message.push_str(
                     "\nhint: control flow is not a field — it is a step whose \
-                     toolName is one of the bare control steps exit, decide, map, \
-                     or reduce (there is no gate/assert tool); a plan finishes \
-                     with `solver` OR `output`, never both",
+                     toolName is one of the bare control steps exit, agent, \
+                     decide, map, or reduce (there is no gate/assert tool); a \
+                     plan finishes with `solver` OR `output`, never both",
                 );
             }
             error_outcome(&message)
@@ -2131,7 +2131,7 @@ steps:
         let message = outcome.result["error"].as_str().unwrap();
         assert!(message.contains("unknown field"), "{message}");
         assert!(message.contains("hint:"), "{message}");
-        assert!(message.contains("exit, decide, map"), "{message}");
+        assert!(message.contains("exit, agent, decide, map"), "{message}");
     }
 
     #[test]

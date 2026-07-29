@@ -6,7 +6,9 @@ use super::editor::EditorContext;
 use super::plan_ws::{
     DraftingProgress, PlanWorkspace, RowKey, RunLine, StepRow, StepStatus, WsTab,
 };
-use graph_core::pipeline::{DECIDE_TOOL, EXIT_TOOL, MAP_TOOL, MAX_STEP_ATTEMPTS, REDUCE_TOOL};
+use graph_core::pipeline::{
+    AGENT_TOOL, DECIDE_TOOL, EXIT_TOOL, MAP_TOOL, MAX_STEP_ATTEMPTS, REDUCE_TOOL,
+};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -203,6 +205,8 @@ fn control_icon(tool: &str) -> Option<(&'static str, Color)> {
         MAP_TOOL => Some(("⟳", Color::Cyan)),
         REDUCE_TOOL => Some(("∑", Color::Cyan)),
         EXIT_TOOL => Some(("⎋", Color::Magenta)),
+        // Yellow: the one control step that spends inference per round.
+        AGENT_TOOL => Some(("✻", Color::Yellow)),
         "plan_and_execute" => Some(("ƒ", Color::White)),
         tool if tool.starts_with("plan__") => Some(("ƒ", Color::White)),
         _ => None,
@@ -1418,6 +1422,11 @@ steps:
       over: "{{E0.values}}"
       do:
         - { id: note, tool_name: t__notify, input: {} }
+  - id: E3
+    tool_name: agent
+    input:
+      prompt: p
+      outputSchema: { type: object, properties: {} }
 solver:
   queryToAnswer: "q"
 "#,
@@ -1434,6 +1443,7 @@ solver:
                 "│  └── else ".to_string(), // single-call branch label rides the piping
                 "├─⟳ ".to_string(),         // E2 map
                 "│  └── ".to_string(),      // note — anonymous body, no head
+                "├─✻ ".to_string(),         // E3 agent — its own junction icon
                 "└── ".to_string(),         // solver closes the trunk
             ]
         );

@@ -805,45 +805,7 @@ impl Pipeline {
             // (decide) or per item (map/reduce). Their step events carry
             // the raw input for the same reason.
             let control = match step.tool_name.as_str() {
-                AGENT_TOOL => {
-                    self.events.step_started(
-                        &self.call_stack,
-                        &step.id,
-                        &step.tool_name,
-                        &Value::Object(step.input.clone()),
-                    );
-                    let started = std::time::Instant::now();
-                    let run = self.run_agent(&step, state).await;
-                    match &run {
-                        Ok(result) => self.events.step_finished(
-                            &self.call_stack,
-                            &step.id,
-                            &step.tool_name,
-                            result,
-                            false,
-                            started.elapsed(),
-                        ),
-                        Err(ExecutionEnd::Failed { message, .. }) => self.events.step_finished(
-                            &self.call_stack,
-                            &step.id,
-                            &step.tool_name,
-                            &json!({"error": message}),
-                            true,
-                            started.elapsed(),
-                        ),
-                        Err(ExecutionEnd::Empty { message, .. }) => self.events.step_finished(
-                            &self.call_stack,
-                            &step.id,
-                            &step.tool_name,
-                            &json!({"error": message, "emptyData": true}),
-                            true,
-                            started.elapsed(),
-                        ),
-                        Err(_) => {}
-                    }
-                    Some(run)
-                }
-                DECIDE_TOOL | MAP_TOOL | REDUCE_TOOL => {
+                AGENT_TOOL | DECIDE_TOOL | MAP_TOOL | REDUCE_TOOL => {
                     self.events.step_started(
                         &self.call_stack,
                         &step.id,
@@ -852,6 +814,7 @@ impl Pipeline {
                     );
                     let started = std::time::Instant::now();
                     let run = match step.tool_name.as_str() {
+                        AGENT_TOOL => self.run_agent(&step, state).await,
                         DECIDE_TOOL => self.run_decide(&step, state).await,
                         MAP_TOOL => self.run_map(&step, state).await,
                         _ => self.run_reduce(&step, state).await,

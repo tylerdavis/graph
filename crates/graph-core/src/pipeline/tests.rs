@@ -3465,3 +3465,241 @@ async fn an_agent_failure_reaches_the_bus_as_a_replan_eligible_error() {
         other => panic!("expected StepFailed, got {other:?}"),
     }
 }
+
+/// Inner calls are dispatched at body depth, so their path has to carry the
+/// item that made them. Collapsing onto `E1/agent.N/tool` would make every
+/// item of a concurrent map indistinguishable in gates and event streams.
+#[tokio::test]
+async fn agent_inner_call_paths_keep_the_body_location() {
+    let registry = search_registry(json!({"values": [{"id": "a"}, {"id": "b"}]}));
+    let (pipeline, _) = pipeline(
+        vec![
+            tool_use("c1", "t__search", json!({})),
+            text(r#"{"found": 1}"#),
+            tool_use("c2", "t__search", json!({})),
+            text(r#"{"found": 2}"#),
+        ],
+        registry.clone(),
+        1,
+    );
+
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": {
+                "toolName": "agent",
+                "input": {"prompt": "handle {{item.id}}", "outputSchema": OUT_SCHEMA()}
+            }
+        }}
+    ]))
+    .unwrap();
+
+    let gate = ScriptedGate::new(vec![]);
+    pipeline
+        .with_gate(gate.clone())
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let paths = gate.paths();
+    assert!(
+        paths.contains(&"E1/do.0/agent.1/t__search".to_string()),
+        "{paths:?}"
+    );
+    assert!(
+        paths.contains(&"E1/do.1/agent.1/t__search".to_string()),
+        "{paths:?}"
+    );
+}
+
+/// Suppressing `plan_and_execute` from the advertised catalogue is only half
+/// the boundary: `dispatch` routes the bare name, so the loop must refuse it
+/// even when the model asks for it anyway.
+#[tokio::test]
+async fn agent_refuses_plan_and_execute_even_when_the_model_asks_for_it() {
+    let registry = search_registry(json!({}));
+    let (pipeline, provider) = pipeline(
+        vec![
+            tool_use("c1", "plan_and_execute", json!({"query": "do it all"})),
+            text(r#"{"found": 0}"#),
+        ],
+        registry.clone(),
+        1,
+    );
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({"prompt": "p", "outputSchema": OUT_SCHEMA()})
+    )]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert_eq!(outcome.state.results["E0"]["final"], json!(true));
+
+    let requests = provider.requests.lock().unwrap();
+    // Exactly two rounds: no planner call was made in between.
+    assert_eq!(requests.len(), 2, "a nested planner run would add requests");
+    let refused = requests[1].messages.iter().any(|m| {
+        matches!(
+            m,
+            graph_llm::types::ChatMessage::ToolResult { content, is_error: true, .. }
+                if content.to_string().contains("not available inside an agent")
+        )
+    });
+    assert!(refused, "the refusal must return into the loop as an error");
+}
+
+#[tokio::test]
+async fn gate_abort_inside_an_agent_is_a_hard_stop() {
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(
+        vec![
+            tool_use("c1", "t__search", json!({})),
+            text(r#"{"found": 0}"#),
+        ],
+        registry.clone(),
+        1,
+    );
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({"prompt": "p", "outputSchema": OUT_SCHEMA()})
+    )]))
+    .unwrap();
+
+    let err = pipeline
+        .with_gate(ScriptedGate::new(vec![GateDecision::Abort]))
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PipelineError::Aborted { .. }),
+        "expected Aborted, got {err:?}"
+    );
+    // The abort landed before the tool ran, and no further round happened.
+    assert!(registry.invocations.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn agent_output_that_misses_the_schema_gets_one_repair_pass() {
+    let registry = search_registry(json!({}));
+    let (pipeline, provider) = pipeline(
+        // Round one answers with the right shape but the wrong type; the
+        // repair role returns the corrected document.
+        vec![text(r#"{"found": "1"}"#), structured(json!({"found": 1}))],
+        registry.clone(),
+        1,
+    );
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({"prompt": "p", "outputSchema": OUT_SCHEMA()})
+    )]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let result = &outcome.state.results["E0"];
+    assert_eq!(result["output"], json!({"found": 1}), "repaired in place");
+    assert_eq!(result["final"], json!(true));
+    // The repair is not a round: one inference round, one repair call.
+    assert_eq!(result["iterations"], json!(1));
+    let requests = provider.requests.lock().unwrap();
+    assert!(
+        requests[1].response_schema.is_some(),
+        "the second call must be the structured repair pass"
+    );
+}
+
+/// Data running out while rendering an agent's prompt is `EmptyData` at any
+/// depth: it degrades, and never becomes a replan-eligible tool failure.
+#[tokio::test]
+async fn agent_empty_data_in_a_body_prompt_degrades() {
+    let registry = search_registry(json!({"values": [{"children": []}]}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": {
+                "toolName": "agent",
+                "input": {
+                    "prompt": "handle {{item.children.0.id}}",
+                    "outputSchema": OUT_SCHEMA()
+                }
+            }
+        }}
+    ]))
+    .unwrap();
+
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, PipelineError::EmptyData { .. }),
+        "expected EmptyData, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn agent_system_prompt_renders_against_the_scope() {
+    let registry = search_registry(json!({"values": [{"id": "team-3"}]}));
+    let (pipeline, provider) = pipeline(vec![text(r#"{"found": 0}"#)], registry.clone(), 1);
+
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {}},
+        agent_step(
+            "E1",
+            json!({
+                "prompt": "p",
+                "systemPrompt": "The team is {{E0.values.0.id}}.",
+                "outputSchema": OUT_SCHEMA()
+            })
+        )
+    ]))
+    .unwrap();
+
+    pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let requests = provider.requests.lock().unwrap();
+    assert!(
+        requests[0].system.contains("The team is team-3."),
+        "{}",
+        requests[0].system
+    );
+}
+
+#[tokio::test]
+async fn an_explicitly_empty_tool_list_fails_the_step_rather_than_granting_everything() {
+    let registry = search_registry(json!({}));
+    let (pipeline, provider) = pipeline(vec![text(r#"{"found": 0}"#)], registry.clone(), 1);
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({"prompt": "p", "outputSchema": OUT_SCHEMA(), "tools": []})
+    )]))
+    .unwrap();
+
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    let text = format!("{err:?}");
+    assert!(text.contains("`tools` is empty"), "{text}");
+    assert!(
+        provider.requests.lock().unwrap().is_empty(),
+        "no inference may be spent on it"
+    );
+}
