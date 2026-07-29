@@ -104,3 +104,5 @@ Body steps count in `steps_executed` — a map over 3 items with a two-step body
 | cost | 0 inference — plus whatever the body calls |
 
 `plan_and_execute`'s planner also has both tools, so LLM-authored plans can fan out over their own intermediate results.
+
+A body step may also be an [`agent`](/plans/agent-step) — the per-item scope (`{{item}}`, `{{index}}`, `{{accumulator}}`) reaches its prompt. That runs one agent per item, so mind the inference multiplier.

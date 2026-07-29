@@ -75,6 +75,8 @@ steps:
       message: "Nothing urgent."
 ```
 
+An [`agent` step](/plans/agent-step) is the escape hatch for the one case plans can't express: when *which* tools to call depends on what earlier calls returned. It still returns schema-conforming JSON, so the rest of the plan stays typed.
+
 Design small, single-purpose plans (fetch-and-shape, in output mode) and compose them from reporting or gating plans. Cycles fail immediately with the chain named (`a → b → a`); nesting is capped at 8.
 
 ## Plan discovery
