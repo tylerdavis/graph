@@ -1,0 +1,90 @@
+---
+title: "graph as an MCP server"
+description: "Serving your plans and the plan authoring commands to another agent"
+icon: "share-nodes"
+---
+
+graph is an MCP *client* — that's [MCP servers](/tools/mcp-servers). This page is the other direction: `graph mcp serve` exposes **your plans** to somebody else's agent, over stdio.
+
+```bash
+graph mcp serve --dir /path/to/project
+```
+
+The point is not to give an agent another shell. It is that a plan is a *reviewed, validated, versioned* pipeline of tool calls — and an agent calling `plan_sprint_report` gets that whole apparatus behind one tool call, instead of improvising the same sequence differently every time.
+
+## Configuring a client
+
+```json
+{
+  "mcpServers": {
+    "graph": {
+      "command": "graph",
+      "args": ["mcp", "serve", "--dir", "/path/to/project"]
+    }
+  }
+}
+```
+
+<Warning>
+`--dir` is not optional in practice. MCP clients launch servers with an arbitrary working directory, so without it the project config layer (`./.graph/`) and your plan catalog resolve against wherever the client happened to be — and the server comes up with no plans and no tools.
+</Warning>
+
+## What gets served
+
+Two populations, deliberately named apart.
+
+### Your plans, as tools
+
+Every plan in the catalog becomes `plan_<identifier>`, carrying that plan's own `input_schema` as the tool's schema, and its `description` plus `exemplars` as the routing signal. The calling agent gets exactly the argument contract graph enforces internally — not a generic "run a plan" tool taking a free-form blob.
+
+```
+plan_sprint_report   { team: string, since?: string }
+plan_urgent_issues   { }
+```
+
+A plan hidden by [`requires_servers`](/plans/overview) on this machine is not served, for the same reason it is not offered to graph's own agent: it cannot run here.
+
+### The authoring commands
+
+`graph_plan_list`, `graph_plan_show`, `graph_plan_validate`, `graph_plan_new`, `graph_plan_draft`, `graph_plan_set`, `graph_plan_unset`, `graph_plan_step_add`, `graph_plan_step_update`, `graph_plan_step_rename`, `graph_plan_step_rm`, `graph_tools_list`, `graph_tools_show`, `graph_tools_test`.
+
+These are the [plan authoring](/plans/authoring) CLI, one tool per verb, so an agent can build and check a plan without a shell. Every edit goes through the same validation guard as the command line: an edit that would break the plan is refused, with the problems it would have introduced.
+
+The `graph_` prefix is what keeps a plan named `tools_list` from colliding with the verb of the same name.
+
+## Authoring and calling in one session
+
+The tool list is read fresh on every `tools/list`, and a successful edit sends `notifications/tools/list_changed`. So an agent can build a capability and then use it, without a restart:
+
+```
+graph_plan_new       identifier: commit_digest
+graph_plan_step_add  E1, builtin__git_log, {…}
+graph_plan_set       input_schema, {…}
+graph_plan_validate  → { ok: true }
+plan_commit_digest   { base: "v1.0", head: "HEAD" }   ← now callable
+```
+
+## How outcomes come back
+
+The CLI signals with [exit codes](/reference/scripting-contract#exit-codes). Those have nowhere to go over MCP, so the distinctions they carry survive as data instead.
+
+| Situation | CLI | Over MCP |
+|---|---|---|
+| Plan ran | exit `0` | result: `{answer, output, plan, steps_executed, exit}` |
+| Plan needs inputs | exit `3` | `isError`, body carries `inputSchema` and `problems` — retry with the argument |
+| [Exit gate](/plans/exit-gates) asserted | exit `4` | `isError`, body carries the gate's `message` and `step` |
+| Edit refused | exit `1` | `isError`, body carries `problemsIntroduced` |
+| Unknown tool, bad argument type | exit `1` | a JSON-RPC error — this one is the caller's mistake, not a result |
+
+The distinction in that last row is the important one. A refused edit *is* an answer: the problem list is what the agent needs to fix its next attempt, and flattening it into an error string would leave the model parsing prose to recover it. A misspelled tool name is not an answer at all.
+
+## Cost and latency
+
+`graph_plan_draft` calls the planner model — roughly 30 seconds, and the only served tool that costs inference. Plans themselves cost whatever their [finish mode](/plans/finish-modes) implies: output-mode plans run with zero inference, solver-mode plans cost one call. Many MCP clients default to a 60-second tool timeout; raise it if your plans are long-running.
+
+## Notes and limits
+
+- **Progress is not yet streamed.** A long plan returns when it is done. Tool activity goes to stderr, where MCP clients conventionally collect server logs.
+- **`ask` and `chat` are not served.** They are graph's conversational layer; an agent calling graph does not need another agent, it needs the plans.
+- **Do not point graph's own `[mcp]` config at `graph mcp serve`.** The pipeline's cycle detection and depth cap work within a process; they do not cross a process boundary.
+- Plan writes are serialized, so concurrent authoring calls cannot silently lose an edit.

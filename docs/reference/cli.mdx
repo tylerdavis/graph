@@ -146,9 +146,10 @@ graph threads rm <id> [--json]
 graph mcp list [--json]              # configured servers
 graph mcp tools [server] [--json]    # discovered tools
 graph mcp test <server> [--json]     # connect, count tools and declared output schemas
+graph mcp serve --dir <path>         # serve graph's plans to an agent over MCP (stdio)
 ```
 
-graph is an MCP *client*: each `[mcp.<name>]` entry becomes a set of `<name>__*` tools. It does not serve MCP — see [MCP servers](/tools/mcp-servers).
+graph is an MCP *client*: each `[mcp.<name>]` entry becomes a set of `<name>__*` tools — see [MCP servers](/tools/mcp-servers). It is also an MCP *server*: `graph mcp serve` exposes every plan in the catalog as a callable tool, plus the plan authoring commands, so another agent can build and run graph plans. See [graph as an MCP server](/tools/mcp-server).
 
 ## `graph shapes`
 
