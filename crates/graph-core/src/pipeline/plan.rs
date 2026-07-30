@@ -19,6 +19,11 @@ pub struct Step {
     /// templates like {{E0.values.0.id}}.
     pub input: Map<String, Value>,
     /// Why this step exists and what it should produce.
+    // Deliberately not `skip_serializing_if`: schemars turns this struct into
+    // the planner's schema (and these doc comments into its descriptions), and
+    // skipping would drop the `default` annotation the planner sees. A null
+    // reasoning is omitted when writing a plan *file* — see
+    // `authoring::to_yaml`.
     #[serde(default)]
     pub reasoning: Option<String>,
 }

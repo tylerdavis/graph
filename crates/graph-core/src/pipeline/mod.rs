@@ -11,6 +11,7 @@
 //!   the solver.
 
 pub mod agent;
+pub mod authoring;
 pub mod body;
 pub mod catalog;
 pub mod condition;
@@ -27,6 +28,7 @@ mod state;
 mod tests;
 
 pub use agent::{agent_tool_def, AGENT_TOOL};
+pub use authoring::{EditAccepted, EditRejected, WriteError};
 pub use catalog::{CatalogCheck, ToolCatalog};
 pub use decision::DECIDE_TOOL;
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
@@ -734,61 +736,11 @@ impl Pipeline {
     /// control-step gates and bodies. No LLM, no registry — tool existence
     /// is checked at execution. Returns every problem found, not just the
     /// first.
+    ///
+    /// The rules live in [`authoring::validate_steps`] so plan authoring can
+    /// validate an edit without constructing a pipeline.
     pub fn validate_plan(&self, plan: &Plan) -> Result<(), Vec<String>> {
-        let mut problems = Vec::new();
-        if plan.is_empty() {
-            problems.push("plan has no steps".to_string());
-        }
-        // Tool existence is checked at execution against the live registry.
-        let all_ids: Vec<&str> = plan.iter().map(|s| s.id.as_str()).collect();
-        let mut seen: Vec<&str> = vec!["input"];
-        for step in plan {
-            if let Err(problem) = plan::check_step_id(&step.id) {
-                problems.push(problem);
-            }
-            if seen.contains(&step.id.as_str()) {
-                problems.push(format!("duplicate step id '{}'", step.id));
-            }
-            if let Some(problem) = plan::workbench_tool_problem(&step.tool_name) {
-                problems.push(format!("step {}: {problem}", step.id));
-            }
-            // Control steps are body-aware: body-internal references
-            // (same-body ids, per-item pseudo-roots) are legal, so the
-            // generic walk below would false-flag them.
-            match step.tool_name.as_str() {
-                AGENT_TOOL => {
-                    agent::validate_agent_input(&step.input, &seen, &step.id, &mut problems)
-                }
-                DECIDE_TOOL => decision::validate_decide_input(
-                    &step.input,
-                    &seen,
-                    &all_ids,
-                    &step.id,
-                    &mut problems,
-                ),
-                MAP_TOOL => iterate::validate_map_input(
-                    &step.input,
-                    &seen,
-                    &all_ids,
-                    &step.id,
-                    &mut problems,
-                ),
-                REDUCE_TOOL => iterate::validate_reduce_input(
-                    &step.input,
-                    &seen,
-                    &all_ids,
-                    &step.id,
-                    &mut problems,
-                ),
-                _ => {
-                    // Template parse + reference-ordering check on every string input.
-                    for value in step.input.values() {
-                        check_templates(value, &seen, &step.id, &mut problems);
-                    }
-                }
-            }
-            seen.push(&step.id);
-        }
+        let problems = authoring::validate_steps(plan);
         if problems.is_empty() {
             Ok(())
         } else {

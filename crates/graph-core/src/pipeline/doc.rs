@@ -15,14 +15,14 @@ pub struct PlanDoc {
     pub name: String,
     pub description: String,
     /// Example queries this plan handles (folded into the tool description).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exemplars: Vec<String>,
     /// MCP server names whose tools the steps use; the plan tool is hidden
     /// when any is missing from the config.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires_servers: Vec<String>,
     /// JSON Schema for the plan's inputs (referenced as `{{input.x}}`).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
     pub steps: Plan,
     /// LLM synthesis of the results into prose. Optional — see `output`.
@@ -160,7 +160,27 @@ pub fn load_plan_docs(dirs: &[PathBuf]) -> LoadedPlans {
     loaded
 }
 
+/// Read a plan file for *execution*: parsed and structurally valid.
 pub fn load_plan_doc(path: &Path) -> Result<PlanDoc, DocError> {
+    let doc = parse_plan_doc(path)?;
+    validate_doc(&doc).map_err(|message| DocError::Invalid {
+        path: path.display().to_string(),
+        message,
+    })?;
+    Ok(doc)
+}
+
+/// Read a plan file for *authoring*: parsed, but not validated.
+///
+/// [`load_plan_doc`] refuses a document that fails [`validate_doc`], which is
+/// right for the runtime catalog and wrong for editing — a plan part-way
+/// through being built (a fresh `graph plan new` scaffold has no steps yet)
+/// must still be openable, or repairing it would be impossible. That is the
+/// same reason the edit guard tolerates pre-existing problems.
+///
+/// Callers are expected to report the problems themselves rather than
+/// pretending the file is sound.
+pub fn parse_plan_doc(path: &Path) -> Result<PlanDoc, DocError> {
     let raw = std::fs::read_to_string(path).map_err(|e| DocError::Io {
         path: path.display().to_string(),
         source: e,
@@ -170,10 +190,6 @@ pub fn load_plan_doc(path: &Path) -> Result<PlanDoc, DocError> {
         message: e.to_string(),
     })?;
     doc.path = Some(path.to_path_buf());
-    validate_doc(&doc).map_err(|message| DocError::Invalid {
-        path: path.display().to_string(),
-        message,
-    })?;
     Ok(doc)
 }
 
