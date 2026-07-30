@@ -142,12 +142,11 @@ pub enum PlanCommand {
     Draft {
         /// What the plan should do, as a self-contained instruction
         goal: String,
-        /// Revise this plan instead of drafting a new one
+        /// Draft into this plan's identity (identifier, name, description,
+        /// input schema). Every step is replaced — use the editing commands
+        /// to correct a plan whose steps you want to keep.
         #[arg(long, value_name = "NAME|PATH")]
         from: Option<String>,
-        /// Guidance for the revision (validation problems, corrections)
-        #[arg(long)]
-        feedback: Option<String>,
         /// Write here instead of <plans dir>/<identifier>.yaml
         #[arg(long, value_name = "PATH")]
         output: Option<std::path::PathBuf>,

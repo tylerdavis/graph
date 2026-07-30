@@ -59,7 +59,7 @@ The commands below create and edit plan files. They are stateless — each one r
 
 ```
 graph plan new <identifier> [--name <n>] [--description <d>] [--output <path>] [--json]
-graph plan draft <goal> [--from <name|path>] [--feedback <f>] [--output <path>] [--stdout] [--json]
+graph plan draft <goal> [--from <name|path>] [--output <path>] [--stdout] [--json]
 graph plan set <name|path> <attribute> <value>... [--json]
 graph plan unset <name|path> <attribute> [--json]
 graph plan step add <name|path> <id> <tool> <json|@file|-> [--reasoning <r>] [--before <id> | --after <id>] [--json]
@@ -72,6 +72,15 @@ graph plan step rm <name|path> <id> [--json]
 `new` scaffolds a plan with no steps. It is intentionally invalid on creation (`plan has no steps`) — an edit is only refused if it makes things *worse*, so a scaffold stays editable and a plan can be built up step by step without ever invoking the planner.
 
 `draft` runs the planner over your tool catalog, one validated step at a time; if drafting exhausts its retries on a step, the valid prefix is saved and reported under `salvaged` so you can finish it with `step add` instead of redrafting. `--stdout` prints the YAML and writes nothing.
+
+**Drafting happens once, at the start.** It replaces every step, so it is not a way to correct a plan — redrafting to fix one thing discards everything that was already right. `--from` exists to draft into a plan's *identity* (its identifier, name, description, and input schema), which is how you get a well-named plan without renaming afterwards:
+
+```bash
+graph plan new commit_digest --description "Summarize commits between two refs"
+graph plan draft "<goal>" --from commit_digest
+```
+
+Once a draft has steps worth keeping, every correction goes through `set`, `step add`, `step update`, `step rename`, and `step rm`. Each applies one intent, is validated atomically, and is refused if it would break the plan.
 
 ### Attributes
 

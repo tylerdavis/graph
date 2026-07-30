@@ -151,7 +151,6 @@ Classify the request before planning and note it in step reasoning:
 
 pub struct DraftingPromptArgs<'a> {
     pub current_date: &'a str,
-    pub last_error: Option<&'a str>,
     pub tools: &'a str,
     pub user_context: &'a str,
     pub step_schema: &'a str,
@@ -165,7 +164,6 @@ pub struct DraftingPromptArgs<'a> {
 /// and reused byte-identically for the outline call and every step call,
 /// so the provider's prompt-cache prefix stays stable.
 pub fn drafting_prompt(args: &DraftingPromptArgs) -> String {
-    let last_error = args.last_error.unwrap_or("none");
     let draft_section = match args.draft {
         Some(draft) => format!(
             "### Draft Under Revision\nThe following draft plan has NOT been executed. \
@@ -184,7 +182,6 @@ You are tasked with creating a step-by-step plan to solve problems using the too
 
 ## Context Variables
 - Current Date: {current_date}
-- Last Error (if any): {last_error}
 
 ## Tools Available
 {tools}
@@ -246,7 +243,6 @@ Classify the request before planning and note it in step reasoning:
 {control_step_rules}
 "#,
         current_date = args.current_date,
-        last_error = last_error,
         tools = args.tools,
         templating_rules = TEMPLATING_RULES,
         user_context = args.user_context,
@@ -369,7 +365,6 @@ mod tests {
     fn drafting_prompt_for(draft: Option<&str>) -> String {
         drafting_prompt(&DraftingPromptArgs {
             current_date: "2026-01-01",
-            last_error: None,
             tools: "(no tools available)",
             user_context: "(none)",
             step_schema: "{}",

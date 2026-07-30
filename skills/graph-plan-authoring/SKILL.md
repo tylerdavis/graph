@@ -43,23 +43,37 @@ Then read what it wrote (`graph plan show <id> --json`), apply the fixes below, 
 - **Do not ask the user for a plan's steps.** Ask for the *goal*; the goal is what `draft` consumes.
 - **Do not judge a plan by reading it.** `graph plan validate --json` is the verdict, and `graph plan run` is the proof. Neither costs you a guess.
 
-### Draft, or build by hand?
+### Draft once, then edit
 
 | Situation | Do this |
 |---|---|
 | Any new plan, described in prose | `graph plan draft "<goal>"` |
-| Drafted plan is wrong in a specific place | edit commands (`plan set`, `plan step *`) |
-| Drafted plan is wrong structurally | `graph plan draft "<goal>" --from <plan> --feedback "<what's wrong>"` |
+| Drafted plan is wrong — in one place or in ten | edit commands (`plan set`, `plan step *`) |
 | Adding a step to a plan you already understand | `graph plan step add` |
 | **No provider credentials** (offline, CI, no API key) | `graph plan new` + edit commands — the only path that costs zero inference |
 
 Building a whole plan with `plan new` + a dozen `step add` calls is for that last row only. If a planner is reachable, drafting gets there faster and grounds the steps in the real catalog.
 
+**Never redraft to fix a plan.** Drafting replaces every step, so aiming the planner at a draft that is 80% right throws away the 80% to fix the 20% — and the next draft is a fresh roll of the dice, not an improvement on this one. However structural the change, sequential edit commands are the way: each applies one intent, is validated atomically, and is *refused* if it would make the plan invalid. Ten rejected-or-applied edits beat one silent rewrite.
+
+The only reason to draft twice is to start over from a genuinely better goal, having decided the current plan is worth nothing.
+
+### Getting a good identifier
+
+`draft` names the plan after the goal string, truncated. To skip the rename, create the identity first and draft into it:
+
+```bash
+graph plan new commit_digest --description "Summarize commits between two refs"
+graph plan draft "<goal>" --from commit_digest --json
+```
+
+`--from` carries the identifier, name, description, and input schema into the draft. It is *not* a revision flag — the steps are still drafted from scratch — so only use it on a plan whose steps you have not hand-tuned yet.
+
 ## The three fixes a fresh draft usually needs
 
 Verified against a real draft — check each one every time.
 
-**1. The identifier and name are the goal string, truncated.** A draft of "Summarize the commits between two git refs…" lands as `summarize_the_commits_between_two_git_re`. Rename it:
+**1. The identifier and name are the goal string, truncated.** A draft of "Summarize the commits between two git refs…" lands as `summarize_the_commits_between_two_git_re`. Avoid this entirely by creating the identity first and drafting into it with `--from` (above). If you already have the ugly draft, rename it:
 
 ```bash
 graph plan set <ugly-id> identifier commit_digest --json
@@ -105,13 +119,7 @@ Read the exit code, not just the output: `0` ok, `1` failure, `3` needs input (t
 
 ## Iterating
 
-**Structural rework — redraft with feedback.** Cheaper in tokens and attention than a chain of hand edits:
-
-```bash
-graph plan draft "<goal>" --from commit_digest --feedback "drop the second infer step; group commits with builtin__reshape instead" --json
-```
-
-**Surgical fixes — one edit command per intent.** Each resolves the plan, applies one edit, writes the file back. No session, no undo (version control is the undo), safe to run concurrently.
+**Every fix is an edit command — one per intent.** Each resolves the plan, applies one edit, writes the file back. No session, no undo (version control is the undo), safe to run concurrently. Structural rework is just several of them in a row: to drop a step and change how the next one groups its data, that is one `step rm` and one `step update`, each validated on the way in.
 
 ```bash
 graph plan set    <plan> <name|description|identifier|exemplars|requires_servers|input_schema|solver|output> <value>... --json

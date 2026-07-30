@@ -83,6 +83,54 @@ whether each is a bug or the doc is stale.
 
 ---
 
+## Phase 0.5 — Retire revision-by-redraft ☑
+
+Found while reviewing `plan new` vs `plan draft`: `merge_planner_output`'s
+`Some(existing)` branch does `doc.steps = output.plan` — a wholesale
+replacement wearing an edit's clothes. The command that read as "revise this
+plan" was the only one that could silently destroy hand-tuned steps, and
+redrafting to fix a plan never produced good results in practice.
+
+The workbench system prompt already said "sequential edits are safer than a
+wholesale re-draft" while the authoring skill routed structural problems
+straight into `draft --from --feedback`. Two surfaces, opposite advice.
+
+Removed the caller-supplied feedback slot everywhere:
+
+- `Pipeline::draft_plan(query, existing)` — dropped `last_error`, and with it
+  the drafting prompt's `Last Error` context variable. **Unrelated to the
+  per-step retry**, which still injects validation problems inside the step
+  loop and is what makes a returned draft statically valid.
+- CLI `plan draft --feedback` gone; `--from` re-documented as "draft into this
+  plan's identity", which is the good-identifier path the skill never taught.
+- `workbench__draft_plan`'s `feedback` param gone; its description and both
+  system prompts now say drafting always replaces every step.
+- The replan path's own `last_error` (`PlannerPromptArgs`, fed from
+  `state.last_error()`) is a different mechanism and is untouched.
+
+Still open, deliberately deferred: whether `--from` and the workbench's
+`fresh` flag survive the `new --goal` collapse below. They are the mechanism
+that collapse would be built on, so they outlive the feedback flag.
+
+## Phase 0.75 — Collapse `plan new` and `plan draft` ☐
+
+One creation verb, drafting opt-in, identifier always explicit:
+
+```bash
+graph plan new <identifier> [--goal "<what it should do>"]
+```
+
+- no `--goal` → today's scaffold, zero inference, no credentials
+- `--goal` → create and draft in one motion; retires `authoring::stated_name`,
+  the ~40 lines that scrape `named X` out of goal prose to recover an argument
+  the CLI could have taken as a flag
+- mostly dissolves the `ok: true` + `problems: ["plan has no steps"]` oddity:
+  the bare scaffold becomes the explicit hand-build path
+
+Naming undecided (`new --goal` vs `create --goal` with `new` as alias). Blast
+radius: `docs/plans/authoring.mdx`, `docs/reference/cli.mdx`,
+`docs/reference/scripting-contract.mdx`, `skills/graph-plan-authoring/SKILL.md`.
+
 ## Phase 1 — Commands return values, not prints
 
 The blocker for a stdio server: stdout is the JSON-RPC channel, and today

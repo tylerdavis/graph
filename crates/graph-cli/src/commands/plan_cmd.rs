@@ -76,21 +76,10 @@ pub async fn run(command: PlanCommand) -> Result<()> {
         PlanCommand::Draft {
             goal,
             from,
-            feedback,
             output,
             stdout,
             json,
-        } => {
-            plan_edit::draft(
-                &goal,
-                from.as_deref(),
-                feedback.as_deref(),
-                output,
-                stdout,
-                json,
-            )
-            .await
-        }
+        } => plan_edit::draft(&goal, from.as_deref(), output, stdout, json).await,
         PlanCommand::Set {
             target,
             attribute,

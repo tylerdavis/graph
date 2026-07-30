@@ -207,10 +207,15 @@ pub fn new_plan(
 /// generated, and on exhaustion the valid prefix is salvaged rather than
 /// thrown away — a partial plan finished with `step add` beats redrafting
 /// from scratch.
+///
+/// `from` supplies the identity to draft into (identifier, name,
+/// description, input schema). It is not a revision mechanism: drafting
+/// replaces every step, so pointing it at a plan whose steps have been
+/// hand-tuned discards that work. Corrections go through `set` and
+/// `step update`, which apply one intent and are validated atomically.
 pub async fn draft(
     goal: &str,
     from: Option<&str>,
-    feedback: Option<&str>,
     output: Option<PathBuf>,
     stdout: bool,
     json: bool,
@@ -231,9 +236,7 @@ pub async fn draft(
     let events = crate::output::make_sink(true, false);
     let pipeline = runtime.pipeline(&store, events).await?;
 
-    let drafted = pipeline
-        .draft_plan(goal, existing_output.as_ref(), feedback)
-        .await;
+    let drafted = pipeline.draft_plan(goal, existing_output.as_ref()).await;
     let mut salvaged = None;
     let planner_output = match drafted {
         Ok(output) => output,

@@ -2734,10 +2734,7 @@ async fn draft_generates_outline_then_steps() {
         registry.clone(),
         1,
     );
-    let output = pipeline
-        .draft_plan("sprint status", None, None)
-        .await
-        .unwrap();
+    let output = pipeline.draft_plan("sprint status", None).await.unwrap();
 
     let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["E0", "E1"]);
@@ -2783,10 +2780,7 @@ async fn draft_retries_invalid_step_with_errors_injected() {
         registry,
         1,
     );
-    let output = pipeline
-        .draft_plan("sprint status", None, None)
-        .await
-        .unwrap();
+    let output = pipeline.draft_plan("sprint status", None).await.unwrap();
     let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["E0", "E1", "E2"]);
 
@@ -2837,7 +2831,7 @@ async fn draft_exhausted_retries_returns_valid_partial() {
         1,
     );
     let err = pipeline
-        .draft_plan("sprint status", None, None)
+        .draft_plan("sprint status", None)
         .await
         .unwrap_err();
     let PipelineError::DraftStepExhausted {
@@ -2861,7 +2855,7 @@ async fn draft_exhausted_retries_returns_valid_partial() {
 }
 
 #[tokio::test]
-async fn draft_revision_carries_draft_and_feedback_in_system() {
+async fn drafting_into_an_existing_plan_carries_it_in_the_system_prompt() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, provider) = pipeline(
         vec![outline_response(), step_draft(search_step("E0"), true)],
@@ -2870,18 +2864,19 @@ async fn draft_revision_carries_draft_and_feedback_in_system() {
     );
     let existing: PlannerOutput = serde_json::from_value(two_step_plan("E0.values.0.id")).unwrap();
     pipeline
-        .draft_plan(
-            "also fetch comments",
-            Some(&existing),
-            Some("E1 references E9, which is not an earlier step"),
-        )
+        .draft_plan("also fetch comments", Some(&existing))
         .await
         .unwrap();
     let requests = provider.requests.lock().unwrap();
     let system = &requests[0].system;
     assert!(system.contains("Draft Under Revision"), "revision section");
     assert!(system.contains("t__search"), "serialized draft in prompt");
-    assert!(system.contains("E1 references E9"), "last error in prompt");
+    // There is no caller-supplied feedback slot: steering the planner at a
+    // plan it will wholly replace is what the editing commands are for.
+    assert!(
+        !system.contains("Last Error"),
+        "the drafting prompt has no last-error slot: {system}"
+    );
     // Constant across the session: the step call sees the same system.
     assert_eq!(requests[0].system, requests[1].system);
 }
@@ -2899,10 +2894,7 @@ async fn draft_accepts_done_early_without_a_step() {
         registry.clone(),
         1,
     );
-    let output = pipeline
-        .draft_plan("sprint status", None, None)
-        .await
-        .unwrap();
+    let output = pipeline.draft_plan("sprint status", None).await.unwrap();
     assert_eq!(output.plan.len(), 1);
     assert_eq!(output.plan[0].id, "E0");
     assert_eq!(provider.requests.lock().unwrap().len(), 3);
@@ -2918,7 +2910,7 @@ async fn draft_accepts_done_early_without_a_step() {
         1,
     );
     let output = empty_pipeline
-        .draft_plan("sprint status", None, None)
+        .draft_plan("sprint status", None)
         .await
         .unwrap();
     assert_eq!(output.plan.len(), 1, "the retry produced the real step");
@@ -2944,10 +2936,7 @@ async fn draft_emits_progress_events() {
     );
     let sink = Arc::new(RecordingSink::default());
     pipeline.events = sink.clone();
-    pipeline
-        .draft_plan("sprint status", None, None)
-        .await
-        .unwrap();
+    pipeline.draft_plan("sprint status", None).await.unwrap();
 
     let events = sink.drafting.lock().unwrap();
     let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
@@ -2993,10 +2982,7 @@ async fn draft_force_completes_when_outline_is_covered_and_planner_never_signals
         registry.clone(),
         1,
     );
-    let output = pipeline
-        .draft_plan("sprint status", None, None)
-        .await
-        .unwrap();
+    let output = pipeline.draft_plan("sprint status", None).await.unwrap();
 
     // 2 stages + MAX_OVERFLOW_STEPS (2) = 4 accepted steps, no more.
     assert!(
@@ -3053,7 +3039,7 @@ async fn draft_rejects_an_empty_outline() {
         1,
     );
     let err = pipeline
-        .draft_plan("sprint status", None, None)
+        .draft_plan("sprint status", None)
         .await
         .unwrap_err();
     assert!(matches!(err, PipelineError::InvalidPlan(_)), "{err}");
