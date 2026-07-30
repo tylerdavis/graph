@@ -1,5 +1,6 @@
-# CI-oriented runtime image: graph plus the tools its github pack shells out
-# to (git, jq, gh). Used as the `container:` for GitHub Actions jobs — see
+# CI-oriented runtime image: graph plus the tools its tool packs shell out to
+# (git, jq, gh for github; curl, jq for slack). Used as the `container:` for
+# GitHub Actions jobs — see
 # .github/workflows/graph-checks.yaml — and works standalone:
 #   docker run --rm ghcr.io/tylerdavis/graph:latest --help
 #
@@ -12,7 +13,7 @@ FROM debian:trixie-slim
 # Links the ghcr package to this repository (automatic for GITHUB_TOKEN
 # pushes; the label makes it hold for any push path).
 LABEL org.opencontainers.image.source="https://github.com/tylerdavis/graph" \
-      org.opencontainers.image.description="graph CLI with git, jq, and gh — ready for CI plan runs" \
+      org.opencontainers.image.description="graph CLI with git, jq, gh, and curl — ready for CI plan runs" \
       org.opencontainers.image.licenses="MIT"
 
 # gh comes from the official releases, not Debian's archive — trixie ships
@@ -20,6 +21,8 @@ LABEL org.opencontainers.image.source="https://github.com/tylerdavis/graph" \
 # the github tool pack depends on.
 ARG GH_VERSION=2.96.0
 
+# curl is a runtime dependency, not just a build one: the slack pack shells
+# out to it. Don't drop it when trimming this layer.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git jq \
     && rm -rf /var/lib/apt/lists/* \
