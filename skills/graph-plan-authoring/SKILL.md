@@ -8,6 +8,10 @@ description: Drive graph's own commands to draft, write, edit, validate, and
 
 # Graph Plan Authoring
 
+<Note>
+If graph is connected as an **MCP server** (`graph mcp serve`), you already have these as tools: `graph_plan_draft`, `graph_plan_set`, `graph_plan_step_add`, `graph_plan_validate`, `graph_tools_test`, and one `plan_<name>` tool per plan. Use those instead of shelling out — same commands, same validation, structured results. Everything below applies verbatim; only the invocation differs.
+</Note>
+
 **graph drafts, writes, edits, and tests plans. Your job is to drive those commands and judge the results.** Every stage of the lifecycle is already a command — aimed at this machine's real tool catalog, enforcing validation on every write:
 
 | Stage | The command | Do *not* substitute |

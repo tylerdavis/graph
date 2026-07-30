@@ -131,79 +131,83 @@ Naming undecided (`new --goal` vs `create --goal` with `new` as alias). Blast
 radius: `docs/plans/authoring.mdx`, `docs/reference/cli.mdx`,
 `docs/reference/scripting-contract.mdx`, `skills/graph-plan-authoring/SKILL.md`.
 
-## Phase 1 — Commands return values, not prints
+## Phase 1 — Commands return values, not prints ☑
 
-The blocker for a stdio server: stdout is the JSON-RPC channel, and today
-~72 `println!`s live in `crates/graph-cli/src/commands/`.
+- ☑ Every command returns `commands::outcome::Outcome` (machine `body`,
+  `rejected` for domain refusals, optional `raw` stdout deliverable).
+  `outcome::report` is the only thing that writes a stream, and the only
+  thing that reads `--json`.
+- ☑ Filled the `--json` gaps this exposed: `tools test`, all of `threads`,
+  `shapes show`, all of `mcp`, `config show`/`path`. Listings now agree on
+  one shape — a named array plus a matching `count`.
+- ☑ Progress sink — landed in Phase 4 as the MCP progress forwarder rather
+  than a generic collector, which is the only consumer it turned out to need.
+- ☑ Exit-code distinctions survive as structured content (see Phase 4).
 
-- ☐ Split every command into a pure `fn … -> Result<Value>` core with the CLI
-  layer doing the rendering. `plan_edit.rs` already has the shape
-  (`report(body, json, is_error)`, `doc_as_json`, `list_as_json`,
-  `listing::tool_as_json`) — make it the only path.
-- ☐ Fill the `--json` gaps this exposes: `tools test`, `threads *`,
-  `shapes show`, `mcp *`. Decide which are worth exposing over MCP at all
-  (`config init`, `threads rm` probably not).
-- ☐ Third `EventSink` variant: a channel/collector sink (model:
-  `workbench/`'s channel-backed sink) instead of a terminal writer.
-- ☐ `SilentExit` codes become part of the returned value, so 3 and 4 survive
-  as structured content rather than a process exit status.
+Phase 0's suite passed unchanged across all of it, and caught one real
+regression on the way: `raw` initially outranked `--json`, which would have
+broken `plan list --json` and `plan show --json`.
 
-Phase 0's suite must pass unchanged across this work. That is the whole point.
+Not converted, deliberately: `ask` and `chat_cmd` stream tokens to a
+terminal and are not served over MCP.
 
-## Phase 2 — The server
+## Phase 2 — The server ☑
 
-- ☐ New crate `graph-mcp-server` (keep the client/server split clean;
-  `graph-mcp` stays the client). `rmcp` is already a dependency at 2.2 —
-  enable the `server` + `transport-io` features.
-- ☐ `graph mcp serve` subcommand.
-- ☐ Rooting: MCP clients launch servers with an arbitrary cwd, so the
-  project `./.graph/` layer resolves to nothing useful. Needs
-  `--config`/`--plans-dir` and/or honoring MCP `roots`. Without it the server
-  silently serves an empty plan catalog.
-- ☐ Lifecycle: build `Runtime` once for the server's life — but keep the
-  shape cache read-fresh per planning attempt (existing invariant).
-  `McpManager::shutdown()` must run on MCP close/SIGTERM before the tokio
-  runtime drops, or graph's own child servers orphan.
-- ☐ Concurrency: rmcp serves requests concurrently. FileStore's flock/append
-  design tolerates it; verify `plan run` re-entrancy.
-- ☐ Logging stays on stderr (`init_tracing` already does); optionally bridge
-  to MCP `logging/setLevel`.
+- ☑ `graph mcp serve`, rmcp `server` + `transport-io`.
+- ☑ **Not** a separate crate, contrary to the original plan. What is being
+  served is `graph-cli`'s own command layer (`Runtime`, `commands::*`), none
+  of which is extractable without turning the binary into a library first. A
+  second crate would have meant a second implementation to keep in sync —
+  the exact failure Phase 1 existed to remove. It lives in
+  `graph-cli/src/mcp_server/`.
+- ☑ Rooting via `--dir`. Load-bearing: MCP clients launch servers with an
+  arbitrary cwd, so without it the catalog comes up empty.
+- ☑ Concurrency: plan writes take a mutex, since MCP request handling is
+  concurrent while read-modify-write authoring is not.
+- ☑ Logging stays on stderr.
+- ☐ `Runtime` is still built per call rather than once per session. Correct
+  but wasteful — config and the plan catalog are re-read every time. Worth
+  doing, but it must keep the shape cache read-fresh per planning attempt.
+- ☐ Bridge to MCP `logging/setLevel`.
 
-## Phase 3 — Tool surface
+## Phase 3 — Tool surface ☑
 
-**Authoring tools** (static) — the plan-authoring skill as an MCP server:
+- ☑ Authoring tools: `graph_plan_{list,show,validate,new,draft,set,unset}`,
+  `graph_plan_step_{add,update,rename,rm}`, `graph_tools_{list,show,test}`.
+  The `graph_` prefix keeps a plan named `tools_list` from colliding with
+  the verb.
+- ☑ Execution tools: each catalog plan as `plan_<identifier>`, carrying its
+  own `input_schema`, with description + exemplars as the routing signal.
+- ☑ `tools/list_changed` after every successful edit, and the list is read
+  fresh per `tools/list` — so a plan authored in a session is callable in
+  that session. Covered end to end by a test.
+- ☑ Documented the recursion hazard (do not point `[mcp]` at `graph mcp
+  serve`). Not enforced in code: the cycle detector works within a process.
 
-- ☐ `graph_plan_draft`, `graph_plan_validate`, `graph_plan_show`,
-  `graph_plan_list`, `graph_plan_new`, `graph_plan_set`, `graph_plan_step_*`
-- ☐ `graph_tools_list`, `graph_tools_show`, `graph_tools_test`
+## Phase 4 — Protocol semantics ☑
 
-**Execution tools** (dynamic) — the higher-value half:
-
-- ☐ Project each catalog plan as its own MCP tool: `input_schema` becomes the
-  MCP input schema, `description`/`exemplars` the routing signal.
-- ☐ `tools/list_changed` when plan files change (or accept staleness and
-  document it).
-- ☐ Guard against pointing graph's `[mcp]` config at graph's own server: the
-  pipeline's depth-8 cycle detection does not cross a process boundary.
-
-## Phase 4 — Protocol semantics
-
-- ☐ Progress notifications from the collector sink. Not optional: `plan draft`
-  is ~30s and `plan run` can be minutes, against a common 60s client timeout.
-- ☐ Cancellation → `ExecutionGate::Abort`, surfacing as
-  `PipelineError::Aborted{state}` (the hook already exists).
-- ☐ Exit codes → results: 3 (needs input) and 4 (gate assertion) must stay
-  distinct as `isError` + structured content, not collapse to an error string.
-- ☐ Consider MCP elicitation for the needs-input case.
+- ☑ Progress notifications, opt-in via `progressToken`, drained before the
+  tool reply so notifications never land after the result they describe.
+- ☑ Cancellation → `ExecutionGate::Abort`, stopping *between* tool calls
+  rather than mid-side-effect.
+- ☑ Exit codes as data: needs-input (CLI 3) returns the input schema so the
+  agent can retry; a fired exit gate (CLI 4) returns the gate's message and
+  step; a refused edit keeps its `problemsIntroduced` list. Argument errors
+  stay JSON-RPC errors, because those are the caller's mistake.
+- ☐ MCP elicitation for the needs-input case. The structured rejection
+  already lets an agent retry, so this is an ergonomic upgrade, not a gap.
 
 ## Out of scope
 
 The workbench TUI (`graph wb plan`) and the `chat` REPL. Interactive surfaces
 do not project onto MCP.
 
-## Open questions
+## Still open
 
-- Does the server expose `ask`/`chat` at all? It would make graph an agent
-  inside an agent — probably not for v1.
-- Per-plan tools: whole catalog, or opt-in via a config allowlist?
-- Does `plan run` over MCP write to the real thread store, or always ephemeral?
+- **Phase 0.75** (below) — the `plan new` / `plan draft` collapse. Naming
+  undecided; unblocked and cheap now that both return `Outcome`.
+- `Runtime` built once per session instead of per call.
+- Per-plan tools: whole catalog, or opt-in via a config allowlist? Serving
+  everything is right for a small catalog and probably wrong for a large one.
+- `ask`/`chat` over MCP: decided against. An agent calling graph does not
+  need another agent, it needs the plans.
