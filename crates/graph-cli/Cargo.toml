@@ -36,6 +36,14 @@ tui-textarea = "0.7"
 ignore = "0.4"
 globset = "0.4"
 regex = "1"
+# graph as an MCP *server* (`graph mcp serve`). graph-mcp holds the client
+# half; the server lives here because what it serves is this crate's command
+# layer. Feature-unified with graph-mcp's client build.
+rmcp = { version = "2.2", default-features = false, features = [
+    "server",
+    "transport-io",
+] }
+schemars = "1"
 
 [dev-dependencies]
 tempfile = "3"

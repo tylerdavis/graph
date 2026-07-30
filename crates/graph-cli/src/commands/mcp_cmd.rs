@@ -16,6 +16,7 @@ pub async fn run(command: McpCommand) -> Result<()> {
         McpCommand::List { json } => list(&loaded.config).map(|o| (o, json)),
         McpCommand::Tools { server, json } => tools(&manager, server).await.map(|o| (o, json)),
         McpCommand::Test { server, json } => test(&manager, &server).await.map(|o| (o, json)),
+        McpCommand::Serve { .. } => unreachable!("serve is dispatched before the manager opens"),
         McpCommand::Probe { .. } => bail!("probe lands with the shape cache (phase 4)"),
     };
     // Before reporting: a failure must still shut the children down, and

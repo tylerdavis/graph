@@ -143,7 +143,7 @@ pub fn resolve_target(runtime: &Runtime, name_or_path: &str) -> Result<(PlanDoc,
 /// `requires_servers` entry that this machine doesn't configure means the file
 /// is portable but not runnable locally, which is worth saying and not worth
 /// failing over.
-fn validate(name_or_path: &str) -> Result<Outcome> {
+pub fn validate(name_or_path: &str) -> Result<Outcome> {
     let runtime = Runtime::init()?;
     let (doc, loaded) = resolve_target(&runtime, name_or_path)?;
     // Structural validation reruns here rather than being assumed from load

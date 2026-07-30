@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod mcp_server;
 mod output;
 mod runtime;
 mod workbench;
@@ -42,6 +43,11 @@ async fn main() -> ExitCode {
 async fn dispatch(command: Command, verbose: u8) -> Result<()> {
     match command {
         Command::Config { command } => commands::config_cmd::run(command),
+        // `serve` owns stdio for the whole process, so it never reaches the
+        // McpCommand dispatcher (which opens a client manager first).
+        Command::Mcp {
+            command: cli::McpCommand::Serve { dir },
+        } => mcp_server::serve(dir).await,
         Command::Mcp { command } => commands::mcp_cmd::run(command).await,
         Command::Tools { command } => commands::tools_cmd::run(command).await,
         Command::Ask {

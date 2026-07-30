@@ -389,6 +389,15 @@ pub enum McpCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Serve graph's plans and authoring commands to an agent over MCP (stdio)
+    Serve {
+        /// Project directory to serve from — the one holding `.graph/`.
+        /// MCP clients launch servers with an arbitrary working directory,
+        /// so without this the plan catalog resolves against wherever the
+        /// client happened to be.
+        #[arg(long, value_name = "PATH")]
+        dir: Option<PathBuf>,
+    },
     /// Pre-warm the observed-shape cache by invoking read-only tools
     Probe {
         server: Option<String>,
