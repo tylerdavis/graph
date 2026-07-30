@@ -171,7 +171,12 @@ pub async fn tools_test(name: &str, input: Value) -> Result<Outcome> {
 ///   treating the plan as broken.
 /// - **exit-gate assertion** (CLI exit 4) → a rejection carrying the gate's
 ///   message and step. The plan worked; its condition fired.
-pub async fn run_plan(identifier: &str, input: Value) -> Result<Outcome> {
+pub async fn run_plan(
+    identifier: &str,
+    input: Value,
+    events: std::sync::Arc<dyn graph_core::EventSink>,
+    gate: Option<std::sync::Arc<dyn graph_core::pipeline::ExecutionGate>>,
+) -> Result<Outcome> {
     let runtime = Runtime::init()?;
     let loaded = runtime.plan_docs();
     let Some(doc) = loaded
@@ -210,11 +215,10 @@ pub async fn run_plan(identifier: &str, input: Value) -> Result<Outcome> {
     }
 
     let store = runtime.store()?;
-    // NullSink, not a terminal sink: progress has nowhere to go on a stdio
-    // server, and anything written to stdout would corrupt the protocol.
-    let pipeline = runtime
-        .pipeline(&store, std::sync::Arc::new(graph_core::NullSink))
-        .await?;
+    // Never a terminal sink: anything written to stdout would corrupt the
+    // protocol. `events` either forwards MCP progress notifications or
+    // discards.
+    let pipeline = runtime.gated_pipeline(&store, events, gate).await?;
     let query = format!("Run the '{}' plan", doc.name);
     let finish = doc.finish();
     let result = pipeline
@@ -222,7 +226,18 @@ pub async fn run_plan(identifier: &str, input: Value) -> Result<Outcome> {
         .await;
     runtime.shutdown().await;
 
-    let outcome = result?;
+    // A cancelled run is not a failure to report as one: the client asked
+    // for it and has already stopped listening for the result.
+    let outcome = match result {
+        Err(graph_core::pipeline::PipelineError::Aborted { state, .. }) => {
+            return Ok(Outcome::rejected(json!({
+                "error": format!("plan '{identifier}' was cancelled"),
+                "plan": identifier,
+                "steps_executed": state.steps_executed(),
+            })));
+        }
+        other => other?,
+    };
     let body = json!({
         "answer": (!outcome.answer.is_empty()).then_some(&outcome.answer),
         "output": outcome.structured,

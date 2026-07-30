@@ -82,9 +82,20 @@ The distinction in that last row is the important one. A refused edit *is* an an
 
 `graph_plan_draft` calls the planner model — roughly 30 seconds, and the only served tool that costs inference. Plans themselves cost whatever their [finish mode](/plans/finish-modes) implies: output-mode plans run with zero inference, solver-mode plans cost one call. Many MCP clients default to a 60-second tool timeout; raise it if your plans are long-running.
 
+## Progress and cancellation
+
+Pass a `progressToken` with a `plan_*` call and the server reports each step as it runs — the same information `plan run` prints to a terminal, including the plan call stack when plans compose. Without a token the run is silent, because MCP only permits notifying against a token the client issued.
+
+```
+notifications/progress  { progressToken: "…", progress: 1, message: "E1 builtin__git_log" }
+notifications/progress  { progressToken: "…", progress: 2, message: "synthesizing the answer" }
+```
+
+Cancelling a call stops the run **between** tool calls, not in the middle of one: a plan halfway through creating an issue finishes that call and stops before the next. The result comes back flagged, carrying how many steps had run.
+
 ## Notes and limits
 
-- **Progress is not yet streamed.** A long plan returns when it is done. Tool activity goes to stderr, where MCP clients conventionally collect server logs.
+- **Tool activity also goes to stderr**, where MCP clients conventionally collect server logs.
 - **`ask` and `chat` are not served.** They are graph's conversational layer; an agent calling graph does not need another agent, it needs the plans.
 - **Do not point graph's own `[mcp]` config at `graph mcp serve`.** The pipeline's cycle detection and depth cap work within a process; they do not cross a process boundary.
 - Plan writes are serialized, so concurrent authoring calls cannot silently lose an edit.

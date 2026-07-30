@@ -24,6 +24,7 @@
 //! collect them as server logs.
 
 mod catalog;
+mod progress;
 mod run;
 
 use crate::cli::{PlanAttribute, StepAttribute};
@@ -185,8 +186,17 @@ impl GraphServer {
         // Execution tools first: a plan named after a verb is still a plan.
         if let Some(identifier) = name.strip_prefix(catalog::PLAN_PREFIX) {
             let input = Value::Object(args);
-            return run::run_plan(identifier, input)
-                .await
+            // Progress is opt-in: MCP only permits notifying against a token
+            // the client supplied. Without one the run is silent.
+            let progress = progress::sink_for(context);
+            // The client can cancel a long run; the gate stops it between
+            // tool calls rather than mid-side-effect.
+            let gate = Arc::new(progress::CancelGate::new(context.ct.clone()));
+            let result = run::run_plan(identifier, input, progress.sink(), Some(gate)).await;
+            // Drain before replying: a notification that lands after the
+            // result it describes is worse than none.
+            progress.finish().await;
+            return result
                 .map(outcome_result)
                 .map_err(|error| McpError::internal_error(format!("{error:#}"), None));
         }

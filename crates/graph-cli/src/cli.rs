@@ -424,7 +424,10 @@ pub enum ShapesCommand {
 #[derive(Subcommand)]
 pub enum ConfigCommand {
     /// Print the merged effective configuration
-    Show,
+    Show {
+        #[arg(long)]
+        json: bool,
+    },
     /// Write a starter config file
     Init {
         /// Write to the global location (~/.config/graph/) instead of the project (./.graph/)
@@ -438,7 +441,10 @@ pub enum ConfigCommand {
         path: Option<PathBuf>,
     },
     /// Print the config file locations and which exist
-    Path,
+    Path {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[cfg(test)]

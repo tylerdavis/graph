@@ -26,6 +26,7 @@ reedline = "0.36"
 chrono.workspace = true
 serde_yaml.workspace = true
 async-trait.workspace = true
+tokio-util = "0.7"
 futures.workspace = true
 # TUI stack for `graph workbench` — crossterm pinned to reedline's 0.28 so
 # the lockfile carries exactly one copy.

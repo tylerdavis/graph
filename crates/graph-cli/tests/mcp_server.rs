@@ -111,6 +111,35 @@ impl Session {
         (result["structuredContent"].clone(), is_error)
     }
 
+    /// Call a tool asking for progress, and collect the notifications that
+    /// arrive before the reply.
+    fn call_with_progress(&mut self, tool: &str, arguments: Value) -> (Value, Vec<Value>) {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send(json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {
+                "name": tool,
+                "arguments": arguments,
+                "_meta": {"progressToken": "tok-1"}
+            }
+        }));
+        let mut progress = Vec::new();
+        loop {
+            let mut line = String::new();
+            let read = self.stdout.read_line(&mut line).expect("read");
+            assert!(read > 0, "server closed awaiting {tool}");
+            let message: Value = serde_json::from_str(&line)
+                .unwrap_or_else(|e| panic!("non-JSON on stdout ({e}): {line:?}"));
+            if message.get("id").and_then(Value::as_i64) == Some(id) {
+                return (message["result"].clone(), progress);
+            }
+            if message.get("method") == Some(&json!("notifications/progress")) {
+                progress.push(message["params"].clone());
+            }
+        }
+    }
+
     fn tool_names(&mut self) -> Vec<String> {
         let reply = self.request("tools/list", json!({}));
         reply["result"]["tools"]
@@ -338,6 +367,85 @@ fn tools_test_reports_a_tool_result_without_failing_the_call() {
     assert!(!is_error);
     assert_eq!(body["result"], json!({"a": "1"}));
     assert_eq!(body["isError"], json!(false));
+}
+
+#[test]
+fn a_running_plan_reports_progress_when_the_client_asks_for_it() {
+    let scratch = Scratch::new();
+    scratch.write_plan("echo_ok", ECHO_PLAN);
+    let mut session = Session::open(&scratch);
+
+    // Many clients time a tool call out after 60s of silence, and a plan can
+    // run for minutes. Progress is what says it is still working.
+    let (result, progress) = session.call_with_progress("plan_echo_ok", json!({"word": "hi"}));
+    assert_eq!(result["structuredContent"]["output"], json!({"said": "hi"}));
+    assert!(
+        !progress.is_empty(),
+        "a progressToken must produce notifications"
+    );
+    for note in &progress {
+        assert_eq!(note["progressToken"], json!("tok-1"));
+    }
+    // The step being executed is named, so a human watching the client sees
+    // the same thing `plan run` shows on a terminal.
+    assert!(
+        progress.iter().any(|note| note["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("builtin__reshape")),
+        "{progress:?}"
+    );
+}
+
+#[test]
+fn a_plan_run_without_a_progress_token_stays_silent() {
+    let scratch = Scratch::new();
+    scratch.write_plan("echo_ok", ECHO_PLAN);
+    let mut session = Session::open(&scratch);
+
+    // MCP forbids notifying against a token the client never issued.
+    session.call("plan_echo_ok", json!({"word": "hi"}));
+    assert!(
+        !session
+            .notifications
+            .iter()
+            .any(|method| method == "notifications/progress"),
+        "{:?}",
+        session.notifications
+    );
+}
+
+#[test]
+fn the_server_advertises_the_capabilities_it_actually_implements() {
+    let scratch = Scratch::new();
+    let mut session = Session::open(&scratch);
+
+    // `listChanged` is a promise: a client that trusts it will not re-read
+    // the tool list unprompted, so advertising it without sending the
+    // notification would strand every plan authored in-session.
+    let reply = session.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "probe", "version": "1"}
+        }),
+    );
+    assert_eq!(
+        reply["result"]["capabilities"]["tools"]["listChanged"],
+        json!(true),
+        "{reply}"
+    );
+    assert_eq!(reply["result"]["serverInfo"]["name"], json!("graph"));
+    // Instructions are the server's chance to teach the calling agent the
+    // draft-once-then-edit loop before it guesses at it.
+    let instructions = reply["result"]["instructions"]
+        .as_str()
+        .expect("instructions");
+    assert!(
+        instructions.contains("Never redraft to fix a plan"),
+        "{instructions}"
+    );
 }
 
 #[test]
