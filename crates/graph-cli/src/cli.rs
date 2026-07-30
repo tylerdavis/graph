@@ -313,7 +313,11 @@ pub enum ToolsCommand {
         json: bool,
     },
     /// Show one tool's description and schemas
-    Show { name: String },
+    Show {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Invoke a tool directly
     Test {
         name: String,

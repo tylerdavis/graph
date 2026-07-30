@@ -45,11 +45,18 @@ async fn dispatch(
             );
             Ok(())
         }
-        ToolsCommand::Show { name } => {
+        ToolsCommand::Show { name, json } => {
             let defs = registry.tools().await?;
             let Some(def) = defs.into_iter().find(|d| d.name == name) else {
                 bail!("unknown tool: {name}");
             };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&super::listing::tool_as_json(&def))?
+                );
+                return Ok(());
+            }
             println!("{}\n\n{}\n", def.name, def.description);
             println!(
                 "input schema:\n{}",

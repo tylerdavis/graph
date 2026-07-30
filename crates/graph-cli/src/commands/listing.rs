@@ -12,6 +12,24 @@ fn source_of(name: &str) -> &str {
         .map_or("(core)", |(source, _)| source)
 }
 
+/// One tool as JSON for `graph tools show --json`: the whole definition the
+/// agent and planner see, losslessly — including the `inputSchema` a caller
+/// needs to write a plan step's input object.
+///
+/// `outputSchema` is what the tool *declares*; `graph shapes show` is what it
+/// has actually been observed to return.
+pub fn tool_as_json(def: &ToolDef) -> Value {
+    json!({
+        "name": def.name,
+        "source": source_of(&def.name),
+        "description": def.description,
+        "readOnly": def.read_only,
+        "inputSchema": def.input_schema,
+        "outputSchema": def.output_schema,
+        "outputExample": def.output_example,
+    })
+}
+
 /// Machine-readable twin of [`render_tool_listing`] for `--json`: the flat
 /// catalog in discovery order, each entry carrying the namespaced `name` an
 /// input actually has to use, plus a `sources` roll-up mirroring the text
@@ -179,6 +197,45 @@ mod tests {
         let defs = vec![def("s__bare", "", None), def("s__t", "Desc.", None)];
         let rendered = render_tool_listing(&defs, false);
         assert_eq!(rendered, "s — 2 tools\n  bare\n  t\n  Desc.\n");
+    }
+
+    #[test]
+    fn show_json_carries_the_whole_definition() {
+        let mut with_schema = def("linear__list_issues", "List issues.", Some(true));
+        with_schema.input_schema =
+            json!({"type": "object", "properties": {"team": {"type": "string"}}});
+        with_schema.output_schema = Some(json!({"type": "object"}));
+        with_schema.output_example = Some(json!({"issues": []}));
+        assert_eq!(
+            tool_as_json(&with_schema),
+            json!({
+                "name": "linear__list_issues",
+                "source": "linear",
+                "description": "List issues.",
+                "readOnly": true,
+                "inputSchema": {"type": "object", "properties": {"team": {"type": "string"}}},
+                "outputSchema": {"type": "object"},
+                "outputExample": {"issues": []},
+            })
+        );
+    }
+
+    #[test]
+    fn show_json_keeps_absent_optionals_as_null() {
+        // Every key is always present, so a caller can address
+        // `.outputSchema` without checking whether it exists first.
+        assert_eq!(
+            tool_as_json(&def("plan_and_execute", "Plan and execute.", None)),
+            json!({
+                "name": "plan_and_execute",
+                "source": "(core)",
+                "description": "Plan and execute.",
+                "readOnly": null,
+                "inputSchema": {},
+                "outputSchema": null,
+                "outputExample": null,
+            })
+        );
     }
 
     #[test]
