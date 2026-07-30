@@ -63,7 +63,7 @@ To reshape every element of a list, call `reshape` inside a [`map` body](/plans/
 
 ## The `github` pack
 
-Building blocks for PR-shaped plans — see the [CI checks cookbook](/cookbook/ci-checks) for them in use.
+Building blocks for PR- and release-shaped plans — see the [CI checks cookbook](/cookbook/ci-checks) for them in use.
 
 ### `builtin__gh_pr_meta`
 
@@ -117,6 +117,41 @@ The default pattern **requires a separator** (dash or space) between the letters
 
 Every field is always present, so template references like `{{Ex.ticket}}` never dangle; a PR without a ticket is `{found: false}`, not an error.
 
+### `builtin__gh_release`
+
+Metadata for a release — tag, title, notes body, url, publication date — plus `previous_tag`, the tag of the release published *before* it. That last field is what makes this the entry point for release-shaped plans: it is the `base` ref for a [`git_log`](#builtin-git-log) or [`git_diff`](#builtin-git-diff) over the range that shipped. Omit `tag` for the latest release. Read-only.
+
+| Input | Type |  |
+| --- | --- | --- |
+| `tag` | string | optional — release tag (e.g. `"v1.4.0"`); default `""` for the latest release |
+| `include_prereleases` | boolean | optional — whether prereleases count when resolving `previous_tag`; default `false`. Never affects which release `tag` resolves to |
+
+| Output | Type |  |
+| --- | --- | --- |
+| `tag` | string | the release's tag |
+| `name` | string | release title (`""` when untitled) |
+| `body` | string | release notes markdown — GitHub's generated notes when that is how the release was made (`""` when empty) |
+| `url` | string | release page |
+| `published_at` | string \| null | ISO 8601; `null` for a draft |
+| `author` | string \| null | login |
+| `is_prerelease` | boolean |  |
+| `is_draft` | boolean |  |
+| `target` | string \| null | target commitish the tag was cut from |
+| `previous_tag` | string \| null | tag of the release before this one; `null` on the first release |
+
+`previous_tag` is resolved by publication date rather than list position, so a prerelease target still finds the last stable release before it. With the default `include_prereleases: false`, a stable release's `previous_tag` is the last *stable* release — so a summary built on it covers everything since users last saw a release, not just since the last release candidate.
+
+The first release in a repository has no predecessor: `previous_tag` is `null`, not an error. Gate on it before diffing —
+
+```yaml
+- id: E1
+  tool_name: exit
+  input:
+    when: { value: "{{E0.previous_tag}}", op: empty }
+    status: success
+    message: first release — nothing to compare against
+```
+
 ### `builtin__gh_pr_inline_comments`
 
 Post inline review comments anchored to lines of the PR diff. Each entry posts as its own API call, so one bad anchor can't sink the rest; entries without a `line`, or whose anchor the API rejects (the line must be part of the diff), pass through unposted. Every comment embeds the `marker` as a hidden HTML tag, and comments from earlier runs carrying the same marker are deleted before posting — repeated runs refresh in place instead of stacking. **Side-effecting** (`read_only: false`).
@@ -152,6 +187,31 @@ Unified diff between two refs (merge-base three-dot diff), path-scoped, truncate
 | `max_bytes` | integer | required — truncation budget |
 
 Output: `{ "text": "<diff>" }` — empty string when nothing changed, which pairs with an `empty` [exit gate](/plans/exit-gates).
+
+### `builtin__git_log`
+
+Commits between two refs, newest first, with the PR number parsed out of each subject. The high-signal, low-cost input for changelog and release-summary steps: commit subjects carry the *intent* that a diff makes an LLM infer, at a fraction of the tokens. Read-only. Needs enough history to resolve both refs (`fetch-depth: 0` in CI).
+
+The range is **two-dot** (`base..head`) — "commits that landed since `base`" — not the three-dot merge-base form [`git_diff`](#builtin-git-diff) takes. Pair it with [`gh_release`](#builtin-gh-release)'s `previous_tag` as `base` and the release tag as `head`.
+
+| Input | Type |  |
+| --- | --- | --- |
+| `base` | string | required — ref the range starts *after* (exclusive) |
+| `head` | string | optional — ref the range ends at (inclusive); default `HEAD` |
+| `paths` | string | optional — space-separated pathspecs; default `""` (everything) |
+| `max_commits` | integer | optional — cap on returned commits; default 200 |
+| `include_merges` | boolean | optional — keep merge commits; default `false` |
+
+| Output | Type |  |
+| --- | --- | --- |
+| `commits` | array | `{sha, short_sha, author, date, subject, pr}` objects, newest first |
+| `count` | integer | commits returned, ready for `eq`/`gt` gates |
+| `total` | integer | commits in the whole range, before `max_commits` |
+| `truncated` | boolean | `true` when `max_commits` cut the list |
+
+`pr` is the pull request number from a trailing `(#123)` in the subject (the form GitHub's squash merge writes), or `null` — so a summary can link each change without a second API call. `count` counts what came back; `total` counts the range, so `truncated` is exact rather than inferred.
+
+Merges are excluded by default: on a squash-merge history they add nothing, and on a merge-commit history the merge subject just restates the branch it brought in. An empty range is `{count: 0}`, not an error — gate on it before spending an inference. An unresolvable ref fails the call loudly rather than returning an empty list a gate would read as "nothing shipped".
 
 ### `builtin__git_changed_files`
 

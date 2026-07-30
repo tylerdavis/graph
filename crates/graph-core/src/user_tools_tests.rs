@@ -197,7 +197,9 @@ fn github_pack_loads_and_validates() {
             "gh_pr_comment",
             "gh_pr_inline_comments",
             "gh_pr_ticket",
+            "gh_release",
             "git_diff",
+            "git_log",
             "git_changed_files",
             "git_file",
             "git_grep"
@@ -226,6 +228,45 @@ fn gh_pr_ticket_default_pattern_requires_a_separator() {
     assert!(
         !default.contains("[- ]?"),
         "default pattern must require a separator, not make it optional: {default}"
+    );
+}
+
+#[tokio::test]
+async fn git_log_defaults_render_and_an_empty_range_is_not_an_error() {
+    // Runs `git log HEAD..HEAD` in this checkout: an empty range must come
+    // back as a gateable {count: 0}, not a failure. Also covers the boolean
+    // input `include_merges` reaching argv as "false" from its schema
+    // default — a default that failed to render would make the script's
+    // `[ "$include_merges" = "true" ]` comparison operate on a template.
+    let docs = load_pack_tools(&["github".to_string()]).unwrap();
+    let registry = UserToolRegistry::builtins(docs, router());
+
+    let outcome = registry
+        .invoke("builtin__git_log", json!({"base": "HEAD", "head": "HEAD"}))
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    assert_eq!(
+        outcome.result,
+        json!({"commits": [], "count": 0, "total": 0, "truncated": false})
+    );
+}
+
+#[test]
+fn git_log_keeps_commits_whose_subject_has_no_pr_number() {
+    // Regression: jq's `capture` emits *nothing* (rather than erroring) on
+    // no match, so building `pr` straight from it dropped the entire commit
+    // object — a log of PR-less subjects came back `{commits: [], count: N}`.
+    // The `// null` keeps the field present and the commit in the list.
+    let docs = load_pack_tools(&["github".to_string()]).unwrap();
+    let log = docs.iter().find(|d| d.name == "git_log").unwrap();
+    let ToolKind::Exec { args, .. } = &log.kind else {
+        panic!("git_log is an exec tool");
+    };
+    let script = args.join("\n");
+    assert!(
+        script.contains("| .n | tonumber) // null)"),
+        "pr must fall back to null when capture matches nothing: {script}"
     );
 }
 
