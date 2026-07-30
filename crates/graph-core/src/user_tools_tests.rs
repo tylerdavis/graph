@@ -234,6 +234,7 @@ fn unknown_pack_errors_with_available_list() {
     let err = load_pack_tools(&["gitlab".to_string()]).unwrap_err();
     assert!(err.contains("gitlab"), "{err}");
     assert!(err.contains("github"), "{err}");
+    assert!(err.contains("slack"), "{err}");
 }
 
 #[tokio::test]
@@ -260,6 +261,28 @@ async fn pack_tools_serve_under_builtin_namespace() {
         .await
         .unwrap_err();
     assert!(matches!(err, ToolError::Unknown(_)));
+}
+
+#[tokio::test]
+async fn slack_pack_loads_and_validates() {
+    let docs = load_pack_tools(&["slack".to_string()]).unwrap();
+    let names: Vec<&str> = docs.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(names, ["slack_post_message"]);
+    // Posting is a side effect; the catalog must never advertise it read-only.
+    assert_eq!(docs[0].read_only, Some(false));
+
+    let defs = UserToolRegistry::builtins(docs, router())
+        .tools()
+        .await
+        .unwrap();
+    assert_eq!(defs[0].name, "builtin__slack_post_message");
+    assert_eq!(defs[0].read_only, Some(false));
+    // channel and ts are the threading contract — a planner only learns it
+    // from the declared output schema.
+    let out = defs[0].output_schema.as_ref().unwrap();
+    for field in ["channel", "ts", "permalink"] {
+        assert!(out["properties"][field].is_object(), "{field}: {out}");
+    }
 }
 
 #[tokio::test]
@@ -954,4 +977,266 @@ async fn llm_pack_infer_routes_by_model_input() {
         .await
         .unwrap();
     assert_eq!(outcome.result, json!({"text": "model=nano-model"}));
+}
+
+// ── Slack pack (real bash and jq, fake curl, no network) ─────────────────
+
+/// A directory holding a fake `curl` that appends its argv *and* its stdin
+/// config to `$CURL_LOG`, then answers with the canned bodies from the
+/// environment. Only curl is faked — bash and jq are the real ones, so the
+/// tests exercise the pack's actual payload building and error handling.
+fn curl_shim() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let shim = dir.path().join("curl");
+    std::fs::write(
+        &shim,
+        r#"#!/bin/sh
+{ printf 'ARGS'; for a in "$@"; do printf ' %s' "$a"; done; printf '\n'; } >> "$CURL_LOG"
+printf 'CONFIG ' >> "$CURL_LOG"; cat >> "$CURL_LOG"
+case " $* " in
+  *chat.postMessage*)  printf '%s' "$FAKE_POST" ;;
+  *chat.getPermalink*) printf '%s' "$FAKE_PERMALINK" ;;
+  *) echo "unexpected curl call: $*" >&2; exit 9 ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+/// The slack pack tool with `curl` resolving to the shim in `dir` and the
+/// canned responses supplied through the doc's `env` map. `run_exec` overlays
+/// that map onto the inherited environment, so the test never mutates its own
+/// process — and a real SLACK_BOT_TOKEN exported on the dev machine can't
+/// leak into the assertions. Rust resolves `bash` from the parent PATH; bash
+/// then resolves `curl` from the child env, where the shim comes first.
+fn slack_tool_with(dir: &std::path::Path, post: &str, permalink: &str) -> UserToolDoc {
+    let mut doc = load_pack_tools(&["slack".to_string()])
+        .unwrap()
+        .into_iter()
+        .find(|d| d.name == "slack_post_message")
+        .expect("slack pack ships slack_post_message");
+    let ToolKind::Exec { env, .. } = &mut doc.kind else {
+        panic!("slack_post_message must be an exec tool")
+    };
+    env.insert(
+        "PATH".to_string(),
+        format!(
+            "{}:{}",
+            dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+    env.insert("SLACK_BOT_TOKEN".to_string(), "xoxb-test-token".to_string());
+    env.insert(
+        "CURL_LOG".to_string(),
+        dir.join("curl.log").display().to_string(),
+    );
+    env.insert("FAKE_POST".to_string(), post.to_string());
+    env.insert("FAKE_PERMALINK".to_string(), permalink.to_string());
+    doc
+}
+
+fn slack_registry(doc: UserToolDoc) -> UserToolRegistry {
+    UserToolRegistry::builtins(vec![doc], router())
+}
+
+#[tokio::test]
+async fn slack_post_message_posts_and_keeps_the_token_out_of_argv() {
+    let shim = curl_shim();
+    let registry = slack_registry(slack_tool_with(
+        shim.path(),
+        r#"{"ok":true,"channel":"C0EN9","ts":"1717171717.000100"}"#,
+        r#"{"ok":true,"permalink":"https://acme.slack.com/archives/C0EN9/p1717171717000100"}"#,
+    ));
+
+    let outcome = registry
+        .invoke(
+            "builtin__slack_post_message",
+            // Quotes and braces in the text would break a concatenated
+            // payload; jq escapes them.
+            json!({"channel": "#eng", "text": r#"deploy *green* — "done", {ok}"#}),
+        )
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    assert_eq!(
+        outcome.result,
+        json!({
+            "channel": "C0EN9",
+            "ts": "1717171717.000100",
+            "permalink": "https://acme.slack.com/archives/C0EN9/p1717171717000100",
+        })
+    );
+
+    let log = std::fs::read_to_string(shim.path().join("curl.log")).unwrap();
+    // thread_ts defaults to "" and is dropped from the payload entirely —
+    // Slack rejects an empty thread_ts.
+    assert!(
+        log.contains(r##"{"channel":"#eng","text":"deploy *green* — \"done\", {ok}"}"##),
+        "{log}"
+    );
+    // The token travels in the curl config on stdin...
+    assert!(
+        log.contains(r#"CONFIG header = "Authorization: Bearer xoxb-test-token""#),
+        "{log}"
+    );
+    // ...and never in argv, which the process table exposes.
+    for line in log.lines().filter(|l| l.starts_with("ARGS")) {
+        assert!(!line.contains("xoxb-test-token"), "token in argv: {line}");
+    }
+    // The permalink lookup used the resolved id, not the "#eng" name.
+    assert!(log.contains("channel=C0EN9"), "{log}");
+}
+
+#[tokio::test]
+async fn slack_post_message_threads_a_reply_under_a_parent_ts() {
+    let shim = curl_shim();
+    let registry = slack_registry(slack_tool_with(
+        shim.path(),
+        r#"{"ok":true,"channel":"C0EN9","ts":"1717171800.000200"}"#,
+        r#"{"ok":true,"permalink":"https://acme.slack.com/archives/C0EN9/p1717171800000200"}"#,
+    ));
+
+    let outcome = registry
+        .invoke(
+            "builtin__slack_post_message",
+            json!({
+                "channel": "C0EN9",
+                "text": "details",
+                "thread_ts": "1717171717.000100",
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    // The reply's own ts comes back — not the parent's, so a chain of
+    // replies can keep threading off the original.
+    assert_eq!(outcome.result["ts"], "1717171800.000200");
+
+    let log = std::fs::read_to_string(shim.path().join("curl.log")).unwrap();
+    assert!(log.contains(r#""thread_ts":"1717171717.000100""#), "{log}");
+}
+
+#[tokio::test]
+async fn slack_post_message_treats_ok_false_as_a_tool_error() {
+    let shim = curl_shim();
+    let registry = slack_registry(slack_tool_with(
+        shim.path(),
+        r#"{"ok":false,"error":"channel_not_found"}"#,
+        r#"{"ok":true,"permalink":"never-reached"}"#,
+    ));
+
+    let outcome = registry
+        .invoke(
+            "builtin__slack_post_message",
+            json!({"channel": "#nope", "text": "hi"}),
+        )
+        .await
+        .unwrap();
+    // Slack answers HTTP 200 for a post it refused. The step must still
+    // fail: a plan cannot be allowed to report a message it never
+    // delivered.
+    assert!(outcome.is_error, "{:?}", outcome.result);
+    assert!(
+        outcome.result["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("channel_not_found"),
+        "{:?}",
+        outcome.result
+    );
+    // And no permalink lookup for a message that doesn't exist.
+    let log = std::fs::read_to_string(shim.path().join("curl.log")).unwrap();
+    assert!(!log.contains("chat.getPermalink"), "{log}");
+}
+
+#[tokio::test]
+async fn slack_post_message_reports_a_non_json_body() {
+    let shim = curl_shim();
+    // A proxy or rate-limit page instead of the API's JSON: there is no
+    // `.error` to quote, so the body itself has to reach the operator.
+    let registry = slack_registry(slack_tool_with(
+        shim.path(),
+        "<html>too many requests</html>",
+        "{}",
+    ));
+
+    let outcome = registry
+        .invoke(
+            "builtin__slack_post_message",
+            json!({"channel": "C1", "text": "hi"}),
+        )
+        .await
+        .unwrap();
+    assert!(outcome.is_error, "{:?}", outcome.result);
+    assert!(
+        outcome.result["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("too many requests"),
+        "{:?}",
+        outcome.result
+    );
+}
+
+#[tokio::test]
+async fn slack_post_message_permalink_is_best_effort() {
+    let shim = curl_shim();
+    let registry = slack_registry(slack_tool_with(
+        shim.path(),
+        r#"{"ok":true,"channel":"C1","ts":"1717171717.000100"}"#,
+        r#"{"ok":false,"error":"message_not_found"}"#,
+    ));
+
+    let outcome = registry
+        .invoke(
+            "builtin__slack_post_message",
+            json!({"channel": "C1", "text": "hi"}),
+        )
+        .await
+        .unwrap();
+    // The message was delivered; a permalink lookup that doesn't answer is
+    // null, not a failed post. The key is still present, so a template
+    // reference to it never dangles.
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    assert_eq!(
+        outcome.result,
+        json!({"channel": "C1", "ts": "1717171717.000100", "permalink": null})
+    );
+}
+
+#[tokio::test]
+async fn slack_post_message_without_a_token_never_calls_slack() {
+    let shim = curl_shim();
+    let mut doc = slack_tool_with(shim.path(), "{}", "{}");
+    let ToolKind::Exec { env, .. } = &mut doc.kind else {
+        unreachable!()
+    };
+    // Explicitly empty rather than absent: the child inherits the parent
+    // environment, so a developer's exported token must not decide this.
+    env.insert("SLACK_BOT_TOKEN".to_string(), String::new());
+
+    let outcome = slack_registry(doc)
+        .invoke(
+            "builtin__slack_post_message",
+            json!({"channel": "C1", "text": "hi"}),
+        )
+        .await
+        .unwrap();
+    assert!(outcome.is_error, "{:?}", outcome.result);
+    assert!(
+        outcome.result["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("SLACK_BOT_TOKEN"),
+        "{:?}",
+        outcome.result
+    );
+    assert!(
+        !shim.path().join("curl.log").exists(),
+        "no request should have been attempted"
+    );
 }

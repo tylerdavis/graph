@@ -61,6 +61,8 @@ graph plan run project_status '{"project":"New Relic"}' > report.md
 curl -X POST "$SLACK_WEBHOOK" --data-urlencode "payload={\"text\": $(jq -Rs . < report.md)}"
 ```
 
+With the [`slack` pack](/tools/builtins#the-slack-pack) enabled, delivery can live *in* the plan instead of the pipe: a final `builtin__slack_post_message` step posts the report and returns the message `ts`, so a follow-up step can thread details under it. Prefer the tool when the plan owns delivery and a failed post should fail the run; prefer the webhook pipe when stdout is the deliverable and the shell owns delivery (a webhook needs no app scopes or channel invite).
+
 Run it with `GRAPH_STORAGE=memory` in the cron environment when it should leave no state behind ([scripting contract](/reference/scripting-contract)).
 
 ## Patterns to reuse
