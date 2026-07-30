@@ -85,8 +85,8 @@ fn list() -> Result<Outcome> {
     let loaded = runtime.plan_docs();
     let body = plan_edit::list_as_json(&loaded);
     if loaded.docs.is_empty() && loaded.skipped.is_empty() {
-        eprintln!("no plan documents found — add YAML files under [plans].paths");
-        return Ok(Outcome::raw(String::new(), body));
+        return Ok(Outcome::raw(String::new(), body)
+            .with_note("no plan documents found — add YAML files under [plans].paths"));
     }
     let text = loaded
         .docs

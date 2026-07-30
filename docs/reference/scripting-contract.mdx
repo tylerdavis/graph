@@ -66,6 +66,20 @@ Output-mode plans don't need `--json` — their stdout **is** JSON:
 graph plan run urgent_issues | jq -e '.count > 0' || echo "all clear"
 ```
 
+### Listing envelopes
+
+Every listing command answers `--json` with the same shape: a named array plus a `count` that matches it.
+
+```bash
+graph plan list --json     # { plans, skipped, hidden }
+graph tools list --json    # { tools, count, sources }
+graph threads list --json  # { threads, count }
+graph shapes list --json   # { shapes, count }
+graph mcp list --json      # { servers, count }
+```
+
+An empty listing is a valid answer, never an error: the envelope still parses and `count` is `0`. When there is a reason the list is empty — no servers configured, no threads yet — it arrives as a `note` field rather than as advice on stderr, so a program gets one parseable thing and a human still gets the hint. Without `--json`, that hint is all there is, and stdout stays empty.
+
 ### Authoring envelopes
 
 The [plan authoring commands](/reference/cli#authoring-plans) follow the same opt-in rule: `--json` puts an envelope on stdout, and without it a one-line result goes to stderr with stdout left empty. A program driving these should always pass `--json`.

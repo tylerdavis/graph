@@ -2,62 +2,95 @@
 //! or MCP servers needed.
 
 use crate::cli::ThreadsCommand;
+use crate::commands::outcome::{report, Outcome};
 use crate::runtime::open_store;
 use anyhow::{bail, Result};
+use graph_core::Store;
 use graph_llm::types::ChatMessage;
+use serde_json::json;
+use std::sync::Arc;
 
 pub async fn run(command: ThreadsCommand) -> Result<()> {
     let config = graph_config::load()?.config;
     let store = open_store(&config)?;
 
     match command {
-        ThreadsCommand::List => {
-            let threads = store.list_threads().await?;
-            if threads.is_empty() {
-                println!("no threads yet — run `graph ask` or `graph chat`");
-                return Ok(());
-            }
-            for thread in threads {
-                println!(
-                    "{}  {}  {:>3} msgs  {}",
-                    thread.id,
-                    format_time(thread.updated_at),
-                    thread.message_count,
-                    thread.title,
-                );
-            }
-            Ok(())
-        }
-        ThreadsCommand::Show { id, state } => {
-            let Some(meta) = store.get_thread(&id).await? else {
-                bail!("no thread with id {id}");
-            };
-            let messages = store.load_messages(&id).await?;
-            if state {
-                println!("{}", serde_json::to_string_pretty(&messages)?);
-                return Ok(());
-            }
-            println!(
-                "{} — {} ({} messages, updated {})\n",
-                meta.id,
-                meta.title,
-                meta.message_count,
-                format_time(meta.updated_at),
-            );
-            for message in &messages {
-                println!("{}", render_message(message));
-            }
-            Ok(())
-        }
-        ThreadsCommand::Rm { id } => {
-            if store.delete_thread(&id).await? {
-                println!("deleted {id}");
-                Ok(())
-            } else {
-                bail!("no thread with id {id}");
-            }
-        }
+        ThreadsCommand::List { json } => report(list(&store).await?, json),
+        ThreadsCommand::Show { id, state, json } => report(show(&store, &id, state).await?, json),
+        ThreadsCommand::Rm { id, json } => report(rm(&store, &id).await?, json),
     }
+}
+
+async fn list(store: &Arc<dyn Store>) -> Result<Outcome> {
+    let threads = store.list_threads().await?;
+    let body = json!({
+        "threads": threads.iter().map(|thread| json!({
+            "id": thread.id,
+            "title": thread.title,
+            "messageCount": thread.message_count,
+            "updatedAt": thread.updated_at,
+        })).collect::<Vec<_>>(),
+        "count": threads.len(),
+    });
+    if threads.is_empty() {
+        return Ok(Outcome::raw(String::new(), body)
+            .with_note("no threads yet — run `graph ask` or `graph chat`"));
+    }
+    let text = threads
+        .iter()
+        .map(|thread| {
+            format!(
+                "{}  {}  {:>3} msgs  {}\n",
+                thread.id,
+                format_time(thread.updated_at),
+                thread.message_count,
+                thread.title,
+            )
+        })
+        .collect::<String>();
+    Ok(Outcome::raw(text, body))
+}
+
+async fn show(store: &Arc<dyn Store>, id: &str, state: bool) -> Result<Outcome> {
+    let Some(meta) = store.get_thread(id).await? else {
+        bail!("no thread with id {id}");
+    };
+    let messages = store.load_messages(id).await?;
+    let body = json!({
+        "id": meta.id,
+        "title": meta.title,
+        "messageCount": meta.message_count,
+        "updatedAt": meta.updated_at,
+        "messages": messages,
+    });
+    // `--state` asks for the raw runtime state, so it prints the messages
+    // verbatim rather than the conversation transcript.
+    if state {
+        let text = format!("{}\n", serde_json::to_string_pretty(&messages)?);
+        return Ok(Outcome::raw(text, body));
+    }
+    let mut text = format!(
+        "{} — {} ({} messages, updated {})\n\n",
+        meta.id,
+        meta.title,
+        meta.message_count,
+        format_time(meta.updated_at),
+    );
+    for message in &messages {
+        text.push_str(&render_message(message));
+        text.push('\n');
+    }
+    Ok(Outcome::raw(text, body))
+}
+
+async fn rm(store: &Arc<dyn Store>, id: &str) -> Result<Outcome> {
+    if !store.delete_thread(id).await? {
+        bail!("no thread with id {id}");
+    }
+    Ok(Outcome::raw(
+        format!("deleted {id}\n"),
+        json!({"deleted": id}),
+    ))
 }
 
 fn format_time(epoch_ms: i64) -> String {

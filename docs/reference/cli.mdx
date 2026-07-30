@@ -130,20 +130,22 @@ Operates on the full catalog: MCP (`server__`), user (`user__`), bundled packs (
 
 `show --json` emits one tool's whole definition — `inputSchema` included, which is what you need to write a step's input object — with every key always present, `null` when absent. Unknown tool names stay ordinary errors (stderr, exit `1`); there is no envelope for them. See the [scripting contract](/reference/scripting-contract#the-tool-catalog).
 
+`test --json` wraps the call: `{tool, isError, result}`. A tool that *reports* an error still exits `0` — the call completed and its payload is the result worth reading, so `isError` carries the distinction the exit code does not. Without `--json` the tool's own result is the deliverable, unwrapped.
+
 ## `graph threads`
 
 ```
-graph threads list
-graph threads show <id> [--state]
-graph threads rm <id>
+graph threads list [--json]
+graph threads show <id> [--state] [--json]
+graph threads rm <id> [--json]
 ```
 
 ## `graph mcp`
 
 ```
-graph mcp list              # configured servers
-graph mcp tools [server]    # discovered tools
-graph mcp test <server>     # connect, count tools and declared output schemas
+graph mcp list [--json]              # configured servers
+graph mcp tools [server] [--json]    # discovered tools
+graph mcp test <server> [--json]     # connect, count tools and declared output schemas
 ```
 
 graph is an MCP *client*: each `[mcp.<name>]` entry becomes a set of `<name>__*` tools. It does not serve MCP — see [MCP servers](/tools/mcp-servers).
@@ -152,7 +154,7 @@ graph is an MCP *client*: each `[mcp.<name>]` entry becomes a set of `<name>__*`
 
 ```
 graph shapes list [--json]
-graph shapes show <tool>
+graph shapes show <tool> [--json]
 ```
 
 Inspect the [shape cache](/tools/shape-cache): `list` prints tool names and seen-counts, `show` prints one tool's cached schema and example. The same data lives as plain files under `<data_dir>/shapes/`.

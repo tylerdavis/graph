@@ -69,6 +69,16 @@ impl Outcome {
             raw: Some(text),
         }
     }
+
+    /// Attach a hint for the human — "no threads yet, run `graph ask`".
+    ///
+    /// It lives in `body` rather than being printed at the call site so that
+    /// it reaches a machine caller as data, and so a `--json` run does not
+    /// also spray advice at stderr.
+    pub fn with_note(mut self, note: impl Into<String>) -> Self {
+        self.body["note"] = Value::String(note.into());
+        self
+    }
 }
 
 /// Render an [`Outcome`] on the terminal's terms and produce the exit code.
@@ -87,6 +97,11 @@ pub fn report(outcome: Outcome, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&body)?);
     } else if let Some(text) = raw {
         print!("{text}");
+        // An empty listing has nothing to put on stdout, so the hint that
+        // explains why is the only thing the human gets.
+        if let Some(note) = body.get("note").and_then(Value::as_str) {
+            eprintln!("{note}");
+        }
     } else if rejected {
         let headline = body
             .get("error")

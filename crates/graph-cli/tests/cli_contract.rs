@@ -379,6 +379,97 @@ fn a_step_add_envelope_reports_where_the_step_landed() {
     assert_eq!(envelope["steps"], serde_json::json!(1));
 }
 
+// ------------------------------------------------- the uniform --json ------
+
+#[test]
+fn every_listing_command_answers_json_with_a_counted_envelope() {
+    let scratch = Scratch::new();
+    scratch.write_plan("echo_ok", ECHO_PLAN);
+
+    // The shape a caller can rely on across the whole surface: a named array
+    // plus a `count` that matches it. Uniformity is the point — an agent
+    // driving these should not have to learn five envelope shapes.
+    for (args, key) in [
+        (vec!["plan", "list", "--json"], "plans"),
+        (vec!["tools", "list", "--json"], "tools"),
+        (vec!["threads", "list", "--json"], "threads"),
+        (vec!["shapes", "list", "--json"], "shapes"),
+        (vec!["mcp", "list", "--json"], "servers"),
+    ] {
+        let run = scratch.graph(&args);
+        run.code_is(0);
+        let envelope = run.json();
+        let items = envelope[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("`{key}` must be an array in {envelope:#}"));
+        // `plan list` predates the convention and reports skipped/hidden
+        // instead of a count; the rest carry one.
+        if let Some(count) = envelope.get("count") {
+            assert_eq!(
+                count,
+                &serde_json::json!(items.len()),
+                "count must match the array it describes: {envelope:#}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_empty_listing_is_an_envelope_with_a_note_not_stderr_advice() {
+    let scratch = Scratch::new();
+
+    // Under --json the hint is data, so stderr stays completely silent: a
+    // machine caller gets one parseable thing and nothing to scrape.
+    let run = scratch.graph(&["threads", "list", "--json"]);
+    run.code_is(0);
+    assert_eq!(
+        run.stderr, "",
+        "--json must not also print advice to stderr"
+    );
+    let envelope = run.json();
+    assert_eq!(envelope["count"], serde_json::json!(0));
+    assert!(envelope["note"].as_str().is_some_and(|n| !n.is_empty()));
+
+    // Without --json the same hint is the only thing the human gets, and it
+    // is a diagnostic, so stdout stays empty rather than carrying prose.
+    scratch
+        .graph(&["threads", "list"])
+        .code_is(0)
+        .stdout_empty()
+        .stderr_contains("no threads yet");
+}
+
+#[test]
+fn tools_test_reports_a_failing_tool_without_failing_the_command() {
+    let scratch = Scratch::new();
+
+    // A tool that reports an error is not a CLI failure: the call completed
+    // and its payload is the result worth reading. `isError` carries the
+    // distinction that the exit code deliberately does not.
+    let run = scratch.graph(&[
+        "tools",
+        "test",
+        "builtin__reshape",
+        r#"{"shape":{"a":"1"}}"#,
+        "--json",
+    ]);
+    run.code_is(0);
+    let envelope = run.json();
+    assert_eq!(envelope["tool"], serde_json::json!("builtin__reshape"));
+    assert_eq!(envelope["isError"], serde_json::json!(false));
+    assert_eq!(envelope["result"], serde_json::json!({"a": "1"}));
+
+    // Without --json the tool's own result is the deliverable, unwrapped.
+    let plain = scratch.graph(&[
+        "tools",
+        "test",
+        "builtin__reshape",
+        r#"{"shape":{"a":"1"}}"#,
+    ]);
+    plain.code_is(0);
+    assert_eq!(plain.json(), serde_json::json!({"a": "1"}));
+}
+
 // ------------------------------------------------------- CI annotations ----
 
 #[test]

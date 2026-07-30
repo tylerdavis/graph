@@ -341,34 +341,60 @@ pub enum ToolsCommand {
         /// Override individual input keys (applied on top of the JSON document)
         #[arg(long = "input", value_name = "KEY=VALUE")]
         inputs: Vec<String>,
+        #[arg(long)]
+        json: bool,
     },
 }
 
 #[derive(Subcommand)]
 pub enum ThreadsCommand {
     /// List threads
-    List,
+    List {
+        #[arg(long)]
+        json: bool,
+    },
     /// Show a thread's messages
     Show {
         id: String,
         /// Include the full runtime state
         #[arg(long)]
         state: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// Delete a thread
-    Rm { id: String },
+    Rm {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
 pub enum McpCommand {
     /// List configured servers and their status
-    List,
+    List {
+        #[arg(long)]
+        json: bool,
+    },
     /// List tools exposed by servers
-    Tools { server: Option<String> },
+    Tools {
+        server: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Connect to a server and verify initialize + tools/list
-    Test { server: String },
+    Test {
+        server: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Pre-warm the observed-shape cache by invoking read-only tools
-    Probe { server: Option<String> },
+    Probe {
+        server: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -379,7 +405,11 @@ pub enum ShapesCommand {
         json: bool,
     },
     /// Show one tool's cached schema and example
-    Show { tool: String },
+    Show {
+        tool: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
