@@ -105,7 +105,7 @@ impl ToolRegistry for MockRegistry {
 
 fn pipeline(
     responses: Vec<ChatResponse>,
-    registry: Arc<MockRegistry>,
+    registry: Arc<dyn ToolRegistry>,
     max_attempts: u32,
 ) -> (Pipeline, Arc<ScriptedProvider>) {
     pipeline_with_named(responses, registry, max_attempts, Default::default())
@@ -117,7 +117,7 @@ fn pipeline(
 /// records on the request.
 fn pipeline_with_named(
     responses: Vec<ChatResponse>,
-    registry: Arc<MockRegistry>,
+    registry: Arc<dyn ToolRegistry>,
     max_attempts: u32,
     named: std::collections::BTreeMap<String, ModelChoice>,
 ) -> (Pipeline, Arc<ScriptedProvider>) {
@@ -1399,6 +1399,95 @@ async fn concurrent_map_completes_all_items_in_order() {
         .filter(|(n, _)| n == "t__issues")
         .count();
     assert_eq!(issues, 5, "every item ran");
+}
+
+/// Registry with the mock tools plus the real `data` pack, so
+/// `builtin__reshape` runs its actual code path behind the pipeline's
+/// render.
+fn registry_with_data_pack(values: Value) -> Arc<dyn ToolRegistry> {
+    let docs = crate::user_tools::load_pack_tools(&["data".to_string()]).unwrap();
+    let providers: std::collections::HashMap<String, Arc<dyn ChatProvider>> =
+        std::collections::HashMap::new();
+    let router = Arc::new(graph_llm::ModelRouter::with_providers(
+        providers,
+        ModelRoles::default(),
+    ));
+    Arc::new(crate::tools::CompositeRegistry::new(vec![
+        search_registry(values),
+        Arc::new(crate::user_tools::UserToolRegistry::builtins(docs, router)),
+    ]))
+}
+
+#[tokio::test]
+async fn caller_shape_survives_model_authored_template_syntax() {
+    // The regression: the pipeline renders a `map` body's call input against
+    // the full scope, so `{{item.text}}` is already substituted when
+    // `builtin__reshape` is dispatched. A second, tool-level render would
+    // parse that substituted text — here an LLM quoting Helm, Actions, and
+    // mustache tags — as graph templates and fail the step.
+    let items = json!({"values": [
+        {"text": "quoting a helm chart: {{ index .Values.image.tag }}"},
+        {"text": "and an action: ${{ github.token }}"},
+        {"text": "and mustache: {{#section}}body{{/section}}"},
+    ]});
+    let registry = registry_with_data_pack(items.clone());
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": {"toolName": "builtin__reshape", "input": {
+                "shape": {"body": "{{item.text}}"},
+            }},
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let bodies: Vec<Value> = items["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| json!({"body": item["text"]}))
+        .collect();
+    assert_eq!(
+        outcome.state.results["E1"]["results"],
+        Value::Array(bodies),
+        "every field passes through byte-identical"
+    );
+}
+
+#[tokio::test]
+async fn caller_shape_resolves_step_and_input_roots() {
+    // The other half of the contract: the pipeline pass is what resolves a
+    // caller-supplied shape, and it sees the whole scope — earlier results
+    // and the plan's inputs — with the typed splice intact.
+    let registry = registry_with_data_pack(json!({"number": 12, "labels": ["bug"]}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "builtin__reshape", "input": {"shape": {
+            "pr": "{{E0.number}}",
+            "tags": "{{E0.labels}}",
+            "title": "PR #{{E0.number}} for {{input.repo}}",
+        }}},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, Some(json!({"repo": "graph"})))
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.state.results["E1"],
+        json!({
+            "pr": 12,                            // exact tag keeps the number
+            "tags": ["bug"],                     // exact tag keeps the array
+            "title": "PR #12 for graph",         // mixed text interpolates
+        })
+    );
 }
 
 #[tokio::test]

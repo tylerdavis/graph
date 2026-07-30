@@ -88,7 +88,7 @@ A `reshape` tool renders its `shape` — a JSON tree whose leaf strings are temp
 
 The shape renders against the tool's own `input` root, so a fixed doc `shape` references its fields as `{{input.*}}`. Inside a plan the pipeline renders the step input first (against `item`, `E0…`, `input`), so a shape authored as `{{item.number}}` reaches the tool already resolved and passes through unchanged — one effective render either way, like a `map`'s `over`.
 
-Set `caller_shape: true` instead of a fixed `shape` to take the shape from each call's `shape` input — the generic [`builtin__reshape`](/tools/builtins#builtin-reshape) path, where the planner authors the mapping per step referencing the surrounding step's roots. Fixed-shape leaves are validated at load time; caller shapes at render time (a bad path is a tool error). One of `shape` or `caller_shape` is required.
+Set `caller_shape: true` instead of a fixed `shape` to take the shape from each call's `shape` input — the generic [`builtin__reshape`](/tools/builtins#builtin-reshape) path, where the planner authors the mapping per step referencing the surrounding step's roots. Fixed-shape leaves are validated at load time and rendered by the tool against its own `input`; a caller shape is rendered *once*, by the pipeline, as part of the calling step's input (a bad path fails that render), and the tool returns it verbatim — so substituted text containing `{{ … }}` is never re-parsed as a template. One of `shape` or `caller_shape` is required.
 
 ## Built-in packs
 

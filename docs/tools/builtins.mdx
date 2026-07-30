@@ -57,7 +57,9 @@ The `shape` is a JSON object whose keys are literal and whose leaf strings are [
       title: "PR #{{E1.number}}"      # interpolate a string
 ```
 
-It **only moves data** — rename, pick, nest, flatten, interpolate. It is logic-less by construction (the [template dialect](/plans/template-language) has no computation), so it can't derive values (sums, casing, conditionals); wrap those in a `user__` [`exec` tool](/tools/user-defined). A shape referencing a field the data lacks is a tool error, not a silent empty — the same contract as an `exec` that exits non-zero.
+It **only moves data** — rename, pick, nest, flatten, interpolate. It is logic-less by construction (the [template dialect](/plans/template-language) has no computation), so it can't derive values (sums, casing, conditionals); wrap those in a `user__` [`exec` tool](/tools/user-defined). A shape referencing a field the data lacks fails the step's input render, like any other bad path in a step input.
+
+Because that single render is the pipeline's, the tool itself never re-renders the shape: whatever the templates resolved to is returned **verbatim**, so values that happen to contain `{{ … }}` — an LLM quoting a Helm chart, a GitHub Actions expression, a mustache partial — pass through untouched instead of being parsed as graph templates. The flip side is that `builtin__reshape` is a plan-step tool: called directly by an [`agent`](/plans/agent-step) step or from `ask`/`chat`, where inputs are model-authored and not plan-rendered, it returns the shape it was given.
 
 To reshape every element of a list, call `reshape` inside a [`map` body](/plans/iteration) over the list and reference `{{item}}` in the shape.
 

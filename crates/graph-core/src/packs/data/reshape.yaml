@@ -17,7 +17,10 @@ description: >
   {"base_sha":"abc","pr":12}. It only moves data — it cannot compute derived
   values (sums, casing, conditionals); wrap those in a user `exec` tool. To
   reshape every element of a list, call this inside a `map` body over the
-  list and reference {{item}} in the shape.
+  list and reference {{item}} in the shape. The shape is resolved by the
+  plan step's own input render, once, so this is a plan-step tool: called
+  directly by an agent (whose inputs are not plan-rendered) it just returns
+  the shape unchanged.
 kind: reshape
 caller_shape: true
 input_schema:
