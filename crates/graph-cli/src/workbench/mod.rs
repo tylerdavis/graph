@@ -219,12 +219,7 @@ async fn run_plan_workbench(
         toolbox.clone() as Arc<dyn ToolRegistry>,
         vec!["plan_and_execute".to_string()],
     ));
-    let plans_dir = runtime
-        .config
-        .plans
-        .paths
-        .first()
-        .map(|p| graph_config::expand_tilde(p));
+    let plans_dir = runtime.plans_dir();
     let debug = Arc::new(runner::DebugControls::default());
     let workbench_tools = Arc::new(tools::WorkbenchTools::new(
         draft.clone(),

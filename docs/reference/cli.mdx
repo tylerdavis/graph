@@ -39,15 +39,73 @@ Full-screen TUI for drafting, inspecting, and test-running plans — see [Plan w
 ## `graph plan`
 
 ```
-graph plan list
-graph plan show <name>
-graph plan validate <name|path>
+graph plan list [--json]
+graph plan show <name|path> [--json]
+graph plan validate <name|path> [--json]
 graph plan run <name> [<json>|@file|-] [--input k=v]... [--json]
 ```
 
-`validate` checks structure (templates, references, ids) and resolves every step tool against the loadable catalog — packs, user tools, plans (composition followed transitively), and configured MCP servers (server-level; MCP tool names are only verifiable by connecting). Unresolvable tools exit `1`; a file whose `requires_servers` declares an unconfigured server validates with a note. `run` performs the same resolution and refuses to start when it fails. Naming a plan hidden by unconfigured `requires_servers` errors with the missing servers.
+`validate` checks structure (templates, references, ids) and resolves every step tool against the loadable catalog — packs, user tools, plans (composition followed transitively), and configured MCP servers (server-level; MCP tool names are only verifiable by connecting). Problems exit `1`; a file whose `requires_servers` declares an unconfigured server validates with a note (portable, just not runnable here). `run` performs the same resolution and refuses to start when it fails. Naming a plan hidden by unconfigured `requires_servers` errors with the missing servers.
 
 `run` exit codes: `0` ok, `3` missing/invalid inputs (schema printed to stderr), `1` failure (including unresolvable tools). Solver output streams to stdout; output-mode plans print JSON; silent plans print nothing.
+
+Per the [streams contract](/reference/scripting-contract#streams), stdout carries only deliverables — `list`'s rows, `show`'s YAML, and `--json` envelopes. Verdicts and hints go to stderr, so `plan validate` prints nothing to stdout on success and its exit code is the answer; `plan list` on an empty catalog leaves stdout empty rather than emitting a hint into it.
+
+`show` and `validate` are deliberately lenient about *which* plans they will open: a plan that is invalid, or hidden by unconfigured `requires_servers`, is exactly the plan you need to inspect, so both resolve it from disk rather than requiring it to be in the runnable catalog. `list` only shows the runnable catalog; `list --json` also reports what was `skipped` (failed to load, with the reason) and `hidden` (with the missing servers).
+
+## Authoring plans
+
+The commands below create and edit plan files. They are stateless — each one resolves a plan, applies a single edit, and writes the YAML back — so there is no draft session and no undo (use version control). Only `draft` costs inference; everything else works with no provider credentials and no network.
+
+```
+graph plan new <identifier> [--name <n>] [--description <d>] [--output <path>] [--json]
+graph plan draft <goal> [--from <name|path>] [--feedback <f>] [--output <path>] [--stdout] [--json]
+graph plan set <name|path> <attribute> <value>... [--json]
+graph plan unset <name|path> <attribute> [--json]
+graph plan step add <name|path> <id> <tool> <json|@file|-> [--reasoning <r>] [--before <id> | --after <id>] [--json]
+graph plan step update <name|path> <id> <attribute> <value> [--json]
+graph plan step rename <name|path> <id> <new-id> [--json]
+graph plan step unset <name|path> <id> <attribute> [--json]
+graph plan step rm <name|path> <id> [--json]
+```
+
+`new` scaffolds a plan with no steps. It is intentionally invalid on creation (`plan has no steps`) — an edit is only refused if it makes things *worse*, so a scaffold stays editable and a plan can be built up step by step without ever invoking the planner.
+
+`draft` runs the planner over your tool catalog. A draft that fails validation gets one automatic repair pass; if incremental drafting exhausts its retries, the valid prefix is saved and reported under `salvaged` so you can finish it with `step add` instead of redrafting. `--stdout` prints the YAML and writes nothing.
+
+### Attributes
+
+One attribute per call, named exactly as it appears in the plan file. See [Plan schema](/reference/plan-schema) for what each one means.
+
+| `plan set <attribute>` | Value |
+|---|---|
+| `name`, `description`, `identifier` | One string |
+| `exemplars`, `requires_servers` | One or more strings |
+| `input_schema` | A JSON Schema object: inline JSON, `@file`, or `-` |
+| `solver` | `{query_to_answer, system_prompt?, data}`: inline JSON, `@file`, or `-` |
+| `output` | A template map: inline JSON, `@file`, or `-` |
+
+| `plan step update <attribute>` | Value |
+|---|---|
+| `tool` | A tool name, or a control step (`exit`, `agent`, `decide`, `map`, `reduce`) |
+| `input` | The step's whole input object: inline JSON, `@file`, or `-` |
+| `reasoning` | One string |
+
+`solver` and `output` are the two finish modes and are mutually exclusive, so setting either clears the other; `unset solver` / `unset output` leaves a silent plan. `unset` refuses the required fields (`identifier`, `name`, `description`, and a step's `tool`/`input`) — change those with `set` instead.
+
+`step rename` is separate from `step update` because it is not a plain field write: it also rewrites every downstream `{{<old-id>.…}}` reference in later steps, the output map, and the solver templates.
+
+### What gets rejected
+
+Every edit runs through the same guard the [plan workbench](/workbench/plan-workbench) uses: an edit is rejected only if it introduces a validation problem that wasn't already there, and a rejected edit leaves the file untouched. Problems that already existed never block an edit (otherwise repairing a broken plan would be impossible) — they come back as `preExistingProblems` on the success result.
+
+So `graph plan step rm demo E1` fails when a later step still references `{{E1.…}}`, naming the template that would dangle, while `graph plan set demo description '…'` succeeds on a plan that is invalid for unrelated reasons.
+
+Exit codes: `0` applied, `1` rejected. With `--json` the envelope is printed to stdout *before* the non-zero exit, so a caller always gets the structured problem list. Without it, a one-line result goes to stderr and stdout stays empty — see the [scripting contract](/reference/scripting-contract).
+
+Changing `identifier` writes a *new* file (`<plans dir>/<new>.yaml`) and leaves the original in place, reporting `renamedFrom`; removing the old file is left to you, so a rename can never silently destroy a plan.
+
+An edit reserializes the whole file, so cosmetic YAML is normalized: flow mappings (`input: { a: b }`) become block mappings, folded scalars (`>`) become literal ones (`|`), and comments are dropped. The plan itself is unchanged — commentary belongs in `description` and each step's `reasoning`, which are real fields the agent also reads.
 
 ## `graph tools`
 
@@ -74,6 +132,8 @@ graph mcp list              # configured servers
 graph mcp tools [server]    # discovered tools
 graph mcp test <server>     # connect, count tools and declared output schemas
 ```
+
+graph is an MCP *client*: each `[mcp.<name>]` entry becomes a set of `<name>__*` tools. It does not serve MCP — see [MCP servers](/tools/mcp-servers).
 
 ## `graph shapes`
 

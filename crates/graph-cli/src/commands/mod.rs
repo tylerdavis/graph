@@ -5,6 +5,7 @@ pub mod input;
 pub mod listing;
 pub mod mcp_cmd;
 pub mod plan_cmd;
+pub mod plan_edit;
 pub mod shapes_cmd;
 pub mod threads_cmd;
 pub mod tools_cmd;

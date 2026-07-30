@@ -242,6 +242,39 @@ pub fn annotate_failure(message: &str) {
     }
 }
 
+/// A failure that has already been reported to the user and carries the exit
+/// code the process should end with.
+///
+/// Commands return this instead of calling `std::process::exit` themselves.
+/// A bare `process::exit` ends the process *where it is called*, skipping
+/// every destructor between there and `main` — which for this binary means
+/// `Runtime::shutdown` may never run and MCP child processes are orphaned onto
+/// the user's terminal. Returning the code instead lets the command unwind
+/// normally; `main` turns it into the exit status once everything is torn down.
+///
+/// "Silent" because the message was already written on the command's own terms
+/// (a `--json` envelope on stdout, or a one-liner on stderr), so `main` must
+/// not print it a second time.
+#[derive(Debug)]
+pub struct SilentExit {
+    pub code: i32,
+}
+
+impl SilentExit {
+    /// The exit code to end with, as an error ready to return from a command.
+    pub fn code(code: i32) -> anyhow::Error {
+        anyhow::Error::new(Self { code })
+    }
+}
+
+impl std::fmt::Display for SilentExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "exiting with code {}", self.code)
+    }
+}
+
+impl std::error::Error for SilentExit {}
+
 /// Workflow-command data encoding: `%`, `\r`, `\n` must be escaped or the
 /// runner truncates the annotation at the first newline.
 fn escape_gha_data(message: &str) -> String {
@@ -259,5 +292,34 @@ mod gha_tests {
             super::escape_gha_data("50% done\r\nnext"),
             "50%25 done%0D%0Anext"
         );
+    }
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::SilentExit;
+
+    #[test]
+    fn a_silent_exit_survives_the_round_trip_main_relies_on() {
+        // `main` recovers the code by downcasting the boxed error. If this
+        // stops working, every non-zero exit code silently becomes 1.
+        for code in [1, 3, 4] {
+            let error = SilentExit::code(code);
+            let recovered = error
+                .downcast::<SilentExit>()
+                .expect("main must be able to recover the code");
+            assert_eq!(recovered.code, code);
+        }
+    }
+
+    #[test]
+    fn an_ordinary_error_is_not_mistaken_for_a_silent_exit() {
+        // The other side of the branch in `main`: a real failure must fall
+        // through to being printed, not swallowed as an exit code.
+        let error = anyhow::anyhow!("no plan named 'nope'");
+        let error = error
+            .downcast::<SilentExit>()
+            .expect_err("an ordinary error must not downcast");
+        assert_eq!(error.to_string(), "no plan named 'nope'");
     }
 }

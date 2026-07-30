@@ -107,3 +107,26 @@ For interactive authoring, the [plan workbench](/workbench/plan-workbench) wraps
 <Frame caption="The authoring loop in one screen: the draft's step tree, its validation verdict, and the agent that edits it.">
   <img src="/images/workbench/workbench-overview.svg" alt="The authoring loop in one screen: the draft's step tree, its validation verdict, and the agent that edits it." />
 </Frame>
+
+## Authoring from the command line
+
+The same loop runs as [individual commands](/reference/cli#authoring-plans) — useful in scripts, and the surface a plan-managing agent drives. Each command applies one edit to the file and writes it back; there is no session to hold open.
+
+```bash
+graph plan new report --name "Report" --description "roll a team's issues into a digest"
+graph plan set report input_schema '{"type":"object","properties":{"team":{"type":"string"}},"required":["team"]}'
+graph plan step add report E1 linear__list_issues '{"teamId":"{{input.team}}"}'
+graph plan step add report E2 builtin__reshape '{"shape":{"count":"{{E1.length}}"}}'
+graph plan set report output '{"count":"{{E2.count}}"}'
+graph plan validate report
+graph plan run report '{"team":"Core"}'
+```
+
+Note what this walkthrough does *not* do: call the planner. `graph plan draft "<goal>"` is available and mirrors the workbench's drafting (one repair pass, salvage on exhaustion), but it is the only authoring command that costs inference. When you already know the steps — or an agent does — building them directly is free, deterministic, and reviewable as a diff.
+
+Two properties make this safe to script against:
+
+- **Edits can only improve things.** An edit is rejected if it introduces a validation problem, and a rejected edit leaves the file untouched — so `step rm` fails when a later step still references the step, naming the template that would dangle. Problems that were *already* there never block an edit, which is what keeps a half-built plan (a fresh `plan new` has no steps yet) editable.
+- **Nothing is clobbered silently.** A write refuses a file that holds a different plan, and changing `identifier` writes a new file rather than overwriting the old one.
+
+Add `--json` to any of these for a machine-readable envelope — including on rejection, where the problem list is what you want most. See the [scripting contract](/reference/scripting-contract#authoring-envelopes).

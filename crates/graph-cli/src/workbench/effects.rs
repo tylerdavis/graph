@@ -4,6 +4,7 @@
 use super::app::{Effect, Msg};
 use super::runner::{DebugControls, UiGate};
 use super::tools::DraftState;
+use graph_core::pipeline::authoring;
 use graph_core::pipeline::doc::PlanDoc;
 use graph_core::pipeline::Pipeline;
 use graph_core::{Agent, AgentError, Store, ToolRegistry};
@@ -48,7 +49,7 @@ fn turn_system_prompt(base: &str, draft: &Option<PlanDoc>) -> String {
                  it (only to re-check after your own edits within this turn):\n",
                 doc.identifier
             ));
-            match serde_yaml::to_string(doc) {
+            match authoring::to_yaml(doc) {
                 Ok(yaml) => prompt.push_str(&yaml),
                 Err(_) => prompt.push_str("(unserializable draft — use workbench__get_plan)"),
             }
@@ -227,54 +228,15 @@ pub fn save_draft(
     let Some(doc) = guard.doc.as_mut() else {
         return Err("no draft".to_string());
     };
-    let path = match &doc.path {
-        Some(path) => {
-            // The path is the file the draft was loaded from. Never write
-            // over a file that holds a different plan — the draft's
-            // identity must match the file's.
-            if let Some(existing) = on_disk_identifier(path) {
-                if existing != doc.identifier {
-                    return Err(format!(
-                        "{} holds plan '{}', not '{}' — refusing to overwrite it",
-                        path.display(),
-                        existing,
-                        doc.identifier
-                    ));
-                }
-            }
-            path.clone()
-        }
-        None => {
-            let dir = plans_dir
-                .map(|p| p.to_path_buf())
-                .ok_or_else(|| "no plans directory configured ([plans].paths)".to_string())?;
-            let candidate = dir.join(format!("{}.yaml", doc.identifier));
-            if candidate.exists() {
-                return Err(format!(
-                    "{} already exists — change the identifier or remove the file",
-                    candidate.display()
-                ));
-            }
-            candidate
-        }
-    };
-    let yaml = serde_yaml::to_string(doc).map_err(|e| e.to_string())?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&path, yaml).map_err(|e| e.to_string())?;
+    // Where it lands, and the guards against clobbering another plan, are
+    // shared with `graph plan` via authoring::target_path / write_doc. The
+    // draft's on-disk identity and dirty flag are this surface's own
+    // bookkeeping, so they stay here.
+    let path = authoring::target_path(doc, plans_dir).map_err(|e| e.to_string())?;
+    authoring::write_doc(doc, &path, false).map_err(|e| e.to_string())?;
     doc.path = Some(path.clone());
     guard.dirty = false;
     Ok(path.display().to_string())
-}
-
-/// The `identifier` of the plan currently in a file, if it can be read
-/// and parsed at all — unreadable/garbled files return None and the save
-/// proceeds (the write can't lose a plan that isn't there).
-fn on_disk_identifier(path: &std::path::Path) -> Option<String> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    let value: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
-    Some(value.get("identifier")?.as_str()?.to_string())
 }
 
 #[cfg(test)]
