@@ -1,0 +1,106 @@
+# github pack: release metadata, plus the tag of the release before it.
+# `previous_tag` is what makes this the entry point for release plans: it
+# is the base ref for git_log/git_diff over "what shipped in this release",
+# resolved from published dates rather than list position, so a target that
+# is itself a prerelease still finds the last stable release before it.
+# Drafts never count as the previous release (they have no published date
+# and nothing shipped in them). A repository's first release comes back
+# with previous_tag: null — a gateable value, not an error. The lookup
+# scans the 100 most recent releases, which covers every current release;
+# asking for a tag older than that window can only under-resolve
+# previous_tag to null, never to a wrong tag.
+name: gh_release
+description: >
+  Metadata for a GitHub release — tag, title, generated notes body, url,
+  publication date — plus previous_tag, the tag of the release published
+  before it. Omit `tag` for the latest release. Use before summarizing a
+  release: previous_tag is the base ref for a git_log or git_diff over
+  the range that shipped. previous_tag is null on the first release, so
+  gate on it before diffing. Needs gh and a checkout whose origin points
+  at the repository.
+kind: exec
+command: bash
+args:
+  - "-ceuo"
+  - "pipefail"
+  - |
+    tag="$1" include_pre="$2"
+    fields=tagName,name,body,url,publishedAt,author,isPrerelease,isDraft,targetCommitish
+    if [ -n "$tag" ]; then
+      meta=$(gh release view "$tag" --json "$fields")
+    else
+      # No tag: gh resolves the latest (non-draft, non-prerelease) release.
+      meta=$(gh release view --json "$fields")
+    fi
+    list=$(gh release list --limit 100 \
+      --json tagName,publishedAt,isDraft,isPrerelease)
+
+    jq -n --argjson meta "$meta" --argjson list "$list" \
+      --argjson include_pre "$include_pre" '
+      ($meta.publishedAt // "") as $published
+      | {
+          tag:           $meta.tagName,
+          name:          ($meta.name // ""),
+          body:          ($meta.body // ""),
+          url:           $meta.url,
+          published_at:  ($meta.publishedAt // null),
+          author:        ($meta.author.login // null),
+          is_prerelease: ($meta.isPrerelease // false),
+          is_draft:      ($meta.isDraft // false),
+          target:        ($meta.targetCommitish // null),
+          previous_tag:
+            (if $published == "" then null
+             else
+               ($list
+                | map(select((.isDraft | not)
+                             and ($include_pre or (.isPrerelease | not))
+                             and .tagName != $meta.tagName
+                             and .publishedAt != null
+                             and .publishedAt < $published))
+                | sort_by(.publishedAt)
+                | last
+                | .tagName)
+             end)
+        }'
+  - gh_release
+  - "{{input.tag}}"
+  - "{{input.include_prereleases}}"
+output: json
+timeout_secs: 30
+read_only: true
+input_schema:
+  type: object
+  properties:
+    tag:
+      type: string
+      default: ""
+      description: >
+        Release tag to read (e.g. "v1.4.0"); "" for the latest release.
+        In a release-triggered workflow this is the tag that fired it.
+    include_prereleases:
+      type: boolean
+      default: false
+      description: >
+        Whether prereleases count when resolving previous_tag. Default
+        false — a stable release's previous_tag is the last stable
+        release, so the summary covers everything since users last saw a
+        release. Set true to diff against the immediately preceding
+        prerelease instead. Never affects which release `tag` resolves to.
+output_schema:
+  type: object
+  properties:
+    tag:           { type: string, description: The release's tag }
+    name:          { type: string, description: Release title; "" when untitled }
+    body:          { type: string, description: Release notes markdown (GitHub's generated notes when that is how the release was made); "" when empty }
+    url:           { type: string, description: HTML url of the release page }
+    published_at:  { type: ["string", "null"], description: ISO 8601 publication time; null for a draft }
+    author:        { type: ["string", "null"], description: Login of the release author }
+    is_prerelease: { type: boolean }
+    is_draft:      { type: boolean }
+    target:        { type: ["string", "null"], description: Target commitish (branch or sha) the tag was cut from }
+    previous_tag:
+      type: ["string", "null"]
+      description: >
+        Tag of the release published before this one — the base ref for a
+        git_log or git_diff over what shipped. null when this is the first
+        release (or a draft); gate on it before diffing.

@@ -16,7 +16,12 @@ repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
 # and the global config layer as usual.
 
 [tools]
-packs = ["github"]      # gh_pr_meta, gh_pr_comment, gh_pr_inline_comments, git_diff, git_changed_files
+# Packs are opt-in: a pack that isn't listed here contributes no tools, even
+# though its YAML is compiled into the binary.
+packs = ["github"]
+# github: gh_pr_meta, gh_pr_comment, gh_pr_inline_comments, gh_pr_ticket,
+#         gh_release, git_diff, git_log, git_changed_files, git_file, git_grep
+# slack:  slack_post_message (needs SLACK_BOT_TOKEN in the environment)
 
 # System prompts — the built-in defaults written out (what `graph config init`
 # now emits) so prompt tuning is dogfooded and reviewable in-repo. Delete a

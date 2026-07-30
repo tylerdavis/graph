@@ -1,0 +1,121 @@
+# github pack: commit subjects between two refs — the cheap, high-signal
+# input for release summaries, where a full diff is both expensive and
+# the wrong altitude. The range is two-dot (base..head): "commits that
+# landed since base", not the symmetric difference git_diff's three-dot
+# form takes. Merges are excluded by default so a squash-merge history
+# reads as one line per change.
+# Records are split on \x1f/\x1e rather than newlines so a subject full of
+# colons or quotes can't shift a field, and the total comes from a
+# separate rev-list --count so `truncated` is accurate rather than
+# inferred from a capped list. An unresolvable ref fails the step loudly
+# (pipefail) instead of yielding an empty list a gate would misread as
+# "nothing shipped".
+name: git_log
+description: >
+  Commits between two git refs (base..head — what landed since base),
+  newest first. Returns {commits, count, total, truncated}; each commit is
+  {sha, short_sha, subject, author, date, pr}, where pr is the pull
+  request number parsed from a trailing "(#123)" in the subject, or null.
+  Merge commits are excluded by default. The right input for changelog and
+  release-summary steps — subjects carry the intent a diff makes an LLM
+  infer. No commits in the range is {count: 0}, not an error.
+kind: exec
+command: bash
+args:
+  - "-ceuo"
+  - "pipefail"
+  - |
+    base="$1" head="$2" paths="$3" max="$4" include_merges="$5"
+    range="$base..$head"
+    filter=()
+    [ "$include_merges" = "true" ] || filter+=(--no-merges)
+    # Only pass a pathspec when there is one: an empty "${spec[@]}" is an
+    # unbound expansion under `set -u` on bash 3.2 (macOS).
+    if [ -n "$paths" ]; then
+      spec=(--)
+      for p in $paths; do spec+=("$p"); done
+    else
+      spec=(--)
+    fi
+    # The count comes from the full range; --max-count only caps what the
+    # LLM sees, so `truncated` reflects the real size.
+    total=$(git rev-list --count "${filter[@]}" "$range" "${spec[@]}")
+    git log "${filter[@]}" --max-count="$max" \
+      --pretty=format:'%H%x1f%h%x1f%an%x1f%aI%x1f%s%x1e' \
+      "$range" "${spec[@]}" \
+      | jq -R -s --argjson total "$total" --argjson max "$max" '
+        (split("\u001e")
+         | map(sub("^\n"; ""))
+         | map(select(length > 0))
+         | map(split("\u001f"))) as $recs
+        | {commits: ($recs | map({
+              sha:       .[0],
+              short_sha: .[1],
+              author:    .[2],
+              date:      .[3],
+              subject:   .[4],
+              # capture emits nothing (not an error) when the subject
+              # carries no PR number, and an empty value would drop the
+              # whole commit object — `// null` keeps the field present.
+              pr: ((.[4]
+                    | capture("\\(#(?<n>[0-9]+)\\)\\s*$")
+                    | .n | tonumber) // null)
+            })),
+           count: ($recs | length),
+           total: $total,
+           truncated: ($total > $max)}'
+  - git_log
+  - "{{input.base}}"
+  - "{{input.head}}"
+  - "{{input.paths}}"
+  - "{{input.max_commits}}"
+  - "{{input.include_merges}}"
+output: json
+timeout_secs: 30
+read_only: true
+input_schema:
+  type: object
+  required: [base]
+  properties:
+    base:
+      type: string
+      description: >
+        Ref or sha the range starts after (exclusive) — e.g. the previous
+        release tag from gh_release's previous_tag.
+    head:
+      type: string
+      default: HEAD
+      description: Ref or sha the range ends at (inclusive); e.g. the release tag
+    paths:
+      type: string
+      default: ""
+      description: Space-separated pathspecs scoping the log; "" for everything
+    max_commits:
+      type: integer
+      default: 200
+      description: Cap on returned commits (truncated flags the cut; total always counts the whole range)
+    include_merges:
+      type: boolean
+      default: false
+      description: >
+        Keep merge commits. Default false — on a squash-merge history
+        merges are noise, and on a merge-commit history the merge subject
+        duplicates the branch it brought in.
+output_schema:
+  type: object
+  properties:
+    commits:
+      type: array
+      description: Newest first
+      items:
+        type: object
+        properties:
+          sha:       { type: string, description: Full commit sha }
+          short_sha: { type: string, description: Abbreviated sha }
+          author:    { type: string, description: Author name }
+          date:      { type: string, description: Author date, ISO 8601 }
+          subject:   { type: string, description: First line of the commit message }
+          pr:        { type: ["integer", "null"], description: PR number from a trailing "(#123)", or null }
+    count:     { type: integer, description: Commits returned, ready for eq/gt gates }
+    total:     { type: integer, description: Commits in the whole range, before max_commits }
+    truncated: { type: boolean, description: true when max_commits cut the list }
