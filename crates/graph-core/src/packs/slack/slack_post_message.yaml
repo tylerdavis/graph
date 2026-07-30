@@ -1,0 +1,102 @@
+# slack pack: post a message with chat.postMessage. The payload is built by
+# jq, never string-concatenated, so a rendered template full of quotes,
+# newlines, or braces can't break the request. Slack answers HTTP 200 even
+# when it refuses the post ({"ok": false, "error": "channel_not_found"}),
+# so the script inspects .ok and exits non-zero — a refused post must fail
+# the step, not read as delivered. The bot token rides in a curl config on
+# stdin instead of an -H argument, keeping it out of the process table;
+# -q (first flag) keeps a stray ~/.curlrc from rewriting the request. The
+# permalink is a best-effort second call: a lookup that doesn't answer
+# comes back null rather than failing a message that was delivered.
+name: slack_post_message
+description: >
+  Post a message to a Slack channel (chat.postMessage). Returns
+  {channel, ts, permalink}; ts is the message timestamp, which a later
+  call passes back as thread_ts to reply in the same thread. Pass
+  thread_ts to post as a threaded reply instead of a new message. A post
+  Slack refuses — unknown channel, bot not in the channel, missing scope —
+  fails the step instead of reading as delivered. Needs curl, jq, and
+  SLACK_BOT_TOKEN in the environment. Side-effecting.
+kind: exec
+command: bash
+args:
+  - "-ceu"
+  - |
+    channel="$1"; text="$2"; thread_ts="$3"
+    token="${SLACK_BOT_TOKEN:-}"
+    if [ -z "$token" ]; then
+      echo "SLACK_BOT_TOKEN is not set (needs a token with chat:write)" >&2
+      exit 1
+    fi
+    payload=$(jq -nc --arg channel "$channel" --arg text "$text" \
+      --arg thread_ts "$thread_ts" \
+      '{channel: $channel, text: $text}
+       + (if $thread_ts == "" then {} else {thread_ts: $thread_ts} end)')
+
+    # The Authorization header goes over stdin (-K -), never argv.
+    auth() { printf 'header = "Authorization: Bearer %s"\n' "$token"; }
+
+    response=$(auth | curl -q -sS --max-time 20 -K - \
+      -H 'Content-Type: application/json; charset=utf-8' \
+      --data-binary "$payload" \
+      https://slack.com/api/chat.postMessage)
+
+    ok=$(jq -r '.ok // false' <<<"$response" 2>/dev/null || echo false)
+    if [ "$ok" != "true" ]; then
+      detail=$(jq -re '.error // empty' <<<"$response" 2>/dev/null) \
+        || detail=$(printf '%s' "$response" | head -c 500)
+      echo "chat.postMessage failed: $detail" >&2
+      exit 1
+    fi
+    channel_id=$(jq -r '.channel' <<<"$response")
+    ts=$(jq -r '.ts' <<<"$response")
+
+    # Best effort: a permalink that doesn't resolve is null, never a
+    # failed post — the message is already delivered by this point.
+    permalink=$(auth | curl -q -sS --max-time 20 -K - -G \
+      --data-urlencode "channel=$channel_id" \
+      --data-urlencode "message_ts=$ts" \
+      https://slack.com/api/chat.getPermalink 2>/dev/null \
+      | jq -r 'if .ok then .permalink else "" end' 2>/dev/null) || permalink=""
+
+    jq -nc --arg channel "$channel_id" --arg ts "$ts" --arg permalink "$permalink" \
+      '{channel: $channel, ts: $ts,
+        permalink: (if $permalink == "" then null else $permalink end)}'
+  - slack_post_message
+  - "{{input.channel}}"
+  - "{{input.text}}"
+  - "{{input.thread_ts}}"
+output: json
+timeout_secs: 30
+read_only: false
+input_schema:
+  type: object
+  required: [channel, text]
+  properties:
+    channel:
+      type: string
+      description: >
+        Target channel: a channel ID (C…/G…/D…, from the channel's "Copy
+        link"), or "#channel-name" for a public channel the bot has
+        joined. IDs are the reliable form; names depend on lookup.
+    text:
+      type: string
+      description: >
+        Message body in Slack mrkdwn — *bold*, _italic_, `code`,
+        <https://url|label> — not GitHub markdown. Also the notification
+        text every channel member sees.
+    thread_ts:
+      type: string
+      default: ""
+      description: >
+        Reply in an existing thread: the parent message's ts (the ts an
+        earlier slack_post_message returned). Omit to post a new
+        top-level message.
+output_schema:
+  type: object
+  properties:
+    channel: { type: string, description: Resolved channel ID — pass it back when replying in-thread }
+    ts:      { type: string, description: Message timestamp; the thread_ts for replies to this message }
+    permalink:
+      type: ["string", "null"]
+      description: Link to the message; null when the permalink lookup did not answer

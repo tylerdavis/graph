@@ -6,7 +6,7 @@
 <circle cx="42" cy="18" r="6" fill="#febc2e"/>
 <circle cx="62" cy="18" r="6" fill="#28c840"/>
 <text x="522" y="23" fill="#8b90a0" text-anchor="middle">graph workbench — the context tab</text>
-<rect x="438.0" y="126.0" width="571.2" height="18" fill="#c6cad3"/>
+<rect x="438.0" y="108.0" width="571.2" height="18" fill="#c6cad3"/>
 <rect x="18.0" y="684.0" width="50.4" height="18" fill="#56b6c2"/>
 <text x="18.0" y="67.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">┌</text>
 <text x="34.8" y="67.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">chat</text>
@@ -32,7 +32,7 @@
 <text x="429.6" y="103.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">┌</text>
 <text x="446.4" y="103.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">tool</text>
 <text x="488.4" y="103.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">catalog</text>
-<text x="555.6" y="103.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">(12)</text>
+<text x="555.6" y="103.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">(13)</text>
 <text x="597.6" y="103.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">—</text>
 <text x="614.4" y="103.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">what</text>
 <text x="656.4" y="103.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">the</text>
@@ -44,45 +44,46 @@
 <text x="412.8" y="121.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="421.2" y="121.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="429.6" y="121.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
-<text x="438.0" y="121.5" textLength="184.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__gh_pr_comment</text>
+<text x="438.0" y="121.5" textLength="252.0" lengthAdjust="spacingAndGlyphs" fill="#171923">builtin__gh_pr_inline_comments</text>
 <text x="1009.2" y="121.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="1017.6" y="121.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="18.0" y="139.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="412.8" y="139.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="421.2" y="139.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="429.6" y="139.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
-<text x="438.0" y="139.5" textLength="252.0" lengthAdjust="spacingAndGlyphs" fill="#171923">builtin__gh_pr_inline_comments</text>
+<text x="438.0" y="139.5" textLength="176.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__gh_pr_ticket</text>
+<text x="631.2" y="139.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">ro</text>
 <text x="1009.2" y="139.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="1017.6" y="139.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="18.0" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="412.8" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="421.2" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="429.6" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
-<text x="438.0" y="157.5" textLength="176.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__gh_pr_ticket</text>
-<text x="631.2" y="157.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">ro</text>
+<text x="438.0" y="157.5" textLength="142.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__git_diff</text>
+<text x="597.6" y="157.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">ro</text>
 <text x="1009.2" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="1017.6" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="18.0" y="175.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="412.8" y="175.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="421.2" y="175.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="429.6" y="175.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
-<text x="438.0" y="175.5" textLength="142.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__git_diff</text>
-<text x="597.6" y="175.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">ro</text>
+<text x="438.0" y="175.5" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__git_changed_files</text>
+<text x="673.2" y="175.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">ro</text>
 <text x="1009.2" y="175.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="1017.6" y="175.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="18.0" y="193.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="412.8" y="193.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="421.2" y="193.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="429.6" y="193.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
-<text x="438.0" y="193.5" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__git_changed_files</text>
-<text x="673.2" y="193.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">ro</text>
+<text x="438.0" y="193.5" textLength="142.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__git_file</text>
+<text x="597.6" y="193.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">ro</text>
 <text x="1009.2" y="193.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="1017.6" y="193.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="18.0" y="211.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="412.8" y="211.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="421.2" y="211.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="429.6" y="211.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
-<text x="438.0" y="211.5" textLength="142.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__git_file</text>
+<text x="438.0" y="211.5" textLength="142.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__git_grep</text>
 <text x="597.6" y="211.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">ro</text>
 <text x="1009.2" y="211.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="1017.6" y="211.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
@@ -90,24 +91,23 @@
 <text x="412.8" y="229.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="421.2" y="229.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="429.6" y="229.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
-<text x="438.0" y="229.5" textLength="142.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__git_grep</text>
-<text x="597.6" y="229.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">ro</text>
+<text x="438.0" y="229.5" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__infer</text>
+<text x="572.4" y="229.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">ro</text>
 <text x="1009.2" y="229.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="1017.6" y="229.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="18.0" y="247.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="412.8" y="247.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="421.2" y="247.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="429.6" y="247.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
-<text x="438.0" y="247.5" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__infer</text>
-<text x="572.4" y="247.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">ro</text>
+<text x="438.0" y="247.5" textLength="134.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__reshape</text>
+<text x="589.2" y="247.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">ro</text>
 <text x="1009.2" y="247.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="1017.6" y="247.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="18.0" y="265.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="412.8" y="265.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="421.2" y="265.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="429.6" y="265.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
-<text x="438.0" y="265.5" textLength="134.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__reshape</text>
-<text x="589.2" y="265.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">ro</text>
+<text x="438.0" y="265.5" textLength="226.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">builtin__slack_post_message</text>
 <text x="1009.2" y="265.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="1017.6" y="265.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="18.0" y="283.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>

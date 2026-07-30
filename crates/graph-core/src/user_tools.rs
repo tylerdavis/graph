@@ -146,6 +146,10 @@ const PACKS: &[(&str, &[&str])] = &[
     ),
     ("llm", &[include_str!("packs/llm/infer.yaml")]),
     ("data", &[include_str!("packs/data/reshape.yaml")]),
+    (
+        "slack",
+        &[include_str!("packs/slack/slack_post_message.yaml")],
+    ),
 ];
 
 /// Packs loaded whether or not `[tools].packs` names them — core
