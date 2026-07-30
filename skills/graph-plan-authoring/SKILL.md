@@ -8,214 +8,144 @@ description: Draft, edit, validate, and run graph plans from the command line.
 
 # Graph Plan Authoring
 
-The [graph repository](https://github.com/tylerdavis/graph) is the source of truth. Read the current docs before authoring — they move ahead of this skill:
+**graph writes plans. You do not.** A planner model, aimed at this machine's real tool catalog, drafts a validated plan from one sentence — then you fix what it got wrong with single-purpose edit commands. Hand-assembling a plan step by step, or writing plan YAML in an editor, is the slow path and usually the wrong one.
 
-- [`docs/plans/authoring.mdx`](https://github.com/tylerdavis/graph/blob/main/docs/plans/authoring.mdx) — the authoring loop, end to end.
-- [`docs/reference/cli.mdx#authoring-plans`](https://github.com/tylerdavis/graph/blob/main/docs/reference/cli.mdx) — every command, every attribute.
-- [`docs/reference/scripting-contract.mdx`](https://github.com/tylerdavis/graph/blob/main/docs/reference/scripting-contract.mdx) — the `--json` envelopes and exit codes.
-- [`docs/reference/plan-schema.mdx`](https://github.com/tylerdavis/graph/blob/main/docs/reference/plan-schema.mdx), [`docs/plans/template-language.mdx`](https://github.com/tylerdavis/graph/blob/main/docs/plans/template-language.mdx), [`docs/plans/finish-modes.mdx`](https://github.com/tylerdavis/graph/blob/main/docs/plans/finish-modes.mdx).
-
-These commands are the same authoring entry points the [plan workbench](https://github.com/tylerdavis/graph/blob/main/docs/workbench/plan-workbench.mdx) TUI drives, exposed as one-shot commands — so an agent can build a plan without a terminal app and without holding a session open.
-
-**Each command is stateless: resolve a plan, apply one edit, write the YAML back.** There is no draft session and no undo — version control is the undo. Every command is idempotent and safe to run concurrently.
-
-**Only `graph plan draft` costs inference.** `plan new` plus the edit commands author a plan end to end with zero LLM calls and no provider credentials. Prefer building steps directly whenever you already know them: it is free, deterministic, and reviewable as a diff.
-
-## The command surface
-
-```
-graph plan new <identifier> [--name <n>] [--description <d>] [--output <path>] [--json]
-graph plan draft <goal> [--from <name|path>] [--feedback <f>] [--output <path>] [--stdout] [--json]
-
-graph plan set   <name|path> <attribute> <value>... [--json]
-graph plan unset <name|path> <attribute> [--json]
-
-graph plan step add    <name|path> <id> <tool> <json|@file|-> [--reasoning <r>] [--before <id> | --after <id>] [--json]
-graph plan step update <name|path> <id> <tool|input|reasoning> <value> [--json]
-graph plan step rename <name|path> <id> <new-id> [--json]
-graph plan step unset  <name|path> <id> <attribute> [--json]
-graph plan step rm     <name|path> <id> [--json]
-
-graph plan list [--json]
-graph plan show <name> [--json]
-graph plan validate <name|path> [--json]
-graph plan run <name> '<json>' [--input k=v]... [--json]
-```
-
-`<name|path>` is a plan identifier or a YAML file path. `show` and `validate` deliberately open plans the runnable catalog rejects (invalid, or hidden by unconfigured `requires_servers`) — that is exactly the plan you need to inspect.
-
-**Always pass `--json`.** Without it a one-line result goes to stderr and stdout stays empty; with it you get a structured envelope — including on rejection, where the problem list is what you want most.
-
-## Workflow
-
-### 1. Orient
+## Start here
 
 ```bash
-graph plan list --json                 # what already exists, and where plans live
-graph plan show <name> --json          # the current document, if editing
-graph plan validate <name> --json      # its verdict before you touch anything
+graph plan draft "<what the plan should do, as one self-contained instruction>" --json
 ```
 
-Editing an existing plan: read it first. Never guess at step ids or template paths.
-
-### 2. Probe the tools before writing any step
-
-```bash
-graph tools list                       # namespaced catalog names
-graph tools show <tool>                # input schema
-graph tools test <tool> '{"...":"..."}'  # the *actual* output shape
-```
-
-`graph tools *` has **no** `--json` flag — parse the human output, or read the cached shape with `graph shapes show <tool>`. Probing pays twice: you author correct `{{E0.path}}` references, and every call feeds the [shape cache](https://github.com/tylerdavis/graph/blob/main/docs/tools/shape-cache.mdx). Skipping this is the single biggest cause of plans that validate clean and then die mid-run on a path that doesn't exist.
-
-### 3. Create the plan
-
-**Hand-built (free, preferred when the steps are known):**
-
-```bash
-graph plan new report --name "Report" --description "roll a team's issues into a digest" --json
-```
-
-`new` scaffolds a plan with no steps, so it is *intentionally invalid* on creation (`plan has no steps`). That is fine — edits are only refused if they make things worse, so a scaffold stays editable.
-
-**Drafted (costs inference):**
-
-```bash
-graph plan draft "Summarize this week's Linear issues for the Core team" --json
-graph plan draft "<goal>" --from report --feedback "E2 references a field that doesn't exist" --json
-graph plan draft "<goal>" --stdout            # print the YAML, write nothing
-```
-
-Drafting runs the planner over your tool catalog one validated step at a time. If it exhausts retries on a step, the valid prefix is still saved and reported under `salvaged` / `failedStep` — finish it with `step add` rather than redrafting from scratch.
-
-### 4. Header and inputs
-
-```bash
-graph plan set report description "Weekly digest of a team's Linear issues" --json
-graph plan set report exemplars "How is Core doing this week?" "Weekly Core digest" --json
-graph plan set report requires_servers linear --json
-graph plan set report input_schema '{"type":"object","required":["team"],"properties":{"team":{"type":"string","description":"Linear team name"}}}' --json
-```
-
-| `plan set <attribute>` | Value |
-|---|---|
-| `name`, `description`, `identifier` | one string |
-| `exemplars`, `requires_servers` | one or more strings |
-| `input_schema`, `solver`, `output` | JSON object: inline, `@file.json`, or `-` for stdin |
-
-`exemplars` and `description` are routing signals the agent reads, not commentary — write them for a reader deciding whether to call this plan.
-
-### 5. Steps
-
-```bash
-graph plan step add report E1 linear__list_issues '{"team":"{{input.team}}","limit":100}' \
-  --reasoning "Pull the team's recent issues" --json
-graph plan step add report E2 builtin__reshape '{"shape":{"count":"{{E1.length}}"}}' --after E1 --json
-```
-
-- `<tool>` is a namespaced catalog name (`linear__…`, `user__…`, `builtin__…`, `plan__…`) or a bare control step: `exit`, `decide`, `map`, `reduce`, `agent`, plus `plan_and_execute`.
-- Step ids are identifiers, unique across the whole plan (control-step body sub-steps included), and may not shadow the reserved template roots `input`, `item`, `index`, `accumulator`, `length`.
-- Steps run sequentially; a step may reference plan inputs and any *earlier* step only.
-- `--before` / `--after` anchor an insertion; the default appends.
-
-Editing:
-
-```bash
-graph plan step update report E1 input '{"team":"{{input.team}}","limit":250}' --json
-graph plan step update report E1 tool linear__list_issues --json
-graph plan step rename report E1 fetch_issues --json     # rewrites every downstream {{E1.…}}
-graph plan step unset  report E1 reasoning --json
-graph plan step rm     report E2 --json
-```
-
-`step update input` replaces the step's **whole** input object — read the step first, then write the merged object back.
-
-### 6. Finish mode
-
-Exactly one of `solver` (prose report, 1 LLM call), `output` (structured JSON, 0 calls), or neither (silent, side effects only). They are mutually exclusive — setting either clears the other.
-
-```bash
-graph plan set report output '{"team":"{{input.team}}","count":"{{E2.count}}"}' --json
-
-graph plan set report solver '{"query_to_answer":"Write a digest of {{input.team}}...","data":{"issues":"{{E1.issues}}"}}' --json
-
-graph plan unset report solver --json                    # -> silent plan
-```
-
-For anything larger than a line, use `@file.json` or `-` rather than fighting shell quoting on an embedded template.
-
-### 7. Validate, then run
-
-```bash
-graph plan validate report --json
-graph plan run report '{"team":"Core"}' --json
-```
-
-`validate --json` reports every layer at once and separates fatal from local:
+That is the first command to run for any new plan. It costs one round of inference, takes ~30s, and returns a plan that is already statically valid:
 
 ```json
-{ "plan":"report", "steps":3, "ok":false,
-  "problems":["step E2 references E5, which is not `input` or an earlier step"],
-  "notes":["step E1: tool 'linear__list_issues' needs MCP server 'linear', which is not configured under [mcp.linear]"] }
+{ "identifier": "summarize_the_commits_between_two_git_re", "ok": true,
+  "steps": 4, "problems": [], "savedTo": "./.graph/plans/summarize_the_commits_between_two_git_re.yaml" }
 ```
 
-`problems` make `ok` false and exit `1`. `notes` never do — a plan naming a server *this* machine lacks is still portable and correct.
+Then read what it wrote (`graph plan show <id> --json`), apply the fixes below, validate, and run.
 
-Run exit codes: **0** ok, **1** failure, **3** needs input (a required field was missing; the schema is printed), **4** an exit gate fired.
+### Before you draft, do not
+
+- **Do not read the docs site first.** Every command is self-describing — `graph plan --help`, `graph plan step add --help`. The reference links at the bottom of this page are for when a rejection message isn't self-explanatory, not for warming up.
+- **Do not write or edit plan YAML in a text editor.** The edit commands enforce validation on every write; a text editor doesn't, and any edit reserializes the file anyway.
+- **Do not enumerate the whole tool catalog and assemble steps yourself.** The planner already sees the catalog and the [shape cache](https://github.com/tylerdavis/graph/blob/main/docs/tools/shape-cache.mdx). Probe individual tools (`graph tools show <name>`) when you're fixing a specific step, not as a survey.
+- **Do not ask the user for a plan's steps.** Ask for the *goal*; the goal is what `draft` consumes.
+
+### Draft, or build by hand?
+
+| Situation | Do this |
+|---|---|
+| Any new plan, described in prose | `graph plan draft "<goal>"` |
+| Drafted plan is wrong in a specific place | edit commands (`plan set`, `plan step *`) |
+| Drafted plan is wrong structurally | `graph plan draft "<goal>" --from <plan> --feedback "<what's wrong>"` |
+| Adding a step to a plan you already understand | `graph plan step add` |
+| **No provider credentials** (offline, CI, no API key) | `graph plan new` + edit commands — the only path that costs zero inference |
+
+Building a whole plan with `plan new` + a dozen `step add` calls is for that last row only. If a planner is reachable, drafting gets there faster and grounds the steps in the real catalog.
+
+## The three fixes a fresh draft usually needs
+
+Verified against a real draft — check each one every time.
+
+**1. The identifier and name are the goal string, truncated.** A draft of "Summarize the commits between two git refs…" lands as `summarize_the_commits_between_two_git_re`. Rename it:
+
+```bash
+graph plan set <ugly-id> identifier commit_digest --json
+graph plan set commit_digest name "Commit Digest" --json
+rm ./.graph/plans/<ugly-id>.yaml     # `set identifier` writes a NEW file; the envelope's `renamedFrom` names the leftover
+```
+
+**2. `input_schema` is often missing while steps reference `{{input.*}}`.** This *validates clean* — no static layer ties template roots to the schema — and then dies at run time:
+
+```
+plan failed at step E0 (builtin__git_log): bad path 'input.base': no key 'base' at input (available: )
+```
+
+Grep the drafted YAML for `{{input.` and declare every root you find:
+
+```bash
+graph plan set commit_digest input_schema '{"type":"object","required":["base","head"],
+  "properties":{"base":{"type":"string","description":"Base git ref"},
+                "head":{"type":"string","description":"Head git ref"}}}' --json
+```
+
+**3. The solver's `data` keys are whole reasoning sentences, and it splices every step.** Drafts routinely emit `"E0 Fetch the commit history between the two refs. This provides…": "{{E0}}"` for all four steps, including `exit` gates that carry nothing. Rewrite it with the couple of results the answer actually needs:
+
+```bash
+graph plan set commit_digest solver '{"query_to_answer":"Summarize the notable changes …","data":{"commits":"{{E0.commits}}","analysis":"{{E2}}"}}' --json
+```
+
+Then:
+
+```bash
+graph plan validate commit_digest --json
+graph plan run commit_digest '{"base":"v0.8.0","head":"main"}' --json
+```
+
+## Iterating
+
+**Structural rework — redraft with feedback.** Cheaper in tokens and attention than a chain of hand edits:
+
+```bash
+graph plan draft "<goal>" --from commit_digest --feedback "drop the second infer step; group commits with builtin__reshape instead" --json
+```
+
+**Surgical fixes — one edit command per intent.** Each resolves the plan, applies one edit, writes the file back. No session, no undo (version control is the undo), safe to run concurrently.
+
+```bash
+graph plan set    <plan> <name|description|identifier|exemplars|requires_servers|input_schema|solver|output> <value>... --json
+graph plan unset  <plan> <attribute> --json
+graph plan step add    <plan> <id> <tool> '<json>' [--reasoning <r>] [--before <id>|--after <id>] --json
+graph plan step update <plan> <id> <tool|input|reasoning> <value> --json
+graph plan step rename <plan> <id> <new-id> --json      # rewrites every downstream {{id.…}}
+graph plan step unset  <plan> <id> <attribute> --json
+graph plan step rm     <plan> <id> --json
+```
+
+- `input_schema`, `solver`, and `output` take a JSON object — inline, `@file.json`, or `-` for stdin. Use `@file` for anything with embedded templates rather than fighting shell quoting.
+- `step update input` replaces the step's **whole** input object; read the step first, write the merged object back.
+- `solver` and `output` are the two finish modes and are mutually exclusive — setting either clears the other; unsetting both leaves a silent plan.
+- **Always pass `--json`.** Without it a one-line result goes to stderr and stdout stays empty.
 
 ## Reading the envelopes
 
-Success on a mutating command:
+Applied: `{"ok": true, "savedTo": "…", "preExistingProblems": [...]}` — `preExistingProblems` are informational, the write happened. (`plan new` spells the same thing `problems`.)
 
-```json
-{ "ok": true, "id": "E2", "index": 1, "steps": 2,
-  "savedTo": "./.graph/plans/report.yaml",
-  "preExistingProblems": ["plan has no steps"],
-  "note": "edit applied; the plan is still invalid, but only from pre-existing problems …" }
-```
-
-Rejection — exit `1`, envelope still on stdout:
+Rejected — exit `1`, envelope still on stdout, **file untouched**:
 
 ```json
 { "error": "edit rejected — it would introduce new validation problems (the draft is unchanged)",
   "problemsIntroduced": ["step E2 references E1, which is not `input` or an earlier step"] }
 ```
 
-`plan new` reports its scaffold's problems as `problems` (the plan is invalid by design); every *subsequent* edit reports them as `preExistingProblems` with an explanatory `note`. Both mean the same thing: the write happened.
+`problemsIntroduced` is a repair list, not an obstacle: fix the named cause, then retry the edit. Never route around a rejection by hand-editing the file.
 
-Keys worth branching on: `problemsIntroduced` (fix and retry), `preExistingProblems` (informational — the edit *did* apply), `availableSteps` (unknown step id, with what exists), `renamedFrom` (an `identifier` change wrote a new file), `salvaged` / `failedStep` (draft saved a valid prefix).
+Also worth branching on: `availableSteps` (unknown step id), `renamedFrom` (an `identifier` change left the original file), `salvaged` / `failedStep` (drafting ran out of retries and saved the valid prefix — finish it with `step add` rather than redrafting).
 
-## Key concepts
+## Guard rails to know
 
-**Edits can only improve things.** An edit is rejected only if it introduces a *new* validation problem, and a rejected edit leaves the file untouched — so `step rm` fails while a later step still references the step, naming the template that would dangle. Pre-existing problems never block an edit; otherwise repairing a broken plan would be impossible.
-
-**Edits are not catalog-aware; `validate` is.** `step add` accepts a tool name that doesn't exist in the catalog — the edit guard runs the static layers only. A bogus or misspelled tool surfaces at `graph plan validate`, so always validate after adding steps; don't treat `"ok": true` on `step add` as proof the tool resolves.
-
-**A rejection is not an error to route around.** `problemsIntroduced` is the exact repair list. Fix the referencing step first, then retry the edit — never rewrite the YAML file by hand to dodge the guard.
-
-**Nothing is clobbered silently.** A write refuses a file holding a different plan. Changing `identifier` writes a *new* file and leaves the original in place (`renamedFrom`); deleting the old one is your call.
-
-**Every edit reserializes the file.** Flow mappings become block mappings, folded scalars (`>`) become literal (`|`), and **comments are dropped**. Commentary belongs in `description` and each step's `reasoning` — real fields the agent also reads. Don't mix hand-editing with these commands expecting formatting to survive.
-
-**Logic belongs in steps, not templates.** The template dialect is strict, typed, and logic-less. Conditionals go in `exit` gates and `decide` steps; computation goes in a tool.
-
-**One command, one intent.** Required operands are positional and attributes are `<attribute> <value>` — there is no batch mode. Sequence the calls, checking each envelope, rather than trying to do two things at once.
-
-## Repair loop for an existing plan
-
-1. `graph plan validate <name> --json` → read `problems`.
-2. `graph plan show <name> --json` → locate the offending step / template.
-3. Probe the real shape (`graph tools test`, `graph shapes show`) before rewriting a path.
-4. Apply **one** edit; if it returns `problemsIntroduced`, fix that cause first.
-5. Re-validate. Repeat until `ok: true` with only `notes` left.
-6. `graph plan run <name> '<input>' --json` against real input.
+- **Edits can only improve things.** An edit is rejected only if it introduces a *new* problem; pre-existing ones never block an edit (otherwise repairing a broken plan would be impossible). So `step rm` fails while a later step still references the step, naming the template that would dangle.
+- **Edits are not catalog-aware; `validate` is.** `step add` accepts a tool name that doesn't exist — only the static layers run on a write. Always `plan validate` after adding steps; `"ok": true` on an edit is not proof the tool resolves.
+- **`validate`'s `notes` are not failures.** `problems` make `ok` false and exit `1`; a `note` about an MCP server this machine lacks means the plan is portable and correct, just not runnable here.
+- **Every edit reserializes the file** — comments are dropped, flow mappings become block. Commentary belongs in `description` and each step's `reasoning`, which are real fields the agent reads.
+- **Run exit codes:** `0` ok, `1` failure, `3` needs input (schema printed), `4` an exit gate fired.
 
 ## Checklist
 
-- [ ] `--json` on every plan command; `graph tools *` parsed as text
-- [ ] Tools probed (`tools show` / `tools test`) before any `{{…}}` path was written
-- [ ] Steps reference only `input` and earlier steps; no reserved-root ids
-- [ ] Exactly one finish mode set (or deliberately silent)
-- [ ] `graph plan validate <name> --json` → `ok: true` (notes are acceptable)
-- [ ] `graph plan run <name>` exits 0 against real input
-- [ ] Rejections resolved by fixing the named cause, not by hand-editing the YAML
+- [ ] Started from `graph plan draft`, not a hand-assembled plan (unless there are no credentials)
+- [ ] Renamed the goal-derived identifier and deleted the leftover file
+- [ ] Every `{{input.*}}` root declared in `input_schema`
+- [ ] Solver `data` keys are short and reference only what the answer needs
+- [ ] `graph plan validate <plan> --json` → `ok: true` (notes acceptable)
+- [ ] `graph plan run <plan> '<input>'` exits 0 against real input
+- [ ] Rejections resolved by fixing the named cause, not by editing YAML directly
+
+## Reference — read only when needed
+
+- A rejection message you can't act on → [`reference/cli.mdx#authoring-plans`](https://github.com/tylerdavis/graph/blob/main/docs/reference/cli.mdx)
+- An envelope key not covered above → [`reference/scripting-contract.mdx`](https://github.com/tylerdavis/graph/blob/main/docs/reference/scripting-contract.mdx)
+- Writing a control step (`exit`, `decide`, `map`, `reduce`, `agent`) by hand → [`plans/exit-gates`](https://github.com/tylerdavis/graph/blob/main/docs/plans/exit-gates.mdx), [`branching`](https://github.com/tylerdavis/graph/blob/main/docs/plans/branching.mdx), [`iteration`](https://github.com/tylerdavis/graph/blob/main/docs/plans/iteration.mdx), [`agent-step`](https://github.com/tylerdavis/graph/blob/main/docs/plans/agent-step.mdx)
+- A template that won't render → [`plans/template-language.mdx`](https://github.com/tylerdavis/graph/blob/main/docs/plans/template-language.mdx)
+- Choosing a finish mode → [`plans/finish-modes.mdx`](https://github.com/tylerdavis/graph/blob/main/docs/plans/finish-modes.mdx)
+- The full field list → [`reference/plan-schema.mdx`](https://github.com/tylerdavis/graph/blob/main/docs/reference/plan-schema.mdx)
