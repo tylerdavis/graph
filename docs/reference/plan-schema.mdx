@@ -6,7 +6,11 @@ icon: "file-code"
 
 The complete field reference for plan YAML files. Concepts and worked examples live in the [Plans](/plans/overview) section; this page is the lookup table.
 
-Field names here are the canonical spelling: snake_case, and that is what anything writing a plan file emits — `graph plan show`, the [authoring commands](/reference/cli#authoring-plans), and the [workbench's](/workbench/plan-workbench) save. The camelCase spellings the planner uses internally (`toolName`, `queryToAnswer`) are accepted as aliases on the way in, so a hand-written plan and a generated one are the same file format. Optional fields you never set are omitted rather than written as `null`/`[]`.
+**Every field name in a plan file is snake_case**, at every depth — top level, steps, control-step grammar, and an [`agent`](/plans/agent-step) step's `input` alike. That is the one spelling to author in, and what everything writing a plan emits: `graph plan show` (including `--json`), the [authoring commands](/reference/cli#authoring-plans), and the [workbench's](/workbench/plan-workbench) save.
+
+The planner uses camelCase internally (`toolName`, `queryToAnswer`) because that is the schema the model is taught. You never see it: a plan it drafts is normalized to snake_case before it reaches disk. The camelCase spellings stay accepted on the way in, so a plan authored before this settled still loads — and rewriting it with any authoring command normalizes it.
+
+Optional fields you never set are omitted rather than written as `null`/`[]`.
 
 ## Top level
 
@@ -37,13 +41,13 @@ Field names here are the canonical spelling: snake_case, and that is what anythi
 | Field | Required | Notes |
 |---|---|---|
 | `id` | yes | identifier (letters, digits, `_`, not digit-leading), unique across the plan including body sub-steps; may not shadow the reserved roots `input`, `item`, `index`, `accumulator`, `length` |
-| `tool_name` | yes | a catalog tool (`server__*`, `user__*`, `builtin__*`, `plan__*`), `plan_and_execute`, or a control step below. `toolName` is accepted as an alias |
+| `tool_name` | yes | a catalog tool (`server__*`, `user__*`, `builtin__*`, `plan__*`), `plan_and_execute`, or a control step below |
 | `input` | yes | the tool's arguments; string values are [templates](/plans/template-language) over `input` and earlier step results |
 | `reasoning` | no | free text, shown in traces |
 
 ## Control steps
 
-Five reserved `tool_name`s are executor-intercepted, never dispatched to a registry. Their `input` is the control grammar. Field names accept both the camelCase spelling the planner emits and the snake_case one plan files use (as `tool_name` itself does):
+Five reserved `tool_name`s are executor-intercepted, never dispatched to a registry. Their `input` is the control grammar — snake_case like everything else, and the only part of a step's `input` graph normalizes, since every other tool's arguments belong to that tool:
 
 ### `exit` — [end the plan early](/plans/exit-gates)
 

@@ -21,8 +21,8 @@ steps:
         Review these issues and identify which are blocked, and why:
         {{E0.issues}}
       tools: ["linear__*"]                 # patterns, resolved at validate time
-      maxIterations: 5
-      outputSchema:
+      max_iterations: 5
+      output_schema:
         type: object
         required: [blocked]
         properties:
@@ -40,17 +40,19 @@ steps:
 | Field | Required | Meaning |
 |---|---|---|
 | `prompt` | yes | The task. Renders against prior results like any step input. |
-| `outputSchema` | yes | JSON Schema for the result. Must be `type: object`. |
+| `output_schema` | yes | JSON Schema for the result. Must be `type: object`. |
 | `tools` | no | Names or wildcard patterns to expose. Omit for the whole catalog; `[]` is a validation error, not "no tools". |
-| `maxIterations` | no | Inference rounds. Default 8. |
+| `max_iterations` | no | Inference rounds. Default 8. |
 | `model` | no | Model role or [named model](/reference/configuration). Default: the `chat` role. |
-| `systemPrompt` | no | Extra guidance appended to the built-in system prompt. Renders against the scope, like `prompt`. |
+| `system_prompt` | no | Extra guidance appended to the built-in system prompt. Renders against the scope, like `prompt`. |
 
-A round is **one model call**, including the one that produces the final answer — so `maxIterations: 1` can answer from the prompt alone but can never call a tool *and* answer. A malformed answer (schema miss, or no text and no tool call) also costs a round; retries and provider failover do not.
+A round is **one model call**, including the one that produces the final answer — so `max_iterations: 1` can answer from the prompt alone but can never call a tool *and* answer. A malformed answer (schema miss, or no text and no tool call) also costs a round; retries and provider failover do not.
 
-Field names are camelCase; the snake_case spellings (`output_schema`, `max_iterations`, `system_prompt`) are accepted as aliases so hand-written YAML reads consistently with `tool_name`.
+Field names are snake_case, like every other part of a [plan file](/reference/plan-schema). The camelCase spellings (`outputSchema`, `maxIterations`, `systemPrompt`) still load, but any authoring command that rewrites the file normalizes them.
 
-The whole input is checked at **load time**, wherever the step appears — top level or inside a `decide`/`map`/`reduce` body: unknown fields, a non-string prompt, `outputSchema` that isn't valid object-typed JSON Schema, a `maxIterations` under 1, an empty `tools`, and template references that point forward or at nothing. A malformed agent step never reaches the run.
+`output_schema`'s *value* is yours: graph never rewrites the property names inside the schema, so an agent can be held to a camelCase contract if that is what its consumer expects.
+
+The whole input is checked at **load time**, wherever the step appears — top level or inside a `decide`/`map`/`reduce` body: unknown fields, a non-string prompt, `output_schema` that isn't valid object-typed JSON Schema, a `max_iterations` under 1, an empty `tools`, and template references that point forward or at nothing. A malformed agent step never reaches the run.
 
 ## Result
 
@@ -65,7 +67,7 @@ The whole input is checked at **load time**, wherever the step appears — top l
 
 Later steps reference `{{E1.output.blocked}}` — `output` is the schema-conforming payload; the rest is provenance.
 
-`final` is `false` when the iteration budget ran out before the agent produced conforming output. In that case `output` is `{}` and **does not** conform to `outputSchema` — the guarantee is "conforming output, or `final: false`", never a fabricated result. A later step reaching into `output` then fails as a bad path, so **check it**, or gate on it:
+`final` is `false` when the iteration budget ran out before the agent produced conforming output. In that case `output` is `{}` and **does not** conform to `output_schema` — the guarantee is "conforming output, or `final: false`", never a fabricated result. A later step reaching into `output` then fails as a bad path, so **check it**, or gate on it:
 
 ```yaml
   - id: E2
@@ -93,7 +95,7 @@ which is not configured under [mcp.linear]
 
 ## What it costs
 
-An agent step is the most expensive thing in the pipeline: **one inference per round**, plus its tool calls. A `maxIterations: 8` agent can cost 8 inferences where an ordinary step costs zero. Reach for `map` with a per-item inference before reaching for an agent — see [iteration](/plans/iteration).
+An agent step is the most expensive thing in the pipeline: **one inference per round**, plus its tool calls. A `max_iterations: 8` agent can cost 8 inferences where an ordinary step costs zero. Reach for `map` with a per-item inference before reaching for an agent — see [iteration](/plans/iteration).
 
 ## Inside control-step bodies
 
@@ -110,7 +112,7 @@ An agent step is the most expensive thing in the pipeline: **one inference per r
         input:
           prompt: "Diagnose incident {{item.id}}: {{item.summary}}"
           tools: ["grafana__*", "user__git_log"]
-          outputSchema:
+          output_schema:
             type: object
             properties:
               cause: { type: string }
@@ -123,9 +125,9 @@ The other control steps (`exit`, `decide`, `map`, `reduce`) still cannot nest in
 ## Errors
 
 - **Tool failures return into the loop** as error results, so the agent can explain or route around them. They do not fail the step.
-- **Output that doesn't match `outputSchema`** gets one `repair`-role fix-up pass; if that fails, the error goes back to the agent and consumes a round.
+- **Output that doesn't match `output_schema`** gets one `repair`-role fix-up pass; if that fails, the error goes back to the agent and consumes a round.
 - **Transient LLM errors** retry with backoff and never consume a round.
 - **A gate abort** during an inner tool call is a hard stop, exactly as elsewhere — see [errors and replanning](/plans/errors-and-replanning).
-- **Empty data** while rendering `prompt` or `systemPrompt` degrades rather than failing, consistent with every other step — at the top level and inside a body alike.
+- **Empty data** while rendering `prompt` or `system_prompt` degrades rather than failing, consistent with every other step — at the top level and inside a body alike.
 
 Every tool call an agent makes goes through the same dispatch path as any other step, so gates, events, the shape cache, and plan-cycle detection all apply at agent depth too. Inner calls report a nested step path — `E1/agent.2/linear__list_issues` at the top level, `E1/do.3/agent.2/linear__list_issues` for an agent in a map body — so a breakpoint on the agent step pauses each call it makes, and concurrent map items stay distinguishable.

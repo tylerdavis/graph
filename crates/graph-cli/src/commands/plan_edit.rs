@@ -508,8 +508,11 @@ fn json_document(raw: &str, field: &str) -> Result<Value> {
 }
 
 /// A plan document as a JSON object — the `--json` shape of `plan show`.
+///
+/// Goes through `authoring::to_json` rather than serializing the struct, so the
+/// envelope spells fields the way the file does (`tool_name`, not `toolName`).
 pub fn doc_as_json(doc: &PlanDoc) -> Result<Value> {
-    let mut value = serde_json::to_value(doc)?;
+    let mut value = authoring::to_json(doc)?;
     // `path` is #[serde(skip)] because it isn't part of the file format, but a
     // machine caller needs to know which file it would be editing.
     if let (Some(map), Some(path)) = (value.as_object_mut(), &doc.path) {

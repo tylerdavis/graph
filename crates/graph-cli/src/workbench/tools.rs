@@ -1146,7 +1146,7 @@ steps:
     fn save_refuses_to_overwrite_a_file_holding_another_plan() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("demo.yaml");
-        std::fs::write(&path, serde_yaml::to_string(&demo_doc()).unwrap()).unwrap();
+        std::fs::write(&path, authoring::to_yaml(&demo_doc()).unwrap()).unwrap();
 
         // A draft whose identity drifted from the file its path points at
         // (the pre-fix bug state) must not clobber that file on save.
