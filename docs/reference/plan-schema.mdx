@@ -6,6 +6,8 @@ icon: "file-code"
 
 The complete field reference for plan YAML files. Concepts and worked examples live in the [Plans](/plans/overview) section; this page is the lookup table.
 
+Field names here are the canonical spelling: snake_case, and that is what anything writing a plan file emits — `graph plan show`, the [authoring commands](/reference/cli#authoring-plans), and the [workbench's](/workbench/plan-workbench) save. The camelCase spellings the planner uses internally (`toolName`, `queryToAnswer`) are accepted as aliases on the way in, so a hand-written plan and a generated one are the same file format. Optional fields you never set are omitted rather than written as `null`/`[]`.
+
 ## Top level
 
 | Field | Required | Type | Notes |
@@ -41,7 +43,7 @@ The complete field reference for plan YAML files. Concepts and worked examples l
 
 ## Control steps
 
-Four reserved `tool_name`s are executor-intercepted, never dispatched to a registry. Their `input` is the control grammar:
+Five reserved `tool_name`s are executor-intercepted, never dispatched to a registry. Their `input` is the control grammar. Field names accept both the camelCase spelling the planner emits and the snake_case one plan files use (as `tool_name` itself does):
 
 ### `exit` — [end the plan early](/plans/exit-gates)
 
@@ -73,6 +75,19 @@ Four reserved `tool_name`s are executor-intercepted, never dispatched to a regis
 | `concurrency` | no (`map` only) | max items in flight; default 1 (sequential); `results` stays in input order |
 | `initial` | no (`reduce` only) | starting accumulator; default `null` |
 
+### `agent` — [delegate an open-ended sub-task](/plans/agent-step)
+
+| Field | Required | Notes |
+|---|---|---|
+| `prompt` | yes | the sub-task, as a self-contained instruction; may use templates (rendered when the loop starts) |
+| `output_schema` | yes | JSON Schema the result must satisfy; must be `"type": "object"` or declare `properties` |
+| `tools` | no | glob patterns selecting which catalog tools the agent may call (e.g. `linear__*`); defaults to the full catalog minus `plan_and_execute` |
+| `max_iterations` | no | tool rounds before the loop gives up; default 8 |
+| `model` | no | model for the loop: a role name, `default`, or a [named model](/models/models-and-providers#named-models) |
+| `system_prompt` | no | replaces the default agent system prompt; may use templates |
+
+Legal everywhere, including inside `decide` branches and `map`/`reduce` bodies.
+
 ## Gate grammar (`when` / `if`)
 
 A single comparison: `{ value, op, to }`, where `value` is usually a template ([typed splice](/plans/template-language#typed-splice) keeps numbers numeric).
@@ -98,6 +113,7 @@ Bodies must not contain `decide`, `map`, or `reduce` (branches may contain `exit
 | Step | Result shape |
 |---|---|
 | `exit` (not fired) | `{passed: true, verdict?, reason?}` |
+| `agent` | `{output, iterations, tools_called, final}` — `output` conforms to `output_schema` when `final` is true; when the budget ran out first, `final` is `false` and `output` is `{}` |
 | `decide` | `{branch, verdict, reason, result}` — `result` is the branch's single-call result or its last step's result |
 | `map` | `{count, results: […]}` in input order |
 | `reduce` | `{count, result}` — the final accumulator |
