@@ -2,6 +2,7 @@
 
 use crate::cli::PlanCommand;
 use crate::commands::input::resolve_input;
+use crate::commands::outcome::{report, Outcome};
 use crate::commands::plan_edit;
 use crate::output::SilentExit;
 use crate::runtime::Runtime;
@@ -19,41 +20,15 @@ const EXIT_PLAN_ASSERTED: i32 = 4;
 
 pub async fn run(command: PlanCommand) -> Result<()> {
     match command {
-        PlanCommand::List { json } => {
-            let runtime = Runtime::init()?;
-            let loaded = runtime.plan_docs();
+        PlanCommand::List { json } => report(list()?, json),
+        PlanCommand::Show { name, json } => report(show(&name)?, json),
+        PlanCommand::Validate { name_or_path, json } => {
+            let outcome = validate(&name_or_path)?;
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&plan_edit::list_as_json(&loaded))?
-                );
-                return Ok(());
+                return report(outcome, true);
             }
-            if loaded.docs.is_empty() && loaded.skipped.is_empty() {
-                eprintln!("no plan documents found — add YAML files under [plans].paths");
-                return Ok(());
-            }
-            for doc in &loaded.docs {
-                println!("{}\t{}", doc.identifier, doc.name);
-            }
-            Ok(())
+            render_validation(&outcome.body)
         }
-        PlanCommand::Show { name, json } => {
-            let runtime = Runtime::init()?;
-            // Lenient like `validate`: reading a plan the catalog rejects is
-            // exactly how you find out why it was rejected.
-            let (doc, _loaded) = resolve_target(&runtime, &name)?;
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&plan_edit::doc_as_json(&doc)?)?
-                );
-            } else {
-                print!("{}", authoring::to_yaml(&doc)?);
-            }
-            Ok(())
-        }
-        PlanCommand::Validate { name_or_path, json } => validate(&name_or_path, json),
         PlanCommand::Run {
             name,
             input,
@@ -66,11 +41,8 @@ pub async fn run(command: PlanCommand) -> Result<()> {
             description,
             output,
             json,
-        } => plan_edit::new_plan(
-            &identifier,
-            name.as_deref(),
-            description.as_deref(),
-            output,
+        } => report(
+            plan_edit::new_plan(&identifier, name.as_deref(), description.as_deref(), output)?,
             json,
         ),
         PlanCommand::Draft {
@@ -79,20 +51,61 @@ pub async fn run(command: PlanCommand) -> Result<()> {
             output,
             stdout,
             json,
-        } => plan_edit::draft(&goal, from.as_deref(), output, stdout, json).await,
+        } => {
+            let outcome = plan_edit::draft(&goal, from.as_deref(), output, stdout).await?;
+            // `--stdout` asks for the document itself, so it outranks
+            // `--json`: a caller who wanted raw YAML did not want it wrapped.
+            report(outcome, json && !stdout)
+        }
         PlanCommand::Set {
             target,
             attribute,
             value,
             json,
-        } => plan_edit::set(&target, attribute, &value, json),
+        } => report(plan_edit::set(&target, attribute, &value)?, json),
         PlanCommand::Unset {
             target,
             attribute,
             json,
-        } => plan_edit::unset(&target, attribute, json),
-        PlanCommand::Step { command } => plan_edit::step(command),
+        } => report(plan_edit::unset(&target, attribute)?, json),
+        PlanCommand::Step { command } => {
+            let json = command.json();
+            report(plan_edit::step(command)?, json)
+        }
     }
+}
+
+/// `graph plan list` — the catalog, plus what was skipped and why.
+///
+/// The text rendering is `identifier\tname` on stdout: unlike the other
+/// listings this one *is* a deliverable (it is what you pipe into `xargs`),
+/// so it does not move to stderr without `--json`.
+fn list() -> Result<Outcome> {
+    let runtime = Runtime::init()?;
+    let loaded = runtime.plan_docs();
+    let body = plan_edit::list_as_json(&loaded);
+    if loaded.docs.is_empty() && loaded.skipped.is_empty() {
+        eprintln!("no plan documents found — add YAML files under [plans].paths");
+        return Ok(Outcome::raw(String::new(), body));
+    }
+    let text = loaded
+        .docs
+        .iter()
+        .map(|doc| format!("{}\t{}\n", doc.identifier, doc.name))
+        .collect::<String>();
+    Ok(Outcome::raw(text, body))
+}
+
+/// `graph plan show` — the document itself, as YAML or as JSON.
+fn show(name: &str) -> Result<Outcome> {
+    let runtime = Runtime::init()?;
+    // Lenient like `validate`: reading a plan the catalog rejects is
+    // exactly how you find out why it was rejected.
+    let (doc, _loaded) = resolve_target(&runtime, name)?;
+    Ok(Outcome::raw(
+        authoring::to_yaml(&doc)?,
+        plan_edit::doc_as_json(&doc)?,
+    ))
 }
 
 /// Resolve a plan identifier or YAML file path to a document, for authoring
@@ -130,7 +143,7 @@ pub fn resolve_target(runtime: &Runtime, name_or_path: &str) -> Result<(PlanDoc,
 /// `requires_servers` entry that this machine doesn't configure means the file
 /// is portable but not runnable locally, which is worth saying and not worth
 /// failing over.
-fn validate(name_or_path: &str, json: bool) -> Result<()> {
+fn validate(name_or_path: &str) -> Result<Outcome> {
     let runtime = Runtime::init()?;
     let (doc, loaded) = resolve_target(&runtime, name_or_path)?;
     // Structural validation reruns here rather than being assumed from load
@@ -145,33 +158,50 @@ fn validate(name_or_path: &str, json: bool) -> Result<()> {
         }
     }
     let ok = problems.is_empty();
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "plan": doc.identifier,
-                "steps": doc.steps.len(),
-                "ok": ok,
-                "problems": problems,
-                "notes": check.notes,
-            }))?
-        );
-        if !ok {
-            return Err(SilentExit::code(1));
-        }
-        return Ok(());
+    let body = serde_json::json!({
+        "plan": doc.identifier,
+        "steps": doc.steps.len(),
+        "ok": ok,
+        "problems": problems,
+        "notes": check.notes,
+    });
+    Ok(if ok {
+        Outcome::ok(body)
+    } else {
+        Outcome::rejected(body)
+    })
+}
+
+/// The human rendering of a validation verdict.
+///
+/// Deliberately not the generic [`report`] rendering: a verdict is not an
+/// edit, and an invalid plan surfaces as a plain error whose message *is* the
+/// problem list — the form that reads best at the end of a shell pipeline.
+/// Notes print either way, since "portable but not runnable here" is worth
+/// saying and not worth failing over.
+fn render_validation(body: &serde_json::Value) -> Result<()> {
+    for note in body["notes"].as_array().into_iter().flatten() {
+        eprintln!("note: {}", note.as_str().unwrap_or_default());
     }
-    for note in &check.notes {
-        eprintln!("note: {note}");
-    }
-    if !ok {
+    let plan = body["plan"].as_str().unwrap_or_default();
+    let problems: Vec<&str> = body["problems"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.as_str())
+        .collect();
+    if !problems.is_empty() {
         bail!(
             "plan '{}' is not valid:\n  - {}",
-            doc.identifier,
+            plan,
             problems.join("\n  - ")
         );
     }
-    eprintln!("ok: '{}' — {} steps", doc.identifier, doc.steps.len());
+    eprintln!(
+        "ok: '{}' — {} steps",
+        plan,
+        body["steps"].as_u64().unwrap_or_default()
+    );
     Ok(())
 }
 

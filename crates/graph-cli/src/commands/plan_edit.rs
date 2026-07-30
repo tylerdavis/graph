@@ -14,12 +14,15 @@
 //! - **Argument errors** (wrong value count, malformed JSON, unknown
 //!   attribute) surface as ordinary `anyhow` errors — the caller mis-typed.
 //! - **Domain rejections** (an edit that would break the plan, an unknown
-//!   step id) come back as a structured body from the edit guard, reported
-//!   through [`report`] so `--json` callers get the problem list.
+//!   step id) come back as a structured body from the edit guard, carried in
+//!   an [`Outcome`] so `--json` callers get the problem list.
+//!
+//! Nothing here prints. Every command returns an [`Outcome`]; rendering it is
+//! the caller's job (see [`crate::commands::outcome`]).
 
 use crate::cli::{PlanAttribute, StepAttribute, StepCommand};
+use crate::commands::outcome::Outcome;
 use crate::commands::plan_cmd::resolve_target;
-use crate::output::SilentExit;
 use crate::runtime::Runtime;
 use anyhow::{bail, Context, Result};
 use graph_core::pipeline::authoring;
@@ -28,80 +31,14 @@ use graph_core::pipeline::{PipelineError, PlannerOutput};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-// ── Reporting ────────────────────────────────────────────────────────────
-
-/// Emit a command's result and terminate with the right exit code.
-///
-/// `--json` promises a machine-parseable envelope on stdout *including on
-/// rejection*, so a caller always gets the structured problem list instead of
-/// having to scrape stderr. Without it, stdout stays free for deliverables
-/// (the streams contract) and the human gets one line on stderr.
-fn report(body: Value, json: bool, is_error: bool) -> Result<()> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(&body)?);
-    } else if is_error {
-        let headline = body
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("the edit was rejected");
-        eprintln!("✗ {headline}");
-        for key in [
-            "problemsIntroduced",
-            "preExistingProblems",
-            "problems",
-            "availableSteps",
-            "availablePlans",
-        ] {
-            if let Some(items) = body.get(key).and_then(Value::as_array) {
-                eprintln!("  {key}:");
-                for item in items {
-                    eprintln!("    - {}", render_item(item));
-                }
-            }
-        }
-    } else {
-        let where_to = body.get("savedTo").and_then(Value::as_str);
-        match where_to {
-            Some(path) => eprintln!("✓ {path}"),
-            None => eprintln!("✓ ok"),
-        }
-        for key in ["note"] {
-            if let Some(note) = body.get(key).and_then(Value::as_str) {
-                eprintln!("  {key}: {note}");
-            }
-        }
-        if let Some(problems) = body.get("preExistingProblems").and_then(Value::as_array) {
-            eprintln!("  still invalid:");
-            for problem in problems {
-                eprintln!("    - {}", render_item(problem));
-            }
-        }
-    }
-    if is_error {
-        // The body is already on stdout (--json) or stderr; the exit code is
-        // the only thing left to carry, and it travels back to `main` so the
-        // command can finish unwinding first.
-        return Err(SilentExit::code(1));
-    }
-    Ok(())
-}
-
-fn render_item(item: &Value) -> String {
-    match item.as_str() {
-        Some(text) => text.to_string(),
-        None => item.to_string(),
-    }
-}
-
 // ── The shared edit pipeline ─────────────────────────────────────────────
 
 /// Resolve → apply the guard → write → report. Every mutating command in
 /// this module is a `mutate` closure handed to this function.
 fn edit(
     target: &str,
-    json: bool,
     mutate: impl FnOnce(&mut PlanDoc) -> Result<Value, Value>,
-) -> Result<()> {
+) -> Result<Outcome> {
     let runtime = Runtime::init()?;
     let (doc, _loaded) = resolve_target(&runtime, target)?;
     let source = doc.path.clone();
@@ -110,9 +47,9 @@ fn edit(
             let mut summary = authoring::summarize_edit(&accepted);
             let path = write_edited(&accepted.doc, &runtime, source.as_deref(), &mut summary)?;
             summary["savedTo"] = json!(path.display().to_string());
-            report(summary, json, false)
+            Ok(Outcome::ok(summary))
         }
-        Err(rejected) => report(rejected.body, json, true),
+        Err(rejected) => Ok(Outcome::rejected(rejected.body)),
     }
 }
 
@@ -157,8 +94,7 @@ pub fn new_plan(
     name: Option<&str>,
     description: Option<&str>,
     output: Option<PathBuf>,
-    json: bool,
-) -> Result<()> {
+) -> Result<Outcome> {
     let runtime = Runtime::init()?;
     // The identifier is the file name and the `plan__<id>` tool name, so a
     // bad one is an argument error, not something to write out and report.
@@ -197,7 +133,7 @@ pub fn new_plan(
              `graph plan set <id> description '<what it does>'`"
         );
     }
-    report(body, json, false)
+    Ok(Outcome::ok(body))
 }
 
 /// `graph plan draft <goal>` — author a plan with the planner model.
@@ -218,8 +154,7 @@ pub async fn draft(
     from: Option<&str>,
     output: Option<PathBuf>,
     stdout: bool,
-    json: bool,
-) -> Result<()> {
+) -> Result<Outcome> {
     let runtime = Runtime::init()?;
     let existing = match from {
         Some(target) => Some(resolve_target(&runtime, target)?.0),
@@ -263,8 +198,8 @@ pub async fn draft(
     }
 
     if stdout {
-        print!("{}", authoring::to_yaml(&doc)?);
-        return Ok(());
+        let yaml = authoring::to_yaml(&doc)?;
+        return Ok(Outcome::raw(yaml, doc_as_json(&doc)?));
     }
 
     let loaded = runtime.plan_docs();
@@ -297,17 +232,17 @@ pub async fn draft(
              `graph plan set` / `graph plan step update`"
         );
     }
-    report(body, json, false)
+    Ok(Outcome::ok(body))
 }
 
 /// `graph plan set <target> <attribute> <value>...`
-pub fn set(target: &str, attribute: PlanAttribute, values: &[String], json: bool) -> Result<()> {
+pub fn set(target: &str, attribute: PlanAttribute, values: &[String]) -> Result<Outcome> {
     let patch = metadata_patch(attribute, values)?;
-    edit(target, json, |doc| authoring::patch_metadata(doc, &patch))
+    edit(target, |doc| authoring::patch_metadata(doc, &patch))
 }
 
 /// `graph plan unset <target> <attribute>`
-pub fn unset(target: &str, attribute: PlanAttribute, json: bool) -> Result<()> {
+pub fn unset(target: &str, attribute: PlanAttribute) -> Result<Outcome> {
     match attribute {
         PlanAttribute::Name | PlanAttribute::Description | PlanAttribute::Identifier => {
             bail!(
@@ -317,19 +252,19 @@ pub fn unset(target: &str, attribute: PlanAttribute, json: bool) -> Result<()> {
                 attribute.as_str()
             )
         }
-        PlanAttribute::Exemplars => edit(target, json, |doc| {
+        PlanAttribute::Exemplars => edit(target, |doc| {
             authoring::patch_metadata(doc, &json!({"exemplars": []}))
         }),
-        PlanAttribute::RequiresServers => edit(target, json, |doc| {
+        PlanAttribute::RequiresServers => edit(target, |doc| {
             authoring::patch_metadata(doc, &json!({"requires_servers": []}))
         }),
-        PlanAttribute::InputSchema => edit(target, json, |doc| {
+        PlanAttribute::InputSchema => edit(target, |doc| {
             authoring::patch_metadata(doc, &json!({"input_schema": null}))
         }),
         // `finish: {}` clears solver *and* output, so refuse unless the named
         // mode is the active one — otherwise `unset solver` on an
         // output-rendering plan would quietly delete its output map.
-        PlanAttribute::Solver => edit(target, json, |doc| {
+        PlanAttribute::Solver => edit(target, |doc| {
             if doc.solver.is_none() {
                 return Err(json!({
                     "error": format!(
@@ -341,7 +276,7 @@ pub fn unset(target: &str, attribute: PlanAttribute, json: bool) -> Result<()> {
             }
             authoring::patch_metadata(doc, &json!({"finish": {}}))
         }),
-        PlanAttribute::Output => edit(target, json, |doc| {
+        PlanAttribute::Output => edit(target, |doc| {
             if doc.output.is_none() {
                 return Err(json!({
                     "error": format!(
@@ -357,7 +292,7 @@ pub fn unset(target: &str, attribute: PlanAttribute, json: bool) -> Result<()> {
 }
 
 /// `graph plan step …`
-pub fn step(command: StepCommand) -> Result<()> {
+pub fn step(command: StepCommand) -> Result<Outcome> {
     match command {
         StepCommand::Add {
             target,
@@ -367,7 +302,7 @@ pub fn step(command: StepCommand) -> Result<()> {
             reasoning,
             before,
             after,
-            json,
+            json: _,
         } => {
             let input = json_document(&input, "input")?;
             let mut step = json!({"id": id, "toolName": tool, "input": input});
@@ -381,14 +316,14 @@ pub fn step(command: StepCommand) -> Result<()> {
             if let Some(anchor) = &after {
                 patch["after"] = json!(anchor);
             }
-            edit(&target, json, |doc| authoring::patch_add_step(doc, &patch))
+            edit(&target, |doc| authoring::patch_add_step(doc, &patch))
         }
         StepCommand::Update {
             target,
             id,
             attribute,
             value,
-            json,
+            json: _,
         } => {
             let mut patch = json!({"id": id});
             match attribute {
@@ -404,34 +339,28 @@ pub fn step(command: StepCommand) -> Result<()> {
                     patch["reasoning"] = json!(value);
                 }
             }
-            edit(&target, json, |doc| {
-                authoring::patch_update_step(doc, &patch)
-            })
+            edit(&target, |doc| authoring::patch_update_step(doc, &patch))
         }
         StepCommand::Rename {
             target,
             id,
             new_id,
-            json,
+            json: _,
         } => {
             let patch = json!({"id": id, "newId": new_id});
-            edit(&target, json, |doc| {
-                authoring::patch_update_step(doc, &patch)
-            })
+            edit(&target, |doc| authoring::patch_update_step(doc, &patch))
         }
         StepCommand::Unset {
             target,
             id,
             attribute,
-            json,
+            json: _,
         } => {
             match attribute {
                 // `patch_update_step` treats an empty reasoning as "clear".
                 StepAttribute::Reasoning => {
                     let patch = json!({"id": id, "reasoning": ""});
-                    edit(&target, json, |doc| {
-                        authoring::patch_update_step(doc, &patch)
-                    })
+                    edit(&target, |doc| authoring::patch_update_step(doc, &patch))
                 }
                 StepAttribute::Tool | StepAttribute::Input => bail!(
                     "a step's {} is required and cannot be cleared — change it with \
@@ -441,11 +370,13 @@ pub fn step(command: StepCommand) -> Result<()> {
                 ),
             }
         }
-        StepCommand::Rm { target, id, json } => {
+        StepCommand::Rm {
+            target,
+            id,
+            json: _,
+        } => {
             let patch = json!({"id": id});
-            edit(&target, json, |doc| {
-                authoring::patch_delete_step(doc, &patch)
-            })
+            edit(&target, |doc| authoring::patch_delete_step(doc, &patch))
         }
     }
 }

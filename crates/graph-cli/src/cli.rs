@@ -238,6 +238,21 @@ impl StepAttribute {
     }
 }
 
+impl StepCommand {
+    /// Whether `--json` was asked for. Presentation is the dispatch layer's
+    /// business, so the command functions themselves never read this — they
+    /// return an `Outcome` and let the caller decide how to render it.
+    pub fn json(&self) -> bool {
+        match self {
+            Self::Add { json, .. }
+            | Self::Update { json, .. }
+            | Self::Rename { json, .. }
+            | Self::Unset { json, .. }
+            | Self::Rm { json, .. } => *json,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 pub enum StepCommand {
     /// Append a step, or anchor it before/after an existing one
