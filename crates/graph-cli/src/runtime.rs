@@ -161,6 +161,66 @@ impl Runtime {
         })
     }
 
+    /// Where new plan files are written: the first configured
+    /// `[plans].paths` entry. None when nothing is configured, which makes
+    /// "where would this go?" a caller-visible error rather than a guess.
+    pub fn plans_dir(&self) -> Option<std::path::PathBuf> {
+        self.config
+            .plans
+            .paths
+            .first()
+            .map(|p| graph_config::expand_tilde(p))
+    }
+
+    /// The file holding the plan with this identifier, anywhere in the
+    /// configured plan directories — *including* plans the catalog refuses:
+    /// ones hidden by unconfigured `requires_servers`, and ones that failed to
+    /// load at all.
+    ///
+    /// Authoring has to be able to open a plan the runtime won't run, because
+    /// that is precisely the plan someone needs to edit. Tries the
+    /// conventional `<identifier>.yaml` name first, then reads the identifier
+    /// out of every plan file in the directory.
+    pub fn find_plan_file(&self, identifier: &str) -> Option<std::path::PathBuf> {
+        let holds_it = |path: &std::path::Path| {
+            graph_core::pipeline::authoring::on_disk_identifier(path).as_deref() == Some(identifier)
+        };
+        for dir in self
+            .config
+            .plans
+            .paths
+            .iter()
+            .map(|p| graph_config::expand_tilde(p))
+        {
+            for extension in ["yaml", "yml"] {
+                let candidate = dir.join(format!("{identifier}.{extension}"));
+                if holds_it(&candidate) {
+                    return Some(candidate);
+                }
+            }
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            // Sorted so a duplicate identifier resolves the same way the
+            // catalog loader resolves it: first file wins, deterministically.
+            let mut candidates: Vec<std::path::PathBuf> = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    matches!(
+                        path.extension().and_then(|e| e.to_str()),
+                        Some("yaml" | "yml")
+                    )
+                })
+                .collect();
+            candidates.sort();
+            if let Some(found) = candidates.into_iter().find(|path| holds_it(path)) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
     /// The plan catalog, kept to documents whose `requires_servers` are all
     /// configured. Files that fail to load stay in `skipped` and are warned
     /// about here — a broken plan never takes the command down.

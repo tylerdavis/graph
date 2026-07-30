@@ -5,11 +5,10 @@
 use super::app::Msg;
 use super::runner::{DebugControls, UiGate};
 use async_trait::async_trait;
-use graph_core::pipeline::doc::{
-    apply_schema_defaults, load_plan_doc, validate_doc, validate_input, PlanDoc,
-};
-use graph_core::pipeline::{Pipeline, PlannerOutput, SolverData, Step};
-use graph_core::{template, ToolDef, ToolError, ToolOutcome, ToolRegistry};
+use graph_core::pipeline::authoring;
+use graph_core::pipeline::doc::{apply_schema_defaults, load_plan_doc, validate_input, PlanDoc};
+use graph_core::pipeline::{Pipeline, PlannerOutput};
+use graph_core::{ToolDef, ToolError, ToolOutcome, ToolRegistry};
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -187,7 +186,7 @@ impl WorkbenchTools {
             Ok(doc) => doc,
             Err(outcome) => return outcome,
         };
-        match serde_yaml::to_string(&doc) {
+        match authoring::to_yaml(&doc) {
             Ok(yaml) => ToolOutcome {
                 result: json!({"identifier": doc.identifier, "name": doc.name, "yaml": yaml}),
                 is_error: false,
@@ -420,7 +419,7 @@ impl WorkbenchTools {
                 partial,
                 ..
             }) => {
-                let doc = merge_planner_output(existing, goal, *partial);
+                let doc = authoring::merge_planner_output(existing, goal, *partial);
                 let steps = doc.steps.len();
                 self.publish(doc, true);
                 return ToolOutcome {
@@ -473,7 +472,7 @@ impl WorkbenchTools {
             }
         }
 
-        let doc = merge_planner_output(existing, goal, output);
+        let doc = authoring::merge_planner_output(existing, goal, output);
         let problems = plan_problems(&self.pipeline, &doc);
         let mut summary = json!({
             "identifier": doc.identifier,
@@ -498,7 +497,7 @@ impl WorkbenchTools {
 
     fn get_plan(&self) -> ToolOutcome {
         match self.current() {
-            Some(doc) => match serde_yaml::to_string(&doc) {
+            Some(doc) => match authoring::to_yaml(&doc) {
                 Ok(yaml) => ToolOutcome {
                     result: json!({"yaml": yaml}),
                     is_error: false,
@@ -512,385 +511,61 @@ impl WorkbenchTools {
         }
     }
 
-    /// Every validation problem in a doc: plan-level plus document-level.
-    fn doc_problems(&self, doc: &PlanDoc) -> Vec<String> {
-        let mut problems = self
-            .pipeline
-            .validate_plan(&doc.steps)
-            .err()
-            .unwrap_or_default();
-        if let Err(problem) = validate_doc(doc) {
-            if !problems.contains(&problem) {
-                problems.push(problem);
-            }
-        }
-        problems
-    }
-
-    /// The choke point for the precise editing tools: apply `mutate` to a
-    /// clone of the draft and reject only edits that introduce NEW
-    /// validation problems (absent before, present after) — the draft stays
-    /// untouched. Pre-existing problems never block an edit: an already-
-    /// invalid draft (e.g. straight from the planner) must stay editable,
-    /// or fixing it becomes chicken-and-egg. Accepted edits on a
-    /// still-invalid plan report the remaining pre-existing problems in
-    /// the success result. `mutate` errors are full result bodies so they
-    /// can carry structured fields.
+    /// The choke point for the precise editing tools. The edit rules
+    /// (reject only what introduces NEW problems) live in
+    /// [`authoring::apply_edit`]; this wrapper adds the workbench's own
+    /// concerns — there must *be* a draft, and an accepted edit publishes
+    /// to the UI and marks the draft dirty.
     fn edit_draft(&self, mutate: impl FnOnce(&mut PlanDoc) -> Result<Value, Value>) -> ToolOutcome {
-        let Some(mut doc) = self.current() else {
+        let Some(doc) = self.current() else {
             return error_outcome("no draft — load or draft one first");
         };
-        let before = self.doc_problems(&doc);
-        let summary = match mutate(&mut doc) {
-            Ok(summary) => summary,
-            Err(body) => {
-                return ToolOutcome {
-                    result: body,
-                    is_error: true,
+        match authoring::apply_edit(&doc, mutate) {
+            Ok(accepted) => {
+                let summary = authoring::summarize_edit(&accepted);
+                self.publish(accepted.doc, true);
+                ToolOutcome {
+                    result: summary,
+                    is_error: false,
                 }
             }
-        };
-        let after = self.doc_problems(&doc);
-        let introduced: Vec<&String> = after.iter().filter(|p| !before.contains(p)).collect();
-        if !introduced.is_empty() {
-            let pre_existing: Vec<&String> = after.iter().filter(|p| before.contains(p)).collect();
-            let mut body = json!({
-                "error": "edit rejected — it would introduce new validation problems \
-                          (the draft is unchanged)",
-                "problemsIntroduced": introduced,
-            });
-            if !pre_existing.is_empty() {
-                body["preExistingProblems"] = json!(pre_existing);
-            }
-            return ToolOutcome {
-                result: body,
+            Err(rejected) => ToolOutcome {
+                result: rejected.body,
                 is_error: true,
-            };
-        }
-        self.publish(doc, true);
-        let mut summary = summary;
-        if !after.is_empty() {
-            summary["preExistingProblems"] = json!(after);
-            summary["note"] = json!(
-                "edit applied; the plan is still invalid, but only from \
-                 pre-existing problems (not caused by this edit) — fix them next"
-            );
-        }
-        ToolOutcome {
-            result: summary,
-            is_error: false,
+            },
         }
     }
 
     /// Patch the draft's plan-level fields: identifier, name, description,
     /// exemplars, and/or the finish type (solver ⇄ output).
     fn update_metadata(&self, input: &Value) -> ToolOutcome {
-        self.edit_draft(|doc| {
-            let mut changed = false;
-            if let Some(identifier) = input.get("identifier").and_then(Value::as_str) {
-                if identifier != doc.identifier {
-                    // A new identifier is a different plan: drop the on-disk
-                    // identity so the next save creates a new file instead
-                    // of overwriting the old plan — the draft's on-disk
-                    // identity is kept only while the identifier is unchanged.
-                    doc.path = None;
-                }
-                doc.identifier = identifier.to_string();
-                changed = true;
-            }
-            if let Some(name) = input.get("name").and_then(Value::as_str) {
-                doc.name = name.to_string();
-                changed = true;
-            }
-            if let Some(description) = input.get("description").and_then(Value::as_str) {
-                doc.description = description.to_string();
-                changed = true;
-            }
-            if let Some(exemplars) = input.get("exemplars").and_then(Value::as_array) {
-                doc.exemplars = exemplars
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect();
-                changed = true;
-            }
-            if let Some(servers) = input.get("requires_servers") {
-                let list = servers.as_array().ok_or_else(
-                    || json!({"error": "requires_servers must be an array of server-name strings"}),
-                )?;
-                doc.requires_servers = list
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect();
-                changed = true;
-            }
-            if let Some(schema) = input.get("input_schema") {
-                if schema.is_null() {
-                    doc.input_schema = None;
-                } else if schema.is_object() {
-                    doc.input_schema = Some(schema.clone());
-                } else {
-                    return Err(json!({"error": "input_schema must be a JSON Schema object (or null to clear)"}));
-                }
-                changed = true;
-            }
-            if let Some(finish) = input.get("finish") {
-                let has_solver = finish.get("solver").is_some();
-                let has_output = finish.get("output").is_some();
-                match (has_solver, has_output) {
-                    (true, true) => {
-                        return Err(
-                            json!({"error": "finish: pass 'solver' OR 'output', not both"}),
-                        );
-                    }
-                    (false, false) => {
-                        // Empty object or null clears both — a silent
-                        // side-effect plan. A non-empty object lacking both
-                        // keys is malformed.
-                        let is_clear = finish.is_null()
-                            || finish.as_object().map(Map::is_empty).unwrap_or(false);
-                        if !is_clear {
-                            return Err(json!({"error": "finish requires 'solver' {queryToAnswer, systemPrompt?} or 'output' {<template map>}, or {} / null to clear to a silent plan"}));
-                        }
-                        doc.solver = None;
-                        doc.output = None;
-                        changed = true;
-                    }
-                    (true, false) => {
-                        let solver_val = finish.get("solver").unwrap();
-                        let solver: SolverData = serde_json::from_value(solver_val.clone())
-                            .map_err(|error| json!({"error": format!("invalid solver: {error}")}))?;
-                        doc.solver = Some(solver);
-                        doc.output = None;
-                        changed = true;
-                    }
-                    (false, true) => {
-                        let output_val = finish.get("output").unwrap();
-                        let output: Map<String, Value> = serde_json::from_value(output_val.clone())
-                            .map_err(|error| json!({"error": format!("invalid output: expected a template map — {error}")}))?;
-                        doc.output = Some(output);
-                        doc.solver = None;
-                        changed = true;
-                    }
-                }
-            }
-            if !changed {
-                return Err(json!({
-                    "error": "update_metadata needs at least one of \
-                              identifier, name, description, exemplars, \
-                              requires_servers, input_schema, finish"
-                }));
-            }
-            Ok(json!({"ok": true, "identifier": doc.identifier, "name": doc.name}))
-        })
+        self.edit_draft(|doc| authoring::patch_metadata(doc, input))
     }
 
     /// Insert a step: appended, or anchored before/after an existing id.
     fn add_step(&self, input: &Value) -> ToolOutcome {
-        self.edit_draft(|doc| {
-            let Some(step) = input.get("step") else {
-                return Err(json!({
-                    "error": "add_step requires a 'step' object: \
-                              {id, toolName, input, reasoning?}"
-                }));
-            };
-            let step: Step = serde_json::from_value(step.clone())
-                .map_err(|error| json!({"error": format!("invalid step: {error}")}))?;
-            let before = input.get("before").and_then(Value::as_str);
-            let after = input.get("after").and_then(Value::as_str);
-            let index = match (before, after) {
-                (Some(_), Some(_)) => {
-                    return Err(json!({"error": "pass 'before' or 'after', not both"}))
-                }
-                (Some(anchor), None) => position_of(anchor, &doc.steps)?,
-                (None, Some(anchor)) => position_of(anchor, &doc.steps)? + 1,
-                (None, None) => doc.steps.len(),
-            };
-            let id = step.id.clone();
-            doc.steps.insert(index, step);
-            Ok(json!({"ok": true, "id": id, "index": index, "steps": doc.steps.len()}))
-        })
+        self.edit_draft(|doc| authoring::patch_add_step(doc, input))
     }
 
     /// Patch one step's fields; `newId` renames it and rewrites downstream
     /// `{{id.*}}` references so templates keep working.
     fn update_step(&self, input: &Value) -> ToolOutcome {
-        self.edit_draft(|doc| {
-            let Some(id) = input.get("id").and_then(Value::as_str) else {
-                return Err(json!({"error": "update_step requires an 'id' string"}));
-            };
-            let index = position_of(id, &doc.steps)?;
-            let mut changed = false;
-            if let Some(tool_name) = input.get("toolName").and_then(Value::as_str) {
-                doc.steps[index].tool_name = tool_name.to_string();
-                changed = true;
-            }
-            if let Some(new_input) = input.get("input") {
-                let Some(map) = new_input.as_object() else {
-                    return Err(json!({
-                        "error": "'input' must be a JSON object — \
-                                  it replaces the step's whole input"
-                    }));
-                };
-                doc.steps[index].input = map.clone();
-                changed = true;
-            }
-            if let Some(reasoning) = input.get("reasoning").and_then(Value::as_str) {
-                doc.steps[index].reasoning = (!reasoning.is_empty()).then(|| reasoning.to_string());
-                changed = true;
-            }
-            let mut final_id = id.to_string();
-            if let Some(new_id) = input.get("newId").and_then(Value::as_str) {
-                if new_id != id {
-                    doc.steps[index].id = new_id.to_string();
-                    rename_references(doc, index, id, new_id);
-                    final_id = new_id.to_string();
-                }
-                changed = true;
-            }
-            if !changed {
-                return Err(json!({
-                    "error": "update_step needs at least one of \
-                              newId, toolName, input, reasoning"
-                }));
-            }
-            Ok(json!({"ok": true, "id": final_id}))
-        })
+        self.edit_draft(|doc| authoring::patch_update_step(doc, input))
     }
 
     /// Remove a step. Validation rejects the edit if later steps still
     /// reference it — the problems say which templates dangle.
     fn delete_step(&self, input: &Value) -> ToolOutcome {
-        self.edit_draft(|doc| {
-            let Some(id) = input.get("id").and_then(Value::as_str) else {
-                return Err(json!({"error": "delete_step requires an 'id' string"}));
-            };
-            let index = position_of(id, &doc.steps)?;
-            doc.steps.remove(index);
-            Ok(json!({"ok": true, "id": id, "steps": doc.steps.len()}))
-        })
+        self.edit_draft(|doc| authoring::patch_delete_step(doc, input))
     }
 }
 
-/// The workbench's full validation verdict for a draft: static document
-/// validation plus catalog-aware tool resolution when the pipeline carries
-/// a catalog. That catalog is the runtime-loadable one plans execute
-/// against — it deliberately does NOT include the workbench's own
-/// `workbench__*` tools, which exist only for this chat agent and would
-/// fail at plan run time (they are also rejected statically).
-/// Catalog notes (declared-but-unconfigured `requires_servers`) are
-/// reported with a `note:` prefix: the file is portable, but it cannot run
-/// here.
+/// The workbench's full validation verdict for a draft: the document's own
+/// problems plus catalog-aware tool resolution against the pipeline's
+/// catalog. See [`authoring::plan_problems`] for why the catalog is
+/// reporting-only and never gates an edit.
 pub(super) fn plan_problems(pipeline: &Pipeline, doc: &PlanDoc) -> Vec<String> {
-    let mut problems = pipeline.validate_plan(&doc.steps).err().unwrap_or_default();
-    if let Err(problem) = validate_doc(doc) {
-        if !problems.contains(&problem) {
-            problems.push(problem);
-        }
-    }
-    if let Some(catalog) = &pipeline.catalog {
-        let check =
-            graph_core::pipeline::catalog::resolve_plan_tools_deep(doc, &pipeline.plans, catalog);
-        for problem in check.errors {
-            if !problems.contains(&problem) {
-                problems.push(problem);
-            }
-        }
-        problems.extend(check.notes.into_iter().map(|note| format!("note: {note}")));
-    }
-    problems
-}
-
-/// Fold the planner's output into a draft: a revision keeps the existing
-/// doc's identity and metadata (identifier, name, description, exemplars,
-/// requires_servers) and replaces its steps; a fresh draft derives them
-/// from the goal.
-fn merge_planner_output(existing: Option<PlanDoc>, goal: &str, output: PlannerOutput) -> PlanDoc {
-    match existing {
-        Some(mut doc) => {
-            doc.steps = output.plan;
-            // Preserve an `output` finish; otherwise refresh the solver.
-            if doc.output.is_none() {
-                doc.solver = Some(output.solver_data);
-            }
-            doc
-        }
-        None => PlanDoc {
-            // A name the goal states explicitly ('named "the_goat"') is
-            // the plan's identity; raw goal prose is only the fallback.
-            identifier: stated_name(goal)
-                .map(|name| identifier_from(&name))
-                .unwrap_or_else(|| identifier_from(goal)),
-            name: stated_name(goal).unwrap_or_else(|| name_from(goal)),
-            description: goal.to_string(),
-            exemplars: Vec::new(),
-            requires_servers: Vec::new(),
-            input_schema: None,
-            steps: output.plan,
-            solver: Some(output.solver_data),
-            output: None,
-            path: None,
-        },
-    }
-}
-
-/// Index of a top-level step by id, or a structured error listing what
-/// exists (mirrors load_plan's availablePlans).
-fn position_of(id: &str, steps: &[Step]) -> Result<usize, Value> {
-    steps.iter().position(|step| step.id == id).ok_or_else(|| {
-        json!({
-            "error": format!("no step with id '{id}'"),
-            "availableSteps": steps.iter().map(|step| step.id.as_str()).collect::<Vec<_>>(),
-        })
-    })
-}
-
-/// After renaming a step id, rewrite `{{old.*}}` roots everywhere that can
-/// see the step's result: later steps' inputs (which contain any control
-/// bodies), the output map, and the solver templates.
-fn rename_references(doc: &mut PlanDoc, index: usize, old: &str, new: &str) {
-    for step in doc.steps.iter_mut().skip(index + 1) {
-        for value in step.input.values_mut() {
-            rewrite_value_roots(value, old, new);
-        }
-    }
-    if let Some(output) = &mut doc.output {
-        for value in output.values_mut() {
-            rewrite_value_roots(value, old, new);
-        }
-    }
-    if let Some(solver) = &mut doc.solver {
-        solver.query_to_answer = template::rewrite_root(&solver.query_to_answer, old, new);
-        if let Some(prompt) = &mut solver.system_prompt {
-            *prompt = template::rewrite_root(prompt, old, new);
-        }
-        for value in solver.data.values_mut() {
-            rewrite_value_roots(value, old, new);
-        }
-    }
-}
-
-/// Apply `rewrite_root` to every string in a JSON value.
-fn rewrite_value_roots(value: &mut Value, old: &str, new: &str) {
-    match value {
-        Value::String(text) => {
-            if text.contains("{{") {
-                *text = template::rewrite_root(text, old, new);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                rewrite_value_roots(item, old, new);
-            }
-        }
-        Value::Object(map) => {
-            for entry in map.values_mut() {
-                rewrite_value_roots(entry, old, new);
-            }
-        }
-        _ => {}
-    }
+    authoring::plan_problems(doc, &pipeline.plans, pipeline.catalog.as_deref())
 }
 
 fn error_outcome(message: &str) -> ToolOutcome {
@@ -898,86 +573,6 @@ fn error_outcome(message: &str) -> ToolOutcome {
         result: json!({"error": message}),
         is_error: true,
     }
-}
-
-/// A plan name the goal states explicitly — "named X", "called X", or
-/// "name it X". A quoted string anywhere after the marker wins (so
-/// 'named something like "the_goat"' resolves to the_goat); otherwise the
-/// next word, unless it's filler that describes rather than names.
-fn stated_name(goal: &str) -> Option<String> {
-    let position = ["named", "called", "name it"]
-        .iter()
-        .filter_map(|marker| find_ascii_ci(goal, marker).map(|at| at + marker.len()))
-        .min()?;
-    let mut rest = goal[position..].trim_start();
-    loop {
-        let first = rest.chars().next()?;
-        // A quoted string is the name verbatim.
-        if matches!(first, '"' | '\'' | '`') {
-            let inner = &rest[first.len_utf8()..];
-            let name = inner[..inner.find(first)?].trim();
-            return (!name.is_empty() && name.chars().count() <= 60).then(|| name.to_string());
-        }
-        let (token, remainder) = match rest.split_once(char::is_whitespace) {
-            Some((token, remainder)) => (token, remainder.trim_start()),
-            None => (rest, ""),
-        };
-        let word = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-');
-        // Skip filler that describes rather than names.
-        if matches!(
-            word.to_ascii_lowercase().as_str(),
-            "" | "something" | "like" | "maybe" | "perhaps" | "it" | "the" | "a" | "an"
-        ) {
-            rest = remainder;
-            continue;
-        }
-        return Some(word.to_string());
-    }
-}
-
-/// Byte offset of an ASCII needle, case-insensitively and on word
-/// boundaries ("renamed" must not match "named"). Matches are all-ASCII,
-/// so the offset is always a char boundary.
-fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
-    let bytes = haystack.as_bytes();
-    let target = needle.as_bytes();
-    if bytes.len() < target.len() {
-        return None;
-    }
-    (0..=bytes.len() - target.len()).find(|&at| {
-        bytes[at..at + target.len()].eq_ignore_ascii_case(target)
-            && (at == 0 || !bytes[at - 1].is_ascii_alphanumeric())
-            && bytes
-                .get(at + target.len())
-                .is_none_or(|next| !next.is_ascii_alphanumeric())
-    })
-}
-
-/// Tool-name-safe identifier from a free-form goal.
-fn identifier_from(goal: &str) -> String {
-    let mut identifier = String::new();
-    for c in goal.chars().take(60) {
-        if c.is_ascii_alphanumeric() {
-            identifier.push(c.to_ascii_lowercase());
-        } else if !identifier.ends_with('_') && !identifier.is_empty() {
-            identifier.push('_');
-        }
-    }
-    let identifier = identifier.trim_matches('_').to_string();
-    if identifier.is_empty() {
-        "draft_plan".to_string()
-    } else {
-        identifier.chars().take(40).collect::<String>()
-    }
-}
-
-fn name_from(goal: &str) -> String {
-    let first_line = goal.lines().next().unwrap_or_default().trim();
-    let mut name: String = first_line.chars().take(60).collect();
-    if name.is_empty() {
-        name = "Draft plan".to_string();
-    }
-    name
 }
 
 #[async_trait]
@@ -1451,23 +1046,6 @@ steps:
         let unknown = tools.show_plan(&json!({"name_or_path": "nope"}));
         assert!(unknown.is_error);
         assert_eq!(unknown.result["availablePlans"], json!(["other_plan"]));
-    }
-
-    #[test]
-    fn fresh_draft_derives_identity_while_revision_keeps_it() {
-        let output = || PlannerOutput {
-            plan: demo_doc().steps,
-            solver_data: Default::default(),
-        };
-
-        // Revision: the existing doc's identity and metadata survive.
-        let revised = merge_planner_output(Some(other_doc()), "Summarize the sprint", output());
-        assert_eq!(revised.identifier, "other_plan");
-
-        // Fresh (no existing draft): identity comes from the goal.
-        let fresh = merge_planner_output(None, "Summarize the sprint", output());
-        assert_eq!(fresh.identifier, "summarize_the_sprint");
-        assert_eq!(fresh.description, "Summarize the sprint");
     }
 
     #[test]
@@ -2188,42 +1766,6 @@ steps:
                 .is_error
         );
         assert!(tools.delete_step(&json!({"id": "E0"})).is_error);
-    }
-
-    #[test]
-    fn identifiers_are_tool_name_safe() {
-        assert_eq!(
-            identifier_from("Summarize this sprint's progress!"),
-            "summarize_this_sprint_s_progress"
-        );
-        assert_eq!(identifier_from("!!!"), "draft_plan");
-    }
-
-    #[test]
-    fn stated_names_in_goals_set_the_draft_identity() {
-        let output = || PlannerOutput {
-            plan: demo_doc().steps,
-            solver_data: Default::default(),
-        };
-
-        // The incident goal: the name is stated, quoted, after filler.
-        let goal = r#"Build a Linear-workbench plan named something like "the_goat" that pulls sprint data"#;
-        let fresh = merge_planner_output(None, goal, output());
-        assert_eq!(fresh.identifier, "the_goat");
-        assert_eq!(fresh.name, "the_goat");
-
-        // Unquoted single-token names work too.
-        let fresh = merge_planner_output(
-            None,
-            "make a plan called sprint_report, for the team",
-            output(),
-        );
-        assert_eq!(fresh.identifier, "sprint_report");
-        assert_eq!(fresh.name, "sprint_report");
-
-        // "renamed" is not a naming marker: prose fallback.
-        let fresh = merge_planner_output(None, "List files renamed last week", output());
-        assert_eq!(fresh.identifier, "list_files_renamed_last_week");
     }
 
     #[tokio::test]

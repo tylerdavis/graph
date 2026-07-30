@@ -2,10 +2,12 @@
 
 use crate::cli::PlanCommand;
 use crate::commands::input::resolve_input;
+use crate::commands::plan_edit;
 use crate::runtime::Runtime;
 use anyhow::{bail, Result};
+use graph_core::pipeline::authoring;
 use graph_core::pipeline::catalog;
-use graph_core::pipeline::doc::{load_plan_doc, validate_input, LoadedPlans};
+use graph_core::pipeline::doc::{parse_plan_doc, validate_input, LoadedPlans, PlanDoc};
 use std::sync::Arc;
 
 /// Exit code for "the plan needs inputs you didn't provide".
@@ -16,9 +18,16 @@ const EXIT_PLAN_ASSERTED: i32 = 4;
 
 pub async fn run(command: PlanCommand) -> Result<()> {
     match command {
-        PlanCommand::List => {
+        PlanCommand::List { json } => {
             let runtime = Runtime::init()?;
             let loaded = runtime.plan_docs();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&plan_edit::list_as_json(&loaded))?
+                );
+                return Ok(());
+            }
             if loaded.docs.is_empty() && loaded.skipped.is_empty() {
                 println!("no plan documents found — add YAML files under [plans].paths");
                 return Ok(());
@@ -28,52 +37,152 @@ pub async fn run(command: PlanCommand) -> Result<()> {
             }
             Ok(())
         }
-        PlanCommand::Show { name } => {
+        PlanCommand::Show { name, json } => {
             let runtime = Runtime::init()?;
-            let loaded = runtime.plan_docs();
-            let Some(doc) = loaded.docs.iter().find(|d| d.identifier == name) else {
-                bail!(missing_plan(&loaded, &name));
-            };
-            print!("{}", serde_yaml::to_string(doc)?);
-            Ok(())
-        }
-        PlanCommand::Validate { name_or_path } => {
-            let runtime = Runtime::init()?;
-            let loaded = runtime.plan_docs();
-            let path = std::path::Path::new(&name_or_path);
-            let doc = if path.exists() {
-                load_plan_doc(path)?
-            } else {
-                match loaded.docs.iter().find(|d| d.identifier == name_or_path) {
-                    Some(doc) => doc.clone(),
-                    None => bail!(missing_plan(&loaded, &name_or_path)),
-                }
-            };
-            // Second layer: resolve every step tool against what this
-            // config can actually load (structural validation already ran
-            // in load_plan_doc / plan_docs).
-            let catalog = runtime.tool_catalog(&loaded.docs)?;
-            let check = catalog::resolve_plan_tools_deep(&doc, &loaded.docs, &catalog);
-            for note in &check.notes {
-                eprintln!("note: {note}");
-            }
-            if !check.is_ok() {
-                bail!(
-                    "plan '{}' has unresolvable tools:\n  - {}",
-                    doc.identifier,
-                    check.errors.join("\n  - ")
+            // Lenient like `validate`: reading a plan the catalog rejects is
+            // exactly how you find out why it was rejected.
+            let (doc, _loaded) = resolve_target(&runtime, &name)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&plan_edit::doc_as_json(&doc)?)?
                 );
+            } else {
+                print!("{}", authoring::to_yaml(&doc)?);
             }
-            println!("ok: '{}' — {} steps", doc.identifier, doc.steps.len());
             Ok(())
         }
+        PlanCommand::Validate { name_or_path, json } => validate(&name_or_path, json),
         PlanCommand::Run {
             name,
             input,
             inputs,
             json,
         } => run_plan(&name, input.as_deref(), &inputs, json).await,
+        PlanCommand::New {
+            identifier,
+            name,
+            description,
+            output,
+            json,
+        } => plan_edit::new_plan(
+            &identifier,
+            name.as_deref(),
+            description.as_deref(),
+            output,
+            json,
+        ),
+        PlanCommand::Draft {
+            goal,
+            from,
+            feedback,
+            output,
+            stdout,
+            json,
+        } => {
+            plan_edit::draft(
+                &goal,
+                from.as_deref(),
+                feedback.as_deref(),
+                output,
+                stdout,
+                json,
+            )
+            .await
+        }
+        PlanCommand::Set {
+            target,
+            attribute,
+            value,
+            json,
+        } => plan_edit::set(&target, attribute, &value, json),
+        PlanCommand::Unset {
+            target,
+            attribute,
+            json,
+        } => plan_edit::unset(&target, attribute, json),
+        PlanCommand::Step { command } => plan_edit::step(command),
     }
+}
+
+/// Resolve a plan identifier or YAML file path to a document, for authoring
+/// and inspection.
+///
+/// Deliberately lenient: it uses `parse_plan_doc`, not `load_plan_doc`, so an
+/// invalid plan can still be opened. A `graph plan new` scaffold has no steps
+/// and therefore never enters the catalog — if this refused to open it, the
+/// build-it-up-with-`step add` flow would be impossible, and `plan validate`
+/// would report "failed to load" instead of the problem list it exists to
+/// print.
+///
+/// A path wins when it exists on disk. Otherwise the catalog is searched,
+/// then every plan file on disk via `Runtime::find_plan_file` — which is what
+/// lets a plan the catalog rejects (hidden by `requires_servers`, or invalid)
+/// still be opened and repaired. Only then does it give up, explaining why.
+pub fn resolve_target(runtime: &Runtime, name_or_path: &str) -> Result<(PlanDoc, LoadedPlans)> {
+    let loaded = runtime.plan_docs();
+    let path = std::path::Path::new(name_or_path);
+    if path.exists() {
+        return Ok((parse_plan_doc(path)?, loaded));
+    }
+    if let Some(doc) = loaded.docs.iter().find(|d| d.identifier == name_or_path) {
+        return Ok((doc.clone(), loaded));
+    }
+    if let Some(found) = runtime.find_plan_file(name_or_path) {
+        return Ok((parse_plan_doc(&found)?, loaded));
+    }
+    bail!(missing_plan(&loaded, name_or_path))
+}
+
+/// `graph plan validate` — the full verdict across all three layers.
+///
+/// `problems` are fatal: the plan cannot run here. `notes` are not — a
+/// `requires_servers` entry that this machine doesn't configure means the file
+/// is portable but not runnable locally, which is worth saying and not worth
+/// failing over.
+fn validate(name_or_path: &str, json: bool) -> Result<()> {
+    let runtime = Runtime::init()?;
+    let (doc, loaded) = resolve_target(&runtime, name_or_path)?;
+    // Structural validation reruns here rather than being assumed from load
+    // time: a plan named by path may never have been through the catalog, and
+    // a caller asking "is this valid?" deserves every layer's answer.
+    let mut problems = authoring::static_problems(&doc);
+    let catalog = runtime.tool_catalog(&loaded.docs)?;
+    let check = catalog::resolve_plan_tools_deep(&doc, &loaded.docs, &catalog);
+    for problem in check.errors {
+        if !problems.contains(&problem) {
+            problems.push(problem);
+        }
+    }
+    let ok = problems.is_empty();
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "plan": doc.identifier,
+                "steps": doc.steps.len(),
+                "ok": ok,
+                "problems": problems,
+                "notes": check.notes,
+            }))?
+        );
+        if !ok {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    for note in &check.notes {
+        eprintln!("note: {note}");
+    }
+    if !ok {
+        bail!(
+            "plan '{}' is not valid:\n  - {}",
+            doc.identifier,
+            problems.join("\n  - ")
+        );
+    }
+    println!("ok: '{}' — {} steps", doc.identifier, doc.steps.len());
+    Ok(())
 }
 
 /// Why a named plan isn't in the catalog: it requires MCP servers this
