@@ -3,6 +3,7 @@
 use crate::cli::PlanCommand;
 use crate::commands::input::resolve_input;
 use crate::commands::plan_edit;
+use crate::output::SilentExit;
 use crate::runtime::Runtime;
 use anyhow::{bail, Result};
 use graph_core::pipeline::authoring;
@@ -167,7 +168,7 @@ fn validate(name_or_path: &str, json: bool) -> Result<()> {
             }))?
         );
         if !ok {
-            std::process::exit(1);
+            return Err(SilentExit::code(1));
         }
         return Ok(());
     }
@@ -246,7 +247,7 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
             problems.join("; ")
         ));
         runtime.shutdown().await;
-        std::process::exit(EXIT_NEEDS_INPUT);
+        return Err(SilentExit::code(EXIT_NEEDS_INPUT));
     }
 
     let store = runtime.store()?;
@@ -309,7 +310,7 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         if let Some(exit) = &outcome.exit {
             annotate(&exit.message);
         }
-        std::process::exit(EXIT_PLAN_ASSERTED);
+        return Err(SilentExit::code(EXIT_PLAN_ASSERTED));
     }
     Ok(())
 }

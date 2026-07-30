@@ -19,6 +19,7 @@
 
 use crate::cli::{PlanAttribute, StepAttribute, StepCommand};
 use crate::commands::plan_cmd::resolve_target;
+use crate::output::SilentExit;
 use crate::runtime::Runtime;
 use anyhow::{bail, Context, Result};
 use graph_core::pipeline::authoring;
@@ -77,7 +78,10 @@ fn report(body: Value, json: bool, is_error: bool) -> Result<()> {
         }
     }
     if is_error {
-        std::process::exit(1);
+        // The body is already on stdout (--json) or stderr; the exit code is
+        // the only thing left to carry, and it travels back to `main` so the
+        // command can finish unwinding first.
+        return Err(SilentExit::code(1));
     }
     Ok(())
 }

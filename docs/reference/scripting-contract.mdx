@@ -28,6 +28,8 @@ One sanctioned exception: under `GRAPH_EVENTS=github`, a *failing* `plan run` pr
 
 For assertion-style automation, put the condition *in the plan* as an exit gate and branch on exit 4 — that's how the [CI checks](/cookbook/ci-checks) work.
 
+A non-zero code never truncates what was already written: the command finishes normally and the code is applied on the way out, so a `--json` envelope on stdout is complete even when the exit code is `1`, `3`, or `4`. MCP servers are shut down on every one of those paths.
+
 ## JSON envelopes
 
 `--json` on `ask` and `plan run` buffers and emits a machine envelope:

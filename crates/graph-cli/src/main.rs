@@ -7,10 +7,12 @@ mod workbench;
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Command};
+use output::SilentExit;
+use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
     // The workbench owns the terminal, so it routes tracing to a log file
     // itself instead of stderr.
@@ -18,7 +20,27 @@ async fn main() -> Result<()> {
         init_tracing(cli.verbose);
     }
 
-    match cli.command {
+    // The one place a command's outcome becomes a process exit status. Commands
+    // signal a specific code with `SilentExit` rather than `process::exit`, so
+    // that everything they own is dropped — MCP children shut down, stdout
+    // flushed — before the process ends. See `output::SilentExit`.
+    match dispatch(cli.command, cli.verbose).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => match error.downcast::<SilentExit>() {
+            // Already reported on the command's own terms; don't print twice.
+            Ok(exit) => ExitCode::from(exit.code as u8),
+            // Same rendering anyhow's own `Termination` gives: message chain,
+            // plus a backtrace when RUST_BACKTRACE is set.
+            Err(error) => {
+                eprintln!("Error: {error:?}");
+                ExitCode::FAILURE
+            }
+        },
+    }
+}
+
+async fn dispatch(command: Command, verbose: u8) -> Result<()> {
+    match command {
         Command::Config { command } => commands::config_cmd::run(command),
         Command::Mcp { command } => commands::mcp_cmd::run(command).await,
         Command::Tools { command } => commands::tools_cmd::run(command).await,
@@ -40,7 +62,7 @@ async fn main() -> Result<()> {
         Command::Threads { command } => commands::threads_cmd::run(command).await,
         Command::Shapes { command } => commands::shapes_cmd::run(command).await,
         Command::Plan { command } => commands::plan_cmd::run(command).await,
-        Command::Workbench { command } => workbench::run(command, cli.verbose).await,
+        Command::Workbench { command } => workbench::run(command, verbose).await,
     }
 }
 
