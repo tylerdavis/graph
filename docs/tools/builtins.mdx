@@ -263,6 +263,12 @@ Delivery for plans whose result a human has to see — a report, a review verdic
 
 Setup, once per workspace: create a Slack app, give it the `chat:write` bot scope, install it to the workspace, invite it to each channel you post to (`/invite @your-app`), and export its bot token (`xoxb-…`) as `SLACK_BOT_TOKEN`. The pack reads the token from the environment exactly like `GH_TOKEN` — no config entry, and no token in a plan.
 
+The button below opens Slack's app-creation flow with that configuration already filled in — pick a workspace, review, and click *Create*, then **Install to Workspace** and copy the bot token from **OAuth & Permissions**.
+
+<Card title="Create the Graph CI Slack app" icon="slack" href="https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Graph%20CI%22%7D%2C%22features%22%3A%7B%22bot_user%22%3A%7B%22display_name%22%3A%22Graph%20CI%22%2C%22always_online%22%3Afalse%7D%7D%2C%22oauth_config%22%3A%7B%22scopes%22%3A%7B%22bot%22%3A%5B%22chat%3Awrite%22%5D%7D%2C%22pkce_enabled%22%3Afalse%7D%2C%22settings%22%3A%7B%22interactivity%22%3A%7B%22is_enabled%22%3Atrue%7D%2C%22org_deploy_enabled%22%3Afalse%2C%22socket_mode_enabled%22%3Atrue%2C%22token_rotation_enabled%22%3Afalse%2C%22is_mcp_enabled%22%3Afalse%7D%7D">
+  Pre-filled from [`app-manifest.json`](https://github.com/tylerdavis/graph/blob/main/crates/graph-core/src/packs/slack/app-manifest.json), the manifest this pack is built against. Paste that file into **From a manifest** by hand if you'd rather not follow a link.
+</Card>
+
 ### `builtin__slack_post_message`
 
 Post a message to a channel ([`chat.postMessage`](https://api.slack.com/methods/chat.postMessage)). Pass `thread_ts` to post as a reply inside an existing thread instead of a new message: the `ts` this tool returns is exactly what a later call passes back, so a plan can post a summary and thread the details under it. **Side-effecting** (`read_only: false`).
