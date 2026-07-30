@@ -362,25 +362,29 @@ async fn llm_pack_infer_returns_text_or_caller_structured_output() {
 // ── Reshape (data pack) ──────────────────────────────────────────────────
 
 #[tokio::test]
-async fn data_pack_reshape_projects_a_new_shape() {
+async fn data_pack_reshape_returns_the_callers_shape_verbatim() {
     let docs = load_pack_tools(&["data".to_string()]).unwrap();
     assert_eq!(docs.len(), 1);
     let registry = UserToolRegistry::builtins(docs, router());
 
-    // Standalone (no plan-level render), the shape's leaves reference the
-    // tool's own `input` root. Rename keys, splice typed values, interpolate.
+    // A caller-supplied shape is rendered by the *pipeline*, against the
+    // surrounding step's scope, before the tool is dispatched. The tool
+    // itself never renders it: text that survived that pass — LLM prose
+    // quoting Helm/Actions/mustache tags, most of all — must not be
+    // re-parsed as graph templates. See
+    // `caller_shape_survives_model_authored_template_syntax` for the
+    // plan-level counterpart.
     let outcome = registry
         .invoke(
             "builtin__reshape",
             json!({
-                "baseRefOid": "abc",
-                "number": 12,
-                "labels": ["bug"],
                 "shape": {
-                    "base_sha": "{{input.baseRefOid}}",
-                    "pr": "{{input.number}}",
-                    "tags": "{{input.labels}}",
-                    "title": "PR #{{input.number}}",
+                    "base_sha": "abc",
+                    "pr": 12,
+                    "tags": ["bug"],
+                    "helm": "image: {{ index .Values.image.tag }}",
+                    "actions": "token: ${{ github.token }}",
+                    "mustache": "{{#items}}x{{/items}}",
                 },
             }),
         )
@@ -391,36 +395,18 @@ async fn data_pack_reshape_projects_a_new_shape() {
         outcome.result,
         json!({
             "base_sha": "abc",
-            "pr": 12,            // exact tag keeps the number type
-            "tags": ["bug"],     // exact tag keeps the array type
-            "title": "PR #12",   // mixed text renders to a string
-        })
+            "pr": 12,
+            "tags": ["bug"],
+            "helm": "image: {{ index .Values.image.tag }}",
+            "actions": "token: ${{ github.token }}",
+            "mustache": "{{#items}}x{{/items}}",
+        }),
+        "byte-identical pass-through, no second render"
     );
 }
 
 #[tokio::test]
-async fn reshape_already_rendered_shape_passes_through() {
-    // Inside a plan the pipeline renders the step input first, so the shape
-    // reaches the tool as concrete literals (no templates left). The tool's
-    // render is then a no-op that returns the object verbatim.
-    let docs = load_pack_tools(&["data".to_string()]).unwrap();
-    let registry = UserToolRegistry::builtins(docs, router());
-    let outcome = registry
-        .invoke(
-            "builtin__reshape",
-            json!({"shape": {"base_sha": "abc", "pr": 12, "tags": ["bug"]}}),
-        )
-        .await
-        .unwrap();
-    assert!(!outcome.is_error, "{:?}", outcome.result);
-    assert_eq!(
-        outcome.result,
-        json!({"base_sha": "abc", "pr": 12, "tags": ["bug"]})
-    );
-}
-
-#[tokio::test]
-async fn reshape_read_only_and_bad_path_is_a_tool_error() {
+async fn reshape_is_read_only() {
     let docs = load_pack_tools(&["data".to_string()]).unwrap();
     let registry = UserToolRegistry::builtins(docs, router());
 
@@ -434,24 +420,6 @@ async fn reshape_read_only_and_bad_path_is_a_tool_error() {
         .unwrap()
         .read_only;
     assert_eq!(read_only, Some(true));
-
-    // A shape referencing a field the input doesn't have is a tool error,
-    // not a panic — the same contract as an exec that exits non-zero.
-    let outcome = registry
-        .invoke(
-            "builtin__reshape",
-            json!({
-                "id": 1,
-                "shape": {"missing": "{{input.nope}}"},
-            }),
-        )
-        .await
-        .unwrap();
-    assert!(outcome.is_error, "{:?}", outcome.result);
-    assert!(outcome.result["error"]
-        .as_str()
-        .unwrap()
-        .contains("reshape failed"));
 }
 
 #[test]
@@ -511,6 +479,30 @@ shape:
         .unwrap();
     assert!(!outcome.is_error, "{:?}", outcome.result);
     assert_eq!(outcome.result, json!({"sha": "abc", "n": 7}));
+}
+
+#[tokio::test]
+async fn reshape_fixed_shape_bad_path_is_a_tool_error() {
+    // A fixed shape is the one shape the tool still renders, so a path the
+    // input lacks is a tool error, not a panic — the same contract as an
+    // exec that exits non-zero.
+    let bad = doc(r#"
+name: missing
+description: fixed projection over a field that isn't there
+kind: reshape
+shape:
+  x: "{{input.nope}}"
+"#);
+    let registry = registry(vec![bad]);
+    let outcome = registry
+        .invoke("user__missing", json!({"id": 1}))
+        .await
+        .unwrap();
+    assert!(outcome.is_error, "{:?}", outcome.result);
+    assert!(outcome.result["error"]
+        .as_str()
+        .unwrap()
+        .contains("reshape failed"));
 }
 
 #[tokio::test]

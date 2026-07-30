@@ -268,7 +268,11 @@ pub fn validate_tool(doc: &UserToolDoc) -> Result<(), String> {
             caller_shape,
         } => match (shape, caller_shape) {
             (Some(shape), _) => check_shape_templates(shape, &check_template)?,
-            (None, true) => {} // caller-supplied; validated at render time
+            // Caller-supplied: nothing to validate here, and nothing to
+            // render later either — the pipeline resolves the shape
+            // against the calling step's scope before dispatch, so a bad
+            // path fails that render, not this tool.
+            (None, true) => {}
             (None, false) => {
                 return Err("reshape tool needs a `shape` or `caller_shape: true`".to_string())
             }
@@ -365,8 +369,9 @@ impl UserToolRegistry {
         };
         // A reshape tool's shape is either fixed in the doc or supplied by
         // the call (`caller_shape`). Resolve it before `input` is consumed
-        // into the render roots; the effective shape is then rendered
-        // against the tool's own `input` root.
+        // into the render roots; a *fixed* shape is then rendered against
+        // the tool's own `input` root, while a caller shape arrives already
+        // rendered by the pipeline and is returned verbatim (see below).
         let reshape_shape = match &doc.kind {
             ToolKind::Reshape {
                 shape,
@@ -413,9 +418,29 @@ impl UserToolRegistry {
                 self.run_prompt(doc, prompt, system.as_deref(), model, caller_schema, &roots)
                     .await
             }
-            ToolKind::Reshape { .. } => {
+            ToolKind::Reshape { caller_shape, .. } => {
                 let shape = reshape_shape.expect("reshape shape resolved above");
-                self.run_reshape(&shape, &roots)
+                if *caller_shape {
+                    // The caller's shape arrives already rendered: a plan
+                    // step's input is rendered against the full scope
+                    // before dispatch (`pipeline/mod.rs`, `pipeline/
+                    // body.rs`), which is the pass that resolves
+                    // {{Ex.field}} / {{item.*}} / {{input.*}}. Rendering
+                    // again here would parse the *substituted* text —
+                    // often LLM output quoting Helm/Actions/mustache tags
+                    // like `{{ index .Values.tag }}` — as graph templates
+                    // and fail the step. Nothing resolves at this level
+                    // anyway: the tool-level roots hold only `input`,
+                    // whose sole key is `shape`.
+                    Ok(ToolOutcome {
+                        result: shape,
+                        is_error: false,
+                    })
+                } else {
+                    // Doc-level fixed shape: validated to {{input.*}}-only
+                    // at load time and resolved only here.
+                    self.run_reshape(&shape, &roots)
+                }
             }
         }
     }
