@@ -30,7 +30,7 @@ pub async fn run(command: PlanCommand) -> Result<()> {
                 return Ok(());
             }
             if loaded.docs.is_empty() && loaded.skipped.is_empty() {
-                println!("no plan documents found — add YAML files under [plans].paths");
+                eprintln!("no plan documents found — add YAML files under [plans].paths");
                 return Ok(());
             }
             for doc in &loaded.docs {
@@ -182,7 +182,7 @@ fn validate(name_or_path: &str, json: bool) -> Result<()> {
             problems.join("\n  - ")
         );
     }
-    println!("ok: '{}' — {} steps", doc.identifier, doc.steps.len());
+    eprintln!("ok: '{}' — {} steps", doc.identifier, doc.steps.len());
     Ok(())
 }
 

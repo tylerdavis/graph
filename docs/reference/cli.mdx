@@ -49,6 +49,8 @@ graph plan run <name> [<json>|@file|-] [--input k=v]... [--json]
 
 `run` exit codes: `0` ok, `3` missing/invalid inputs (schema printed to stderr), `1` failure (including unresolvable tools). Solver output streams to stdout; output-mode plans print JSON; silent plans print nothing.
 
+Per the [streams contract](/reference/scripting-contract#streams), stdout carries only deliverables — `list`'s rows, `show`'s YAML, and `--json` envelopes. Verdicts and hints go to stderr, so `plan validate` prints nothing to stdout on success and its exit code is the answer; `plan list` on an empty catalog leaves stdout empty rather than emitting a hint into it.
+
 `show` and `validate` are deliberately lenient about *which* plans they will open: a plan that is invalid, or hidden by unconfigured `requires_servers`, is exactly the plan you need to inspect, so both resolve it from disk rather than requiring it to be in the runnable catalog. `list` only shows the runnable catalog; `list --json` also reports what was `skipped` (failed to load, with the reason) and `hidden` (with the missing servers).
 
 ## Authoring plans
