@@ -181,8 +181,16 @@ fn a_fired_gate_adds_an_exit_block_to_the_envelope() {
     // CHARACTERIZATION, NOT ENDORSEMENT: the contract documents `answer` as
     // the solver report ("null for output/silent plans") and this plan has no
     // solver, yet the gate message lands there. Pinned so the refactor can't
-    // change it silently; see the drift list in MCP-SERVER-ROADMAP.md.
-    assert_eq!(envelope["answer"], serde_json::json!("no rows found"));
+    // change it silently.
+    assert_eq!(
+        envelope["answer"],
+        serde_json::json!("no rows found"),
+        "drift item #1 in MCP-SERVER-ROADMAP.md: `answer` is documented as the \
+         solver report and null for output/silent plans, but a fired exit gate \
+         puts its message here on a plan with no solver. If this assertion now \
+         fails, the drift was fixed on purpose — update the roadmap and \
+         docs/reference/scripting-contract.mdx together with this test."
+    );
 }
 
 #[test]
