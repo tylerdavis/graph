@@ -30,6 +30,7 @@
           "plans/exit-gates",
           "plans/branching",
           "plans/iteration",
+          "plans/agent-step",
           "plans/the-planner",
           "plans/errors-and-replanning"
         ]

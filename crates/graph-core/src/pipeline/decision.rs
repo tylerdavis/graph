@@ -52,9 +52,9 @@ pub fn decide_tool_def() -> crate::tools::ToolDef {
                       vs. create a new one. Gate it with exactly one of `if` (a logical \
                       comparison) or `infer` (a yes/no question judged against prior \
                       results). A branch is a single tool call or a list of steps; \
-                      branches may contain `exit` steps (a fired exit ends the WHOLE \
-                      plan) but not `decide`, `map`, or `reduce` — call a plan \
-                      (plan__*) for nested control flow. Later steps reference this \
+                      branches may contain `exit` and `agent` steps (a fired exit ends \
+                      the WHOLE plan) but never `decide`, `map`, or `reduce` — call a \
+                      plan (plan__*) for nested control flow. Later steps reference this \
                       step's id: {{Ex.result}} is the chosen branch's output, \
                       {{Ex.branch}} which side ran."
             .to_string(),

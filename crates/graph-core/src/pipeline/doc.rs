@@ -207,6 +207,7 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
         if !step.tool_name.contains("__")
             && step.tool_name != "plan_and_execute"
             && step.tool_name != super::EXIT_TOOL
+            && step.tool_name != super::AGENT_TOOL
             && step.tool_name != super::DECIDE_TOOL
             && step.tool_name != super::MAP_TOOL
             && step.tool_name != super::REDUCE_TOOL
@@ -214,7 +215,7 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
             return Err(format!(
                 "step {} tool '{}' is not a namespaced tool name (like \
                  linear__list_issues) or one of the control steps: \
-                 exit, decide, map, reduce, plan_and_execute",
+                 exit, agent, decide, map, reduce, plan_and_execute",
                 step.id, step.tool_name
             ));
         }
@@ -223,6 +224,9 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
         // template walk would false-flag them.
         let mut problems = Vec::new();
         match step.tool_name.as_str() {
+            name if name == super::AGENT_TOOL => {
+                super::agent::validate_agent_input(&step.input, &seen, &step.id, &mut problems)
+            }
             name if name == super::DECIDE_TOOL => super::decision::validate_decide_input(
                 &step.input,
                 &seen,
@@ -429,6 +433,58 @@ solver:
         validate_doc(&doc).map(|()| doc)
     }
 
+    /// Plan documents are the human-authored surface, so every control
+    /// step's input validator has to run here — not only on planner-written
+    /// plans. An agent step whose schema, budget, or prompt is malformed
+    /// must fail at load, before it can fail mid-run (where a planned run
+    /// would spend a replan attempt "fixing" a static defect).
+    #[test]
+    fn agent_step_input_is_validated_in_plan_documents() {
+        fn doc_with(input_block: &str) -> Result<PlanDoc, String> {
+            let head = "identifier: probe\nname: Probe\ndescription: d\n\
+                        steps:\n  - id: E0\n    tool_name: agent\n    input:\n";
+            let tail = "output:\n  x: \"{{E0.output}}\"\n";
+            doc_from(&(head.to_string() + input_block + tail))
+        }
+
+        let cases = [
+            (
+                "      prompt: 12345\n      outputSchema: { type: object }\n",
+                "invalid agent input",
+            ),
+            (
+                "      prompt: hi\n      maxIterations: 0\n      outputSchema: { type: object }\n",
+                "at least 1",
+            ),
+            (
+                "      prompt: hi\n      outputSchema: { type: string }\n",
+                "type \"object\"",
+            ),
+            (
+                "      prompt: hi\n      outputSchema: { type: object }\n      unknownField: nope\n",
+                "invalid agent input",
+            ),
+            (
+                "      prompt: hi\n      outputSchema: { type: object }\n      tools: []\n",
+                "`tools` is empty",
+            ),
+            (
+                "      prompt: \"{{E7.values}}\"\n      outputSchema: { type: object }\n",
+                "E7",
+            ),
+        ];
+        for (input, expected) in cases {
+            let Err(err) = doc_with(input) else {
+                panic!("expected a validation error for:\n{input}");
+            };
+            assert!(err.contains(expected), "for\n{input}got: {err}");
+        }
+
+        // The well-formed shape still loads.
+        doc_with("      prompt: hi\n      outputSchema: { type: object, properties: {} }\n")
+            .expect("a valid agent step must load");
+    }
+
     #[test]
     fn accepts_descriptive_step_ids() {
         let doc = doc_from(&DOC.replace("E0", "find_team").replace("E1", "team_issues")).unwrap();
@@ -456,7 +512,7 @@ solver:
         let err = doc_from(&DOC.replace("linear__list_issues", "gate")).unwrap_err();
         assert!(err.contains("'gate'"), "{err}");
         assert!(
-            err.contains("exit, decide, map, reduce, plan_and_execute"),
+            err.contains("exit, agent, decide, map, reduce, plan_and_execute"),
             "{err}"
         );
     }

@@ -64,9 +64,9 @@ pub fn map_tool_def() -> crate::tools::ToolDef {
                       available alongside earlier step results. Per-item results are \
                       collected in input order: later steps reference {{Ex.results}} for \
                       the list and {{Ex.count}} for how many ran. Set `concurrency` above \
-                      1 only when the per-item calls are independent. The body may not \
-                      contain `exit`, `decide`, `map`, or `reduce` — call a plan (plan__*) \
-                      for nested control flow."
+                      1 only when the per-item calls are independent. The body may contain \
+                      an `agent` step, but never `exit`, `decide`, `map`, or `reduce` — \
+                      call a plan (plan__*) for nested control flow."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -94,8 +94,9 @@ pub fn reduce_tool_def() -> crate::tools::ToolDef {
                       Later steps reference {{Ex.result}} for the final value. Always \
                       sequential — each iteration depends on the previous; for \
                       independent per-item work use `map` (optionally concurrent) and \
-                      reduce over its results. The body may not contain `exit`, `decide`, \
-                      `map`, or `reduce` — call a plan (plan__*) for nested control flow."
+                      reduce over its results. The body may contain an `agent` step, but \
+                      never `exit`, `decide`, `map`, or `reduce` — call a plan (plan__*) \
+                      for nested control flow."
             .to_string(),
         input_schema: json!({
             "type": "object",

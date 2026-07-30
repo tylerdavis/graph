@@ -10,6 +10,7 @@
 //!   In both modes, `EmptyData` (plan fine, data ran out) goes straight to
 //!   the solver.
 
+pub mod agent;
 pub mod body;
 pub mod catalog;
 pub mod condition;
@@ -25,6 +26,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 
+pub use agent::{agent_tool_def, AGENT_TOOL};
 pub use catalog::{CatalogCheck, ToolCatalog};
 pub use decision::DECIDE_TOOL;
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
@@ -614,6 +616,7 @@ impl Pipeline {
     /// described-tools text and the pretty-printed step schema.
     async fn planner_catalog(&self) -> (String, String) {
         let mut tools = self.registry.tools().await.unwrap_or_default();
+        tools.push(agent::agent_tool_def());
         tools.push(exit::exit_tool_def());
         tools.push(decision::decide_tool_def());
         tools.push(iterate::map_tool_def());
@@ -753,6 +756,9 @@ impl Pipeline {
             // (same-body ids, per-item pseudo-roots) are legal, so the
             // generic walk below would false-flag them.
             match step.tool_name.as_str() {
+                AGENT_TOOL => {
+                    agent::validate_agent_input(&step.input, &seen, &step.id, &mut problems)
+                }
                 DECIDE_TOOL => decision::validate_decide_input(
                     &step.input,
                     &seen,
@@ -799,7 +805,7 @@ impl Pipeline {
             // (decide) or per item (map/reduce). Their step events carry
             // the raw input for the same reason.
             let control = match step.tool_name.as_str() {
-                DECIDE_TOOL | MAP_TOOL | REDUCE_TOOL => {
+                AGENT_TOOL | DECIDE_TOOL | MAP_TOOL | REDUCE_TOOL => {
                     self.events.step_started(
                         &self.call_stack,
                         &step.id,
@@ -808,6 +814,7 @@ impl Pipeline {
                     );
                     let started = std::time::Instant::now();
                     let run = match step.tool_name.as_str() {
+                        AGENT_TOOL => self.run_agent(&step, state).await,
                         DECIDE_TOOL => self.run_decide(&step, state).await,
                         MAP_TOOL => self.run_map(&step, state).await,
                         _ => self.run_reduce(&step, state).await,
