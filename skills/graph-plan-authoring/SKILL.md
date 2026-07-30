@@ -1,14 +1,24 @@
 ---
 name: graph-plan-authoring
-description: Draft, edit, validate, and run graph plans from the command line.
-  Use when creating a new plan, repairing or extending an existing one, adding
-  or reordering steps, changing a plan's inputs or finish mode, or driving the
-  plan workbench's authoring tools from a script or an agent instead of the TUI.
+description: Drive graph's own commands to draft, write, edit, validate, and
+  test plans. Use when creating a new plan, repairing or extending an existing
+  one, adding or reordering steps, changing a plan's inputs or finish mode, or
+  driving the plan workbench's authoring tools from a script instead of the TUI.
 ---
 
 # Graph Plan Authoring
 
-**graph writes plans. You do not.** A planner model, aimed at this machine's real tool catalog, drafts a validated plan from one sentence — then you fix what it got wrong with single-purpose edit commands. Hand-assembling a plan step by step, or writing plan YAML in an editor, is the slow path and usually the wrong one.
+**graph drafts, writes, edits, and tests plans. Your job is to drive those commands and judge the results.** Every stage of the lifecycle is already a command — aimed at this machine's real tool catalog, enforcing validation on every write:
+
+| Stage | The command | Do *not* substitute |
+|---|---|---|
+| Draft | `graph plan draft "<goal>"` | assembling steps yourself from the catalog |
+| Write | `graph plan new`, `graph plan set`, `graph plan step add` | writing YAML in an editor |
+| Edit | `graph plan set/unset`, `graph plan step update/rename/rm` | patching the file by hand |
+| Check | `graph plan validate --json` | reasoning about whether the plan looks valid |
+| Test | `graph tools test`, `graph plan run` | predicting what a tool returns, or writing your own harness |
+
+Each one applies a single intent and reports a machine-readable result. Reimplementing any of them by hand is slower, unvalidated, and usually wrong — and drafting is the stage agents skip most often.
 
 ## Start here
 
@@ -23,7 +33,7 @@ That is the first command to run for any new plan. It costs one round of inferen
   "steps": 4, "problems": [], "savedTo": "./.graph/plans/summarize_the_commits_between_two_git_re.yaml" }
 ```
 
-Then read what it wrote (`graph plan show <id> --json`), apply the fixes below, validate, and run.
+Then read what it wrote (`graph plan show <id> --json`), apply the fixes below, validate, and run. `draft` is the only authoring command that costs inference; everything after it is free and deterministic.
 
 ### Before you draft, do not
 
@@ -31,6 +41,7 @@ Then read what it wrote (`graph plan show <id> --json`), apply the fixes below, 
 - **Do not write or edit plan YAML in a text editor.** The edit commands enforce validation on every write; a text editor doesn't, and any edit reserializes the file anyway.
 - **Do not enumerate the whole tool catalog and assemble steps yourself.** The planner already sees the catalog and the [shape cache](https://github.com/tylerdavis/graph/blob/main/docs/tools/shape-cache.mdx). Probe individual tools (`graph tools show <name>`) when you're fixing a specific step, not as a survey.
 - **Do not ask the user for a plan's steps.** Ask for the *goal*; the goal is what `draft` consumes.
+- **Do not judge a plan by reading it.** `graph plan validate --json` is the verdict, and `graph plan run` is the proof. Neither costs you a guess.
 
 ### Draft, or build by hand?
 
@@ -76,12 +87,21 @@ graph plan set commit_digest input_schema '{"type":"object","required":["base","
 graph plan set commit_digest solver '{"query_to_answer":"Summarize the notable changes …","data":{"commits":"{{E0.commits}}","analysis":"{{E2}}"}}' --json
 ```
 
-Then:
+## Testing what you built
+
+Don't reason about whether a plan works — graph runs it.
 
 ```bash
-graph plan validate commit_digest --json
-graph plan run commit_digest '{"base":"v0.8.0","head":"main"}' --json
+graph plan validate commit_digest --json                          # static: refs, ids, tools resolve
+graph tools test builtin__git_log '{"base":"v0.8.0","head":"main"}'   # one tool, real output
+graph plan run commit_digest '{"base":"v0.8.0","head":"main"}' --json  # the whole plan, real data
 ```
+
+`validate` catches what is knowable without running: dangling `{{refs}}`, duplicate ids, tools that don't resolve. Everything else — a path that isn't in a tool's real output, an empty result, a gate that fires — only shows up in a run, as a typed error naming the available keys.
+
+When a step's template path is the suspect, `graph tools test <tool> '<input>'` calls that one tool and prints exactly what it returns; `graph shapes show <tool>` prints what it has returned before. Use those instead of guessing at a field name — and both feed the [shape cache](https://github.com/tylerdavis/graph/blob/main/docs/tools/shape-cache.mdx), which makes the next draft better.
+
+Read the exit code, not just the output: `0` ok, `1` failure, `3` needs input (the schema is printed — that is fix #2 above), `4` an exit gate fired deliberately.
 
 ## Iterating
 
@@ -129,7 +149,7 @@ Also worth branching on: `availableSteps` (unknown step id), `renamedFrom` (an `
 - **Edits are not catalog-aware; `validate` is.** `step add` accepts a tool name that doesn't exist — only the static layers run on a write. Always `plan validate` after adding steps; `"ok": true` on an edit is not proof the tool resolves.
 - **`validate`'s `notes` are not failures.** `problems` make `ok` false and exit `1`; a `note` about an MCP server this machine lacks means the plan is portable and correct, just not runnable here.
 - **Every edit reserializes the file** — comments are dropped, flow mappings become block. Commentary belongs in `description` and each step's `reasoning`, which are real fields the agent reads.
-- **Run exit codes:** `0` ok, `1` failure, `3` needs input (schema printed), `4` an exit gate fired.
+- **Run exit codes:** `0` ok, `1` failure, `3` needs input (schema printed), `4` an exit gate fired. A plan is done when a real run exits `0`, not when it looks right.
 
 ## Checklist
 
@@ -140,6 +160,7 @@ Also worth branching on: `availableSteps` (unknown step id), `renamedFrom` (an `
 - [ ] `graph plan validate <plan> --json` → `ok: true` (notes acceptable)
 - [ ] `graph plan run <plan> '<input>'` exits 0 against real input
 - [ ] Rejections resolved by fixing the named cause, not by editing YAML directly
+- [ ] Every stage went through a graph command — no hand-written YAML, no hand-run harness
 
 ## Reference — read only when needed
 
