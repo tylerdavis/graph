@@ -387,3 +387,18 @@ pub enum ConfigCommand {
     /// Print the config file locations and which exist
     Path,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn the_command_tree_is_well_formed() {
+        // clap's own consistency check: duplicate arg ids, conflicting short
+        // flags, `required` on a positional after an optional one. All of it
+        // otherwise panics at runtime, on the user's terminal, and only for
+        // the one subcommand that happens to be broken.
+        Cli::command().debug_assert();
+    }
+}
