@@ -109,6 +109,46 @@ A rejected edit exits `1` with the envelope still on stdout, so the problem list
 
 Other keys worth branching on: `availableSteps` (an unknown step id, listing what exists), `renamedFrom` (an `identifier` change wrote a new file and left the original), and `salvaged` / `failedStep` (`draft` saved a valid prefix after drafting ran out of retries).
 
+### The tool catalog
+
+`graph tools list --json` is the companion read: what a step's `tool_name` may be, resolved against this machine's actual configuration.
+
+```json
+{
+  "tools": [
+    {
+      "name": "linear__list_issues",
+      "source": "linear",
+      "description": "List issues in a team or project …",
+      "readOnly": true,
+      "hasOutputSchema": true
+    }
+  ],
+  "count": 1,
+  "sources": [{ "source": "linear", "count": 1 }]
+}
+```
+
+`name` is the namespaced form a plan step must use; bare names (`plan_and_execute`) report `"source": "(core)"`. `description` is whole, not the first line the text listing shows — it is what a caller routes on. `readOnly` is `null` when the tool declares no hint. An empty catalog is a valid envelope (`"count": 0`), not an error.
+
+Schemas are deliberately not included — a few hundred tools would bury the names, which is what a caller enumerates for. `hasOutputSchema` tells you whether one exists; `graph tools show <name> --json` is the per-tool read:
+
+```json
+{
+  "name": "linear__list_issues",
+  "source": "linear",
+  "description": "List issues in a team or project …",
+  "readOnly": true,
+  "inputSchema": { "type": "object", "properties": { "team": { "type": "string" } } },
+  "outputSchema": { "type": "object" },
+  "outputExample": null
+}
+```
+
+`inputSchema` is what a plan step's `input` object must satisfy. Every key is always present and `null` when absent, so a caller can address `.outputSchema` without probing for it first. An unknown tool name is an ordinary error — message on stderr, exit `1`, no envelope — because it is a bad argument, not a domain rejection.
+
+`outputSchema` and `outputExample` are what a tool *declares*, and most declare nothing. For what a tool has actually been observed to return, read the [shape cache](/tools/shape-cache) with `graph shapes show <name>`.
+
 ## Inference cost by invocation
 
 | Invocation | LLM calls |

@@ -110,12 +110,16 @@ An edit reserializes the whole file, so cosmetic YAML is normalized: flow mappin
 ## `graph tools`
 
 ```
-graph tools list
-graph tools show <name>
+graph tools list [--json]
+graph tools show <name> [--json]
 graph tools test <name> [<json>|@file|-] [--input k=v]...
 ```
 
 Operates on the full catalog: MCP (`server__`), user (`user__`), bundled packs (`builtin__`), plan (`plan__`), and `plan_and_execute`. `list` groups the catalog by source — names and one-line descriptions, `plan_and_execute` under `(core)`.
+
+`list --json` emits the flat catalog instead, each entry carrying the **namespaced** name a plan step has to use, its `source`, the full `description` (untruncated — it is the routing signal), `readOnly`, and `hasOutputSchema`, plus a per-source roll-up. That is the surface for a script or an [agent authoring a plan](/plans/authoring#authoring-from-the-command-line); per-tool schemas stay on `tools show`.
+
+`show --json` emits one tool's whole definition — `inputSchema` included, which is what you need to write a step's input object — with every key always present, `null` when absent. Unknown tool names stay ordinary errors (stderr, exit `1`); there is no envelope for them. See the [scripting contract](/reference/scripting-contract#the-tool-catalog).
 
 ## `graph threads`
 
