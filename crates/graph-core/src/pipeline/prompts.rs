@@ -60,22 +60,10 @@ pub struct PlannerPromptArgs<'a> {
     pub user_context: &'a str,
     pub existing_plan: &'a str,
     pub step_schema: &'a str,
-    /// A draft plan under revision (workbench). Unlike `existing_plan`,
-    /// nothing in it has executed: every step is mutable.
-    pub draft: Option<&'a str>,
 }
 
 pub fn planner_prompt(args: &PlannerPromptArgs) -> String {
     let last_error = args.last_error.unwrap_or("none");
-    let draft_section = match args.draft {
-        Some(draft) => format!(
-            "### Draft Under Revision\nThe following draft plan has NOT been executed. \
-             Revise it according to the user's request — you may modify, reorder, \
-             remove, or replace any step. Output the COMPLETE revised plan, not a diff.\n\
-             <draft_plan>\n{draft}\n</draft_plan>\n\n"
-        ),
-        None => String::new(),
-    };
     format!(
         r#"# Tool-Based Task Execution Framework
 
@@ -99,7 +87,7 @@ You are tasked with creating a step-by-step plan to solve problems using the too
 </current_user_context>
 
 ## Plan Structure
-{draft_section}### Existing Plan
+### Existing Plan
 Steps that have already executed. Never repeat or modify them — continue from them.
 <existing_plan>
 {existing_plan}
@@ -155,14 +143,13 @@ Classify the request before planning and note it in step reasoning:
         tools = args.tools,
         templating_rules = TEMPLATING_RULES,
         user_context = args.user_context,
-        draft_section = draft_section,
         existing_plan = args.existing_plan,
         step_schema = args.step_schema,
         control_step_rules = CONTROL_STEP_RULES,
     )
 }
 
-pub struct IncrementalPlannerPromptArgs<'a> {
+pub struct DraftingPromptArgs<'a> {
     pub current_date: &'a str,
     pub last_error: Option<&'a str>,
     pub tools: &'a str,
@@ -174,10 +161,10 @@ pub struct IncrementalPlannerPromptArgs<'a> {
     pub draft: Option<&'a str>,
 }
 
-/// The system prompt for incremental drafting. Built once per drafting
-/// session and reused byte-identically for the outline call and every step
-/// call, so the provider's prompt-cache prefix stays stable.
-pub fn incremental_planner_prompt(args: &IncrementalPlannerPromptArgs) -> String {
+/// The system prompt for plan drafting. Built once per drafting session
+/// and reused byte-identically for the outline call and every step call,
+/// so the provider's prompt-cache prefix stays stable.
+pub fn drafting_prompt(args: &DraftingPromptArgs) -> String {
     let last_error = args.last_error.unwrap_or("none");
     let draft_section = match args.draft {
         Some(draft) => format!(
@@ -193,7 +180,7 @@ pub fn incremental_planner_prompt(args: &IncrementalPlannerPromptArgs) -> String
         r#"# Tool-Based Task Execution Framework
 
 ## Overview
-You are tasked with creating a step-by-step plan to solve problems using the tools listed below. Each step must use one of the defined tools; the plan will be executed as a program, and a solver LLM will synthesize the collected results into the final answer. You draft the plan incrementally: an outline first, then one step per request.
+You are tasked with creating a step-by-step plan to solve problems using the tools listed below. Each step must use one of the defined tools; the plan will be executed as a program, and a solver LLM will synthesize the collected results into the final answer. You draft the plan in stages: an outline first, then one step per request.
 
 ## Context Variables
 - Current Date: {current_date}
@@ -219,7 +206,7 @@ Each step must conform to:
 
 Step IDs are identifiers (letters, digits, _; not starting with a digit), unique across the plan, and never `input`, `item`, `index`, `accumulator`, or `length`. Each step request names the ID to use.
 
-### Incremental Drafting Protocol
+### Drafting Protocol
 1. First, produce an OUTLINE: 2–8 stages, each a one-sentence `summary` plus `expectedTool` (the exact catalog tool name) when you already know it. A control step (`agent`, `decide`, `map`, or `reduce`) is ONE stage — its body nests inside that single step's input. The outline also carries `queryToAnswer` and optional `systemPrompt` (see Solver Schema below).
 2. Steps are then requested ONE at a time, each request naming the step id to use. Emit exactly one step per request; you see the outline and every previously accepted step.
 3. The outline is a guide, not a contract: merge, skip, or add stages as the real steps demand.
@@ -269,8 +256,7 @@ Classify the request before planning and note it in step reasoning:
     )
 }
 
-/// The first user turn of an incremental drafting session: ask for the
-/// outline.
+/// The first user turn of a drafting session: ask for the outline.
 pub fn outline_request(query: &str) -> String {
     format!("Produce the plan outline for this task.\n\n# Task\n{query}")
 }
@@ -376,13 +362,12 @@ mod tests {
             user_context: "(none)",
             existing_plan: "(none)",
             step_schema: "{}",
-            draft: None,
         });
         assert!(prompt.contains(CONTROL_STEP_RULES));
     }
 
-    fn incremental_prompt(draft: Option<&str>) -> String {
-        incremental_planner_prompt(&IncrementalPlannerPromptArgs {
+    fn drafting_prompt_for(draft: Option<&str>) -> String {
+        drafting_prompt(&DraftingPromptArgs {
             current_date: "2026-01-01",
             last_error: None,
             tools: "(no tools available)",
@@ -393,16 +378,16 @@ mod tests {
     }
 
     #[test]
-    fn incremental_prompt_carries_the_shared_sections() {
-        let prompt = incremental_prompt(None);
+    fn drafting_prompt_carries_the_shared_sections() {
+        let prompt = drafting_prompt_for(None);
         assert!(prompt.contains(CONTROL_STEP_RULES));
         assert!(prompt.contains(TEMPLATING_RULES));
         assert!(!prompt.contains("Draft Under Revision"));
     }
 
     #[test]
-    fn incremental_prompt_teaches_the_drafting_protocol() {
-        let prompt = incremental_prompt(None);
+    fn drafting_prompt_teaches_the_drafting_protocol() {
+        let prompt = drafting_prompt_for(None);
         assert!(
             prompt.contains("is ONE stage"),
             "a control step must be exactly one outline stage"
@@ -418,8 +403,8 @@ mod tests {
     }
 
     #[test]
-    fn incremental_prompt_revision_slot_carries_the_draft() {
-        let prompt = incremental_prompt(Some("{\"plan\": []}"));
+    fn drafting_prompt_revision_slot_carries_the_draft() {
+        let prompt = drafting_prompt_for(Some("{\"plan\": []}"));
         assert!(prompt.contains("Draft Under Revision"));
         assert!(prompt.contains("{\"plan\": []}"));
     }

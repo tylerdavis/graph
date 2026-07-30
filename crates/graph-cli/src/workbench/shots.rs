@@ -69,10 +69,6 @@ struct ShotSpec {
     plan: Option<String>,
     #[serde(default)]
     grid: Grid,
-    /// How `workbench__draft_plan` drafts (`oneshot` default,
-    /// `incremental` for the drafting-overlay shots).
-    #[serde(default)]
-    draft_strategy: Option<graph_config::DraftStrategy>,
     /// The user's chat message, typed through the real reducer.
     /// Omitted: no agent turn runs (pure workspace shots).
     #[serde(default)]
@@ -137,7 +133,7 @@ struct Capture {
     /// turn ended).
     #[serde(default)]
     at: Option<NamedCapture>,
-    /// Capture when the incremental drafting overlay starts this
+    /// Capture when the drafting overlay starts this
     /// (0-based) step.
     #[serde(default)]
     draft_step: Option<usize>,
@@ -385,7 +381,6 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         // Fixed: the pipeline date must not vary between regenerations.
         current_date: "2026-07-19".to_string(),
         max_attempts: 2,
-        draft_strategy: spec.draft_strategy.unwrap_or_default(),
     });
 
     let debug = Arc::new(DebugControls::default());

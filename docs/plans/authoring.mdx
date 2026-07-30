@@ -122,7 +122,7 @@ graph plan validate report
 graph plan run report '{"team":"Core"}'
 ```
 
-Note what this walkthrough does *not* do: call the planner. `graph plan draft "<goal>"` is available and mirrors the workbench's drafting (one repair pass, salvage on exhaustion), but it is the only authoring command that costs inference. When you already know the steps — or an agent does — building them directly is free, deterministic, and reviewable as a diff.
+Note what this walkthrough does *not* do: call the planner. `graph plan draft "<goal>"` is available and mirrors the workbench's drafting (per-step validation, salvage on exhaustion), but it is the only authoring command that costs inference. When you already know the steps — or an agent does — building them directly is free, deterministic, and reviewable as a diff.
 
 Two properties make this safe to script against:
 

@@ -232,8 +232,8 @@ pub enum Msg {
         breakpoints: Option<Vec<String>>,
     },
     Planning,
-    // Incremental drafting progress (workbench__draft_plan under the
-    // incremental strategy); rendered as the plan tab's drafting overlay.
+    // Drafting progress (workbench__draft_plan: outline, then one step
+    // per call); rendered as the plan tab's drafting overlay.
     DraftOutline {
         items: Vec<OutlineRow>,
     },

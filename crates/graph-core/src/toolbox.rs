@@ -189,7 +189,6 @@ mod tests {
             user_context: String::new(),
             current_date: "2026-07-09".into(),
             max_attempts: 2,
-            draft_strategy: graph_config::DraftStrategy::Oneshot,
         });
         (AgentToolbox::new(base.clone(), pipeline, vec![doc]), base)
     }

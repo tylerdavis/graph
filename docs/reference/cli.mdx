@@ -71,7 +71,7 @@ graph plan step rm <name|path> <id> [--json]
 
 `new` scaffolds a plan with no steps. It is intentionally invalid on creation (`plan has no steps`) — an edit is only refused if it makes things *worse*, so a scaffold stays editable and a plan can be built up step by step without ever invoking the planner.
 
-`draft` runs the planner over your tool catalog. A draft that fails validation gets one automatic repair pass; if incremental drafting exhausts its retries, the valid prefix is saved and reported under `salvaged` so you can finish it with `step add` instead of redrafting. `--stdout` prints the YAML and writes nothing.
+`draft` runs the planner over your tool catalog, one validated step at a time; if drafting exhausts its retries on a step, the valid prefix is saved and reported under `salvaged` so you can finish it with `step add` instead of redrafting. `--stdout` prints the YAML and writes nothing.
 
 ### Attributes
 

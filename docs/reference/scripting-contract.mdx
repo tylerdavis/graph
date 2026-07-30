@@ -107,7 +107,7 @@ A rejected edit exits `1` with the envelope still on stdout, so the problem list
 }
 ```
 
-Other keys worth branching on: `availableSteps` (an unknown step id, listing what exists), `renamedFrom` (an `identifier` change wrote a new file and left the original), and `salvaged` / `failedStep` (`draft` saved a valid prefix after incremental drafting ran out of retries).
+Other keys worth branching on: `availableSteps` (an unknown step id, listing what exists), `renamedFrom` (an `identifier` change wrote a new file and left the original), and `salvaged` / `failedStep` (`draft` saved a valid prefix after drafting ran out of retries).
 
 ## Inference cost by invocation
 
@@ -133,8 +133,8 @@ With `GRAPH_EVENTS=jsonl`, stderr switches from human progress to one JSON objec
 | `planning` | — | the planner starts authoring |
 | `replanning` | `attempt` | a replan attempt begins |
 | `synthesizing` | — | the solver starts writing |
-| `draft_outline` | `items` | incremental drafting produced its outline |
-| `draft_step_started` | `index`, `summary` | incremental drafting begins a step |
+| `draft_outline` | `items` | drafting produced its outline |
+| `draft_step_started` | `index`, `summary` | drafting begins a step |
 | `draft_step_finished` | `index`, `step`, `problems`, `attempt` | that step was accepted (or retried) |
 
 Token-level solver deltas are deliberately not emitted.
@@ -144,7 +144,6 @@ Token-level solver deltas are deliberately not emitted.
 | Variable | Effect |
 |---|---|
 | `GRAPH_STORAGE` | `file` \| `memory` — overrides `[storage].backend`. Invalid values error. |
-| `GRAPH_DRAFT_STRATEGY` | `oneshot` \| `incremental` — overrides [`[planner].draft_strategy`](/reference/configuration#planner). Invalid values error. |
 | `GRAPH_EVENTS` | `jsonl` — the event feed above. `github` — failure annotations for GitHub Actions (see Streams). |
 | `GRAPH_LOG` | [tracing filter](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for diagnostics on stderr (e.g. `GRAPH_LOG=debug`, `GRAPH_LOG=graph_mcp=trace`). Overrides `-v` flags. |
 | `GRAPH_WORKBENCH_LOG` | file path for the [workbench's debug log](/workbench/plan-workbench#debug-logging). Overrides `[workbench].log_path` and the `<data_dir>/workbench.log` default. |

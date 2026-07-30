@@ -80,9 +80,6 @@ pub struct Pipeline {
     pub user_context: String,
     pub current_date: String,
     pub max_attempts: u32,
-    /// How [`Pipeline::draft_plan`] produces a plan (config-selected;
-    /// defaults to one-shot).
-    pub draft_strategy: graph_config::DraftStrategy,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -113,7 +110,7 @@ pub enum PipelineError {
         error: Option<Value>,
         state: Box<RunState>,
     },
-    /// Incremental drafting could not produce a valid step within its
+    /// Drafting could not produce a valid step within its
     /// budget. Carries the valid partial draft — everything accepted
     /// before the failure — so interactive callers can salvage it
     /// (mirrors `Aborted` carrying the partial run state).
@@ -559,57 +556,6 @@ impl Pipeline {
 
     // ── Planner ──────────────────────────────────────────────────────────
 
-    /// Ask the planner for a draft. Nothing executes; validation is the
-    /// caller's job for the one-shot strategy (see
-    /// [`Pipeline::validate_plan`]), while the incremental strategy
-    /// validates each step as it is drafted. `existing` is a prior draft
-    /// to revise; `last_error` is validation or execution feedback to fix.
-    pub async fn draft_plan(
-        &self,
-        query: &str,
-        existing: Option<&PlannerOutput>,
-        last_error: Option<&str>,
-    ) -> Result<PlannerOutput, PipelineError> {
-        match self.draft_strategy {
-            graph_config::DraftStrategy::Oneshot => {
-                self.draft_plan_oneshot(query, existing, last_error).await
-            }
-            graph_config::DraftStrategy::Incremental => {
-                self.draft_plan_incremental(query, existing, last_error)
-                    .await
-            }
-        }
-    }
-
-    /// The one-shot strategy — catalog, prompt, one structured LLM call.
-    async fn draft_plan_oneshot(
-        &self,
-        query: &str,
-        existing: Option<&PlannerOutput>,
-        last_error: Option<&str>,
-    ) -> Result<PlannerOutput, PipelineError> {
-        self.events.planning();
-        let draft = existing.map(|output| serde_json::to_string_pretty(output).unwrap_or_default());
-        let system = self
-            .planner_system("(none)", "E0", last_error, draft.as_deref())
-            .await;
-        let mut output: PlannerOutput = self
-            .router
-            .get_structured(
-                Role::Planner,
-                system,
-                vec![ChatMessage::User {
-                    content: query.to_string(),
-                }],
-                "plan",
-            )
-            .await?;
-        // Plans run in emitted order; reference-ordering validation (not
-        // an id sort — ids are opaque) catches a mis-sequenced plan.
-        plan::default_solver_data(&output.plan, &mut output.solver_data.data);
-        Ok(output)
-    }
-
     /// Gather the planner-facing tool catalog shared by every system-prompt
     /// builder: registry tools, the control-step defs (exit/decide/map/
     /// reduce, in that order), and `plan__*` docs for plans not already on
@@ -656,15 +602,14 @@ impl Pipeline {
 
     /// The planner's system prompt: tool catalog (registry, control steps,
     /// callable plans), observed shapes, and templating contract.
-    /// `existing_plan` is executed-and-immutable steps (replan
-    /// continuation), while `draft` is an unexecuted plan under revision
-    /// (workbench) — they are different prompt sections.
+    /// `existing_plan` is executed-and-immutable steps (the replan
+    /// continuation); drafting a fresh plan goes through
+    /// [`Pipeline::draft_plan`] and its own prompt instead.
     async fn planner_system(
         &self,
         existing_plan: &str,
         next_step_id: &str,
         last_error: Option<&str>,
-        draft: Option<&str>,
     ) -> String {
         let (tools_text, step_schema) = self.planner_catalog().await;
 
@@ -676,7 +621,6 @@ impl Pipeline {
             user_context: &self.user_context,
             existing_plan,
             step_schema: &step_schema,
-            draft,
         })
     }
 
@@ -690,12 +634,7 @@ impl Pipeline {
         };
         let last_error = state.last_error().map(|e| e.content.clone());
         let system = self
-            .planner_system(
-                &existing_plan,
-                &state.next_step_id(),
-                last_error.as_deref(),
-                None,
-            )
+            .planner_system(&existing_plan, &state.next_step_id(), last_error.as_deref())
             .await;
 
         let output: PlannerOutput = self

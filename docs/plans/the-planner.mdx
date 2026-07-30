@@ -46,10 +46,10 @@ A chat turn through `plan_and_execute` is 4+ inference calls: the agent (decidin
 
 ## Drafting without executing
 
-The same planner also powers **draft-only** planning: the [workbench](/workbench/plan-workbench)'s `workbench__draft_plan` produces a plan for you to review instead of executing it, with validation feedback looped back to the planner for one automatic revision.
+The same planner also powers **draft-only** planning: the [workbench](/workbench/plan-workbench)'s `workbench__draft_plan` produces a plan for you to review instead of executing it.
 
-How a draft is produced is configurable via [`[planner].draft_strategy`](/reference/configuration#planner) (or `GRAPH_DRAFT_STRATEGY`): `oneshot` (default) drafts the whole plan in one structured call; `incremental` drafts an outline first, then generates steps one at a time, each statically validated before acceptance and retried with the problems as feedback.
+A draft is built in stages: the planner first sketches an **outline** (2–8 one-sentence stages plus the solver's brief), then generates the real steps one inference at a time — each step sees the outline and every previously accepted step, is statically validated before acceptance, and is retried up to 3 times with the validation problems injected as feedback. A draft that comes back is therefore statically valid; if a step exhausts its retries, the valid prefix is kept so you can finish it with the editing tools instead of redrafting.
 
-<Frame caption="The planner drafting incrementally in the workbench: two steps accepted, the third being drafted, the outline's last stage still pending.">
-  <img src="/images/workbench/drafting-overlay.svg" alt="The planner drafting incrementally in the workbench: two steps accepted, the third being drafted, the outline's last stage still pending." />
+<Frame caption="The planner drafting in the workbench: two steps accepted, the third being drafted, the outline's last stage still pending.">
+  <img src="/images/workbench/drafting-overlay.svg" alt="The planner drafting in the workbench: two steps accepted, the third being drafted, the outline's last stage still pending." />
 </Frame>
