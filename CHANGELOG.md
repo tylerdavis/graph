@@ -2,6 +2,48 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
+## v0.9.0 — 2026-07-30
+
+
+### Added
+
+- model fallbacks for provider outage failover (#67)
+- add the agent control step
+- add gh_release and git_log to the github pack
+- add slack pack with slack_post_message
+- manage plans from the command line
+
+### Changed
+
+- lift plan authoring rules into graph-core
+- draft plans one validated step at a time, always
+
+### Documentation
+
+- rework intro/quickstart, add project-setup skill, tidy release asset names (#65)
+- escape curly braces in template-language frontmatter (#66)
+- reorganize the docs — plans-first IA, one owner per fact
+- coherence pass after the reorg — catalog table parity, models links
+- restructure the workbench page; split the exit-gates opener
+- generate workbench screenshots from executed sessions
+- inline Frame embeds — Mintlify snippets don't interpolate props into JSX attributes
+- place workbench screenshots across the reorganized pages
+- rewrite quickstart manual setup to mirror the fast path
+- replace the introduction's plan-run snippet with a workbench hero shot
+- document the agent control step
+- document the plan authoring commands
+- ship an app manifest and a one-click create-app button
+
+### Fixed
+
+- show never-run steps as skipped after a fired exit gate
+- add fallbacks field to the shots harness ModelChoice
+- close the agent step's validation, path, and boundary gaps
+- enable the slack pack in the repo-carried config
+- carry exit codes back to main instead of exiting in place
+- keep plan list and validate off stdout
+- stop re-rendering caller-supplied reshape shapes
+
 ## v0.8.1 — 2026-07-17
 
 
