@@ -463,7 +463,7 @@ fn paused_prompt(app: &App) -> Option<&GatePrompt> {
 
 fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions) {
     let ws = &app.ws;
-    // An incremental draft in flight replaces the doc rows: the doc only
+    // A draft in flight replaces the doc rows: the doc only
     // changes at the final publish, so live progress renders from events.
     if let Some(drafting) = &ws.drafting {
         draw_drafting_view(frame, app, drafting, area);
@@ -666,7 +666,7 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions
     );
 }
 
-/// The incremental-drafting overlay: accepted steps, the step being
+/// The drafting overlay: accepted steps, the step being
 /// drafted, and the outline's remaining stages as placeholders — reusing
 /// the step-status glyph vocabulary (✓ accepted · ◐ drafting · ○ pending
 /// stage), with the last failed attempt's problems in the detail pane.

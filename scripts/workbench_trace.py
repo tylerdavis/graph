@@ -4,7 +4,7 @@
 The workbench writes a timestamped tracing stream to
 `<data_dir>/workbench.log` (default ~/.local/share/graph/workbench.log).
 This parses it into nested spans — session > turn > tool call, plus the
-two sibling phases of an incremental draft: a one-shot outline that sketches
+two sibling phases of a plan draft: a single outline call that sketches
 stages, then a separate step-by-step drafting loop that turns each stage into
 a validated step (up to 3 attempts each) — and prints an indented timeline
 with durations, error markers, and (truncated) tool inputs.

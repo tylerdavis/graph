@@ -109,7 +109,7 @@ pub enum RunLine {
     Error(String),
 }
 
-/// One outline stage of an in-flight incremental draft.
+/// One outline stage of an in-flight draft.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct OutlineRow {
     pub summary: String,
@@ -133,7 +133,7 @@ pub struct CurrentDraftStep {
     pub attempt: u32,
 }
 
-/// Live progress of an incremental `workbench__draft_plan` call, rendered
+/// Live progress of a `workbench__draft_plan` call, rendered
 /// by the plan tab in place of the doc rows. Built purely from events —
 /// the shared draft doc is untouched until the final publish.
 #[derive(Debug, Default)]
@@ -172,7 +172,7 @@ pub struct PlanWorkspace {
     pub solver_text: String,
     /// Set after a run: the headline plus whether it was an error.
     pub outcome: Option<(String, bool)>,
-    /// An incremental draft in flight; the plan tab renders this instead
+    /// A draft in flight; the plan tab renders this instead
     /// of the doc rows while set.
     pub drafting: Option<DraftingProgress>,
 }

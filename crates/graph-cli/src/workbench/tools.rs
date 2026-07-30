@@ -404,15 +404,18 @@ impl WorkbenchTools {
             plan: doc.steps.clone(),
             solver_data: doc.solver.clone().unwrap_or_default(),
         });
-        let mut output = match self
+        // Drafting validates every step before accepting it, so a draft
+        // that comes back at all is statically valid; only catalog
+        // problems (reported below) can remain.
+        let output = match self
             .pipeline
             .draft_plan(goal, existing_output.as_ref(), feedback)
             .await
         {
             Ok(output) => output,
-            // Incremental drafting exhausted its retries: salvage the
-            // valid prefix so the agent finishes it with the edit tools
-            // instead of redrafting from scratch.
+            // Drafting exhausted its retries: salvage the valid prefix so
+            // the agent finishes it with the edit tools instead of
+            // redrafting from scratch.
             Err(graph_core::pipeline::PipelineError::DraftStepExhausted {
                 step_id,
                 problems,
@@ -425,8 +428,8 @@ impl WorkbenchTools {
                 return ToolOutcome {
                     result: json!({
                         "error": format!(
-                            "incremental drafting could not produce a valid \
-                             step {step_id}; the valid partial draft \
+                            "drafting could not produce a valid step \
+                             {step_id}; the valid partial draft \
                              ({steps} steps) has been published"
                         ),
                         "failedStep": step_id,
@@ -441,37 +444,6 @@ impl WorkbenchTools {
             Err(error) => return error_outcome(&format!("planner failed: {error}")),
         };
 
-        // One bounded repair pass: never hand over an invalid draft
-        // silently. The invalid draft goes back to the planner as the
-        // draft under revision with the problems as the error to fix;
-        // whatever the retry produces is handed over, problems surfaced.
-        // Repair triggers on static problems only; the final summary
-        // below still reports catalog problems via plan_problems.
-        let static_problems = self
-            .pipeline
-            .validate_plan(&output.plan)
-            .err()
-            .unwrap_or_default();
-        let mut repair_attempted = false;
-        if !static_problems.is_empty() {
-            repair_attempted = true;
-            let repair_feedback = format!(
-                "the drafted plan failed validation — fix these problems: {}",
-                static_problems.join("; ")
-            );
-            match self
-                .pipeline
-                .draft_plan(goal, Some(&output), Some(&repair_feedback))
-                .await
-            {
-                Ok(retry) => output = retry,
-                // A failed retry keeps the first draft and its problems.
-                Err(error) => {
-                    tracing::debug!(target: "workbench", "draft repair pass failed: {error}")
-                }
-            }
-        }
-
         let doc = authoring::merge_planner_output(existing, goal, output);
         let problems = plan_problems(&self.pipeline, &doc);
         let mut summary = json!({
@@ -479,14 +451,11 @@ impl WorkbenchTools {
             "steps": doc.steps.len(),
             "validation": if problems.is_empty() { json!("ok") } else { json!(problems) },
         });
-        if repair_attempted {
-            summary["repairAttempted"] = json!(true);
-            if !problems.is_empty() {
-                summary["note"] = json!(
-                    "the draft is still invalid after one repair pass — \
-                     fix the remaining problems with the editing tools"
-                );
-            }
+        if !problems.is_empty() {
+            summary["note"] = json!(
+                "the draft has catalog problems — fix them with the \
+                 editing tools"
+            );
         }
         self.publish(doc, true);
         ToolOutcome {
@@ -587,9 +556,9 @@ impl ToolRegistry for WorkbenchTools {
                               when revising after validation problems or user corrections. \
                               Pass fresh: true when the goal describes a NEW plan — \
                               otherwise the current draft is treated as the plan under \
-                              revision and keeps its identifier and metadata. A draft \
-                              that fails validation gets one automatic repair pass; \
-                              any remaining problems are returned in `validation`."
+                              revision and keeps its identifier and metadata. Each step \
+                              is validated as it is drafted; any remaining problems are \
+                              returned in `validation`."
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -920,7 +889,6 @@ mod tests {
             user_context: String::new(),
             current_date: String::new(),
             max_attempts: 1,
-            draft_strategy: graph_config::DraftStrategy::Oneshot,
         })
     }
 
@@ -1780,7 +1748,7 @@ steps:
         }
     }
 
-    // ── draft_plan repair pass (scripted LLM) ──────────────────────────
+    // ── draft_plan (scripted LLM) ──────────────────────────────────────
 
     struct ScriptedProvider {
         responses: Mutex<Vec<graph_llm::types::ChatResponse>>,
@@ -1859,31 +1827,8 @@ steps:
             user_context: String::new(),
             current_date: String::new(),
             max_attempts: 1,
-            draft_strategy: graph_config::DraftStrategy::Oneshot,
         });
         (pipeline, provider)
-    }
-
-    /// The incident draft as planner JSON: E10's template has a parse
-    /// error ("empty segment in path '.'").
-    fn invalid_planner_output() -> Value {
-        json!({
-            "plan": [
-                {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-                {"id": "E10", "toolName": "t__report", "input": {"rows": "{{.}}"}},
-            ],
-            "solverData": {"queryToAnswer": "q", "data": {}}
-        })
-    }
-
-    fn valid_planner_output() -> Value {
-        json!({
-            "plan": [
-                {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-                {"id": "E10", "toolName": "t__report", "input": {"rows": "{{E0.values}}"}},
-            ],
-            "solverData": {"queryToAnswer": "q", "data": {}}
-        })
     }
 
     fn draft_tools(
@@ -1900,88 +1845,6 @@ steps:
         (tools, rx)
     }
 
-    #[tokio::test]
-    async fn draft_plan_repairs_an_invalid_draft_with_one_revision_pass() {
-        let (pipeline, provider) =
-            scripted_pipeline(vec![invalid_planner_output(), valid_planner_output()]);
-        let (tools, mut rx) = draft_tools(pipeline);
-
-        let outcome = tools.draft_plan(&json!({"goal": "report on x"})).await;
-        assert!(!outcome.is_error, "{:?}", outcome.result);
-        assert_eq!(outcome.result["validation"], json!("ok"));
-        assert_eq!(outcome.result["repairAttempted"], json!(true));
-
-        let requests = provider.requests.lock().unwrap();
-        assert_eq!(requests.len(), 2, "exactly one repair pass");
-        assert!(
-            requests[1].system.contains("Draft Under Revision"),
-            "the repair goes through the draft-revision path"
-        );
-        assert!(
-            requests[1].system.contains("empty segment"),
-            "the validation problem is the repair feedback"
-        );
-        match rx.try_recv().unwrap() {
-            Msg::DraftReplaced { doc, dirty } => {
-                assert!(dirty);
-                assert_eq!(doc.steps[1].input["rows"], json!("{{E0.values}}"));
-            }
-            _ => panic!("expected DraftReplaced"),
-        }
-    }
-
-    #[tokio::test]
-    async fn draft_plan_hands_over_a_still_invalid_draft_with_problems_surfaced() {
-        let (pipeline, provider) =
-            scripted_pipeline(vec![invalid_planner_output(), invalid_planner_output()]);
-        let (tools, mut rx) = draft_tools(pipeline);
-
-        let outcome = tools.draft_plan(&json!({"goal": "report on x"})).await;
-        assert!(!outcome.is_error, "a problem draft is not a tool error");
-        assert!(
-            outcome.result["validation"].is_array(),
-            "problems surfaced: {:?}",
-            outcome.result
-        );
-        assert!(outcome.result["validation"]
-            .to_string()
-            .contains("empty segment"));
-        assert_eq!(outcome.result["repairAttempted"], json!(true));
-        assert!(outcome.result["note"]
-            .as_str()
-            .unwrap()
-            .contains("still invalid"));
-        assert_eq!(
-            provider.requests.lock().unwrap().len(),
-            2,
-            "the repair pass is bounded to one retry"
-        );
-        assert!(
-            matches!(rx.try_recv().unwrap(), Msg::DraftReplaced { .. }),
-            "the draft is handed over anyway — editing stays possible"
-        );
-    }
-
-    #[tokio::test]
-    async fn draft_plan_valid_first_try_skips_the_repair_pass() {
-        let (pipeline, provider) = scripted_pipeline(vec![valid_planner_output()]);
-        let (tools, _rx) = draft_tools(pipeline);
-        let outcome = tools.draft_plan(&json!({"goal": "report on x"})).await;
-        assert!(!outcome.is_error);
-        assert_eq!(outcome.result["validation"], json!("ok"));
-        assert!(outcome.result.get("repairAttempted").is_none());
-        assert_eq!(provider.requests.lock().unwrap().len(), 1);
-    }
-
-    // ── incremental drafting (scripted LLM) ────────────────────────────
-
-    fn incremental_pipeline(outputs: Vec<Value>) -> (Arc<Pipeline>, Arc<ScriptedProvider>) {
-        let (pipeline, provider) = scripted_pipeline(outputs);
-        let mut pipeline = (*pipeline).clone();
-        pipeline.draft_strategy = graph_config::DraftStrategy::Incremental;
-        (Arc::new(pipeline), provider)
-    }
-
     fn outline_output() -> Value {
         json!({
             "items": [
@@ -1993,8 +1856,8 @@ steps:
     }
 
     #[tokio::test]
-    async fn incremental_draft_publishes_once_when_complete() {
-        let (pipeline, provider) = incremental_pipeline(vec![
+    async fn draft_publishes_once_when_complete() {
+        let (pipeline, provider) = scripted_pipeline(vec![
             outline_output(),
             json!({"step": {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
                    "planComplete": false}),
@@ -2011,7 +1874,7 @@ steps:
         assert_eq!(
             provider.requests.lock().unwrap().len(),
             3,
-            "outline + one call per step; per-step validation means no repair pass"
+            "outline + one call per step"
         );
         // Exactly one publish — partial plans never hit the shared doc.
         match rx.try_recv().unwrap() {
@@ -2026,13 +1889,13 @@ steps:
     }
 
     #[tokio::test]
-    async fn incremental_draft_exhaustion_salvages_the_valid_prefix() {
+    async fn draft_exhaustion_salvages_the_valid_prefix() {
         let invalid_step = || {
             json!({"step": {"id": "E1", "toolName": "t__report",
                             "input": {"rows": "{{E9.values}}"}},
                    "planComplete": false})
         };
-        let (pipeline, _) = incremental_pipeline(vec![
+        let (pipeline, _) = scripted_pipeline(vec![
             outline_output(),
             json!({"step": {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
                    "planComplete": false}),

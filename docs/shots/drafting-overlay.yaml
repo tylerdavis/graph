@@ -1,10 +1,9 @@
-# The incremental drafting overlay: two steps accepted, the third being
-# drafted, the outline's remaining stage pending. Used in
-# using/plan-workbench.mdx's Incremental drafting section.
+# The drafting overlay: two steps accepted, the third being drafted, the
+# outline's remaining stage pending. Used in using/plan-workbench.mdx's
+# drafting section.
 name: drafting-overlay
-title: graph workbench — incremental drafting
+title: graph workbench — drafting a plan
 grid: { cols: 120, rows: 36 }
-draft_strategy: incremental
 
 chat: "draft a plan that reviews a PR and posts findings as comments"
 

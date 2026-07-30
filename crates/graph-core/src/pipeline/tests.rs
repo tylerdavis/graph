@@ -154,7 +154,6 @@ fn pipeline_with_named(
             user_context: "test user".into(),
             current_date: "2026-07-09".into(),
             max_attempts,
-            draft_strategy: graph_config::DraftStrategy::Oneshot,
         },
         provider,
     )
@@ -1999,61 +1998,6 @@ impl crate::EventSink for RecordingSink {
 }
 
 #[tokio::test]
-async fn draft_plan_returns_output_without_executing() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, provider) = pipeline(
-        vec![structured(two_step_plan("E0.values.0.id"))],
-        registry.clone(),
-        1,
-    );
-    let output = pipeline
-        .draft_plan("sprint status", None, None)
-        .await
-        .unwrap();
-    assert_eq!(output.plan.len(), 2);
-    assert_eq!(output.plan[0].id, "E0");
-    assert_eq!(
-        output.solver_data.query_to_answer,
-        "how is the sprint going"
-    );
-    assert!(
-        registry.invocations.lock().unwrap().is_empty(),
-        "draft must not execute"
-    );
-    let requests = provider.requests.lock().unwrap();
-    assert_eq!(requests.len(), 1, "one planner call, no solver");
-    assert!(!requests[0].system.contains("Draft Under Revision"));
-}
-
-#[tokio::test]
-async fn draft_plan_revision_carries_draft_and_error() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, provider) = pipeline(
-        vec![structured(two_step_plan("E0.values.0.id"))],
-        registry,
-        1,
-    );
-    let existing: PlannerOutput = serde_json::from_value(two_step_plan("E0.values.0.id")).unwrap();
-    pipeline
-        .draft_plan(
-            "also fetch comments",
-            Some(&existing),
-            Some("E1 references E9, which is not an earlier step"),
-        )
-        .await
-        .unwrap();
-    let requests = provider.requests.lock().unwrap();
-    let system = &requests[0].system;
-    assert!(system.contains("Draft Under Revision"), "revision section");
-    assert!(system.contains("t__search"), "serialized draft in prompt");
-    assert!(system.contains("E1 references E9"), "last error in prompt");
-    assert!(
-        system.contains("<existing_plan>\n(none)\n</existing_plan>"),
-        "the draft must not occupy the executed-steps slot"
-    );
-}
-
-#[tokio::test]
 async fn gate_proceed_is_transparent() {
     let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
     let (pipeline, _) = pipeline(
@@ -2651,12 +2595,7 @@ steps:
     );
 }
 
-// ── Incremental drafting ─────────────────────────────────────────────────
-
-fn incremental(mut pipeline: Pipeline) -> Pipeline {
-    pipeline.draft_strategy = graph_config::DraftStrategy::Incremental;
-    pipeline
-}
+// ── Plan drafting ────────────────────────────────────────────────────────
 
 fn outline_response() -> ChatResponse {
     structured(json!({
@@ -2695,7 +2634,7 @@ fn assistant_turns(request: &ChatRequest) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn incremental_draft_generates_outline_then_steps() {
+async fn draft_generates_outline_then_steps() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, provider) = pipeline(
         vec![
@@ -2706,7 +2645,7 @@ async fn incremental_draft_generates_outline_then_steps() {
         registry.clone(),
         1,
     );
-    let output = incremental(pipeline)
+    let output = pipeline
         .draft_plan("sprint status", None, None)
         .await
         .unwrap();
@@ -2742,7 +2681,7 @@ async fn incremental_draft_generates_outline_then_steps() {
 }
 
 #[tokio::test]
-async fn incremental_draft_retries_invalid_step_with_errors_injected() {
+async fn draft_retries_invalid_step_with_errors_injected() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, provider) = pipeline(
         vec![
@@ -2755,7 +2694,7 @@ async fn incremental_draft_retries_invalid_step_with_errors_injected() {
         registry,
         1,
     );
-    let output = incremental(pipeline)
+    let output = pipeline
         .draft_plan("sprint status", None, None)
         .await
         .unwrap();
@@ -2795,7 +2734,7 @@ async fn incremental_draft_retries_invalid_step_with_errors_injected() {
 }
 
 #[tokio::test]
-async fn incremental_draft_exhausted_retries_returns_valid_partial() {
+async fn draft_exhausted_retries_returns_valid_partial() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, _) = pipeline(
         vec![
@@ -2808,7 +2747,7 @@ async fn incremental_draft_exhausted_retries_returns_valid_partial() {
         registry,
         1,
     );
-    let err = incremental(pipeline)
+    let err = pipeline
         .draft_plan("sprint status", None, None)
         .await
         .unwrap_err();
@@ -2833,7 +2772,7 @@ async fn incremental_draft_exhausted_retries_returns_valid_partial() {
 }
 
 #[tokio::test]
-async fn incremental_draft_revision_carries_draft_and_feedback_in_system() {
+async fn draft_revision_carries_draft_and_feedback_in_system() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, provider) = pipeline(
         vec![outline_response(), step_draft(search_step("E0"), true)],
@@ -2841,7 +2780,7 @@ async fn incremental_draft_revision_carries_draft_and_feedback_in_system() {
         1,
     );
     let existing: PlannerOutput = serde_json::from_value(two_step_plan("E0.values.0.id")).unwrap();
-    incremental(pipeline)
+    pipeline
         .draft_plan(
             "also fetch comments",
             Some(&existing),
@@ -2859,7 +2798,7 @@ async fn incremental_draft_revision_carries_draft_and_feedback_in_system() {
 }
 
 #[tokio::test]
-async fn incremental_draft_accepts_done_early_without_a_step() {
+async fn draft_accepts_done_early_without_a_step() {
     // One accepted step, then step: null + planComplete → a 1-step plan.
     let registry = search_registry(json!({"values": []}));
     let (pipeline, provider) = pipeline(
@@ -2871,7 +2810,7 @@ async fn incremental_draft_accepts_done_early_without_a_step() {
         registry.clone(),
         1,
     );
-    let output = incremental(pipeline)
+    let output = pipeline
         .draft_plan("sprint status", None, None)
         .await
         .unwrap();
@@ -2889,7 +2828,7 @@ async fn incremental_draft_accepts_done_early_without_a_step() {
         registry,
         1,
     );
-    let output = incremental(empty_pipeline)
+    let output = empty_pipeline
         .draft_plan("sprint status", None, None)
         .await
         .unwrap();
@@ -2902,7 +2841,7 @@ async fn incremental_draft_accepts_done_early_without_a_step() {
 }
 
 #[tokio::test]
-async fn incremental_draft_emits_progress_events() {
+async fn draft_emits_progress_events() {
     let registry = search_registry(json!({"values": []}));
     let (mut pipeline, _) = pipeline(
         vec![
@@ -2916,7 +2855,7 @@ async fn incremental_draft_emits_progress_events() {
     );
     let sink = Arc::new(RecordingSink::default());
     pipeline.events = sink.clone();
-    incremental(pipeline)
+    pipeline
         .draft_plan("sprint status", None, None)
         .await
         .unwrap();
@@ -2948,8 +2887,7 @@ async fn incremental_draft_emits_progress_events() {
 }
 
 #[tokio::test]
-async fn incremental_draft_force_completes_when_outline_is_covered_and_planner_never_signals_done()
-{
+async fn draft_force_completes_when_outline_is_covered_and_planner_never_signals_done() {
     // A 2-stage outline, then valid steps that NEVER set planComplete. The
     // loop must cover the outline, allow MAX_OVERFLOW_STEPS extra, then
     // force-close — not grind to the step budget or error.
@@ -2966,7 +2904,7 @@ async fn incremental_draft_force_completes_when_outline_is_covered_and_planner_n
         registry.clone(),
         1,
     );
-    let output = incremental(pipeline)
+    let output = pipeline
         .draft_plan("sprint status", None, None)
         .await
         .unwrap();
@@ -3018,43 +2956,19 @@ async fn incremental_draft_force_completes_when_outline_is_covered_and_planner_n
 }
 
 #[tokio::test]
-async fn incremental_draft_rejects_an_empty_outline() {
+async fn draft_rejects_an_empty_outline() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, _) = pipeline(
         vec![structured(json!({"items": [], "queryToAnswer": "q"}))],
         registry,
         1,
     );
-    let err = incremental(pipeline)
+    let err = pipeline
         .draft_plan("sprint status", None, None)
         .await
         .unwrap_err();
     assert!(matches!(err, PipelineError::InvalidPlan(_)), "{err}");
     assert!(err.to_string().contains("outline has no items"));
-}
-
-#[tokio::test]
-async fn default_strategy_stays_oneshot_with_a_single_request() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, provider) = pipeline(
-        vec![structured(two_step_plan("E0.values.0.id"))],
-        registry,
-        1,
-    );
-    assert_eq!(
-        pipeline.draft_strategy,
-        graph_config::DraftStrategy::Oneshot,
-        "the default strategy is one-shot"
-    );
-    pipeline
-        .draft_plan("sprint status", None, None)
-        .await
-        .unwrap();
-    assert_eq!(
-        provider.requests.lock().unwrap().len(),
-        1,
-        "one-shot drafting is exactly one planner call"
-    );
 }
 
 #[test]

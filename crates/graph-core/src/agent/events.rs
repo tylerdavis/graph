@@ -41,10 +41,10 @@ pub trait EventSink: Send + Sync {
         _elapsed: Duration,
     ) {
     }
-    /// Incremental drafting produced its outline: a JSON array of
+    /// Drafting produced its outline: a JSON array of
     /// `{summary, expectedTool}` stage items.
     fn draft_outline(&self, _items: &Value) {}
-    /// Incremental drafting started generating the step for stage `index`
+    /// Drafting started generating the step for stage `index`
     /// (0-based), described by `summary`.
     fn draft_step_started(&self, _index: usize, _summary: &str) {}
     /// A drafted step finished validation. Empty `problems` means the step

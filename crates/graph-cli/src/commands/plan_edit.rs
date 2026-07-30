@@ -203,10 +203,10 @@ pub fn new_plan(
 /// `graph plan draft <goal>` — author a plan with the planner model.
 ///
 /// The only command here that costs inference. Mirrors the workbench's
-/// `workbench__draft_plan` exactly: one bounded repair pass when the draft
-/// fails static validation, and on incremental-drafting exhaustion the valid
-/// prefix is salvaged rather than thrown away — a partial plan finished with
-/// `step add` beats redrafting from scratch.
+/// `workbench__draft_plan` exactly: drafting validates each step as it is
+/// generated, and on exhaustion the valid prefix is salvaged rather than
+/// thrown away — a partial plan finished with `step add` beats redrafting
+/// from scratch.
 pub async fn draft(
     goal: &str,
     from: Option<&str>,
@@ -235,7 +235,7 @@ pub async fn draft(
         .draft_plan(goal, existing_output.as_ref(), feedback)
         .await;
     let mut salvaged = None;
-    let mut planner_output = match drafted {
+    let planner_output = match drafted {
         Ok(output) => output,
         Err(PipelineError::DraftStepExhausted {
             step_id,
@@ -252,31 +252,6 @@ pub async fn draft(
         }
     };
 
-    // One bounded repair pass: never hand over an invalid draft silently. The
-    // invalid draft goes back to the planner as the draft under revision with
-    // the problems as the error to fix; whatever the retry produces is what
-    // ships, problems and all.
-    let mut repair_attempted = false;
-    if salvaged.is_none() {
-        let static_problems = authoring::validate_steps(&planner_output.plan);
-        if !static_problems.is_empty() {
-            repair_attempted = true;
-            let repair_feedback = format!(
-                "the drafted plan failed validation — fix these problems: {}",
-                static_problems.join("; ")
-            );
-            match pipeline
-                .draft_plan(goal, Some(&planner_output), Some(&repair_feedback))
-                .await
-            {
-                Ok(retry) => planner_output = retry,
-                // A failed retry keeps the first draft and its problems.
-                Err(error) => {
-                    tracing::debug!("draft repair pass failed: {error}")
-                }
-            }
-        }
-    }
     runtime.shutdown().await;
 
     let mut doc = authoring::merge_planner_output(existing, goal, planner_output);
@@ -303,15 +278,12 @@ pub async fn draft(
         "savedTo": path.display().to_string(),
         "problems": problems,
     });
-    if repair_attempted {
-        body["repairAttempted"] = json!(true);
-    }
     if let Some((step_id, step_problems)) = salvaged {
         body["salvaged"] = json!(true);
         body["failedStep"] = json!(step_id);
         body["stepProblems"] = json!(step_problems);
         body["note"] = json!(format!(
-            "incremental drafting could not produce a valid step {step_id}; the valid \
+            "drafting could not produce a valid step {step_id}; the valid \
              partial draft ({} steps) was saved — finish it with \
              `graph plan step add` rather than redrafting",
             doc.steps.len()

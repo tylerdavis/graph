@@ -1,5 +1,5 @@
-//! Incremental plan drafting: an outline call, then one structured LLM
-//! call per step, each statically validated before acceptance. The
+//! Plan drafting: an outline call, then one structured LLM call per step,
+//! each statically validated before acceptance. The
 //! conversation is a transient scratchpad — the system prompt is built
 //! once and reused byte-identically across every call (prompt-cache
 //! invariant), and only accepted work persists as Assistant turns; failed
@@ -69,9 +69,13 @@ pub const MAX_STEP_ATTEMPTS: u32 = 3;
 const MAX_OVERFLOW_STEPS: usize = 2;
 
 impl Pipeline {
-    /// The incremental strategy: outline → one validated step per call.
-    /// See the module docs for the conversation discipline.
-    pub(super) async fn draft_plan_incremental(
+    /// Ask the planner for a draft: outline → one validated step per
+    /// call, each step statically validated as it is drafted (so the
+    /// caller never has to validate the whole plan). Nothing executes.
+    /// `existing` is a prior draft to revise; `last_error` is validation
+    /// or execution feedback to fix. See the module docs for the
+    /// conversation discipline.
+    pub async fn draft_plan(
         &self,
         query: &str,
         existing: Option<&PlannerOutput>,
@@ -80,9 +84,7 @@ impl Pipeline {
         self.events.planning();
         let draft = existing.map(|output| serde_json::to_string_pretty(output).unwrap_or_default());
         // Built once; every call in this session reuses it byte-identically.
-        let system = self
-            .incremental_planner_system(last_error, draft.as_deref())
-            .await;
+        let system = self.drafting_system(last_error, draft.as_deref()).await;
 
         let mut messages = vec![ChatMessage::User {
             content: prompts::outline_request(query),
@@ -222,18 +224,13 @@ impl Pipeline {
         Ok(assemble_output(&outline, plan))
     }
 
-    /// The system prompt for an incremental drafting session — the same
-    /// catalog/shape gathering as `planner_system` (the shape cache is
-    /// read fresh here, at drafting time), rendered through the
-    /// incremental prompt.
-    async fn incremental_planner_system(
-        &self,
-        last_error: Option<&str>,
-        draft: Option<&str>,
-    ) -> String {
+    /// The system prompt for a drafting session — the same catalog/shape
+    /// gathering as `planner_system` (the shape cache is read fresh here,
+    /// at drafting time), rendered through the drafting prompt.
+    async fn drafting_system(&self, last_error: Option<&str>, draft: Option<&str>) -> String {
         let (tools_text, step_schema) = self.planner_catalog().await;
 
-        prompts::incremental_planner_prompt(&prompts::IncrementalPlannerPromptArgs {
+        prompts::drafting_prompt(&prompts::DraftingPromptArgs {
             current_date: &self.current_date,
             last_error,
             tools: &tools_text,
@@ -277,7 +274,7 @@ fn push_correction(
 }
 
 /// Solver data comes from the outline (no extra inference); `data`
-/// defaults to every step result, exactly like the one-shot path.
+/// defaults to every step result.
 fn assemble_output(outline: &PlanOutline, plan: Plan) -> PlannerOutput {
     let mut output = PlannerOutput {
         plan,
