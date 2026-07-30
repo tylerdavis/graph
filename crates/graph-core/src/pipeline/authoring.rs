@@ -30,6 +30,7 @@
 use super::catalog::{self, ToolCatalog};
 use super::doc::{validate_doc, PlanDoc};
 use super::plan::{self, Plan, PlannerOutput, SolverData, Step};
+use super::{AGENT_TOOL, DECIDE_TOOL, MAP_TOOL, REDUCE_TOOL};
 use crate::template;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
@@ -648,32 +649,111 @@ pub fn target_path(doc: &PlanDoc, plans_dir: Option<&Path>) -> Result<PathBuf, W
     }
 }
 
+/// The `agent` step's own input keys, in the spelling the planner emits paired
+/// with the spelling a plan file uses. Only these keys are renamed: the *values*
+/// are free-form (an `outputSchema` is a whole JSON Schema, whose property names
+/// are the tool author's business) and are never descended into.
+const AGENT_INPUT_KEYS: [(&str, &str); 3] = [
+    ("systemPrompt", "system_prompt"),
+    ("maxIterations", "max_iterations"),
+    ("outputSchema", "output_schema"),
+];
+
 /// Serialize a document as the YAML a human would have written.
 ///
-/// `Step` and `SolverData` serialize camelCase because they are *prompt
-/// surface* — the planner's JSON schema must keep saying `toolName` and
-/// `queryToAnswer`. The plan *file* format is snake_case, so the two spellings
-/// are reconciled here rather than by changing either contract. Both are
-/// accepted on the way in (serde aliases), so this round-trips.
+/// `Step` and `SolverData` *serialize* camelCase, and the control-step specs
+/// accept it, because that is *prompt surface* — the planner's JSON schema must
+/// keep saying `toolName` and `queryToAnswer`. The plan *file* format is
+/// snake_case at every depth, so the two spellings are reconciled here rather
+/// than by changing either contract. camelCase stays accepted on the way in
+/// (serde aliases), so this round-trips and normalizes an older file in passing.
 ///
-/// Only the structs' own keys are renamed. A step's `input` is a free-form map
-/// that legitimately contains camelCase (an `agent` step's `outputSchema`,
-/// `maxIterations`), and is left exactly as authored.
+/// See `docs/reference/plan-schema.mdx` — that page is the contract this
+/// function has to satisfy.
 pub fn to_yaml(doc: &PlanDoc) -> Result<String, WriteError> {
+    let value = to_file_shape(doc)?;
+    serde_yaml::to_string(&value).map_err(|e| WriteError::Serialize(e.to_string()))
+}
+
+/// The document as JSON, in the plan *file*'s shape.
+///
+/// Shares [`to_yaml`]'s normalization on purpose: `graph plan show --json`
+/// describes a file on disk, and a caller that reads the envelope and a human
+/// who opens the file must see one spelling. Key order is serde_json's
+/// (alphabetical), which is what a machine caller addresses by name anyway.
+pub fn to_json(doc: &PlanDoc) -> Result<Value, WriteError> {
+    let value = to_file_shape(doc)?;
+    serde_json::to_value(value).map_err(|e| WriteError::Serialize(e.to_string()))
+}
+
+/// The document normalized into the file format's spelling, still as a tree.
+///
+/// Deliberately built on `serde_yaml::Value`: its mapping preserves insertion
+/// order, so a hand-authored file survives a parse/serialize cycle with its
+/// field order intact.
+fn to_file_shape(doc: &PlanDoc) -> Result<serde_yaml::Value, WriteError> {
     let mut value = serde_yaml::to_value(doc).map_err(|e| WriteError::Serialize(e.to_string()))?;
     if let Some(steps) = value.get_mut("steps").and_then(|s| s.as_sequence_mut()) {
         for step in steps {
-            rename_key(step, "toolName", "tool_name");
-            // `Step::reasoning` can't use `skip_serializing_if` — that would
-            // change the planner's schema — so an unset one is dropped here.
-            remove_null(step, "reasoning");
+            snake_case_step(step);
         }
     }
     if let Some(solver) = value.get_mut("solver") {
         rename_key(solver, "queryToAnswer", "query_to_answer");
         rename_key(solver, "systemPrompt", "system_prompt");
     }
-    serde_yaml::to_string(&value).map_err(|e| WriteError::Serialize(e.to_string()))
+    Ok(value)
+}
+
+/// Rewrite one step into the file's spelling, descending into the bodies a
+/// control step carries in its `input`.
+///
+/// Recursion follows only the bodies of the *known* control steps. An ordinary
+/// tool's input is a free-form map that may legitimately hold keys named `do`,
+/// `then`, or `input`, and renaming inside one would corrupt a real argument.
+fn snake_case_step(step: &mut serde_yaml::Value) {
+    rename_key(step, "toolName", "tool_name");
+    // `Step::reasoning` can't use `skip_serializing_if` — that would change the
+    // planner's schema — so an unset one is dropped here.
+    remove_null(step, "reasoning");
+
+    let tool = step
+        .get("tool_name")
+        .and_then(serde_yaml::Value::as_str)
+        .map(str::to_owned);
+    let Some(input) = step.get_mut("input") else {
+        return;
+    };
+    match tool.as_deref() {
+        Some(AGENT_TOOL) => {
+            for (planner, file) in AGENT_INPUT_KEYS {
+                rename_key(input, planner, file);
+            }
+        }
+        Some(DECIDE_TOOL) => {
+            for side in ["then", "else"] {
+                if let Some(branch) = input.get_mut(side) {
+                    snake_case_body(branch);
+                }
+            }
+        }
+        Some(MAP_TOOL | REDUCE_TOOL) => {
+            if let Some(body) = input.get_mut("do") {
+                snake_case_body(body);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A control step's body, in either of its two shapes: a list of steps, or a
+/// single call — a step without an id, which [`snake_case_step`] handles as-is.
+fn snake_case_body(body: &mut serde_yaml::Value) {
+    match body {
+        serde_yaml::Value::Sequence(steps) => steps.iter_mut().for_each(snake_case_step),
+        serde_yaml::Value::Mapping(_) => snake_case_step(body),
+        _ => {}
+    }
 }
 
 /// Drop a key from a YAML mapping when its value is null, so a field nobody
@@ -1146,10 +1226,9 @@ solver:
     }
 
     #[test]
-    fn a_steps_input_keeps_its_own_camel_case_keys() {
-        // `input` is a free-form map. An `agent` step legitimately carries
-        // camelCase spec fields there, and rewriting them would corrupt the
-        // step — only the Step's *own* keys get renamed.
+    fn written_yaml_snake_cases_an_agent_steps_input_keys() {
+        // The `agent` spec's own keys are part of the plan file format, so they
+        // are written in the file's spelling like every other field.
         let base = doc(r#"
 identifier: demo
 name: Demo
@@ -1160,12 +1239,178 @@ steps:
     input:
       prompt: do the thing
       maxIterations: 3
+      systemPrompt: be terse
       outputSchema: { type: object, properties: { ok: { type: boolean } } }
 "#);
         let yaml = to_yaml(&base).unwrap();
-        assert!(yaml.contains("maxIterations: 3"), "{yaml}");
-        assert!(yaml.contains("outputSchema:"), "{yaml}");
+        assert!(yaml.contains("max_iterations: 3"), "{yaml}");
+        assert!(yaml.contains("system_prompt: be terse"), "{yaml}");
+        assert!(yaml.contains("output_schema:"), "{yaml}");
         assert!(yaml.contains("tool_name: agent"), "{yaml}");
+        assert!(!yaml.contains("maxIterations"), "{yaml}");
+        assert!(!yaml.contains("systemPrompt"), "{yaml}");
+        assert!(!yaml.contains("outputSchema"), "{yaml}");
+    }
+
+    #[test]
+    fn an_output_schemas_own_property_names_are_left_alone() {
+        // The key is the plan's; the *value* is a JSON Schema whose property
+        // names belong to whoever consumes the agent's output. Descending into
+        // it would silently rewrite the contract the agent is held to.
+        let base = doc(r#"
+identifier: demo
+name: Demo
+description: demo plan
+steps:
+  - id: E1
+    tool_name: agent
+    input:
+      prompt: do the thing
+      outputSchema:
+        type: object
+        properties:
+          reviewStatus: { type: string }
+          maxIterations: { type: integer }
+"#);
+        let yaml = to_yaml(&base).unwrap();
+        assert!(yaml.contains("output_schema:"), "{yaml}");
+        assert!(yaml.contains("reviewStatus:"), "{yaml}");
+        // The nested property merely *named* like a spec key stays untouched.
+        assert!(yaml.contains("maxIterations:"), "{yaml}");
+    }
+
+    #[test]
+    fn an_ordinary_tools_input_keeps_its_own_camel_case_keys() {
+        // `input` is free-form for every non-control tool: a real MCP argument
+        // may be spelled camelCase, or named like a control-step body key.
+        let base = doc(r#"
+identifier: demo
+name: Demo
+description: demo plan
+steps:
+  - id: E1
+    tool_name: t__search
+    input:
+      teamId: ENG
+      outputSchema: passthrough
+      do: something
+      then: later
+"#);
+        let yaml = to_yaml(&base).unwrap();
+        for untouched in ["teamId:", "outputSchema: passthrough", "do:", "then:"] {
+            assert!(yaml.contains(untouched), "{untouched} rewritten:\n{yaml}");
+        }
+    }
+
+    #[test]
+    fn written_yaml_snake_cases_inside_control_step_bodies() {
+        // A body is a step list or a single call, and either can hold an
+        // `agent`. Renaming only top-level steps would leak the planner's
+        // spelling into every branch.
+        let base = doc(r#"
+identifier: demo
+name: Demo
+description: demo plan
+steps:
+  - id: E1
+    tool_name: decide
+    input:
+      if: { value: "{{E0.count}}", op: gt, to: 0 }
+      then:
+        toolName: t__search
+        input: { query: x }
+      else:
+        - id: B1
+          toolName: agent
+          input:
+            prompt: summarize
+            maxIterations: 2
+            outputSchema: { type: object }
+  - id: E2
+    tool_name: map
+    input:
+      over: "{{E1.results}}"
+      do:
+        toolName: agent
+        input:
+          prompt: "check {{item}}"
+          outputSchema: { type: object }
+"#);
+        let yaml = to_yaml(&base).unwrap();
+        assert!(!yaml.contains("toolName"), "{yaml}");
+        assert!(!yaml.contains("maxIterations"), "{yaml}");
+        assert!(!yaml.contains("outputSchema"), "{yaml}");
+        assert_eq!(yaml.matches("tool_name: agent").count(), 2, "{yaml}");
+        assert!(yaml.contains("tool_name: t__search"), "{yaml}");
+        assert!(yaml.contains("max_iterations: 2"), "{yaml}");
+    }
+
+    #[test]
+    fn the_json_shape_spells_fields_like_the_file_does() {
+        // `plan show --json` describes a file on disk; a caller parsing the
+        // envelope and a human reading the file must not see two spellings.
+        let base = doc(r#"
+identifier: demo
+name: Demo
+description: demo plan
+steps:
+  - id: E1
+    tool_name: agent
+    input:
+      prompt: do the thing
+      maxIterations: 3
+      outputSchema: { type: object }
+solver:
+  query_to_answer: what happened?
+  data: {}
+"#);
+        let json = serde_json::to_string(&to_json(&base).unwrap()).unwrap();
+        assert!(json.contains("\"tool_name\""), "{json}");
+        assert!(json.contains("\"max_iterations\""), "{json}");
+        assert!(json.contains("\"output_schema\""), "{json}");
+        assert!(json.contains("\"query_to_answer\""), "{json}");
+        assert!(!json.contains("toolName"), "{json}");
+        assert!(!json.contains("maxIterations"), "{json}");
+        assert!(!json.contains("queryToAnswer"), "{json}");
+    }
+
+    #[test]
+    fn a_camel_case_plan_file_still_loads() {
+        // The planner's spelling stays accepted on the way in, so a plan
+        // authored before the file format settled keeps working.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.yaml");
+        std::fs::write(
+            &path,
+            r#"
+identifier: legacy
+name: Legacy
+description: authored in the planner's spelling
+steps:
+  - id: E1
+    toolName: agent
+    input:
+      prompt: do the thing
+      maxIterations: 3
+      outputSchema: { type: object }
+solver:
+  queryToAnswer: what happened?
+  systemPrompt: be terse
+  data: {}
+"#,
+        )
+        .unwrap();
+        let loaded = super::super::doc::load_plan_doc(&path).unwrap();
+        assert_eq!(loaded.steps[0].tool_name, "agent");
+        assert_eq!(
+            loaded.solver.as_ref().unwrap().query_to_answer,
+            "what happened?"
+        );
+        // …and rewriting it normalizes the file to the documented spelling.
+        let yaml = to_yaml(&loaded).unwrap();
+        assert!(!yaml.contains("toolName"), "{yaml}");
+        assert!(!yaml.contains("queryToAnswer"), "{yaml}");
+        assert!(!yaml.contains("maxIterations"), "{yaml}");
     }
 
     #[test]
