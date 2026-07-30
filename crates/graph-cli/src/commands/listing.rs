@@ -3,6 +3,48 @@
 
 use graph_core::ToolDef;
 use graph_mcp::NAMESPACE_SEPARATOR;
+use serde_json::{json, Value};
+
+/// The source a namespaced tool belongs to (`linear__list_issues` →
+/// `linear`). Bare names like `plan_and_execute` are core.
+fn source_of(name: &str) -> &str {
+    name.split_once(NAMESPACE_SEPARATOR)
+        .map_or("(core)", |(source, _)| source)
+}
+
+/// Machine-readable twin of [`render_tool_listing`] for `--json`: the flat
+/// catalog in discovery order, each entry carrying the namespaced `name` an
+/// input actually has to use, plus a `sources` roll-up mirroring the text
+/// renderer's sections.
+///
+/// Schemas are deliberately absent — a catalog of a few hundred tools would
+/// bury the names, which is what a caller enumerates for. `graph tools show`
+/// is the per-tool schema surface.
+pub fn tool_listing_as_json(defs: &[ToolDef]) -> Value {
+    let mut sources: Vec<(&str, usize)> = Vec::new();
+    for def in defs {
+        let source = source_of(&def.name);
+        match sources.iter_mut().find(|(name, _)| *name == source) {
+            Some((_, count)) => *count += 1,
+            None => sources.push((source, 1)),
+        }
+    }
+
+    json!({
+        "tools": defs.iter().map(|def| json!({
+            "name": def.name,
+            "source": source_of(&def.name),
+            "description": def.description,
+            "readOnly": def.read_only,
+            "hasOutputSchema": def.output_schema.is_some(),
+        })).collect::<Vec<_>>(),
+        "count": defs.len(),
+        "sources": sources.iter().map(|(source, count)| json!({
+            "source": source,
+            "count": count,
+        })).collect::<Vec<_>>(),
+    })
+}
 
 /// Group namespaced defs by source prefix, one section per source: an
 /// emphasized header with the tool count, then one entry per tool — bold
@@ -35,10 +77,7 @@ pub fn render_tool_listing(defs: &[ToolDef], color: bool) -> String {
     // Group by namespace prefix, preserving discovery order.
     let mut groups: Vec<(&str, Vec<&ToolDef>)> = Vec::new();
     for def in defs {
-        let source = def
-            .name
-            .split_once(NAMESPACE_SEPARATOR)
-            .map_or("(core)", |(source, _)| source);
+        let source = source_of(&def.name);
         match groups.iter_mut().find(|(name, _)| *name == source) {
             Some((_, tools)) => tools.push(def),
             None => groups.push((source, vec![def])),
@@ -140,6 +179,76 @@ mod tests {
         let defs = vec![def("s__bare", "", None), def("s__t", "Desc.", None)];
         let rendered = render_tool_listing(&defs, false);
         assert_eq!(rendered, "s — 2 tools\n  bare\n  t\n  Desc.\n");
+    }
+
+    #[test]
+    fn json_carries_namespaced_names_and_a_source_rollup() {
+        let defs = vec![
+            def("everything__echo", "Echoes back the input.", None),
+            def("everything__get-sum", "Adds two numbers.", Some(true)),
+            def("plan_and_execute", "Plan and execute a task.", None),
+        ];
+        assert_eq!(
+            tool_listing_as_json(&defs),
+            json!({
+                "tools": [
+                    {
+                        "name": "everything__echo",
+                        "source": "everything",
+                        "description": "Echoes back the input.",
+                        "readOnly": null,
+                        "hasOutputSchema": false,
+                    },
+                    {
+                        "name": "everything__get-sum",
+                        "source": "everything",
+                        "description": "Adds two numbers.",
+                        "readOnly": true,
+                        "hasOutputSchema": false,
+                    },
+                    {
+                        "name": "plan_and_execute",
+                        "source": "(core)",
+                        "description": "Plan and execute a task.",
+                        "readOnly": null,
+                        "hasOutputSchema": false,
+                    },
+                ],
+                "count": 3,
+                "sources": [
+                    {"source": "everything", "count": 2},
+                    {"source": "(core)", "count": 1},
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn json_keeps_multi_line_descriptions_whole() {
+        // The text renderer truncates to the first line for density; a
+        // description is a routing signal, so the machine form keeps it all.
+        let defs = vec![def("s__t", "First line.\nSecond line.", None)];
+        let listing = tool_listing_as_json(&defs);
+        assert_eq!(
+            listing["tools"][0]["description"],
+            "First line.\nSecond line."
+        );
+    }
+
+    #[test]
+    fn json_reports_an_empty_catalog_as_a_valid_envelope() {
+        assert_eq!(
+            tool_listing_as_json(&[]),
+            json!({"tools": [], "count": 0, "sources": []})
+        );
+    }
+
+    #[test]
+    fn json_flags_a_declared_output_schema() {
+        let mut with_schema = def("s__t", "Desc.", None);
+        with_schema.output_schema = Some(json!({"type": "object"}));
+        let listing = tool_listing_as_json(&[with_schema]);
+        assert_eq!(listing["tools"][0]["hasOutputSchema"], true);
     }
 
     #[test]

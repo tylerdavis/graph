@@ -308,7 +308,10 @@ pub enum StepCommand {
 #[derive(Subcommand)]
 pub enum ToolsCommand {
     /// List every tool visible to the agent and planner
-    List,
+    List {
+        #[arg(long)]
+        json: bool,
+    },
     /// Show one tool's description and schemas
     Show { name: String },
     /// Invoke a tool directly

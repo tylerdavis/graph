@@ -21,8 +21,17 @@ async fn dispatch(
     command: ToolsCommand,
 ) -> Result<()> {
     match command {
-        ToolsCommand::List => {
+        ToolsCommand::List { json } => {
             let defs = registry.tools().await?;
+            if json {
+                // An empty catalog is a valid answer, not an error: the
+                // envelope still parses, so a caller branches on `count`.
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&super::listing::tool_listing_as_json(&defs))?
+                );
+                return Ok(());
+            }
             if defs.is_empty() {
                 println!("no tools available — configure [mcp.*] servers");
                 return Ok(());
