@@ -130,3 +130,13 @@ Two properties make this safe to script against:
 - **Nothing is clobbered silently.** A write refuses a file that holds a different plan, and changing `identifier` writes a new file rather than overwriting the old one.
 
 Add `--json` to any of these for a machine-readable envelope — including on rejection, where the problem list is what you want most. See the [scripting contract](/reference/scripting-contract#authoring-envelopes).
+
+<Tip>
+  To have your coding agent drive this loop, install the skill:
+
+  ```shellscript
+  npx skills add tylerdavis/graph
+  ```
+
+  This installs [/graph-plan-authoring](https://github.com/tylerdavis/graph/blob/main/skills/graph-plan-authoring/SKILL.md) (Claude Code, Cursor, Codex, and most other agents). It teaches the loop the way it is meant to run — draft first, then repair — including the fixes a fresh draft usually needs and how to read a rejection envelope as a repair list.
+</Tip>
