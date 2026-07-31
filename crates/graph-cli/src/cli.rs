@@ -391,10 +391,13 @@ pub enum McpCommand {
     },
     /// Serve graph's plans and authoring commands to an agent over MCP (stdio)
     Serve {
-        /// Project directory to serve from — the one holding `.graph/`.
-        /// MCP clients launch servers with an arbitrary working directory,
-        /// so without this the plan catalog resolves against wherever the
-        /// client happened to be.
+        /// Serve this project's plans and config (the directory holding
+        /// `.graph/`). Use `--dir .` for the current directory.
+        ///
+        /// Without it, only your global config (~/.config/graph) is loaded:
+        /// an MCP client chooses the directory the server starts in, and a
+        /// `.graph/` found there can spawn processes, so it is never adopted
+        /// implicitly.
         #[arg(long, value_name = "PATH")]
         dir: Option<PathBuf>,
     },
