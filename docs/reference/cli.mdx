@@ -59,7 +59,7 @@ The commands below create and edit plan files. They are stateless — each one r
 
 ```
 graph plan new <identifier> [--name <n>] [--description <d>] [--output <path>] [--json]
-graph plan draft <goal> [--from <name|path>] [--feedback <f>] [--output <path>] [--stdout] [--json]
+graph plan draft <goal> [--from <name|path>] [--output <path>] [--stdout] [--json]
 graph plan set <name|path> <attribute> <value>... [--json]
 graph plan unset <name|path> <attribute> [--json]
 graph plan step add <name|path> <id> <tool> <json|@file|-> [--reasoning <r>] [--before <id> | --after <id>] [--json]
@@ -72,6 +72,15 @@ graph plan step rm <name|path> <id> [--json]
 `new` scaffolds a plan with no steps. It is intentionally invalid on creation (`plan has no steps`) — an edit is only refused if it makes things *worse*, so a scaffold stays editable and a plan can be built up step by step without ever invoking the planner.
 
 `draft` runs the planner over your tool catalog, one validated step at a time; if drafting exhausts its retries on a step, the valid prefix is saved and reported under `salvaged` so you can finish it with `step add` instead of redrafting. `--stdout` prints the YAML and writes nothing.
+
+**Drafting happens once, at the start.** It replaces every step, so it is not a way to correct a plan — redrafting to fix one thing discards everything that was already right. `--from` exists to draft into a plan's *identity* (its identifier, name, description, and input schema), which is how you get a well-named plan without renaming afterwards:
+
+```bash
+graph plan new commit_digest --description "Summarize commits between two refs"
+graph plan draft "<goal>" --from commit_digest
+```
+
+Once a draft has steps worth keeping, every correction goes through `set`, `step add`, `step update`, `step rename`, and `step rm`. Each applies one intent, is validated atomically, and is refused if it would break the plan.
 
 ### Attributes
 
@@ -121,29 +130,32 @@ Operates on the full catalog: MCP (`server__`), user (`user__`), bundled packs (
 
 `show --json` emits one tool's whole definition — `inputSchema` included, which is what you need to write a step's input object — with every key always present, `null` when absent. Unknown tool names stay ordinary errors (stderr, exit `1`); there is no envelope for them. See the [scripting contract](/reference/scripting-contract#the-tool-catalog).
 
+`test --json` wraps the call: `{tool, isError, result}`. A tool that *reports* an error still exits `0` — the call completed and its payload is the result worth reading, so `isError` carries the distinction the exit code does not. Without `--json` the tool's own result is the deliverable, unwrapped.
+
 ## `graph threads`
 
 ```
-graph threads list
-graph threads show <id> [--state]
-graph threads rm <id>
+graph threads list [--json]
+graph threads show <id> [--state] [--json]
+graph threads rm <id> [--json]
 ```
 
 ## `graph mcp`
 
 ```
-graph mcp list              # configured servers
-graph mcp tools [server]    # discovered tools
-graph mcp test <server>     # connect, count tools and declared output schemas
+graph mcp list [--json]              # configured servers
+graph mcp tools [server] [--json]    # discovered tools
+graph mcp test <server> [--json]     # connect, count tools and declared output schemas
+graph mcp serve --dir <path>         # serve graph's plans to an agent over MCP (stdio)
 ```
 
-graph is an MCP *client*: each `[mcp.<name>]` entry becomes a set of `<name>__*` tools. It does not serve MCP — see [MCP servers](/tools/mcp-servers).
+graph is an MCP *client*: each `[mcp.<name>]` entry becomes a set of `<name>__*` tools — see [MCP servers](/tools/mcp-servers). It is also an MCP *server*: `graph mcp serve` exposes every plan in the catalog as a callable tool, plus the plan authoring commands, so another agent can build and run graph plans. See [graph as an MCP server](/tools/mcp-server).
 
 ## `graph shapes`
 
 ```
 graph shapes list [--json]
-graph shapes show <tool>
+graph shapes show <tool> [--json]
 ```
 
 Inspect the [shape cache](/tools/shape-cache): `list` prints tool names and seen-counts, `show` prints one tool's cached schema and example. The same data lives as plain files under `<data_dir>/shapes/`.

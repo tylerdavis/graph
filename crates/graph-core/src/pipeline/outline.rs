@@ -72,19 +72,26 @@ impl Pipeline {
     /// Ask the planner for a draft: outline → one validated step per
     /// call, each step statically validated as it is drafted (so the
     /// caller never has to validate the whole plan). Nothing executes.
-    /// `existing` is a prior draft to revise; `last_error` is validation
-    /// or execution feedback to fix. See the module docs for the
-    /// conversation discipline.
+    ///
+    /// `existing` seeds the draft with a plan's identity and prior steps —
+    /// used to draft into an already-named plan, not to "revise" one. There
+    /// is deliberately no feedback parameter: redrafting replaces every step,
+    /// so steering the planner at a plan that already has hand-tuned steps
+    /// discards them. Corrections belong in the editing commands
+    /// (`plan set`, `plan step update`), which apply one intent and are
+    /// validated atomically. Per-step validation problems are still fed back
+    /// inside the step loop below; that is a different mechanism.
+    ///
+    /// See the module docs for the conversation discipline.
     pub async fn draft_plan(
         &self,
         query: &str,
         existing: Option<&PlannerOutput>,
-        last_error: Option<&str>,
     ) -> Result<PlannerOutput, PipelineError> {
         self.events.planning();
         let draft = existing.map(|output| serde_json::to_string_pretty(output).unwrap_or_default());
         // Built once; every call in this session reuses it byte-identically.
-        let system = self.drafting_system(last_error, draft.as_deref()).await;
+        let system = self.drafting_system(draft.as_deref()).await;
 
         let mut messages = vec![ChatMessage::User {
             content: prompts::outline_request(query),
@@ -227,12 +234,11 @@ impl Pipeline {
     /// The system prompt for a drafting session — the same catalog/shape
     /// gathering as `planner_system` (the shape cache is read fresh here,
     /// at drafting time), rendered through the drafting prompt.
-    async fn drafting_system(&self, last_error: Option<&str>, draft: Option<&str>) -> String {
+    async fn drafting_system(&self, draft: Option<&str>) -> String {
         let (tools_text, step_schema) = self.planner_catalog().await;
 
         prompts::drafting_prompt(&prompts::DraftingPromptArgs {
             current_date: &self.current_date,
-            last_error,
             tools: &tools_text,
             user_context: &self.user_context,
             step_schema: &step_schema,
