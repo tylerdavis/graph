@@ -10,7 +10,7 @@
 # against the tool's declared output schema at generation time.
 name: pr-review-debug
 title: graph workbench — debugging pr_review
-plan: .graph/plans/pr_review.yaml
+plan: docs/shots/plans/pr_review.yaml
 grid: { cols: 120, rows: 36 }
 
 chat: "run it against PR #61, but pause before anything posts to GitHub"

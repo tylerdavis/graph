@@ -2,7 +2,7 @@
 # tool's schema in the detail pane. Used in using/plan-workbench.mdx.
 name: context-tab
 title: graph workbench — the context tab
-plan: .graph/plans/pr_review.yaml
+plan: docs/shots/plans/pr_review.yaml
 grid: { cols: 120, rows: 36 }
 
 capture:

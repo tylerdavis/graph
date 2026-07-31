@@ -1,3 +1,9 @@
+# Docs-screenshot fixture (docs/shots/workbench-overview.yaml,
+# context-tab.yaml, pr-review-debug.yaml). This was the repo's live PR
+# reviewer until graph_review_9000 replaced it in CI; it is kept here,
+# out of the live catalog, because those screenshots are shot against it.
+# Not shipped to users, not run by CI.
+#
 # Specialized PR reviewer, self-contained: fetches its own context via the
 # bundled github tool pack, reviews the full diff (minus generated files)
 # against the repo rubric, anchors line-resolvable findings as inline diff
@@ -76,6 +82,7 @@ steps:
     tool_name: builtin__gh_pr_comment
     input:
       pr: "{{input.pr}}"
+      marker: "graph:pr_review:summary"
       body: |
         Graph PR review — managed by [`pr_review.yaml`](https://github.com/tylerdavis/graph/blob/main/.graph/plans/pr_review.yaml)
 
