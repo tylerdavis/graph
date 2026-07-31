@@ -16,8 +16,9 @@ demo plans that exist only for screenshots live in `docs/shots/plans/`.
 
 ## Workflow
 
-1. **Pick or write the plan.** Real repo plans (`.graph/plans/pr_review.yaml`) or a
-   demo plan under `docs/shots/plans/`. Demo plans validate against the real
+1. **Pick or write the plan.** Real repo plans (`.graph/plans/docs_drift.yaml`) or a
+   demo plan under `docs/shots/plans/` (which also holds `pr_review.yaml`, the
+   retired reviewer kept as a fixture for the workbench shots). Demo plans validate against the real
    catalog, so they may only use pack tools (`builtin__*`) and the repo's
    `.graph/tools/` user tools — **MCP tools (`linear__*` etc.) cannot be scripted**
    (no server is configured in the harness). Start a demo plan with a comment

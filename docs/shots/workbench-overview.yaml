@@ -3,7 +3,7 @@
 # "Open it in the workbench" step, and in plans/authoring.mdx.
 name: workbench-overview
 title: graph workbench — pr_review
-plan: .graph/plans/pr_review.yaml
+plan: docs/shots/plans/pr_review.yaml
 grid: { cols: 120, rows: 36 }
 
 chat: "what does this plan do?"

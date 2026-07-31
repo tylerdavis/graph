@@ -4,7 +4,7 @@ description: "Give a commenting plan its own name and avatar via a GitHub App"
 icon: "robot"
 ---
 
-By default, the comments a plan posts in CI — like the [`pr_review` reviewer](/cookbook/ci-checks)'s summary and inline findings — appear as **github-actions\[bot\]**. That identity comes from the workflow's `github.token`, not from graph. The [github pack](/tools/builtins) tools shell out to `gh`, which acts as whatever `GH_TOKEN` is set in the environment — and exec tools pass the process env through untouched. So giving the reviewer its own name and avatar is just a token swap: mint a GitHub App installation token and hand it to the review step.
+By default, the comments a plan posts in CI — like the [`graph_review_9000` reviewer](/cookbook/ci-checks)'s summary and inline findings — appear as **github-actions\[bot\]**. That identity comes from the workflow's `github.token`, not from graph. The [github pack](/tools/builtins) tools shell out to `gh`, which acts as whatever `GH_TOKEN` is set in the environment — and exec tools pass the process env through untouched. So giving the reviewer its own name and avatar is just a token swap: mint a GitHub App installation token and hand it to the review step.
 
 ## Create the app
 
@@ -28,7 +28,7 @@ The official [`actions/create-github-app-token`](https://github.com/actions/crea
           private-key: ${{ secrets.REVIEW_APP_KEY }}
 
       - name: Review and comment
-        run: graph plan run pr_review --input pr="$PR"
+        run: graph plan run graph_review_9000 --input pr="$PR"
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
 ```

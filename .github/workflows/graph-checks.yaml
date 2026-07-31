@@ -3,9 +3,9 @@
 # so there is no install step; all logic lives in the repo-carried plans
 # (./.graph/) and the bundled github tool pack. GRAPH_EVENTS=github turns
 # failing gates into run annotations. docs-drift fails the check (exit 4)
-# on undocumented behavior changes; pr-review posts findings as a PR
-# comment, edited in place on each push; graph-review-9000 posts a deeper
-# eight-pass review the same way, under its own comment markers.
+# on undocumented behavior changes; graph-review-9000 posts its eight-pass
+# findings as inline comments plus a summary comment, each refreshed in
+# place on every push via its own marker.
 name: graph checks
 
 on:
@@ -51,25 +51,7 @@ jobs:
       - name: Docs drift gate
         run: graph plan run docs_drift --input base="$BASE" --input head="$HEAD"
 
-  pr-review:
-    if: >-
-      !github.event.pull_request.draft &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-24.04
-    container:
-      image: ghcr.io/tylerdavis/graph:v0.9.0
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Review and comment
-        run: graph plan run pr_review --input pr="$PR"
-
-  # The eight-pass reviewer. Needs >= v0.9.0: it calls builtin__git_file and
+  # The reviewer. Needs >= v0.9.0: it calls builtin__git_file and
   # builtin__reshape, neither of which exists in the v0.7.0 image.
   graph-review-9000:
     if: >-
