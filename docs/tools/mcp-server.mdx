@@ -26,8 +26,29 @@ The point is not to give an agent another shell. It is that a plan is a *reviewe
 ```
 
 <Warning>
-`--dir` is not optional in practice. MCP clients launch servers with an arbitrary working directory, so without it the project config layer (`./.graph/`) and your plan catalog resolve against wherever the client happened to be — and the server comes up with no plans and no tools.
+**Pass `--dir`, or you get only your global setup.** Without it the server loads `~/.config/graph/` alone: your global plans are served, but no project's are.
+
+This is deliberate, not a limitation. An MCP client chooses the working directory the server starts in — you did not. A `.graph/` found there can declare `[mcp.*]` servers graph spawns as child processes, and `.graph/tools/*.yaml` tools that shell out. Adopting that silently, because a client happened to start in a checked-out repo, would run code you never asked for. So the project layer is opt-in.
+
+Use `--dir .` when you are launching by hand and mean the current directory.
 </Warning>
+
+## What is loaded, and when
+
+| Layer | Without `--dir` | With `--dir <path>` |
+|---|---|---|
+| `~/.config/graph/config.toml` | loaded | loaded |
+| `~/.config/graph/plans`, `…/tools` | loaded | loaded |
+| `<path>/.graph/config.toml` | **ignored** | loaded |
+| `<path>/.graph/plans`, `…/tools` | **ignored** | loaded |
+
+The global layer is anchored to your home directory, so it does not depend on where anything was started. Only the project layer does, which is why only the project layer requires you to name it.
+
+<Note>
+`[plans].paths` *replaces* the default list rather than adding to it. A project config that pins `paths = ["./.graph/plans"]` drops `~/.config/graph/plans`, and those global plans stop being served.
+</Note>
+
+If the server ends up with no plans at all, it says so — on stderr, and in the MCP `instructions` the calling model reads, along with the `--dir` fix.
 
 ## What gets served
 

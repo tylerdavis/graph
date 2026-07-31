@@ -6,21 +6,21 @@
 //! terminal and exits with a code, neither of which exists here, so the
 //! pipeline is driven directly and the result becomes a value.
 
+use super::runtime;
 use crate::cli::StepCommand;
 use crate::commands::outcome::Outcome;
 use crate::commands::{listing, plan_cmd, plan_edit};
-use crate::runtime::Runtime;
 use anyhow::{bail, Result};
 use graph_core::pipeline::{catalog, doc::validate_input, ExitStatus};
 use serde_json::{json, Map, Value};
 
 pub fn plan_list() -> Result<Outcome> {
-    let runtime = Runtime::init()?;
+    let runtime = runtime()?;
     Ok(Outcome::ok(plan_edit::list_as_json(&runtime.plan_docs())))
 }
 
 pub fn plan_show(target: &str) -> Result<Outcome> {
-    let runtime = Runtime::init()?;
+    let runtime = runtime()?;
     let (doc, _) = plan_cmd::resolve_target(&runtime, target)?;
     Ok(Outcome::ok(plan_edit::doc_as_json(&doc)?))
 }
@@ -109,7 +109,7 @@ pub fn step_rm(args: &Map<String, Value>) -> Result<Outcome> {
 }
 
 pub async fn tools_list() -> Result<Outcome> {
-    let runtime = Runtime::init()?;
+    let runtime = runtime()?;
     let store = runtime.store()?;
     let toolbox = runtime
         .toolbox(&store, std::sync::Arc::new(graph_core::NullSink))
@@ -123,7 +123,7 @@ pub async fn tools_list() -> Result<Outcome> {
 }
 
 pub async fn tools_show(name: &str) -> Result<Outcome> {
-    let runtime = Runtime::init()?;
+    let runtime = runtime()?;
     let store = runtime.store()?;
     let toolbox = runtime
         .toolbox(&store, std::sync::Arc::new(graph_core::NullSink))
@@ -140,7 +140,7 @@ pub async fn tools_show(name: &str) -> Result<Outcome> {
 }
 
 pub async fn tools_test(name: &str, input: Value) -> Result<Outcome> {
-    let runtime = Runtime::init()?;
+    let runtime = runtime()?;
     let store = runtime.store()?;
     let toolbox = runtime
         .toolbox(&store, std::sync::Arc::new(graph_core::NullSink))
@@ -177,7 +177,7 @@ pub async fn run_plan(
     events: std::sync::Arc<dyn graph_core::EventSink>,
     gate: Option<std::sync::Arc<dyn graph_core::pipeline::ExecutionGate>>,
 ) -> Result<Outcome> {
-    let runtime = Runtime::init()?;
+    let runtime = runtime()?;
     let loaded = runtime.plan_docs();
     let Some(doc) = loaded
         .docs

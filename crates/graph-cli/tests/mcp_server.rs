@@ -25,9 +25,27 @@ struct Session {
 
 impl Session {
     fn open(scratch: &Scratch) -> Self {
+        Self::spawn(
+            scratch,
+            &[
+                "mcp",
+                "serve",
+                "--dir",
+                &scratch.path().display().to_string(),
+            ],
+        )
+    }
+
+    /// A server started *in* the scratch but without `--dir` — the shape an
+    /// MCP client produces, where the working directory is the client's
+    /// choice rather than the user's.
+    fn open_unpinned(scratch: &Scratch) -> Self {
+        Self::spawn(scratch, &["mcp", "serve"])
+    }
+
+    fn spawn(scratch: &Scratch, args: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_graph"))
-            .args(["mcp", "serve", "--dir"])
-            .arg(scratch.path())
+            .args(args)
             .current_dir(scratch.path())
             .env("HOME", scratch.path())
             .env("GRAPH_STORAGE", "memory")
@@ -446,6 +464,50 @@ fn the_server_advertises_the_capabilities_it_actually_implements() {
         instructions.contains("Never redraft to fix a plan"),
         "{instructions}"
     );
+}
+
+#[test]
+fn without_dir_the_working_directorys_project_is_not_loaded() {
+    let scratch = Scratch::new();
+    scratch.write_plan("echo_ok", ECHO_PLAN);
+
+    // The scratch IS a graph project, and the server is started inside it.
+    // It must still be ignored: an MCP client picks the working directory,
+    // so a `.graph/` found there carries no user intent — and it can name
+    // `[mcp.*]` child processes and exec tools.
+    let mut session = Session::open_unpinned(&scratch);
+    assert!(
+        !session.tool_names().contains(&"plan_echo_ok".to_string()),
+        "an unpinned server must not adopt the working directory's project"
+    );
+
+    // ...and the same server started with --dir does serve it.
+    let mut pinned = Session::open(&scratch);
+    assert!(pinned.tool_names().contains(&"plan_echo_ok".to_string()));
+}
+
+#[test]
+fn an_unpinned_server_with_no_plans_explains_itself_to_the_model() {
+    let scratch = Scratch::new();
+    scratch.write_plan("echo_ok", ECHO_PLAN);
+    let mut session = Session::open_unpinned(&scratch);
+
+    // The quietest failure this server has is looking connected while
+    // offering nothing. The instructions are where the model will see it.
+    let reply = session.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "probe", "version": "1"}
+        }),
+    );
+    let instructions = reply["result"]["instructions"].as_str().unwrap_or_default();
+    assert!(
+        instructions.contains("no plans are available"),
+        "{instructions}"
+    );
+    assert!(instructions.contains("--dir"), "{instructions}");
 }
 
 #[test]

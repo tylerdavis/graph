@@ -25,6 +25,7 @@
 
 mod catalog;
 mod progress;
+mod project;
 mod run;
 
 use crate::cli::{PlanAttribute, StepAttribute};
@@ -45,21 +46,40 @@ use tokio::sync::Mutex;
 
 /// Serve MCP on stdin/stdout until the client disconnects.
 pub async fn serve(dir: Option<PathBuf>) -> Result<()> {
-    // MCP clients launch servers with an arbitrary working directory, so the
-    // project config layer (`./.graph/`) and the plan catalog would resolve
-    // against wherever the client happened to be. `--dir` is how a client
-    // says which project it means.
-    if let Some(dir) = dir {
-        std::env::set_current_dir(&dir)
+    // `--dir` is explicit and wins. Without it the launch directory is used
+    // for now, and MCP roots may still relocate us once the client connects
+    // (see `on_initialized`) — because a client-launched server's working
+    // directory is usually `/`, not the user's project.
+    if let Some(dir) = &dir {
+        std::env::set_current_dir(dir)
             .map_err(|e| anyhow!("cannot serve from {}: {e}", dir.display()))?;
     }
+    project::set_pinned(dir.is_some());
+
     // Fail before the transport opens rather than answering `initialize` and
     // then erroring on every call.
-    let _ = Runtime::init()?;
-    tracing::info!("graph mcp server ready");
-    let service = GraphServer::default()
-        .serve(rmcp::transport::stdio())
-        .await?;
+    let runtime = runtime()?;
+    let plans = runtime.plan_docs().docs.len();
+    match (&dir, plans) {
+        (Some(dir), _) => tracing::info!(
+            "serving {plans} plan(s) from {} plus the global config",
+            dir.display()
+        ),
+        // The quiet failure this server can have: looks connected, has
+        // nothing to offer, and never says why.
+        (None, 0) => tracing::warn!(
+            "no plans found. Only the global config (~/.config/graph) is \
+             loaded — the directory this server was started in is ignored \
+             unless you pass --dir, because a client chooses that directory, \
+             not you. Re-launch with `--dir <project>` to serve its plans."
+        ),
+        (None, _) => tracing::info!(
+            "serving {plans} plan(s) from the global config; pass --dir \
+             <project> to add a project's plans"
+        ),
+    }
+
+    let service = GraphServer::new().serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())
 }
@@ -74,6 +94,27 @@ pub struct GraphServer {
     /// normally await each call, so this contends approximately never — it is
     /// here because the failure mode is lost work rather than an error.
     writes: Arc<Mutex<()>>,
+}
+
+impl GraphServer {
+    fn new() -> Self {
+        Self {
+            writes: Arc::new(Mutex::new(())),
+        }
+    }
+
+    /// How many plans this server is currently offering.
+    fn plan_count(&self) -> usize {
+        runtime().map(|r| r.plan_docs().docs.len()).unwrap_or(0)
+    }
+}
+
+/// A runtime over the config this server is permitted to use.
+///
+/// Every entry point goes through here rather than `Runtime::init`, so the
+/// project layer cannot sneak in via a call site that forgot.
+pub(crate) fn runtime() -> Result<Runtime> {
+    Runtime::with_config(project::config()?)
 }
 
 /// Turn an [`Outcome`] into a tool result.
@@ -159,7 +200,7 @@ impl GraphServer {
     /// a callable tool without restarting the server.
     fn tools(&self) -> Vec<rmcp::model::Tool> {
         let mut tools = catalog::authoring_tools();
-        if let Ok(runtime) = Runtime::init() {
+        if let Ok(runtime) = runtime() {
             for doc in &runtime.plan_docs().docs {
                 tools.push(catalog::plan_tool(doc));
             }
@@ -310,6 +351,19 @@ impl ServerHandler for GraphServer {
                  replaces every step, so it discards whatever was already right."
                 .into(),
         );
+        // An empty catalog is the server's quietest failure: it looks
+        // connected and has nothing to offer. Say so where the model will
+        // read it, and say what to do about it.
+        if self.plan_count() == 0 && !project::is_pinned() {
+            let instructions = info.instructions.take().unwrap_or_default();
+            info.instructions = Some(format!(
+                "{instructions}\n\nNOTE: no plans are available. This server was started \
+                 without --dir, so only the user's global configuration \
+                 (~/.config/graph) is loaded and no project's plans are \
+                 served. If the user expected plans from a project, tell them \
+                 to relaunch it as `graph mcp serve --dir <project>`."
+            ));
+        }
         info
     }
 

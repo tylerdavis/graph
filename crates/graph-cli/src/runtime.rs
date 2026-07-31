@@ -21,7 +21,18 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn init() -> Result<Self> {
-        let loaded = graph_config::load()?;
+        Self::with_config(graph_config::load()?.config)
+    }
+
+    /// Build a runtime over an already-resolved config.
+    ///
+    /// The MCP server uses this to serve a *deliberately narrowed* config —
+    /// see `mcp_server::project`.
+    pub fn with_config(config: graph_config::Config) -> Result<Self> {
+        let loaded = graph_config::LoadedConfig {
+            config,
+            sources: Vec::new(),
+        };
         let router = ModelRouter::from_config(&loaded.config)?;
         let registry = Arc::new(McpManager::new(loaded.config.mcp.clone()));
         Ok(Self {
