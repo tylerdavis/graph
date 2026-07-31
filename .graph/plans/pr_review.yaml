@@ -76,6 +76,7 @@ steps:
     tool_name: builtin__gh_pr_comment
     input:
       pr: "{{input.pr}}"
+      marker: "graph:pr_review:summary"
       body: |
         Graph PR review — managed by [`pr_review.yaml`](https://github.com/tylerdavis/graph/blob/main/.graph/plans/pr_review.yaml)
 

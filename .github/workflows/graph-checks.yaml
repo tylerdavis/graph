@@ -4,7 +4,8 @@
 # (./.graph/) and the bundled github tool pack. GRAPH_EVENTS=github turns
 # failing gates into run annotations. docs-drift fails the check (exit 4)
 # on undocumented behavior changes; pr-review posts findings as a PR
-# comment, edited in place on each push.
+# comment, edited in place on each push; graph-review-9000 posts a deeper
+# eight-pass review the same way, under its own comment markers.
 name: graph checks
 
 on:
@@ -38,7 +39,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/tylerdavis/graph:v0.7.0
+      image: ghcr.io/tylerdavis/graph:v0.9.0
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -56,7 +57,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/tylerdavis/graph:v0.7.0
+      image: ghcr.io/tylerdavis/graph:v0.9.0
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -67,3 +68,23 @@ jobs:
 
       - name: Review and comment
         run: graph plan run pr_review --input pr="$PR"
+
+  # The eight-pass reviewer. Needs >= v0.9.0: it calls builtin__git_file and
+  # builtin__reshape, neither of which exists in the v0.7.0 image.
+  graph-review-9000:
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/tylerdavis/graph:v0.9.0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # the plan reads files at $HEAD via git_file
+
+      - name: Deep review and comment
+        run: graph plan run graph_review_9000 --input pr="$PR"

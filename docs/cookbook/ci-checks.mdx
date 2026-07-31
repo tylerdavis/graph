@@ -4,7 +4,7 @@ description: "Adapt and improve your CI pipelines with ease"
 icon: "badge-check"
 ---
 
-This repo dogfoods graph in its own pull-request checks: a **docs-drift gate** (an inferred exit gate as a merge check) and a **specialized reviewer** (structured findings posted as a PR comment by the plan itself). Every piece ships in this repo — the plans in `./.graph/plans/`, the rubric tool in `./.graph/tools/`, the workflow in `.github/workflows/graph-checks.yaml` — and every PR against graph runs them.
+This repo dogfoods graph in its own pull-request checks: a **docs-drift gate** (an inferred exit gate as a merge check) and two **specialized reviewers** (structured findings posted as PR comments by the plans themselves). Every piece ships in this repo — the plans in `./.graph/plans/`, the rubric tool in `./.graph/tools/`, the workflow in `.github/workflows/graph-checks.yaml` — and every PR against graph runs them.
 
 <Tip>
   To replicate this setup in your own repository, hand the work to your coding agent.
@@ -139,6 +139,7 @@ steps:
     tool_name: builtin__gh_pr_comment
     input:
       pr: "{{input.pr}}"
+      marker: "graph:pr_review:summary"
       body: |
         Graph PR review — managed by [`pr_review.yaml`](https://github.com/tylerdavis/graph/blob/main/.graph/plans/pr_review.yaml)
 
@@ -168,8 +169,21 @@ Before trusting a plan like this with write access, step through it on a real PR
 - **Review the whole diff.** The diff is scoped to nothing (`paths: "."`) minus generated files — an early version reviewed only `crates/` and `docs/`, which blinded it to the highest-leverage changes in an infra PR: workflows, plans, and the exec tools they run.
 - **Ground absence claims in the complete file list, never the diff.** The diff is byte-capped and git orders hunks by path, so on a big PR the `docs/` hunks are exactly what falls off the end — an early version reported "docs not updated" false positives on a PR whose docs edits sat past the truncation point. The fix is layered: `git_changed_files` (E1) feeds the reviewer a complete, never-truncated file list; the rubric judges docs-parity and test-parity only from that list; `git_diff` appends a visible `[diff truncated: …]` marker when it cuts; and the prompt bans "not shown in the diff" as evidence — a finding must cite something the reviewer can actually see.
 - **Findings flow through the pipeline, enriched at each step.** The jq transform (E4) adds `path`/`body` to each finding without dropping the original fields; `gh_pr_inline_comments` (E5) passes those extras through and adds `url` where a comment posted. So the summary table (E6) renders from one array — severity and finding from the review, the link from the post — with no join logic, which the [template dialect](/plans/template-language) couldn't express anyway. Findings the LLM couldn't pin to a line (or whose line the API rejects) simply come back without `url`, and the inverted section renders them as plain text.
-- **Repeated runs refresh everything in place.** `gh_pr_comment` uses `--edit-last --create-if-none` for the summary; `gh_pr_inline_comments` embeds a hidden marker in each inline comment and deletes the previous marker's comments before posting. Each push updates the review instead of stacking. One caveat on the summary: `--edit-last` keys on the token identity, so a _second_ plan posting its own summary to the same PR would overwrite this one on its next run — when plans share a PR, pass each a distinct `marker` to `gh_pr_comment` and the upsert keys on that instead.
+- **Repeated runs refresh everything in place.** Both posting tools take a distinct `marker`, embed it as a hidden tag, and find-and-edit (or delete-then-repost) the comment carrying it. Each push updates the review instead of stacking. The marker on the summary is not optional here: without one `gh_pr_comment` falls back to `--edit-last`, which keys on the token identity — and since `graph_review_9000` posts its own summary to the same PR as the same **github-actions\[bot\]** identity, a markerless upsert would overwrite whichever summary landed most recently. One marker per plan per comment surface is the rule whenever plans share a PR.
 - **Inline comments stay advisory.** They post as plain review comments, not a `REQUEST_CHANGES` review — they only gate merging on repos with _Require conversation resolution before merging_ enabled.
+
+## `graph_review_9000` — the eight-pass reviewer
+
+`pr_review` is one rubric'd call over the diff. `graph_review_9000` is the deeper variant: it fetches the **full contents of every changed file** at the head sha (a `map` over `git_changed_files` output at `concurrency: 8`, so the reviewer sees surrounding code rather than bare hunks), then runs one structured `builtin__infer` call carrying eight named passes — stated intent vs. diff, pipeline/control-step invariants, template & shape engine, Rust/async/storage footguns, plan composition & model routing, test coverage, repo conventions & docs parity, and CLI surface & copy.
+
+What it demonstrates beyond `pr_review`:
+
+- **The rubric lives in the plan, not a repo-local tool.** `builtin__infer` takes both the instruction and a `caller_output_schema`, so the whole reviewer is one plan file with no `./.graph/tools/` dependency — the schema declares `passes` (exactly eight, `minItems`/`maxItems`) and a flat `findings` array, and graph validates the model's output against it with a `repair`-role fix-up.
+- **Presentation stays in templates.** `builtin__reshape` (E6) projects each finding into a GitHub alert-style comment body — no jq tool needed — and the summary comment renders the at-a-glance pass table and the collapsible sections with plain [sections](/plans/template-language#sections).
+- **Ordering is asked for, not computed.** The template dialect can't sort, so the schema asks the model for `blocker_ordinal` and a severity-ordered `passes` array, and the templates iterate in the order they arrive. Logic belongs in steps or the schema — never the markdown.
+- **Self-refutation before output.** The instruction ends with a gate telling the model to try to disprove each blocker against the diff and demote what doesn't survive, and to use `unverified` rather than `pass` for anything it couldn't check — a false clear costs as much as a false blocker.
+
+It needs the **v0.9.0 image or newer**: `builtin__git_file` and `builtin__reshape` do not exist in v0.7.0.
 
 ## The workflow
 
@@ -178,6 +192,7 @@ The full file is `.github/workflows/graph-checks.yaml`; the notable choices:
 - **The release image is the runtime.** `container: ghcr.io/tylerdavis/graph:vX.Y.Z` carries graph plus `git`, `jq`, and `gh` (pinned from official releases — distro packages lag the JSON fields and flags the pack tools use) and the `safe.directory` git config that Actions' foreign-owned workspace mounts require. The image tag is the version pin; `packages: read` plus `GITHUB_TOKEN` credentials pull it while private.
 - **`GRAPH_EVENTS=github`** makes a failing plan annotate the run itself — the one sanctioned case of graph writing non-deliverable output to stdout, failure-paths only ([details](/reference/scripting-contract#streams)).
 - **Guards are cheap and layered**: drafts skipped, fork PRs skipped (they have no `ANTHROPIC_API_KEY`, and the `${VAR}` reference in the repo config fails loudly as the backstop), one concurrency group per PR with cancel-in-progress.
-- **Cost per PR**: worst case one `judge`-role call (docs-drift) plus one review call; docs-only PRs pay only the review; drafts pay nothing.
+- **Cost per PR**: worst case one `judge`-role call (docs-drift) plus two review calls — `pr_review`'s focused pass and `graph_review_9000`'s eight-pass one, the latter carrying full file contents and so the more expensive of the two; docs-only PRs pay only the reviews; drafts pay nothing.
+- **One job per plan, no `needs` between them.** The three jobs are independent and run in parallel; only docs-drift can fail the check (exit 4). The reviewers always exit 0 — their comments are the deliverable, not a gate.
 
 Want the reviewer to comment under its own name and avatar instead of **github-actions\[bot\]**? That's a token swap — see [A custom bot identity](/cookbook/bot-identity).
