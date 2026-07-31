@@ -394,10 +394,9 @@ impl WorkbenchTools {
         let Some(goal) = input.get("goal").and_then(Value::as_str) else {
             return error_outcome("draft_plan requires a 'goal' string");
         };
-        let feedback = input.get("feedback").and_then(Value::as_str);
         // fresh: the goal describes a NEW plan — ignore the current draft
         // entirely, so an unrelated loaded plan isn't treated as the plan
-        // under revision (which would keep its identifier and metadata).
+        // being drafted into (which would keep its identifier and metadata).
         let fresh = input.get("fresh").and_then(Value::as_bool).unwrap_or(false);
         let existing = if fresh { None } else { self.current() };
         let existing_output = existing.as_ref().map(|doc| PlannerOutput {
@@ -409,7 +408,7 @@ impl WorkbenchTools {
         // problems (reported below) can remain.
         let output = match self
             .pipeline
-            .draft_plan(goal, existing_output.as_ref(), feedback)
+            .draft_plan(goal, existing_output.as_ref())
             .await
         {
             Ok(output) => output,
@@ -550,14 +549,17 @@ impl ToolRegistry for WorkbenchTools {
         let mut defs = vec![
             ToolDef {
                 name: DRAFT_PLAN.to_string(),
-                description: "Create or revise the workbench's draft plan from a goal. The \
-                              planner sees the full tool catalog and the current draft; pass \
-                              the user's request as a self-contained `goal`, and `feedback` \
-                              when revising after validation problems or user corrections. \
-                              Pass fresh: true when the goal describes a NEW plan — \
-                              otherwise the current draft is treated as the plan under \
-                              revision and keeps its identifier and metadata. Each step \
-                              is validated as it is drafted; any remaining problems are \
+                description: "Draft the workbench's plan from a goal, when there is no draft \
+                              yet or the user asks to start over. The planner sees the full \
+                              tool catalog; pass the user's request as a self-contained \
+                              `goal`. Pass fresh: true when the goal describes a NEW plan — \
+                              otherwise the current draft's identifier and metadata are \
+                              kept and its steps are drafted again. This ALWAYS replaces \
+                              every step, so never call it to change a draft that already \
+                              has steps worth keeping: use workbench__update_step / \
+                              add_step / update_metadata, which apply one change each and \
+                              are rejected if they would break the plan. Each step is \
+                              validated as it is drafted; any remaining problems are \
                               returned in `validation`."
                     .to_string(),
                 input_schema: json!({
@@ -565,8 +567,7 @@ impl ToolRegistry for WorkbenchTools {
                     "required": ["goal"],
                     "properties": {
                         "goal": {"type": "string", "description": "What the plan should accomplish, self-contained."},
-                        "feedback": {"type": "string", "description": "What to change about the current draft, or validation errors to fix."},
-                        "fresh": {"type": "boolean", "description": "Draft a NEW plan from scratch, ignoring the current draft (which otherwise keeps its identifier and metadata as the plan under revision). Default false."}
+                        "fresh": {"type": "boolean", "description": "Draft a NEW plan from scratch, ignoring the current draft (which otherwise keeps its identifier and metadata). Default false."}
                     }
                 }),
                 output_schema: None,

@@ -56,10 +56,12 @@ changes unless you pass overwrite_draft: true, which you may only do \
 after the user confirms discarding them.\n\
 - workbench__draft_plan: draft a plan from a goal when there is no draft \
 yet, or when the user asks to start over from scratch. Pass the user's \
-request as a self-contained goal; pass feedback when revising after \
-validation problems or user corrections; pass fresh: true when the goal \
-is a NEW plan — otherwise the current draft is treated as the plan \
-under revision and keeps its identifier and metadata.\n\
+request as a self-contained goal; pass fresh: true when the goal is a \
+NEW plan — otherwise the current draft's identifier and metadata are \
+kept and its steps are drafted again. It ALWAYS replaces every step, so \
+never reach for it to correct a draft that already has steps worth \
+keeping — redrafting to fix something loses the work that was already \
+right. Use the editing tools instead.\n\
 - workbench__get_plan: re-read the draft YAML. The current draft is \
 already included below in this prompt each turn — call this only to \
 re-check after your own edits within the same turn.\n\

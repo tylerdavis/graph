@@ -142,12 +142,11 @@ pub enum PlanCommand {
     Draft {
         /// What the plan should do, as a self-contained instruction
         goal: String,
-        /// Revise this plan instead of drafting a new one
+        /// Draft into this plan's identity (identifier, name, description,
+        /// input schema). Every step is replaced — use the editing commands
+        /// to correct a plan whose steps you want to keep.
         #[arg(long, value_name = "NAME|PATH")]
         from: Option<String>,
-        /// Guidance for the revision (validation problems, corrections)
-        #[arg(long)]
-        feedback: Option<String>,
         /// Write here instead of <plans dir>/<identifier>.yaml
         #[arg(long, value_name = "PATH")]
         output: Option<std::path::PathBuf>,
@@ -235,6 +234,21 @@ impl StepAttribute {
             Self::Tool => "tool",
             Self::Input => "input",
             Self::Reasoning => "reasoning",
+        }
+    }
+}
+
+impl StepCommand {
+    /// Whether `--json` was asked for. Presentation is the dispatch layer's
+    /// business, so the command functions themselves never read this — they
+    /// return an `Outcome` and let the caller decide how to render it.
+    pub fn json(&self) -> bool {
+        match self {
+            Self::Add { json, .. }
+            | Self::Update { json, .. }
+            | Self::Rename { json, .. }
+            | Self::Unset { json, .. }
+            | Self::Rm { json, .. } => *json,
         }
     }
 }
@@ -327,34 +341,69 @@ pub enum ToolsCommand {
         /// Override individual input keys (applied on top of the JSON document)
         #[arg(long = "input", value_name = "KEY=VALUE")]
         inputs: Vec<String>,
+        #[arg(long)]
+        json: bool,
     },
 }
 
 #[derive(Subcommand)]
 pub enum ThreadsCommand {
     /// List threads
-    List,
+    List {
+        #[arg(long)]
+        json: bool,
+    },
     /// Show a thread's messages
     Show {
         id: String,
         /// Include the full runtime state
         #[arg(long)]
         state: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// Delete a thread
-    Rm { id: String },
+    Rm {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
 pub enum McpCommand {
     /// List configured servers and their status
-    List,
+    List {
+        #[arg(long)]
+        json: bool,
+    },
     /// List tools exposed by servers
-    Tools { server: Option<String> },
+    Tools {
+        server: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Connect to a server and verify initialize + tools/list
-    Test { server: String },
+    Test {
+        server: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Serve graph's plans and authoring commands to an agent over MCP (stdio)
+    Serve {
+        /// Project directory to serve from — the one holding `.graph/`.
+        /// MCP clients launch servers with an arbitrary working directory,
+        /// so without this the plan catalog resolves against wherever the
+        /// client happened to be.
+        #[arg(long, value_name = "PATH")]
+        dir: Option<PathBuf>,
+    },
     /// Pre-warm the observed-shape cache by invoking read-only tools
-    Probe { server: Option<String> },
+    Probe {
+        server: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -365,13 +414,20 @@ pub enum ShapesCommand {
         json: bool,
     },
     /// Show one tool's cached schema and example
-    Show { tool: String },
+    Show {
+        tool: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
 pub enum ConfigCommand {
     /// Print the merged effective configuration
-    Show,
+    Show {
+        #[arg(long)]
+        json: bool,
+    },
     /// Write a starter config file
     Init {
         /// Write to the global location (~/.config/graph/) instead of the project (./.graph/)
@@ -385,5 +441,23 @@ pub enum ConfigCommand {
         path: Option<PathBuf>,
     },
     /// Print the config file locations and which exist
-    Path,
+    Path {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn the_command_tree_is_well_formed() {
+        // clap's own consistency check: duplicate arg ids, conflicting short
+        // flags, `required` on a positional after an optional one. All of it
+        // otherwise panics at runtime, on the user's terminal, and only for
+        // the one subcommand that happens to be broken.
+        Cli::command().debug_assert();
+    }
 }

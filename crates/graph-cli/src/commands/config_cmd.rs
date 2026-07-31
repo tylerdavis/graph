@@ -1,7 +1,9 @@
 //! `graph config` — show/init/path.
 
 use crate::cli::ConfigCommand;
+use crate::commands::outcome::{report, Outcome};
 use anyhow::{bail, Context, Result};
+use serde_json::json;
 
 const STARTER_CONFIG: &str = r#"# graph configuration
 # Values in ${VAR} form are read from the environment at load time.
@@ -71,15 +73,27 @@ fn starter_config() -> Result<String> {
 
 pub fn run(command: ConfigCommand) -> Result<()> {
     match command {
-        ConfigCommand::Show => show(),
-        ConfigCommand::Path => path(),
-        ConfigCommand::Init { global, force, .. } => init(global, force),
+        ConfigCommand::Show { json } => report(show()?, json),
+        ConfigCommand::Path { json } => report(path(), json),
+        ConfigCommand::Init { global, force, .. } => report(init(global, force)?, false),
     }
 }
 
-fn show() -> Result<()> {
+/// The effective config. The text rendering is TOML — the format you would
+/// paste back into a config file — while `--json` gives the same values in
+/// the shape a program addresses.
+fn show() -> Result<Outcome> {
     let loaded = graph_config::load()?;
     let rendered = toml::to_string_pretty(&loaded.config)?;
+    let sources: Vec<String> = loaded
+        .sources
+        .iter()
+        .map(|source| source.display().to_string())
+        .collect();
+    let body = json!({
+        "config": serde_json::to_value(&loaded.config)?,
+        "sources": sources,
+    });
     if loaded.sources.is_empty() {
         eprintln!("# no config files found — showing defaults (run `graph config init`)");
     } else {
@@ -87,27 +101,26 @@ fn show() -> Result<()> {
             eprintln!("# merged from {}", source.display());
         }
     }
-    print!("{rendered}");
-    Ok(())
+    Ok(Outcome::raw(rendered, body))
 }
 
-fn path() -> Result<()> {
+fn path() -> Outcome {
+    let mut text = String::new();
+    let mut files = Vec::new();
     for candidate in [
         graph_config::global_config_path(),
         graph_config::project_config_path(),
     ] {
         let expanded = graph_config::expand_tilde(&candidate);
-        let marker = if expanded.exists() {
-            "exists"
-        } else {
-            "missing"
-        };
-        println!("{}\t{marker}", expanded.display());
+        let exists = expanded.exists();
+        let marker = if exists { "exists" } else { "missing" };
+        text.push_str(&format!("{}\t{marker}\n", expanded.display()));
+        files.push(json!({"path": expanded.display().to_string(), "exists": exists}));
     }
-    Ok(())
+    Outcome::raw(text, json!({"files": files, "count": files.len()}))
 }
 
-fn init(global: bool, force: bool) -> Result<()> {
+fn init(global: bool, force: bool) -> Result<Outcome> {
     let target = if global {
         graph_config::global_config_path()
     } else {
@@ -126,8 +139,9 @@ fn init(global: bool, force: bool) -> Result<()> {
     }
     std::fs::write(&target, starter_config()?)
         .with_context(|| format!("writing {}", target.display()))?;
-    println!("wrote {}", target.display());
-    Ok(())
+    Ok(Outcome::ok(
+        json!({"ok": true, "savedTo": target.display().to_string()}),
+    ))
 }
 
 #[cfg(test)]
