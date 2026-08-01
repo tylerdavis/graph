@@ -896,6 +896,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Paused(prompt) => match prompt.kind {
             GateKind::BeforeCall => "paused",
             GateKind::OnError { .. } => "paused (error)",
+            GateKind::Ask { .. } => "asking",
         },
         Mode::Editing(_) => "editing",
     };
@@ -981,6 +982,11 @@ fn draw_debug_panel(
             Span::styled(&prompt.tool, Style::new().add_modifier(Modifier::BOLD)),
             Span::styled(" failed", ERROR.add_modifier(Modifier::BOLD)),
         ])),
+        GateKind::Ask { .. } => lines.push(Line::from(vec![
+            Span::styled("? ", Style::new().fg(Color::Yellow)),
+            Span::styled(&prompt.path, ACCENT.add_modifier(Modifier::BOLD)),
+            Span::styled(" is asking you a question", Style::new().fg(Color::Yellow)),
+        ])),
     }
     if !prompt.call_stack.is_empty() {
         lines.push(Line::styled(
@@ -1015,6 +1021,9 @@ fn draw_debug_panel(
     let title = match &prompt.kind {
         GateKind::BeforeCall => " debug ─ n next step · c continue · s skip · a abort ",
         GateKind::OnError { .. } => " debug ─ s inject result · n let it fail · a abort ",
+        // No abort: an unanswered question is a plan-declared condition
+        // (`whenUnanswered`), not a reason to kill the run.
+        GateKind::Ask { .. } => " question ─ s answer · n decline ",
     };
     render_scrolled(
         frame,

@@ -48,7 +48,7 @@ Inside `do`, two pseudo-roots exist per item: `{{item}}` (the element) and `{{in
 
 The body is either a single tool call (`{tool_name, input}`, no id — any catalog tool, including `plan__*` and `plan_and_execute`) or an inline step list with same-iteration dataflow: each step may reference earlier steps *in the same iteration*, and the **last** step's result is the iteration's output. Body step ids must not reuse top-level ids and are invisible outside the body. Iterations are isolated — an item's body never sees another item's results.
 
-Bodies must not contain `exit`, `decide`, `map`, or `reduce`. For nested control flow — including a map inside a map — put it in a plan and call `plan__*` from the body; cycle detection and the depth cap apply as usual, and an error-exit inside that sub-plan fails the map/reduce step.
+Bodies may contain [`agent`](/plans/agent-step) and [`ask`](/plans/ask-step) steps, whose prompt or question reaches `{{item}}`, `{{index}}`, and `{{accumulator}}`. An `ask` inside a body is asked once per item, always serialized — even under `concurrency` — so prefer asking once about the whole list. Bodies must not contain `exit`, `decide`, `map`, or `reduce`. For nested control flow — including a map inside a map — put it in a plan and call `plan__*` from the body; cycle detection and the depth cap apply as usual, and an error-exit inside that sub-plan fails the map/reduce step.
 
 ## The step result
 

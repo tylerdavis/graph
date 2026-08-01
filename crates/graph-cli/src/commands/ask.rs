@@ -32,7 +32,13 @@ pub async fn run(args: AskArgs) -> Result<()> {
     } else {
         crate::output::make_sink(!stream_text, false)
     };
-    let toolbox = runtime.toolbox(&store, events.clone()).await?;
+    // A conversation already has the user's attention: a plan called as
+    // plan__* from here can put an `ask` step's question to them.
+    let hooks = crate::runtime::PipelineHooks {
+        interlocutor: crate::interlocutor::tty(),
+        ..Default::default()
+    };
+    let toolbox = runtime.toolbox_with(&store, events.clone(), hooks).await?;
     let agent = runtime.agent(events, toolbox)?;
 
     let mut messages = match &existing {

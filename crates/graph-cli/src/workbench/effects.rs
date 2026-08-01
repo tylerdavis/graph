@@ -2,7 +2,7 @@
 //! work is spawned; completion always arrives back as a [`Msg`].
 
 use super::app::{Effect, Msg};
-use super::runner::{DebugControls, UiGate};
+use super::runner::{DebugControls, UiGate, UiInterlocutor};
 use super::tools::DraftState;
 use graph_core::pipeline::authoring;
 use graph_core::pipeline::doc::PlanDoc;
@@ -129,7 +129,9 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                     });
                     return;
                 };
-                let mut pipeline = (*ctx.pipeline).clone();
+                let mut pipeline = (*ctx.pipeline)
+                    .clone()
+                    .with_interlocutor(Arc::new(UiInterlocutor::new(ctx.tx.clone())));
                 if gated {
                     ctx.debug.arm();
                     pipeline = pipeline

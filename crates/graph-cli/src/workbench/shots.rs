@@ -376,6 +376,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         call_stack: Vec::new(),
         store: Some(store.clone()),
         gate: None,
+        interlocutor: None,
         catalog: Some(Arc::new(catalog)),
         user_context: String::new(),
         // Fixed: the pipeline date must not vary between regenerations.

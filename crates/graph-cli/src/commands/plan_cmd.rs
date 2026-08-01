@@ -273,7 +273,15 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
     // Non-JSON runs stream the solver's answer to stdout as it generates;
     // --json buffers and emits the envelope instead.
     let events: Arc<dyn graph_core::EventSink> = crate::output::make_sink(json, !json);
-    let pipeline = runtime.pipeline(&store, events).await?;
+    // `ask` steps reach the terminal when there is one. When there isn't
+    // (CI, a redirected stdin, machine-readable events), the hook is
+    // absent and each `ask` resolves by its declared `whenUnanswered` —
+    // the same plan, a declared unattended behaviour.
+    let hooks = crate::runtime::PipelineHooks {
+        interlocutor: crate::interlocutor::tty(),
+        ..Default::default()
+    };
+    let pipeline = runtime.pipeline_with(&store, events, hooks).await?;
     let query = format!("Run the '{}' plan", doc.name);
     let finish = doc.finish();
     let result = pipeline

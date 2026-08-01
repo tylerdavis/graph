@@ -11,7 +11,7 @@ graph is built to be piped. This page is the whole machine-facing contract: what
 | Stream | Carries |
 |---|---|
 | **stdout** | the deliverable only — streamed answer text, an output-mode plan's JSON, or a `--json` envelope. Nothing else. |
-| **stderr** | everything human: tool activity, progress markers (`✎ planning…`, `✎ synthesizing…`, `↻ replanning`), solver streaming in chat, hints |
+| **stderr** | everything human: tool activity, progress markers (`✎ planning…`, `✎ synthesizing…`, `↻ replanning`), solver streaming in chat, hints, and [`ask` step](/plans/ask-step) prompts |
 
 So `graph plan run report '{"project":"X"}' > report.md` captures a clean report while progress stays visible in the terminal.
 
@@ -27,6 +27,8 @@ One sanctioned exception: under `GRAPH_EVENTS=github`, a *failing* `plan run` pr
 | `4` | **assertion fired** — an [exit gate](/plans/exit-gates) ended the plan with an error state; infrastructure is fine, the condition is real |
 
 For assertion-style automation, put the condition *in the plan* as an exit gate and branch on exit 4 — that's how the [CI checks](/cookbook/ci-checks) work.
+
+An [`ask` step](/plans/ask-step) never introduces a new code. A plan that cannot reach a human runs its declared `when_unanswered` path: `default` carries on and exits `0`, `fail` is an ordinary step failure and exits `1`. Scripted callers get the unattended behaviour automatically — prompting requires stdin *and* stderr to be terminals, and is disabled outright under `GRAPH_EVENTS=jsonl`, which owns stderr.
 
 A non-zero code never truncates what was already written: the command finishes normally and the code is applied on the way out, so a `--json` envelope on stdout is complete even when the exit code is `1`, `3`, or `4`. MCP servers are shut down on every one of those paths.
 

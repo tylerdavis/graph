@@ -150,6 +150,7 @@ fn pipeline_with_named(
             call_stack: Vec::new(),
             store: None,
             gate: None,
+            interlocutor: None,
             catalog: None,
             user_context: "test user".into(),
             current_date: "2026-07-09".into(),
@@ -3691,4 +3692,314 @@ async fn an_explicitly_empty_tool_list_fails_the_step_rather_than_granting_every
         provider.requests.lock().unwrap().is_empty(),
         "no inference may be spent on it"
     );
+}
+
+// ── ask steps ──────────────────────────────────────────────────────────────
+
+/// A scripted human. Records what it was asked so tests can assert the
+/// question actually rendered.
+struct ScriptedHuman {
+    outcome: Mutex<Vec<AskOutcome>>,
+    asked: Mutex<Vec<AskRequest>>,
+}
+
+impl ScriptedHuman {
+    fn new(outcomes: Vec<AskOutcome>) -> Arc<Self> {
+        Arc::new(Self {
+            outcome: Mutex::new(outcomes),
+            asked: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn answering(answer: Value) -> Arc<Self> {
+        Self::new(vec![AskOutcome::Answered(answer)])
+    }
+
+    fn prompts(&self) -> Vec<String> {
+        self.asked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.prompt.clone())
+            .collect()
+    }
+}
+
+#[async_trait]
+impl Interlocutor for ScriptedHuman {
+    async fn ask(&self, request: AskRequest) -> AskOutcome {
+        self.asked.lock().unwrap().push(request);
+        let mut outcomes = self.outcome.lock().unwrap();
+        if outcomes.len() > 1 {
+            outcomes.remove(0)
+        } else {
+            outcomes
+                .first()
+                .cloned()
+                .unwrap_or(AskOutcome::Unavailable("script exhausted".into()))
+        }
+    }
+}
+
+const ASK_SCHEMA: fn() -> Value = || {
+    json!({
+        "type": "object",
+        "required": ["repo"],
+        "properties": {"repo": {"type": "string", "description": "Target repo"}}
+    })
+};
+
+fn ask_step(id: &str, input: Value) -> Value {
+    json!({"id": id, "toolName": "ask", "input": input})
+}
+
+#[tokio::test]
+async fn an_answer_becomes_the_step_result_and_flows_downstream() {
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    let human = ScriptedHuman::answering(json!({"repo": "tylerdavis/graph"}));
+    let pipeline = pipeline.with_interlocutor(human.clone());
+
+    let plan: Plan = serde_json::from_value(json!([
+        ask_step("E0", json!({"prompt": "Which repo?", "outputSchema": ASK_SCHEMA()})),
+        {"id": "E1", "toolName": "t__search", "input": {"query": "{{E0.answer.repo}}"}},
+    ]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert_eq!(outcome.state.results["E0"]["answer"]["repo"], "tylerdavis/graph");
+    assert_eq!(outcome.state.results["E0"]["answered"], json!(true));
+    // The whole point: a human's answer is ordinary step data.
+    let calls = registry.invocations.lock().unwrap().clone();
+    assert_eq!(calls[0].1["query"], "tylerdavis/graph");
+}
+
+#[tokio::test]
+async fn the_question_renders_against_earlier_results() {
+    let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let human = ScriptedHuman::answering(json!({"repo": "x"}));
+    let pipeline = pipeline.with_interlocutor(human.clone());
+
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        ask_step(
+            "E1",
+            json!({"prompt": "Pick from {{E0.values}}", "outputSchema": ASK_SCHEMA()})
+        ),
+    ]))
+    .unwrap();
+
+    pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert!(
+        human.prompts()[0].contains("team-1"),
+        "{:?}",
+        human.prompts()
+    );
+}
+
+#[tokio::test]
+async fn with_nobody_to_ask_the_default_declares_what_happens() {
+    // The portability invariant: this is the CI run of an interactive plan.
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+
+    let plan: Plan = serde_json::from_value(json!([ask_step(
+        "E0",
+        json!({
+            "prompt": "Which repo?",
+            "outputSchema": ASK_SCHEMA(),
+            "whenUnanswered": "default",
+            "default": {"repo": "tylerdavis/graph"}
+        })
+    )]))
+    .unwrap();
+
+    // No interlocutor installed at all — the headless shape.
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert_eq!(outcome.state.results["E0"]["answer"]["repo"], "tylerdavis/graph");
+    assert_eq!(outcome.state.results["E0"]["answered"], json!(false));
+    assert_eq!(outcome.state.results["E0"]["reason"], "unavailable");
+}
+
+#[tokio::test]
+async fn a_declining_human_is_distinguishable_from_an_absent_one() {
+    // Both take the `default` path, but a plan can branch on which
+    // happened — someone said no, versus nobody was there.
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let human = ScriptedHuman::new(vec![AskOutcome::Declined]);
+    let pipeline = pipeline.with_interlocutor(human);
+
+    let plan: Plan = serde_json::from_value(json!([ask_step(
+        "E0",
+        json!({
+            "prompt": "Which repo?",
+            "outputSchema": ASK_SCHEMA(),
+            "whenUnanswered": "default",
+            "default": {"repo": "fallback"}
+        })
+    )]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert_eq!(outcome.state.results["E0"]["reason"], "declined");
+}
+
+#[tokio::test]
+async fn the_default_is_rendered_not_taken_literally() {
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+
+    let plan: Plan = serde_json::from_value(json!([ask_step(
+        "E0",
+        json!({
+            "prompt": "Which repo?",
+            "outputSchema": ASK_SCHEMA(),
+            "whenUnanswered": "default",
+            "default": {"repo": "{{input.repo}}"}
+        })
+    )]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, Some(json!({"repo": "from-input"})))
+        .await
+        .unwrap();
+    assert_eq!(outcome.state.results["E0"]["answer"]["repo"], "from-input");
+}
+
+#[tokio::test]
+async fn an_unanswerable_ask_fails_by_default() {
+    // `fail` is the default precisely so that an author who never thought
+    // about the headless case finds out, instead of a plan silently
+    // proceeding on a value nobody supplied.
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+
+    let plan: Plan = serde_json::from_value(json!([ask_step(
+        "E0",
+        json!({"prompt": "Which repo?", "outputSchema": ASK_SCHEMA()})
+    )]))
+    .unwrap();
+
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    match err {
+        PipelineError::StepFailed { tool, message, .. } => {
+            assert_eq!(tool, "ask");
+            assert!(message.contains("whenUnanswered"), "{message}");
+        }
+        other => panic!("expected a step failure, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_answer_that_misses_the_schema_fails_rather_than_propagating() {
+    // Hosts are not trusted to validate: a hand-typed TTY answer and a
+    // partial client form both land here.
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let human = ScriptedHuman::answering(json!({"repo": 12}));
+    let pipeline = pipeline.with_interlocutor(human);
+
+    let plan: Plan = serde_json::from_value(json!([ask_step(
+        "E0",
+        json!({"prompt": "Which repo?", "outputSchema": ASK_SCHEMA()})
+    )]))
+    .unwrap();
+
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    let text = format!("{err:?}");
+    assert!(text.contains("does not conform"), "{text}");
+}
+
+#[tokio::test]
+async fn an_ask_inside_a_map_body_sees_the_item() {
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let human = ScriptedHuman::answering(json!({"repo": "picked"}));
+    let pipeline = pipeline.with_interlocutor(human.clone());
+
+    let plan: Plan = serde_json::from_value(json!([{
+        "id": "E0",
+        "toolName": "map",
+        "input": {
+            "over": ["alpha", "beta"],
+            "do": {
+                "toolName": "ask",
+                "input": {"prompt": "Rename {{item}}?", "outputSchema": ASK_SCHEMA()}
+            }
+        }
+    }]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert_eq!(outcome.state.results["E0"]["count"], json!(2));
+    assert_eq!(
+        human.prompts(),
+        vec!["Rename alpha?".to_string(), "Rename beta?".to_string()]
+    );
+    assert_eq!(
+        outcome.state.results["E0"]["results"][0]["answer"]["repo"],
+        "picked"
+    );
+}
+
+#[tokio::test]
+async fn an_exit_gate_can_branch_on_whether_a_human_answered() {
+    // The composition that makes `ask` worth having as a step rather than
+    // a special case: its result is ordinary data.
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+
+    let plan: Plan = serde_json::from_value(json!([
+        ask_step(
+            "E0",
+            json!({
+                "prompt": "Approve?",
+                "outputSchema": ASK_SCHEMA(),
+                "whenUnanswered": "default",
+                "default": {"repo": "none"}
+            })
+        ),
+        {
+            "id": "E1",
+            "toolName": "exit",
+            "input": {
+                "when": {"value": "{{E0.answered}}", "op": "eq", "to": false},
+                "status": "success",
+                "message": "nobody approved — nothing to do"
+            }
+        },
+        {"id": "E2", "toolName": "t__search", "input": {"query": "should not run"}},
+    ]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert!(outcome.exit.is_some());
+    assert!(registry.invocations.lock().unwrap().is_empty());
 }

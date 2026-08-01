@@ -11,6 +11,7 @@
 //!   the solver.
 
 pub mod agent;
+pub mod ask;
 pub mod authoring;
 pub mod body;
 pub mod catalog;
@@ -19,6 +20,7 @@ pub mod decision;
 pub mod doc;
 pub mod exit;
 pub mod gate;
+pub mod interlocutor;
 pub mod iterate;
 mod outline;
 pub mod plan;
@@ -28,11 +30,13 @@ mod state;
 mod tests;
 
 pub use agent::{agent_tool_def, AGENT_TOOL};
+pub use ask::{ask_tool_def, AskResult, WhenUnanswered, ASK_TOOL};
 pub use authoring::{EditAccepted, EditRejected, WriteError};
 pub use catalog::{CatalogCheck, ToolCatalog};
 pub use decision::DECIDE_TOOL;
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
 pub use gate::{ErrorDecision, ExecutionGate, GateContext, GateDecision, StepPath};
+pub use interlocutor::{AskOutcome, AskRequest, Interlocutor};
 pub use iterate::{MAP_TOOL, REDUCE_TOOL};
 pub use outline::{OutlineItem, PlanOutline, StepDraft, MAX_STEP_ATTEMPTS};
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
@@ -69,6 +73,12 @@ pub struct Pipeline {
     /// (see [`gate`] module docs for scope). Propagates into nested plan
     /// calls via [`Pipeline::nested`].
     pub gate: Option<Arc<dyn ExecutionGate>>,
+    /// Optional way to put a question to a human, used by `ask` steps.
+    /// `None` means nobody can be asked — every `ask` resolves as
+    /// [`interlocutor::AskOutcome::Unavailable`] and the step's declared
+    /// `whenUnanswered` decides what happens. Propagates into nested plan
+    /// calls via [`Pipeline::nested`].
+    pub interlocutor: Option<Arc<dyn Interlocutor>>,
     /// The loadable-tool catalog, when the caller can build one (the CLI
     /// runtime does; bare test pipelines don't). When present,
     /// [`Pipeline::run_explicit`] resolves every step tool against it and
@@ -211,6 +221,13 @@ impl Pipeline {
     /// dispatch in this pipeline and any plans it calls.
     pub fn with_gate(mut self, gate: Arc<dyn ExecutionGate>) -> Self {
         self.gate = Some(gate);
+        self
+    }
+
+    /// Install an [`Interlocutor`], letting `ask` steps in this pipeline
+    /// and any plans it calls reach a human.
+    pub fn with_interlocutor(mut self, interlocutor: Arc<dyn Interlocutor>) -> Self {
+        self.interlocutor = Some(interlocutor);
         self
     }
 
@@ -565,6 +582,7 @@ impl Pipeline {
     async fn planner_catalog(&self) -> (String, String) {
         let mut tools = self.registry.tools().await.unwrap_or_default();
         tools.push(agent::agent_tool_def());
+        tools.push(ask::ask_tool_def());
         tools.push(exit::exit_tool_def());
         tools.push(decision::decide_tool_def());
         tools.push(iterate::map_tool_def());
@@ -696,7 +714,7 @@ impl Pipeline {
             // (decide) or per item (map/reduce). Their step events carry
             // the raw input for the same reason.
             let control = match step.tool_name.as_str() {
-                AGENT_TOOL | DECIDE_TOOL | MAP_TOOL | REDUCE_TOOL => {
+                AGENT_TOOL | ASK_TOOL | DECIDE_TOOL | MAP_TOOL | REDUCE_TOOL => {
                     self.events.step_started(
                         &self.call_stack,
                         &step.id,
@@ -706,6 +724,7 @@ impl Pipeline {
                     let started = std::time::Instant::now();
                     let run = match step.tool_name.as_str() {
                         AGENT_TOOL => self.run_agent(&step, state).await,
+                        ASK_TOOL => self.run_ask(&step, state).await,
                         DECIDE_TOOL => self.run_decide(&step, state).await,
                         MAP_TOOL => self.run_map(&step, state).await,
                         _ => self.run_reduce(&step, state).await,

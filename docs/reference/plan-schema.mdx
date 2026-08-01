@@ -92,6 +92,17 @@ Five reserved `tool_name`s are executor-intercepted, never dispatched to a regis
 
 Legal everywhere, including inside `decide` branches and `map`/`reduce` bodies.
 
+### `ask` — [put a question to the user](/plans/ask-step)
+
+| Field | Required | Notes |
+|---|---|---|
+| `prompt` | yes | the question as the user sees it; may use templates |
+| `output_schema` | yes | JSON Schema for the answer; must be `"type": "object"` with **primitive-typed properties only** (string, number, integer, boolean, enum) |
+| `when_unanswered` | no | `fail` (default) \| `default` — behaviour when nobody can be asked |
+| `default` | with `when_unanswered: default` | fallback answer; must conform to `output_schema`; may use templates |
+
+Legal everywhere, including inside `decide` branches and `map`/`reduce` bodies. Whether a human is reachable depends on the host, not the plan, so `when_unanswered` is what keeps one plan runnable both interactively and in CI.
+
 ## Gate grammar (`when` / `if`)
 
 A single comparison: `{ value, op, to }`, where `value` is usually a template ([typed splice](/plans/template-language#typed-splice) keeps numbers numeric).
@@ -118,6 +129,7 @@ Bodies must not contain `decide`, `map`, or `reduce` (branches may contain `exit
 |---|---|
 | `exit` (not fired) | `{passed: true, verdict?, reason?}` |
 | `agent` | `{output, iterations, tools_called, final}` — `output` conforms to `output_schema` when `final` is true; when the budget ran out first, `final` is `false` and `output` is `{}` |
+| `ask` | `{answer, answered, reason?}` — `answer` conforms to `output_schema`; `answered` is false when the `default` was used, and `reason` is then `"declined"` or `"unavailable"` |
 | `decide` | `{branch, verdict, reason, result}` — `result` is the branch's single-call result or its last step's result |
 | `map` | `{count, results: […]}` in input order |
 | `reduce` | `{count, result}` — the final accumulator |

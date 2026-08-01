@@ -1,7 +1,7 @@
 //! Shared wiring: config → providers → MCP registry → store → agent.
 
 use anyhow::{Context, Result};
-use graph_core::pipeline::{doc::LoadedPlans, Pipeline, ToolCatalog};
+use graph_core::pipeline::{doc::LoadedPlans, ExecutionGate, Interlocutor, Pipeline, ToolCatalog};
 use graph_core::toolbox::AgentToolbox;
 use graph_core::user_tools::UserToolRegistry;
 use graph_core::{Agent, CompositeRegistry, EventSink, Store, ThreadMeta, ToolRegistry};
@@ -9,6 +9,16 @@ use graph_llm::ModelRouter;
 use graph_mcp::McpManager;
 use graph_store::{FileStore, MemoryStore, RecordingRegistry};
 use std::sync::Arc;
+
+/// The interactive hooks a host can hand a [`Pipeline`]. Both are
+/// optional and independent: `graph plan run` on a terminal installs an
+/// interlocutor and no gate, the workbench installs both, and CI installs
+/// neither.
+#[derive(Default, Clone)]
+pub struct PipelineHooks {
+    pub gate: Option<Arc<dyn ExecutionGate>>,
+    pub interlocutor: Option<Arc<dyn Interlocutor>>,
+}
 
 pub struct Runtime {
     pub config: graph_config::Config,
@@ -283,18 +293,22 @@ impl Runtime {
         store: &Arc<dyn Store>,
         events: Arc<dyn EventSink>,
     ) -> Result<Arc<Pipeline>> {
-        self.gated_pipeline(store, events, None).await
+        self.pipeline_with(store, events, PipelineHooks::default())
+            .await
     }
 
-    /// A pipeline with an [`ExecutionGate`] consulted before every real tool
-    /// call — the workbench's debugger hook, and the MCP server's
-    /// cancellation hook.
-    pub async fn gated_pipeline(
+    /// A pipeline carrying whichever interactive hooks the caller can
+    /// serve: an [`ExecutionGate`](graph_core::pipeline::ExecutionGate)
+    /// intercepting tool calls, an
+    /// [`Interlocutor`](graph_core::pipeline::Interlocutor) answering
+    /// `ask` steps, or neither (the CI shape).
+    pub async fn pipeline_with(
         &self,
         store: &Arc<dyn Store>,
         events: Arc<dyn EventSink>,
-        gate: Option<Arc<dyn graph_core::pipeline::ExecutionGate>>,
+        hooks: PipelineHooks,
     ) -> Result<Arc<Pipeline>> {
+        let PipelineHooks { gate, interlocutor } = hooks;
         let base = self.recording_registry(store)?;
         let user_context = user_context_text(&self.config.user);
         let plans = self.plan_docs().docs;
@@ -307,6 +321,7 @@ impl Runtime {
             call_stack: Vec::new(),
             store: Some(store.clone()),
             gate,
+            interlocutor,
             catalog: Some(Arc::new(catalog)),
             user_context,
             current_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
@@ -321,8 +336,21 @@ impl Runtime {
         store: &Arc<dyn Store>,
         events: Arc<dyn EventSink>,
     ) -> Result<Arc<AgentToolbox>> {
+        self.toolbox_with(store, events, PipelineHooks::default())
+            .await
+    }
+
+    /// The agent's tool catalog over a hooked pipeline — so a plan called
+    /// as `plan__*` from a conversation can still reach the human who is
+    /// already sitting there.
+    pub async fn toolbox_with(
+        &self,
+        store: &Arc<dyn Store>,
+        events: Arc<dyn EventSink>,
+        hooks: PipelineHooks,
+    ) -> Result<Arc<AgentToolbox>> {
         let base = self.recording_registry(store)?;
-        let pipeline = self.pipeline(store, events).await?;
+        let pipeline = self.pipeline_with(store, events, hooks).await?;
         let plans = pipeline.plans.as_ref().clone();
         Ok(Arc::new(AgentToolbox::new(base, pipeline, plans)))
     }

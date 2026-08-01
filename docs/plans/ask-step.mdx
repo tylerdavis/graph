@@ -1,0 +1,156 @@
+---
+title: "Ask steps"
+description: "Put a question to the person running the plan, and declare what happens when there isn't one"
+icon: "message-question"
+---
+
+An `ask` step requests a value only a human can supply — a choice between options, a confirmation before something irreversible, a detail no tool exposes — and binds the answer to the step id like any other result.
+
+```yaml
+steps:
+  - id: E0
+    tool_name: ask
+    input:
+      prompt: "Which channel should this release go to?"
+      output_schema:
+        type: object
+        required: [channel, confirm]
+        properties:
+          channel:
+            enum: [stable, beta, nightly]
+            description: Release channel
+          confirm:
+            type: boolean
+            description: Really cut it?
+      when_unanswered: default
+      default:
+        channel: "{{input.fallback}}"
+        confirm: false
+```
+
+Use it sparingly. A human's attention is the most expensive thing a plan can spend, and most questions aren't really questions: if a tool can fetch the value, call the tool; if a model can judge it, use an [`infer` gate](/plans/exit-gates) or an [`agent` step](/plans/agent-step).
+
+## Input
+
+| Field | Required | Meaning |
+|---|---|---|
+| `prompt` | yes | The question, as the user sees it. Renders against prior results like any step input. |
+| `output_schema` | yes | JSON Schema for the answer. Must be `type: object` with primitive-typed properties (see [Answer schemas](#answer-schemas)). |
+| `when_unanswered` | no | `fail` (default) or `default` — what happens when nobody answers. |
+| `default` | with `when_unanswered: default` | The fallback answer. Must conform to `output_schema`. Renders like `prompt`. |
+
+Field names are snake_case in a plan file, like every other step. The camelCase spellings (`outputSchema`, `whenUnanswered`) still load, and any authoring command that rewrites the file normalizes them.
+
+## Result
+
+```json
+{
+  "answer":   { "channel": "nightly", "confirm": true },
+  "answered": true
+}
+```
+
+Later steps reference `{{E0.answer.channel}}`. `answered` is `false` when the fallback was used, and a `reason` field then says which of the two ways it got there:
+
+```json
+{
+  "answer":   { "channel": "beta", "confirm": false },
+  "answered": false,
+  "reason":   "declined"
+}
+```
+
+- `"declined"` — a person saw the question and chose not to answer.
+- `"unavailable"` — nobody could be asked at all.
+
+Because the answer is ordinary step data, the rest of the plan language already works over it. Branch on whether a human was involved with an [`exit` gate](/plans/exit-gates) or a [`decide` step](/plans/branching):
+
+```yaml
+  - id: E1
+    tool_name: exit
+    input:
+      when: { value: "{{E0.answered}}", op: eq, to: false }
+      status: success
+      message: "nobody approved the release — nothing to do"
+```
+
+## When nobody can answer
+
+This is the field that matters, and the reason `ask` is safe to use in a plan you also run in CI.
+
+Whether a human is reachable is a property of *where the plan runs*, not of the plan:
+
+| Host | Can ask? |
+|---|---|
+| `graph plan run` on a terminal | yes — prompts on stderr, reads stdin |
+| `graph chat` / `graph ask` | yes, for plans called as `plan__*` |
+| The [plan workbench](/workbench/plan-workbench) | yes — the question opens the answer editor |
+| `graph mcp serve` | only if the client advertised `elicitation` support |
+| CI, `graph plan run < /dev/null`, `GRAPH_EVENTS=jsonl` | no |
+
+A plan that only works on the first four is not portable, and portability is most of why a plan beats a prose runbook. So the unattended behaviour is declared in the plan, statically visible, and reviewable — never inferred:
+
+- **`when_unanswered: fail`** (the default) — the step fails and the run stops. The right choice when proceeding without the answer would be wrong.
+- **`when_unanswered: default`** — fall back to `default` and carry on, with `answered: false` recording that it happened.
+
+`fail` is the default deliberately: an author who never considered the headless case finds out the first time it runs there, instead of a plan quietly proceeding on a value nobody supplied.
+
+A `default` is checked against `output_schema` at load time when it contains no templates, and after rendering when it does — a template's type isn't knowable until it resolves.
+
+## Answer schemas
+
+`output_schema` must be a flat object whose properties are primitives (`string`, `number`, `integer`, `boolean`) or enums. No nested objects, no arrays.
+
+This is MCP's `elicitation/create` constraint, and graph enforces it for **every** host, not just MCP. A schema only a raw-JSON prompt could satisfy would make the plan silently unusable from an MCP client — exactly the host-specific trap `when_unanswered` exists to close. Nested data belongs in a tool result, not in a form a person fills in one field at a time.
+
+Two practical consequences:
+
+- **Describe every property.** The `description` is the field label the user sees.
+- **Prefer an enum over free text** when the options are known. Terminals render it as a choice list and clients render it as a picker, and neither can then produce a value the plan has to defend against.
+
+An answer is validated against `output_schema` before it becomes a result, whatever host produced it — a hand-typed terminal answer and a client's form submission are equally untrusted. A non-conforming answer fails the step rather than propagating.
+
+## Where `ask` can appear
+
+Top level, and inside a [`decide`](/plans/branching) branch or a [`map`/`reduce`](/plans/iteration) body, where the question can reference `{{item}}`, `{{index}}`, and `{{accumulator}}`:
+
+```yaml
+  - id: E1
+    tool_name: map
+    input:
+      over: "{{E0.candidates}}"
+      do:
+        tool_name: ask
+        input:
+          prompt: "Keep {{item.name}}?"
+          output_schema:
+            type: object
+            required: [keep]
+            properties:
+              keep: { type: boolean, description: Keep this one? }
+```
+
+Questions are always serialized — one at a time, in item order — even when `map` sets `concurrency` above 1, because two prompts at once are unanswerable. That makes an `ask` inside a concurrent map a bottleneck by construction: prefer asking once about the whole list.
+
+Like every control step, `ask` never reaches a tool registry and is never seen by an [execution gate](/architecture/execution-model) — it makes no tool call. Its result still counts toward `steps_executed`.
+
+## The terminal prompt
+
+`graph plan run` walks the schema field by field on stderr, so stdout still carries only the deliverable:
+
+```
+? Which channel should this release go to? [E0]
+  (blank cancels)
+  channel — Release channel [stable | beta | nightly]: nightly
+  confirm — Really cut it? [y/n]: y
+```
+
+Typed lines are coerced to the schema's types (`3` becomes a number for an `integer` field and the string `"3"` for a `string` one), `y`/`yes`/`true` and `n`/`no`/`false` both work for booleans, and enum values match case-insensitively. A value that can't be coerced is re-prompted up to three times, then the question is declined. A blank line on a required field declines immediately.
+
+There is no prompt at all when stdin or stderr is not a terminal, or when `GRAPH_EVENTS=jsonl` has claimed stderr for machine-readable events. In those cases the ask is `unavailable`, which is the honest input to `when_unanswered`.
+
+## From an MCP client
+
+`graph mcp serve` turns an `ask` into an `elicitation/create` request back to the client, issued from inside the `tools/call` that is running the plan.
+
+It is capability-gated: a client that didn't advertise `elicitation` at initialize time is never sent a request, and the ask resolves as `unavailable` immediately. A client that advertises support and then errors or times out is also `unavailable` — an unanswerable question is a plan-declared condition, not a server failure. `decline` and `cancel` both come back as `"declined"`.
