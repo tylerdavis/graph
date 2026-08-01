@@ -165,13 +165,29 @@ fn coerce(kind: &Kind, text: &str) -> Result<Value, String> {
     }
 }
 
-/// Attempts allowed per field before the whole question is declined.
-/// Bounded so a scripted stdin that never satisfies the schema ends the
-/// run instead of spinning.
-const MAX_ATTEMPTS: usize = 3;
+/// Re-prompts allowed per field after a value that could not be coerced.
+/// A field therefore gets `MAX_RETRIES + 1` prompts in total. Bounded so a
+/// scripted stdin that never satisfies the schema ends the run instead of
+/// spinning.
+const MAX_RETRIES: usize = 3;
 
 fn prompt(request: &AskRequest) -> AskOutcome {
-    let mut err = std::io::stderr();
+    let stdin = std::io::stdin();
+    let mut lines = stdin.lock().lines().map_while(Result::ok);
+    fill_form(request, &mut lines, &mut std::io::stderr())
+}
+
+/// Walk the answer schema field by field, reading one line per prompt.
+///
+/// Split out from [`prompt`] so the retry budget and the coercion messages
+/// are testable against a scripted reader — the loop is where the
+/// documented behaviour lives, and the last drift between the two was a
+/// review comment rather than a failing test.
+fn fill_form(
+    request: &AskRequest,
+    lines: &mut impl Iterator<Item = String>,
+    err: &mut impl Write,
+) -> AskOutcome {
     let location = if request.call_stack.is_empty() {
         request.path.to_string()
     } else {
@@ -185,8 +201,6 @@ fn prompt(request: &AskRequest) -> AskOutcome {
     }
     let _ = writeln!(err, "  (blank cancels)");
 
-    let stdin = std::io::stdin();
-    let mut lines = stdin.lock().lines();
     let mut answer = Map::new();
 
     for field in &fields {
@@ -194,10 +208,14 @@ fn prompt(request: &AskRequest) -> AskOutcome {
             Some(description) => format!("{} — {description}", field.name),
             None => field.name.clone(),
         };
-        for attempt in 1..=MAX_ATTEMPTS {
+        // The first prompt is not a retry: `retries_left` counts the
+        // re-prompts a bad value earns, so the field is prompted
+        // MAX_RETRIES + 1 times before the question is declined.
+        let mut retries_left = MAX_RETRIES;
+        loop {
             let _ = write!(err, "  {label} [{}]: ", hint(&field.kind));
             let _ = err.flush();
-            let Some(Ok(line)) = lines.next() else {
+            let Some(line) = lines.next() else {
                 // EOF: stdin closed mid-question.
                 let _ = writeln!(err);
                 return AskOutcome::Unavailable("stdin closed before the answer".to_string());
@@ -214,7 +232,8 @@ fn prompt(request: &AskRequest) -> AskOutcome {
                     answer.insert(field.name.clone(), value);
                     break;
                 }
-                Err(problem) if attempt < MAX_ATTEMPTS => {
+                Err(problem) if retries_left > 0 => {
+                    retries_left -= 1;
                     let _ = writeln!(err, "    {problem} — try again");
                 }
                 Err(problem) => {
@@ -289,6 +308,106 @@ mod tests {
         assert!(coerce(&Kind::Boolean, "maybe")
             .unwrap_err()
             .contains("not yes or no"));
+    }
+
+    fn request(schema: Value) -> AskRequest {
+        AskRequest {
+            path: graph_core::pipeline::StepPath::top("E0"),
+            call_stack: Vec::new(),
+            prompt: "Pick one".to_string(),
+            schema,
+        }
+    }
+
+    /// Run the form against scripted input, returning the outcome and
+    /// everything written to the "terminal".
+    fn fill(schema: Value, input: &[&str]) -> (AskOutcome, String) {
+        let mut lines = input.iter().map(|s| (*s).to_string());
+        let mut out: Vec<u8> = Vec::new();
+        let outcome = fill_form(&request(schema), &mut lines, &mut out);
+        (outcome, String::from_utf8(out).unwrap())
+    }
+
+    fn choice_schema() -> Value {
+        json!({
+            "type": "object",
+            "required": ["verdict"],
+            "properties": {"verdict": {"enum": ["ship", "hold"]}}
+        })
+    }
+
+    #[test]
+    fn a_bad_value_is_re_prompted_exactly_max_retries_times() {
+        // The count the docs promise. Three bad values are each answered
+        // with "try again"; the fourth prompt is the last one, so a bad
+        // value there declines. Four prompts, three retries.
+        let (outcome, shown) = fill(choice_schema(), &["a", "b", "c", "ship"]);
+        assert!(matches!(outcome, AskOutcome::Answered(_)), "{shown}");
+        assert_eq!(shown.matches("try again").count(), MAX_RETRIES);
+        assert_eq!(shown.matches("verdict").count(), MAX_RETRIES + 1);
+    }
+
+    #[test]
+    fn a_field_that_is_never_satisfied_declines_instead_of_spinning() {
+        let (outcome, shown) = fill(choice_schema(), &["a", "b", "c", "d", "ship"]);
+        assert!(matches!(outcome, AskOutcome::Declined), "{shown}");
+        // The budget is spent on re-prompts, never on a silent extra read:
+        // the trailing valid answer is not consumed.
+        assert_eq!(shown.matches("verdict").count(), MAX_RETRIES + 1);
+    }
+
+    #[test]
+    fn a_blank_line_on_a_required_field_declines_immediately() {
+        let (outcome, shown) = fill(choice_schema(), &["", "ship"]);
+        assert!(matches!(outcome, AskOutcome::Declined), "{shown}");
+        assert!(!shown.contains("try again"), "{shown}");
+    }
+
+    #[test]
+    fn a_blank_line_on_an_optional_field_omits_it_and_moves_on() {
+        let schema = json!({
+            "type": "object",
+            "required": ["repo"],
+            "properties": {
+                "repo": {"type": "string"},
+                "note": {"type": "string"}
+            }
+        });
+        // Properties are walked in schema (sorted) order: note, then repo.
+        let (outcome, shown) = fill(schema, &["", "graph"]);
+        match outcome {
+            AskOutcome::Answered(value) => {
+                assert_eq!(value["repo"], "graph");
+                assert!(value.get("note").is_none(), "{value}");
+            }
+            other => panic!("expected an answer, got {other:?} — {shown}"),
+        }
+    }
+
+    #[test]
+    fn stdin_closing_mid_question_is_unavailable_not_declined() {
+        // Nobody refused — there was nobody there. The distinction is what
+        // a plan's `reason` field reports.
+        let (outcome, shown) = fill(choice_schema(), &[]);
+        assert!(
+            matches!(outcome, AskOutcome::Unavailable(_)),
+            "{outcome:?} — {shown}"
+        );
+    }
+
+    #[test]
+    fn the_question_and_its_field_labels_reach_the_terminal() {
+        let schema = json!({
+            "type": "object",
+            "required": ["verdict"],
+            "properties": {
+                "verdict": {"enum": ["ship", "hold"], "description": "Ship it?"}
+            }
+        });
+        let (_, shown) = fill(schema, &["ship"]);
+        assert!(shown.contains("Pick one"), "{shown}");
+        assert!(shown.contains("Ship it?"), "{shown}");
+        assert!(shown.contains("ship | hold"), "{shown}");
     }
 
     #[test]
