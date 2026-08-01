@@ -36,16 +36,16 @@ use std::path::{Path, PathBuf};
 /// Resolve → apply the guard → write → report. Every mutating command in
 /// this module is a `mutate` closure handed to this function.
 fn edit(
+    runtime: &Runtime,
     target: &str,
     mutate: impl FnOnce(&mut PlanDoc) -> Result<Value, Value>,
 ) -> Result<Outcome> {
-    let runtime = Runtime::init()?;
-    let (doc, _loaded) = resolve_target(&runtime, target)?;
+    let (doc, _loaded) = resolve_target(runtime, target)?;
     let source = doc.path.clone();
     match authoring::apply_edit(&doc, mutate) {
         Ok(accepted) => {
             let mut summary = authoring::summarize_edit(&accepted);
-            let path = write_edited(&accepted.doc, &runtime, source.as_deref(), &mut summary)?;
+            let path = write_edited(&accepted.doc, runtime, source.as_deref(), &mut summary)?;
             summary["savedTo"] = json!(path.display().to_string());
             Ok(Outcome::ok(summary))
         }
@@ -90,12 +90,12 @@ fn write_edited(
 /// only blocks *new* problems, so a scaffold stays editable and an agent can
 /// build the plan up with `step add` without ever calling the planner.
 pub fn new_plan(
+    runtime: &Runtime,
     identifier: &str,
     name: Option<&str>,
     description: Option<&str>,
     output: Option<PathBuf>,
 ) -> Result<Outcome> {
-    let runtime = Runtime::init()?;
     // The identifier is the file name and the `plan__<id>` tool name, so a
     // bad one is an argument error, not something to write out and report.
     if identifier.is_empty()
@@ -150,14 +150,14 @@ pub fn new_plan(
 /// hand-tuned discards that work. Corrections go through `set` and
 /// `step update`, which apply one intent and are validated atomically.
 pub async fn draft(
+    runtime: &Runtime,
     goal: &str,
     from: Option<&str>,
     output: Option<PathBuf>,
     stdout: bool,
 ) -> Result<Outcome> {
-    let runtime = Runtime::init()?;
     let existing = match from {
-        Some(target) => Some(resolve_target(&runtime, target)?.0),
+        Some(target) => Some(resolve_target(runtime, target)?.0),
         None => None,
     };
     let existing_output = existing.as_ref().map(|doc| PlannerOutput {
@@ -236,13 +236,20 @@ pub async fn draft(
 }
 
 /// `graph plan set <target> <attribute> <value>...`
-pub fn set(target: &str, attribute: PlanAttribute, values: &[String]) -> Result<Outcome> {
+pub fn set(
+    runtime: &Runtime,
+    target: &str,
+    attribute: PlanAttribute,
+    values: &[String],
+) -> Result<Outcome> {
     let patch = metadata_patch(attribute, values)?;
-    edit(target, |doc| authoring::patch_metadata(doc, &patch))
+    edit(runtime, target, |doc| {
+        authoring::patch_metadata(doc, &patch)
+    })
 }
 
 /// `graph plan unset <target> <attribute>`
-pub fn unset(target: &str, attribute: PlanAttribute) -> Result<Outcome> {
+pub fn unset(runtime: &Runtime, target: &str, attribute: PlanAttribute) -> Result<Outcome> {
     match attribute {
         PlanAttribute::Name | PlanAttribute::Description | PlanAttribute::Identifier => {
             bail!(
@@ -252,19 +259,19 @@ pub fn unset(target: &str, attribute: PlanAttribute) -> Result<Outcome> {
                 attribute.as_str()
             )
         }
-        PlanAttribute::Exemplars => edit(target, |doc| {
+        PlanAttribute::Exemplars => edit(runtime, target, |doc| {
             authoring::patch_metadata(doc, &json!({"exemplars": []}))
         }),
-        PlanAttribute::RequiresServers => edit(target, |doc| {
+        PlanAttribute::RequiresServers => edit(runtime, target, |doc| {
             authoring::patch_metadata(doc, &json!({"requires_servers": []}))
         }),
-        PlanAttribute::InputSchema => edit(target, |doc| {
+        PlanAttribute::InputSchema => edit(runtime, target, |doc| {
             authoring::patch_metadata(doc, &json!({"input_schema": null}))
         }),
         // `finish: {}` clears solver *and* output, so refuse unless the named
         // mode is the active one — otherwise `unset solver` on an
         // output-rendering plan would quietly delete its output map.
-        PlanAttribute::Solver => edit(target, |doc| {
+        PlanAttribute::Solver => edit(runtime, target, |doc| {
             if doc.solver.is_none() {
                 return Err(json!({
                     "error": format!(
@@ -276,7 +283,7 @@ pub fn unset(target: &str, attribute: PlanAttribute) -> Result<Outcome> {
             }
             authoring::patch_metadata(doc, &json!({"finish": {}}))
         }),
-        PlanAttribute::Output => edit(target, |doc| {
+        PlanAttribute::Output => edit(runtime, target, |doc| {
             if doc.output.is_none() {
                 return Err(json!({
                     "error": format!(
@@ -292,7 +299,7 @@ pub fn unset(target: &str, attribute: PlanAttribute) -> Result<Outcome> {
 }
 
 /// `graph plan step …`
-pub fn step(command: StepCommand) -> Result<Outcome> {
+pub fn step(runtime: &Runtime, command: StepCommand) -> Result<Outcome> {
     match command {
         StepCommand::Add {
             target,
@@ -316,7 +323,9 @@ pub fn step(command: StepCommand) -> Result<Outcome> {
             if let Some(anchor) = &after {
                 patch["after"] = json!(anchor);
             }
-            edit(&target, |doc| authoring::patch_add_step(doc, &patch))
+            edit(runtime, &target, |doc| {
+                authoring::patch_add_step(doc, &patch)
+            })
         }
         StepCommand::Update {
             target,
@@ -339,7 +348,9 @@ pub fn step(command: StepCommand) -> Result<Outcome> {
                     patch["reasoning"] = json!(value);
                 }
             }
-            edit(&target, |doc| authoring::patch_update_step(doc, &patch))
+            edit(runtime, &target, |doc| {
+                authoring::patch_update_step(doc, &patch)
+            })
         }
         StepCommand::Rename {
             target,
@@ -348,7 +359,9 @@ pub fn step(command: StepCommand) -> Result<Outcome> {
             json: _,
         } => {
             let patch = json!({"id": id, "newId": new_id});
-            edit(&target, |doc| authoring::patch_update_step(doc, &patch))
+            edit(runtime, &target, |doc| {
+                authoring::patch_update_step(doc, &patch)
+            })
         }
         StepCommand::Unset {
             target,
@@ -360,7 +373,9 @@ pub fn step(command: StepCommand) -> Result<Outcome> {
                 // `patch_update_step` treats an empty reasoning as "clear".
                 StepAttribute::Reasoning => {
                     let patch = json!({"id": id, "reasoning": ""});
-                    edit(&target, |doc| authoring::patch_update_step(doc, &patch))
+                    edit(runtime, &target, |doc| {
+                        authoring::patch_update_step(doc, &patch)
+                    })
                 }
                 StepAttribute::Tool | StepAttribute::Input => bail!(
                     "a step's {} is required and cannot be cleared — change it with \
@@ -376,7 +391,9 @@ pub fn step(command: StepCommand) -> Result<Outcome> {
             json: _,
         } => {
             let patch = json!({"id": id});
-            edit(&target, |doc| authoring::patch_delete_step(doc, &patch))
+            edit(runtime, &target, |doc| {
+                authoring::patch_delete_step(doc, &patch)
+            })
         }
     }
 }

@@ -487,6 +487,100 @@ fn without_dir_the_working_directorys_project_is_not_loaded() {
 }
 
 #[test]
+fn an_unpinned_server_writes_to_the_global_plans_dir_not_the_clients_cwd() {
+    // The read half of this was already enforced; the write half was not,
+    // and every authoring command re-loaded the full layered config, so a
+    // plan landed in whatever directory the client happened to launch us
+    // in. Where a plan is written is not a client's choice.
+    let scratch = Scratch::new();
+    let mut session = Session::open_unpinned(&scratch);
+
+    let (body, is_error) = session.call_parts(
+        "graph_plan_new",
+        json!({"identifier": "written_where", "name": "W", "description": "d"}),
+    );
+    assert!(!is_error, "{body}");
+
+    let saved = body["savedTo"].as_str().expect("savedTo");
+    let global = scratch
+        .path()
+        .join(".config/graph/plans/written_where.yaml");
+    assert_eq!(
+        std::path::Path::new(saved),
+        global,
+        "an unpinned server writes to the user's global plans dir"
+    );
+    assert!(global.exists(), "the file is really there: {saved}");
+    assert!(
+        !scratch
+            .path()
+            .join(".graph/plans/written_where.yaml")
+            .exists(),
+        "nothing may be written into the client's working directory"
+    );
+
+    // Every mutating command shares the resolution, so a follow-up edit
+    // must land on the same file rather than forking a copy into the cwd.
+    let (body, is_error) = session.call_parts(
+        "graph_plan_step_add",
+        json!({"target": "written_where", "id": "E0", "tool": "builtin__git_log", "input": {}}),
+    );
+    assert!(!is_error, "{body}");
+    assert_eq!(
+        std::path::Path::new(body["savedTo"].as_str().expect("savedTo")),
+        global
+    );
+}
+
+#[test]
+fn an_unpinned_servers_writes_never_read_the_working_directorys_config() {
+    // The sharper edge of the same bug: the authoring commands loaded the
+    // layered config, so a `.graph/config.toml` in the client's cwd could
+    // contribute providers, model routing, `[mcp.*]` child processes, and
+    // exec tools. A config that cannot even be expanded proves whether it
+    // was read at all.
+    let scratch = Scratch::new();
+    std::fs::write(
+        scratch.path().join(".graph/config.toml"),
+        "[providers.evil]\ntype = \"anthropic\"\napi_key = \"${MUST_NOT_BE_READ_BY_GRAPH}\"\n",
+    )
+    .expect("write a hostile project config");
+
+    let mut session = Session::open_unpinned(&scratch);
+    let (body, is_error) = session.call_parts(
+        "graph_plan_new",
+        json!({"identifier": "unpoisoned", "name": "U", "description": "d"}),
+    );
+    assert!(
+        !is_error,
+        "the working directory's config must not be loaded at all: {body}"
+    );
+    assert!(
+        !body.to_string().contains("MUST_NOT_BE_READ_BY_GRAPH"),
+        "{body}"
+    );
+}
+
+#[test]
+fn a_pinned_server_still_writes_into_the_project_it_was_given() {
+    // --dir is the user saying "this directory, I mean it" — the opt-in
+    // must keep working, or the fix above just breaks project authoring.
+    let scratch = Scratch::new();
+    let mut session = Session::open(&scratch);
+
+    let (body, is_error) = session.call_parts(
+        "graph_plan_new",
+        json!({"identifier": "in_project", "name": "P", "description": "d"}),
+    );
+    assert!(!is_error, "{body}");
+    let saved = body["savedTo"].as_str().expect("savedTo");
+    assert!(
+        std::path::Path::new(saved).ends_with(".graph/plans/in_project.yaml"),
+        "a pinned server writes into its project: {saved}"
+    );
+}
+
+#[test]
 fn an_unpinned_server_with_no_plans_explains_itself_to_the_model() {
     let scratch = Scratch::new();
     scratch.write_plan("echo_ok", ECHO_PLAN);

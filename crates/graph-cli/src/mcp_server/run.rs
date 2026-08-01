@@ -54,25 +54,28 @@ fn json_arg(args: &Map<String, Value>, key: &str) -> Result<String> {
 }
 
 pub fn step_add(args: &Map<String, Value>) -> Result<Outcome> {
-    plan_edit::step(StepCommand::Add {
-        target: target_of(args)?,
-        id: string_of(args, "id")?,
-        tool: string_of(args, "tool")?,
-        input: json_arg(args, "input")?,
-        reasoning: args
-            .get("reasoning")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        before: args
-            .get("before")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        after: args
-            .get("after")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        json: false,
-    })
+    plan_edit::step(
+        &runtime()?,
+        StepCommand::Add {
+            target: target_of(args)?,
+            id: string_of(args, "id")?,
+            tool: string_of(args, "tool")?,
+            input: json_arg(args, "input")?,
+            reasoning: args
+                .get("reasoning")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            before: args
+                .get("before")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            after: args
+                .get("after")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            json: false,
+        },
+    )
 }
 
 pub fn step_update(args: &Map<String, Value>) -> Result<Outcome> {
@@ -81,31 +84,40 @@ pub fn step_update(args: &Map<String, Value>) -> Result<Outcome> {
         "input" => json_arg(args, "value")?,
         _ => string_of(args, "value")?,
     };
-    plan_edit::step(StepCommand::Update {
-        target: target_of(args)?,
-        id: string_of(args, "id")?,
-        attribute: super::step_attribute(&attribute)
-            .map_err(|error| anyhow::anyhow!("{}", error.message))?,
-        value,
-        json: false,
-    })
+    plan_edit::step(
+        &runtime()?,
+        StepCommand::Update {
+            target: target_of(args)?,
+            id: string_of(args, "id")?,
+            attribute: super::step_attribute(&attribute)
+                .map_err(|error| anyhow::anyhow!("{}", error.message))?,
+            value,
+            json: false,
+        },
+    )
 }
 
 pub fn step_rename(args: &Map<String, Value>) -> Result<Outcome> {
-    plan_edit::step(StepCommand::Rename {
-        target: target_of(args)?,
-        id: string_of(args, "id")?,
-        new_id: string_of(args, "new_id")?,
-        json: false,
-    })
+    plan_edit::step(
+        &runtime()?,
+        StepCommand::Rename {
+            target: target_of(args)?,
+            id: string_of(args, "id")?,
+            new_id: string_of(args, "new_id")?,
+            json: false,
+        },
+    )
 }
 
 pub fn step_rm(args: &Map<String, Value>) -> Result<Outcome> {
-    plan_edit::step(StepCommand::Rm {
-        target: target_of(args)?,
-        id: string_of(args, "id")?,
-        json: false,
-    })
+    plan_edit::step(
+        &runtime()?,
+        StepCommand::Rm {
+            target: target_of(args)?,
+            id: string_of(args, "id")?,
+            json: false,
+        },
+    )
 }
 
 pub async fn tools_list() -> Result<Outcome> {

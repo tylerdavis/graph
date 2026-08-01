@@ -254,35 +254,44 @@ impl GraphServer {
             "graph_plan_list" => run::plan_list(),
             "graph_plan_show" => run::plan_show(&required_str(&args, "target")?),
             "graph_plan_validate" => run::plan_validate(&required_str(&args, "target")?),
-            "graph_plan_new" => plan_edit::new_plan(
-                &required_str(&args, "identifier")?,
-                optional_str(&args, "name").as_deref(),
-                optional_str(&args, "description").as_deref(),
-                None,
-            ),
+            "graph_plan_new" => {
+                let identifier = required_str(&args, "identifier")?;
+                let name = optional_str(&args, "name");
+                let description = optional_str(&args, "description");
+                runtime().and_then(|rt| {
+                    plan_edit::new_plan(
+                        &rt,
+                        &identifier,
+                        name.as_deref(),
+                        description.as_deref(),
+                        // No destination argument is exposed: a client may
+                        // not choose where on this machine a plan is written.
+                        None,
+                    )
+                })
+            }
             "graph_plan_draft" => {
-                plan_edit::draft(
-                    &required_str(&args, "goal")?,
-                    optional_str(&args, "from").as_deref(),
-                    None,
-                    false,
-                )
-                .await
+                let goal = required_str(&args, "goal")?;
+                let from = optional_str(&args, "from");
+                match runtime() {
+                    Ok(rt) => plan_edit::draft(&rt, &goal, from.as_deref(), None, false).await,
+                    Err(error) => Err(error),
+                }
             }
             "graph_plan_set" => {
                 let value = args
                     .get("value")
                     .ok_or_else(|| invalid("`value` is required"))?;
-                plan_edit::set(
-                    &required_str(&args, "target")?,
-                    plan_attribute(&required_str(&args, "attribute")?)?,
-                    &value_args(value),
-                )
+                let target = required_str(&args, "target")?;
+                let attribute = plan_attribute(&required_str(&args, "attribute")?)?;
+                let values = value_args(value);
+                runtime().and_then(|rt| plan_edit::set(&rt, &target, attribute, &values))
             }
-            "graph_plan_unset" => plan_edit::unset(
-                &required_str(&args, "target")?,
-                plan_attribute(&required_str(&args, "attribute")?)?,
-            ),
+            "graph_plan_unset" => {
+                let target = required_str(&args, "target")?;
+                let attribute = plan_attribute(&required_str(&args, "attribute")?)?;
+                runtime().and_then(|rt| plan_edit::unset(&rt, &target, attribute))
+            }
             "graph_plan_step_add" => run::step_add(&args),
             "graph_plan_step_update" => run::step_update(&args),
             "graph_plan_step_rename" => run::step_rename(&args),
