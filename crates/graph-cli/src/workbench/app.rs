@@ -650,8 +650,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
                 }
                 GateKind::Ask { .. } => {
                     app.ws.step_running(&prompt.path);
-                    app.status =
-                        format!("? {} is asking — s answer · n decline", prompt.path);
+                    app.status = format!("? {} is asking — s answer · n decline", prompt.path);
                 }
             }
             let ask = matches!(prompt.kind, GateKind::Ask { .. });
@@ -1301,8 +1300,7 @@ fn submit_editor(app: &mut App) -> Vec<Effect> {
                         format!("replaced {}'s error with an injected result", prompt.path);
                 }
                 GateKind::Ask { .. } => {
-                    app.ws
-                        .run_log_info(&format!("? {} answered", prompt.path));
+                    app.ws.run_log_info(&format!("? {} answered", prompt.path));
                     app.status = format!("answered {}", prompt.path);
                 }
             }

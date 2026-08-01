@@ -19,7 +19,8 @@ use std::io::{BufRead, Write};
 /// The terminal interlocutor as a pipeline hook, or `None` when this
 /// process has no usable terminal. The one place callers should reach for.
 pub fn tty() -> Option<std::sync::Arc<dyn Interlocutor>> {
-    TtyInterlocutor::detect().map(|tty| std::sync::Arc::new(tty) as std::sync::Arc<dyn Interlocutor>)
+    TtyInterlocutor::detect()
+        .map(|tty| std::sync::Arc::new(tty) as std::sync::Arc<dyn Interlocutor>)
 }
 
 /// Answers `ask` steps from the controlling terminal.

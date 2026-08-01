@@ -3770,7 +3770,10 @@ async fn an_answer_becomes_the_step_result_and_flows_downstream() {
         .run_explicit("q", plan, Finish::Silent, None)
         .await
         .unwrap();
-    assert_eq!(outcome.state.results["E0"]["answer"]["repo"], "tylerdavis/graph");
+    assert_eq!(
+        outcome.state.results["E0"]["answer"]["repo"],
+        "tylerdavis/graph"
+    );
     assert_eq!(outcome.state.results["E0"]["answered"], json!(true));
     // The whole point: a human's answer is ordinary step data.
     let calls = registry.invocations.lock().unwrap().clone();
@@ -3826,7 +3829,10 @@ async fn with_nobody_to_ask_the_default_declares_what_happens() {
         .run_explicit("q", plan, Finish::Silent, None)
         .await
         .unwrap();
-    assert_eq!(outcome.state.results["E0"]["answer"]["repo"], "tylerdavis/graph");
+    assert_eq!(
+        outcome.state.results["E0"]["answer"]["repo"],
+        "tylerdavis/graph"
+    );
     assert_eq!(outcome.state.results["E0"]["answered"], json!(false));
     assert_eq!(outcome.state.results["E0"]["reason"], "unavailable");
 }
@@ -3875,7 +3881,12 @@ async fn the_default_is_rendered_not_taken_literally() {
     .unwrap();
 
     let outcome = pipeline
-        .run_explicit("q", plan, Finish::Silent, Some(json!({"repo": "from-input"})))
+        .run_explicit(
+            "q",
+            plan,
+            Finish::Silent,
+            Some(json!({"repo": "from-input"})),
+        )
         .await
         .unwrap();
     assert_eq!(outcome.state.results["E0"]["answer"]["repo"], "from-input");

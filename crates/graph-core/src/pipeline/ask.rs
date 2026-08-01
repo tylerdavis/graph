@@ -239,7 +239,10 @@ pub fn validate_ask_input(
 /// Schema-check a value, returning the joined errors when it fails.
 fn schema_mismatch(value: &Value, schema: &Value) -> Option<String> {
     let validator = jsonschema::validator_for(schema).ok()?;
-    let errors: Vec<String> = validator.iter_errors(value).map(|e| e.to_string()).collect();
+    let errors: Vec<String> = validator
+        .iter_errors(value)
+        .map(|e| e.to_string())
+        .collect();
     (!errors.is_empty()).then(|| errors.join("; "))
 }
 

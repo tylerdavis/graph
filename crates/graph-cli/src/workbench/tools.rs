@@ -1684,7 +1684,10 @@ steps:
         let message = outcome.result["error"].as_str().unwrap();
         assert!(message.contains("unknown field"), "{message}");
         assert!(message.contains("hint:"), "{message}");
-        assert!(message.contains("exit, agent, ask, decide, map"), "{message}");
+        assert!(
+            message.contains("exit, agent, ask, decide, map"),
+            "{message}"
+        );
     }
 
     #[test]

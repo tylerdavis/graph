@@ -1,6 +1,6 @@
 mod cli;
-mod interlocutor;
 mod commands;
+mod interlocutor;
 mod mcp_server;
 mod output;
 mod runtime;
