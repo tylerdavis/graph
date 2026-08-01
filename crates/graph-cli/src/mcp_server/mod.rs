@@ -273,6 +273,9 @@ impl GraphServer {
             "graph_plan_draft" => {
                 let goal = required_str(&args, "goal")?;
                 let from = optional_str(&args, "from");
+                // `and_then`, as the sibling arms use, cannot hold the
+                // `.await`; and `?` cannot appear here because this arm
+                // yields anyhow's Result, not the McpError one.
                 match runtime() {
                     Ok(rt) => plan_edit::draft(&rt, &goal, from.as_deref(), None, false).await,
                     Err(error) => Err(error),
