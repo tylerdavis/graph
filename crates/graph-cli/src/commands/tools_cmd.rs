@@ -40,8 +40,23 @@ async fn dispatch(
     }
 }
 
-async fn list(registry: &(dyn ToolRegistry + Send + Sync)) -> Result<Outcome> {
-    let defs = registry.tools().await?;
+/// The catalog as an authoring caller needs to see it: invokable tools
+/// plus the control-step vocabulary.
+///
+/// Control steps are appended here rather than added to a registry because
+/// they are not invokable — the executor evaluates them. But an agent
+/// writing a plan needs their schemas exactly as much as a tool's, and a
+/// catalog that omits them sends it to read graph's source instead.
+pub(crate) async fn catalog(
+    registry: &(dyn ToolRegistry + Send + Sync),
+) -> Result<Vec<graph_core::ToolDef>> {
+    let mut defs = registry.tools().await?;
+    defs.extend(graph_core::pipeline::control_step_defs());
+    Ok(defs)
+}
+
+pub(crate) async fn list(registry: &(dyn ToolRegistry + Send + Sync)) -> Result<Outcome> {
+    let defs = catalog(registry).await?;
     // An empty catalog is a valid answer, not an error: the envelope still
     // parses, so a caller branches on `count`.
     let body = super::listing::tool_listing_as_json(&defs);
@@ -56,8 +71,11 @@ async fn list(registry: &(dyn ToolRegistry + Send + Sync)) -> Result<Outcome> {
     Ok(Outcome::raw(text, body))
 }
 
-async fn show(registry: &(dyn ToolRegistry + Send + Sync), name: &str) -> Result<Outcome> {
-    let defs = registry.tools().await?;
+pub(crate) async fn show(
+    registry: &(dyn ToolRegistry + Send + Sync),
+    name: &str,
+) -> Result<Outcome> {
+    let defs = catalog(registry).await?;
     let Some(def) = defs.into_iter().find(|d| d.name == name) else {
         // A bad argument, not a domain rejection — so no envelope, even
         // under `--json`.
@@ -78,12 +96,23 @@ async fn show(registry: &(dyn ToolRegistry + Send + Sync), name: &str) -> Result
     Ok(Outcome::raw(text, body))
 }
 
-async fn test(
+pub(crate) async fn test(
     registry: &(dyn ToolRegistry + Send + Sync),
     name: &str,
     input: Option<&str>,
     inputs: &[String],
 ) -> Result<Outcome> {
+    // A control step has a description and a schema, so it looks testable
+    // in a listing. It is not: the executor evaluates it, and dispatching
+    // the bare name would fail deep in the registry with an unhelpful
+    // "unknown tool". Say what it actually is instead.
+    if graph_core::pipeline::is_control_step(name) {
+        bail!(
+            "'{name}' is a control step, not an invokable tool — it is evaluated \
+             by the plan executor. Add it to a plan (graph plan step add) and run \
+             the plan; `graph tools show {name}` describes its input."
+        );
+    }
     let input = crate::commands::input::resolve_input(input, inputs)?;
     let invoked = registry.invoke(name, input).await?;
     // A tool that reports failure is not a CLI failure: the call completed

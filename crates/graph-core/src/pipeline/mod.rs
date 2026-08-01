@@ -135,6 +135,39 @@ pub enum PipelineError {
     },
 }
 
+/// Every control step, described the way the planner sees it.
+///
+/// The single source of truth for the control-step vocabulary: the
+/// planner's catalog is built from it, and so is the `tools` command
+/// surface (`graph tools list`/`show`, and `graph_tools_*` over MCP). That
+/// matters more than it looks — a control step that is not in a catalog an
+/// agent can query is a step it can only learn about by reading graph's
+/// source, which is exactly what agents did before this existed.
+///
+/// These are *descriptions*, not registry entries: control steps are
+/// evaluated by the executor and never dispatched, so they are deliberately
+/// absent from every [`ToolRegistry`](crate::tools::ToolRegistry) and
+/// cannot be invoked.
+pub fn control_step_defs() -> Vec<crate::tools::ToolDef> {
+    vec![
+        agent::agent_tool_def(),
+        ask::ask_tool_def(),
+        exit::exit_tool_def(),
+        decision::decide_tool_def(),
+        iterate::map_tool_def(),
+        iterate::reduce_tool_def(),
+    ]
+}
+
+/// True when `name` is a control step — executor-evaluated step vocabulary
+/// rather than an invokable tool.
+pub fn is_control_step(name: &str) -> bool {
+    matches!(
+        name,
+        AGENT_TOOL | ASK_TOOL | EXIT_TOOL | DECIDE_TOOL | MAP_TOOL | REDUCE_TOOL
+    )
+}
+
 /// Maximum plan-call nesting (cycles are caught by the call stack; this
 /// bounds legitimate-but-deep chains).
 pub const MAX_PLAN_DEPTH: usize = 8;
@@ -581,12 +614,7 @@ impl Pipeline {
     /// described-tools text and the pretty-printed step schema.
     async fn planner_catalog(&self) -> (String, String) {
         let mut tools = self.registry.tools().await.unwrap_or_default();
-        tools.push(agent::agent_tool_def());
-        tools.push(ask::ask_tool_def());
-        tools.push(exit::exit_tool_def());
-        tools.push(decision::decide_tool_def());
-        tools.push(iterate::map_tool_def());
-        tools.push(iterate::reduce_tool_def());
+        tools.extend(control_step_defs());
         for plan_doc in self.plans.iter() {
             if self.call_stack.iter().any(|f| f == &plan_doc.identifier) {
                 continue; // don't offer plans already on the call stack

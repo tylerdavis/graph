@@ -9,7 +9,7 @@
 use super::runtime;
 use crate::cli::StepCommand;
 use crate::commands::outcome::Outcome;
-use crate::commands::{listing, plan_cmd, plan_edit};
+use crate::commands::{plan_cmd, plan_edit};
 use anyhow::{bail, Result};
 use graph_core::pipeline::{catalog, doc::validate_input, ExitStatus};
 use serde_json::{json, Map, Value};
@@ -108,18 +108,23 @@ pub fn step_rm(args: &Map<String, Value>) -> Result<Outcome> {
     })
 }
 
+/// The `tools` family, delegated to the command layer.
+///
+/// The bodies below build a toolbox and hand it straight to
+/// `commands::tools_cmd`. They deliberately do NOT re-derive the catalog:
+/// the command functions are the only definition of what a plan step may
+/// name — invokable tools plus the control-step vocabulary — and a second
+/// copy here is exactly how the control steps went missing from this
+/// surface while `graph tools list` served them.
 pub async fn tools_list() -> Result<Outcome> {
     let runtime = runtime()?;
     let store = runtime.store()?;
     let toolbox = runtime
         .toolbox(&store, std::sync::Arc::new(graph_core::NullSink))
         .await?;
-    let defs = {
-        use graph_core::ToolRegistry;
-        toolbox.tools().await?
-    };
+    let outcome = crate::commands::tools_cmd::list(toolbox.as_ref()).await;
     runtime.shutdown().await;
-    Ok(Outcome::ok(listing::tool_listing_as_json(&defs)))
+    outcome
 }
 
 pub async fn tools_show(name: &str) -> Result<Outcome> {
@@ -128,15 +133,9 @@ pub async fn tools_show(name: &str) -> Result<Outcome> {
     let toolbox = runtime
         .toolbox(&store, std::sync::Arc::new(graph_core::NullSink))
         .await?;
-    let defs = {
-        use graph_core::ToolRegistry;
-        toolbox.tools().await?
-    };
+    let outcome = crate::commands::tools_cmd::show(toolbox.as_ref(), name).await;
     runtime.shutdown().await;
-    let Some(def) = defs.into_iter().find(|d| d.name == name) else {
-        bail!("unknown tool: {name}");
-    };
-    Ok(Outcome::ok(listing::tool_as_json(&def)))
+    outcome
 }
 
 pub async fn tools_test(name: &str, input: Value) -> Result<Outcome> {
@@ -145,19 +144,10 @@ pub async fn tools_test(name: &str, input: Value) -> Result<Outcome> {
     let toolbox = runtime
         .toolbox(&store, std::sync::Arc::new(graph_core::NullSink))
         .await?;
-    let invoked = {
-        use graph_core::ToolRegistry;
-        toolbox.invoke(name, input).await
-    };
+    let raw = serde_json::to_string(&input)?;
+    let outcome = crate::commands::tools_cmd::test(toolbox.as_ref(), name, Some(&raw), &[]).await;
     runtime.shutdown().await;
-    let invoked = invoked?;
-    // A tool reporting failure is a result, not a call failure — the payload
-    // is what the caller needs in order to fix the step.
-    Ok(Outcome::ok(json!({
-        "tool": name,
-        "isError": invoked.is_error,
-        "result": invoked.result,
-    })))
+    outcome
 }
 
 /// Run a plan and return its result.

@@ -265,6 +265,61 @@ fn the_tool_catalog_envelope_is_addressable_without_probing() {
 }
 
 #[test]
+fn the_catalog_serves_the_control_steps_an_author_has_to_write() {
+    // A plan step's tool_name is either a catalog tool or a control step.
+    // If the catalog only answers for half of that, an agent authoring a
+    // plan has to read graph's source to learn the other half — which is
+    // exactly what they did before these were listed.
+    let scratch = Scratch::new();
+
+    let run = scratch.graph(&["tools", "list", "--json"]);
+    run.code_is(0);
+    let envelope = run.json();
+    let tools = envelope["tools"].as_array().expect("tools array");
+
+    for name in ["exit", "ask", "agent", "decide", "map", "reduce"] {
+        let found = tools
+            .iter()
+            .find(|tool| tool["name"] == serde_json::json!(name))
+            .unwrap_or_else(|| panic!("control step '{name}' is missing from the catalog"));
+        assert_eq!(
+            found["source"],
+            serde_json::json!("(control)"),
+            "control steps need their own group: they cannot be invoked"
+        );
+    }
+
+    // And each is fully described, schema included — a name alone is not
+    // enough to write the step's input.
+    let run = scratch.graph(&["tools", "show", "ask", "--json"]);
+    run.code_is(0);
+    let shown = run.json();
+    assert_eq!(shown["name"], serde_json::json!("ask"));
+    assert_eq!(shown["source"], serde_json::json!("(control)"));
+    let properties = shown["inputSchema"]["properties"]
+        .as_object()
+        .expect("an input schema with properties");
+    for field in ["prompt", "outputSchema", "whenUnanswered", "default"] {
+        assert!(properties.contains_key(field), "ask is missing `{field}`");
+    }
+}
+
+#[test]
+fn a_control_step_refuses_to_be_tested_as_a_tool() {
+    // It is listed and described like a tool, so a caller will try. The
+    // refusal has to say what it is instead of failing in the registry.
+    let scratch = Scratch::new();
+
+    let run = scratch.graph(&["tools", "test", "ask", "--input", "prompt=hi"]);
+    run.code_is(1);
+    assert!(
+        run.stderr.contains("control step"),
+        "the refusal must name what `ask` actually is: {}",
+        run.stderr
+    );
+}
+
+#[test]
 fn tools_show_always_includes_every_schema_key() {
     let scratch = Scratch::new();
 
