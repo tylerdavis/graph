@@ -3,7 +3,7 @@
 //! truth. Registered under `workbench__` alongside the normal catalog.
 
 use super::app::Msg;
-use super::runner::{DebugControls, UiGate};
+use super::runner::{DebugControls, UiGate, UiInterlocutor};
 use async_trait::async_trait;
 use graph_core::pipeline::authoring;
 use graph_core::pipeline::doc::{apply_schema_defaults, load_plan_doc, validate_input, PlanDoc};
@@ -168,7 +168,8 @@ impl WorkbenchTools {
                 message.push_str(
                     "\nhint: control flow is not a field — it is a step whose \
                      toolName is one of the bare control steps exit, agent, \
-                     decide, map, or reduce (there is no gate/assert tool); a \
+                     ask, decide, map, or reduce (there is no gate/assert \
+                     tool); a \
                      plan finishes with `solver` OR `output`, never both",
                 );
             }
@@ -355,7 +356,11 @@ impl WorkbenchTools {
             gated,
             breakpoints: provided.then(|| breakpoints.clone()),
         });
-        let mut pipeline = (*self.pipeline).clone();
+        // The interlocutor rides every run, gated or not: an `ask` step's
+        // question is the plan asking for input, not a debugger pause.
+        let mut pipeline = (*self.pipeline)
+            .clone()
+            .with_interlocutor(Arc::new(UiInterlocutor::new(self.tx.clone())));
         if gated {
             pipeline =
                 pipeline.with_gate(Arc::new(UiGate::new(self.tx.clone(), self.debug.clone())));
@@ -886,6 +891,7 @@ mod tests {
             call_stack: Vec::new(),
             store: None,
             gate: None,
+            interlocutor: None,
             catalog: None,
             user_context: String::new(),
             current_date: String::new(),
@@ -1678,7 +1684,10 @@ steps:
         let message = outcome.result["error"].as_str().unwrap();
         assert!(message.contains("unknown field"), "{message}");
         assert!(message.contains("hint:"), "{message}");
-        assert!(message.contains("exit, agent, decide, map"), "{message}");
+        assert!(
+            message.contains("exit, agent, ask, decide, map"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -1824,6 +1833,7 @@ steps:
             call_stack: Vec::new(),
             store: None,
             gate: None,
+            interlocutor: None,
             catalog: None,
             user_context: String::new(),
             current_date: String::new(),

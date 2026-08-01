@@ -9,7 +9,7 @@
 use super::exit::PlanExit;
 use super::plan::{check_step_id, Step};
 use super::state::{BusEntry, BusKind};
-use super::{Pipeline, AGENT_TOOL, EXIT_TOOL};
+use super::{Pipeline, AGENT_TOOL, ASK_TOOL, EXIT_TOOL};
 use crate::template::{render_input, RenderError, Roots};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -133,6 +133,8 @@ pub fn validate_body(
                 // this body's scope, pseudo-roots included) plus its schema
                 // and budget, so it replaces the generic walk.
                 super::agent::validate_agent_input(&call.input, &body_seen, step_id, problems);
+            } else if call.tool_name == super::ASK_TOOL {
+                super::ask::validate_ask_input(&call.input, &body_seen, step_id, problems);
             } else {
                 for value in call.input.values() {
                     super::check_templates(value, &body_seen, step_id, problems);
@@ -161,6 +163,8 @@ pub fn validate_body(
                 check_body_tool(name, &step.tool_name, step_id, allow_exit, problems);
                 if step.tool_name == super::AGENT_TOOL {
                     super::agent::validate_agent_input(&step.input, &body_seen, &step.id, problems);
+                } else if step.tool_name == super::ASK_TOOL {
+                    super::ask::validate_ask_input(&step.input, &body_seen, &step.id, problems);
                 } else {
                     for value in step.input.values() {
                         super::check_templates(value, &body_seen, &step.id, problems);
@@ -189,7 +193,7 @@ fn check_body_tool(
         }
         return;
     }
-    if tool == super::AGENT_TOOL {
+    if tool == super::AGENT_TOOL || tool == super::ASK_TOOL {
         return;
     }
     if let Some(problem) = super::plan::workbench_tool_problem(tool) {
@@ -273,6 +277,22 @@ fn agent_body_error(
     BodyError::fail(fail, steps_executed, bus)
 }
 
+/// Map an ask step's failure onto the body error channel, with the same
+/// `Empty`-stays-`Render` rule as [`agent_body_error`]. An ask never
+/// dispatches, so it has no abort channel.
+fn ask_body_error(
+    fail: super::ask::AskFail,
+    label: &str,
+    steps_executed: usize,
+    bus: Vec<BusEntry>,
+) -> BodyError {
+    let fail = match fail {
+        super::ask::AskFail::Empty(error) => BodyFail::Render(error),
+        super::ask::AskFail::Failed(message) => BodyFail::Tool(format!("{label}: {message}")),
+    };
+    BodyError::fail(fail, steps_executed, bus)
+}
+
 impl Pipeline {
     /// Render and run one body in a scope layered over `base_scope` plus
     /// the given pseudo-roots (`item`/`index` for map, `accumulator` too
@@ -314,6 +334,24 @@ impl Pipeline {
                         Err(fail) => Err(agent_body_error(
                             fail,
                             &format!("{label} (agent)"),
+                            0,
+                            Vec::new(),
+                        )),
+                    };
+                }
+                if call.tool_name == ASK_TOOL {
+                    // Like `agent`, an ask renders its own fields against
+                    // this body's scope so {{item}}/{{index}}/
+                    // {{accumulator}} reach the question and the default.
+                    return match self.run_ask_scoped(&path, &call.input, &scope).await {
+                        Ok(result) => Ok(BodyRun {
+                            result,
+                            steps_executed: 1,
+                            bus: Vec::new(),
+                        }),
+                        Err(fail) => Err(ask_body_error(
+                            fail,
+                            &format!("{label} (ask)"),
                             0,
                             Vec::new(),
                         )),
@@ -372,6 +410,18 @@ impl Pipeline {
                                 return Err(agent_body_error(
                                     fail,
                                     &format!("{label} step {} (agent)", body_step.id),
+                                    steps_executed,
+                                    bus,
+                                ));
+                            }
+                        }
+                    } else if body_step.tool_name == ASK_TOOL {
+                        match self.run_ask_scoped(&path, &body_step.input, &scope).await {
+                            Ok(result) => result,
+                            Err(fail) => {
+                                return Err(ask_body_error(
+                                    fail,
+                                    &format!("{label} step {} (ask)", body_step.id),
                                     steps_executed,
                                     bus,
                                 ));

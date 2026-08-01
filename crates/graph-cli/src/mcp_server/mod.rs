@@ -24,6 +24,7 @@
 //! collect them as server logs.
 
 mod catalog;
+mod elicit;
 mod progress;
 mod project;
 mod run;
@@ -233,7 +234,14 @@ impl GraphServer {
             // The client can cancel a long run; the gate stops it between
             // tool calls rather than mid-side-effect.
             let gate = Arc::new(progress::CancelGate::new(context.ct.clone()));
-            let result = run::run_plan(identifier, input, progress.sink(), Some(gate)).await;
+            // `ask` steps put their question to the client, when it said
+            // at initialize time that it can carry one. When it can't, the
+            // plan's own `whenUnanswered` decides — which is why a plan
+            // written for a terminal still runs here.
+            let interlocutor = elicit::ElicitationInterlocutor::detect(&context.peer)
+                .map(|e| Arc::new(e) as Arc<dyn graph_core::pipeline::Interlocutor>);
+            let result =
+                run::run_plan(identifier, input, progress.sink(), Some(gate), interlocutor).await;
             // Drain before replying: a notification that lands after the
             // result it describes is worse than none.
             progress.finish().await;

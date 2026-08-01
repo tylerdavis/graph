@@ -56,6 +56,17 @@ impl EditorState {
                     prompt.path
                 ),
             ),
+            // The "prefill" here is the answer form; the question itself
+            // is the first thing the user needs to read, so it leads.
+            GateKind::Ask { .. } => (
+                format!("answer {}", prompt.path),
+                prompt
+                    .input
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .unwrap_or("The plan is asking for input.")
+                    .to_string(),
+            ),
         };
         let mut header = vec![what, format!("prefill: {provenance}")];
         if !downstream.is_empty() {

@@ -31,6 +31,7 @@
           "plans/branching",
           "plans/iteration",
           "plans/agent-step",
+          "plans/ask-step",
           "plans/the-planner",
           "plans/errors-and-replanning"
         ]

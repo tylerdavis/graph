@@ -32,6 +32,10 @@ pub enum GateKind {
     BeforeCall,
     /// The call failed (break-on-exception): replace, let it fail, or abort.
     OnError { error: Value },
+    /// An `ask` step is putting a question to the user. Not a debugger
+    /// pause: the run is waiting on an answer it declared it needs, so the
+    /// only two replies are an answer (the inject editor) and a decline.
+    Ask { schema: Value },
 }
 
 /// A pending debugger decision: the run is parked on `reply`.
@@ -377,6 +381,7 @@ impl Msg {
                 match kind {
                     GateKind::BeforeCall => "before-call",
                     GateKind::OnError { .. } => "on-error",
+                    GateKind::Ask { .. } => "ask",
                 },
                 call_stack.len()
             ),
@@ -643,8 +648,18 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
                         prompt.path
                     );
                 }
+                GateKind::Ask { .. } => {
+                    app.ws.step_running(&prompt.path);
+                    app.status = format!("? {} is asking — s answer · n decline", prompt.path);
+                }
             }
+            let ask = matches!(prompt.kind, GateKind::Ask { .. });
             app.mode = Mode::Paused(prompt);
+            // An ask has exactly one useful reply, so open the editor for
+            // it rather than making the user discover the `s` key.
+            if ask {
+                return open_inject_editor(app);
+            }
             Vec::new()
         }
         Msg::RunFinished {
@@ -1165,6 +1180,7 @@ fn decide(app: &mut App, decision: UiDecision) -> Vec<Effect> {
         UiDecision::Proceed { .. } => match prompt.kind {
             GateKind::BeforeCall => "stepping…".to_string(),
             GateKind::OnError { .. } => "letting the step fail…".to_string(),
+            GateKind::Ask { .. } => "declining the question…".to_string(),
         },
         UiDecision::Skip { .. } => "skipping…".to_string(),
         UiDecision::Abort => "aborting…".to_string(),
@@ -1183,7 +1199,15 @@ fn open_inject_editor(app: &mut App) -> Vec<Effect> {
     let Mode::Paused(prompt) = std::mem::replace(&mut app.mode, Mode::Idle) else {
         unreachable!()
     };
-    let (prefill, provenance) = app.ws.prefill_for(&prompt.tool);
+    // An `ask` has no recorded output shape — the prefill is the answer
+    // form itself, built from the schema the step declared.
+    let (prefill, provenance) = match &prompt.kind {
+        GateKind::Ask { schema } => (
+            super::editor::schema_skeleton(schema),
+            "a skeleton from the question's answer schema",
+        ),
+        _ => app.ws.prefill_for(&prompt.tool),
+    };
     let references = prompt
         .top_level_step()
         .map(|step| app.ws.downstream_references(step))
@@ -1274,6 +1298,10 @@ fn submit_editor(app: &mut App) -> Vec<Effect> {
                     ));
                     app.status =
                         format!("replaced {}'s error with an injected result", prompt.path);
+                }
+                GateKind::Ask { .. } => {
+                    app.ws.run_log_info(&format!("? {} answered", prompt.path));
+                    app.status = format!("answered {}", prompt.path);
                 }
             }
             app.mode = app.resume_mode();

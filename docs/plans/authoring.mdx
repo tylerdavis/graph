@@ -42,7 +42,7 @@ Missing required inputs are handled for you: `plan run` exits with code 3 and pr
 
 ## 3. Steps
 
-Steps run **sequentially**; each input may reference plan inputs and any earlier step. Tool names are namespaced catalog names, plus the four bare control steps — [`exit`](/plans/exit-gates), [`decide`](/plans/branching), and [`map`/`reduce`](/plans/iteration) — and [`plan_and_execute`](/plans/the-planner), the reserved planner tool.
+Steps run **sequentially**; each input may reference plan inputs and any earlier step. Tool names are namespaced catalog names, plus the bare control steps — [`exit`](/plans/exit-gates), [`decide`](/plans/branching), [`map`/`reduce`](/plans/iteration), [`agent`](/plans/agent-step), and [`ask`](/plans/ask-step) — and [`plan_and_execute`](/plans/the-planner), the reserved planner tool.
 
 Step ids are identifiers — letters, digits, and `_`, not starting with a digit — unique across the plan (body sub-steps included). The planner's `E0`, `E1`, … convention and descriptive names like `fetch_project` are equally valid. Ids may not shadow the reserved template roots `input`, `item`, `index`, `accumulator`, or `length`.
 

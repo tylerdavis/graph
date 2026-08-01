@@ -176,6 +176,7 @@ pub async fn run_plan(
     input: Value,
     events: std::sync::Arc<dyn graph_core::EventSink>,
     gate: Option<std::sync::Arc<dyn graph_core::pipeline::ExecutionGate>>,
+    interlocutor: Option<std::sync::Arc<dyn graph_core::pipeline::Interlocutor>>,
 ) -> Result<Outcome> {
     let runtime = runtime()?;
     let loaded = runtime.plan_docs();
@@ -218,7 +219,13 @@ pub async fn run_plan(
     // Never a terminal sink: anything written to stdout would corrupt the
     // protocol. `events` either forwards MCP progress notifications or
     // discards.
-    let pipeline = runtime.gated_pipeline(&store, events, gate).await?;
+    let pipeline = runtime
+        .pipeline_with(
+            &store,
+            events,
+            crate::runtime::PipelineHooks { gate, interlocutor },
+        )
+        .await?;
     let query = format!("Run the '{}' plan", doc.name);
     let finish = doc.finish();
     let result = pipeline

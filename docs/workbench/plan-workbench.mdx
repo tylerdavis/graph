@@ -126,6 +126,8 @@ A debug run (`g`) works like a debugger over plan execution. Pauses are **non-mo
 
 **The inject editor** explains itself: a header says what the JSON becomes, where the prefill came from (the tool's declared output example → an observed example → a skeleton synthesized from its `output_schema` → empty), and — the part that matters — **which paths downstream templates read** from this step, so you know exactly what fields the value must contain. `Ctrl+S` submits; `Esc` returns to the pause; the hints stay visible alongside any parse error.
 
+**Questions.** An [`ask` step](/plans/ask-step) parks the run the same way a breakpoint does, but it is not a debugger pause — the plan declared it needs this value. The prompt shows the question and opens the answer editor directly, prefilled with a skeleton built from the step's answer schema; `s` submits the answer and `n` declines, taking the step's `when_unanswered` path. There is no abort: an unanswered question is a plan-declared condition, and a run that must stop can still be aborted at the next gated tool call. Breakpoints and continue mode never suppress a question — skipping it while a human sat watching would silently take the unattended path.
+
 Control-step *evaluation* is never gated — `exit`/`decide` gates (including `infer` judge calls) and `map`/`reduce` orchestration are read-only engine computation; their side effects are the body calls, which are. While paused, the exit controls (`q`, `Ctrl+C`) abort the run — press again once it stops to quit; run keys are blocked until the pause is decided, and the chat input is inert. `?` still opens help, and the workspace scrolls and navigates normally.
 
 ## Saving
@@ -156,7 +158,7 @@ Logging is always on, with the default filter (`warn,workbench=debug`) recording
 | `u` | workspace | undo the last draft replacement (again to redo) |
 | `n` / `Enter` | paused | next step — proceed this call, pause at the next |
 | `c` | paused | continue to the next breakpoint or failing call |
-| `s` | paused | skip / inject (on error: replace the failed result) |
+| `s` | paused | skip / inject (on error: replace the failed result; on a question: submit the answer) |
 | `a` | paused | abort the run |
 | `Ctrl+S` | anywhere | save the draft (in an editor: submit) |
 | `Esc` | editor | cancel (returns to the pause when injecting) |

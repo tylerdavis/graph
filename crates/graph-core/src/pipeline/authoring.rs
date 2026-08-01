@@ -30,7 +30,7 @@
 use super::catalog::{self, ToolCatalog};
 use super::doc::{validate_doc, PlanDoc};
 use super::plan::{self, Plan, PlannerOutput, SolverData, Step};
-use super::{AGENT_TOOL, DECIDE_TOOL, MAP_TOOL, REDUCE_TOOL};
+use super::{AGENT_TOOL, ASK_TOOL, DECIDE_TOOL, MAP_TOOL, REDUCE_TOOL};
 use crate::template;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
@@ -67,6 +67,9 @@ pub fn validate_steps(plan: &Plan) -> Vec<String> {
         match step.tool_name.as_str() {
             super::AGENT_TOOL => {
                 super::agent::validate_agent_input(&step.input, &seen, &step.id, &mut problems)
+            }
+            super::ASK_TOOL => {
+                super::ask::validate_ask_input(&step.input, &seen, &step.id, &mut problems)
             }
             super::DECIDE_TOOL => super::decision::validate_decide_input(
                 &step.input,
@@ -659,6 +662,13 @@ const AGENT_INPUT_KEYS: [(&str, &str); 3] = [
     ("outputSchema", "output_schema"),
 ];
 
+/// The same, for `ask`. `default`'s *value* is a schema-shaped object the
+/// author owns, so it is never descended into.
+const ASK_INPUT_KEYS: [(&str, &str); 2] = [
+    ("outputSchema", "output_schema"),
+    ("whenUnanswered", "when_unanswered"),
+];
+
 /// Serialize a document as the YAML a human would have written.
 ///
 /// `Step` and `SolverData` *serialize* camelCase, and the control-step specs
@@ -727,6 +737,11 @@ fn snake_case_step(step: &mut serde_yaml::Value) {
     match tool.as_deref() {
         Some(AGENT_TOOL) => {
             for (planner, file) in AGENT_INPUT_KEYS {
+                rename_key(input, planner, file);
+            }
+        }
+        Some(ASK_TOOL) => {
+            for (planner, file) in ASK_INPUT_KEYS {
                 rename_key(input, planner, file);
             }
         }

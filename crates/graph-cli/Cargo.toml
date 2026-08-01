@@ -43,6 +43,9 @@ regex = "1"
 rmcp = { version = "2.2", default-features = false, features = [
     "server",
     "transport-io",
+    # `ask` steps become elicitation/create requests back to the client
+    # (mcp_server/elicit.rs).
+    "elicitation",
 ] }
 schemars = "1"
 

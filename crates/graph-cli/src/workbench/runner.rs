@@ -5,8 +5,8 @@
 use super::app::{GateKind, Msg};
 use async_trait::async_trait;
 use graph_core::pipeline::{
-    ErrorDecision, ExecutionGate, GateContext, GateDecision, PipelineError, PipelineOutcome,
-    StepPath,
+    AskOutcome, AskRequest, ErrorDecision, ExecutionGate, GateContext, GateDecision, Interlocutor,
+    PipelineError, PipelineOutcome, StepPath,
 };
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
@@ -297,6 +297,71 @@ impl ExecutionGate for UiGate {
             UiDecision::Proceed { .. } => ErrorDecision::Fail,
             UiDecision::Skip { result } => ErrorDecision::Replace { result },
             UiDecision::Abort => ErrorDecision::Abort,
+        }
+    }
+}
+
+/// Answers `ask` steps from the workbench, reusing the pause machinery:
+/// the question parks the run on the same oneshot a breakpoint does, and
+/// the inject editor — prefilled from the answer schema — is the form.
+///
+/// Debug controls are deliberately NOT consulted. Continue mode means
+/// "don't stop at breakpoints"; a question the plan declared it needs is
+/// not a breakpoint, and skipping it would silently take the
+/// `whenUnanswered` path while a human sat watching.
+pub struct UiInterlocutor {
+    tx: UnboundedSender<Msg>,
+    /// Concurrent `map` items must queue their questions rather than
+    /// clobber each other's prompt — the same rule [`UiGate`] follows.
+    ask_lock: tokio::sync::Mutex<()>,
+}
+
+impl UiInterlocutor {
+    pub fn new(tx: UnboundedSender<Msg>) -> Self {
+        Self {
+            tx,
+            ask_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+}
+
+#[async_trait]
+impl Interlocutor for UiInterlocutor {
+    async fn ask(&self, request: AskRequest) -> AskOutcome {
+        let _guard = self.ask_lock.lock().await;
+        let (reply, receiver) = oneshot::channel();
+        let path = if request.call_stack.is_empty() {
+            request.path.to_string()
+        } else {
+            format!("{}→{}", request.call_stack.join("→"), request.path)
+        };
+        let sent = self.tx.send(Msg::GateAsk {
+            kind: GateKind::Ask {
+                schema: request.schema.clone(),
+            },
+            path: path.clone(),
+            tool: graph_core::pipeline::ASK_TOOL.to_string(),
+            // The question and its schema ARE the step's input; showing
+            // them in the pause pane is what makes the form legible.
+            input: json!({
+                "prompt": request.prompt,
+                "outputSchema": request.schema,
+            }),
+            call_stack: request.call_stack.clone(),
+            scope: Map::new(),
+            reply,
+        });
+        if sent.is_err() {
+            return AskOutcome::Unavailable("the workbench UI is gone".to_string());
+        }
+        match receiver.await {
+            Ok(UiDecision::Skip { result }) => AskOutcome::Answered(result),
+            // `n` declines, and so does `a`: the interlocutor has no abort
+            // channel, and the plan's `whenUnanswered` is the declared
+            // answer to "nobody answered". A run that must stop can still
+            // be aborted at the next gated tool call.
+            Ok(UiDecision::Proceed { .. } | UiDecision::Abort) => AskOutcome::Declined,
+            Err(_) => AskOutcome::Unavailable("the workbench UI is gone".to_string()),
         }
     }
 }

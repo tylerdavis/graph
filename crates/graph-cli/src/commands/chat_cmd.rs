@@ -15,7 +15,13 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
     let store = runtime.store()?;
     let mut thread: Option<ThreadMeta> = resolve_thread(store.as_ref(), thread).await?;
     let events: Arc<dyn graph_core::EventSink> = crate::output::make_sink(false, false);
-    let toolbox = runtime.toolbox(&store, events.clone()).await?;
+    // A conversation already has the user's attention: a plan called as
+    // plan__* from here can put an `ask` step's question to them.
+    let hooks = crate::runtime::PipelineHooks {
+        interlocutor: crate::interlocutor::tty(),
+        ..Default::default()
+    };
+    let toolbox = runtime.toolbox_with(&store, events.clone(), hooks).await?;
     let agent = runtime.agent(events, toolbox)?;
 
     let mut messages: Vec<ChatMessage> = match &thread {

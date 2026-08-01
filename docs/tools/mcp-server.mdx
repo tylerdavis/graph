@@ -114,6 +114,21 @@ notifications/progress  { progressToken: "…", progress: 2, message: "synthesiz
 
 Cancelling a call stops the run **between** tool calls, not in the middle of one: a plan halfway through creating an issue finishes that call and stops before the next. The result comes back flagged, carrying how many steps had run.
 
+## Questions back to the client
+
+A plan can contain an [`ask` step](/plans/ask-step) — a value only a person can supply. Over MCP that becomes an `elicitation/create` request sent back to *your* client from inside the `tools/call` that is running the plan:
+
+```
+-> tools/call            { name: "plan_release_check", arguments: { fallback: "beta" } }
+<- elicitation/create    { message: "Which channel should this release go to?", requestedSchema: {…} }
+-> (client shows a form, user answers)
+<- tools/call result     { output: { channel: "nightly", from_human: true } }
+```
+
+It is capability-gated. A client that did not advertise `elicitation` at initialize time is never sent a request — the ask resolves as unavailable immediately and the plan runs its declared `when_unanswered` path, which is why a plan written for a terminal still works here. A client that advertises support and then errors or times out is treated the same way; an unanswerable question is a plan-declared condition, not a server failure. `decline` and `cancel` both come back to the plan as `"declined"`.
+
+The answer schema is a flat object of primitive fields, which is the protocol's constraint — graph enforces it when the plan is validated, so it fails as a review comment rather than at runtime on one host.
+
 ## Notes and limits
 
 - **Tool activity also goes to stderr**, where MCP clients conventionally collect server logs.

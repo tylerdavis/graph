@@ -185,6 +185,7 @@ mod tests {
             call_stack: Vec::new(),
             store: None,
             gate: None,
+            interlocutor: None,
             catalog: None,
             user_context: String::new(),
             current_date: "2026-07-09".into(),
