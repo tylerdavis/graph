@@ -4014,3 +4014,91 @@ async fn an_exit_gate_can_branch_on_whether_a_human_answered() {
     assert!(outcome.exit.is_some());
     assert!(registry.invocations.lock().unwrap().is_empty());
 }
+
+// ── Control-step discoverability ───────────────────────────────────────────
+
+#[test]
+fn every_control_step_is_described_in_the_catalog() {
+    // The catalog is the only way an authoring agent can learn a control
+    // step exists or what its input looks like. A step missing here sends
+    // it to read graph's source instead — which is what happened before
+    // `control_step_defs` was the single source of truth.
+    let described: Vec<String> = control_step_defs().into_iter().map(|d| d.name).collect();
+    for name in [
+        AGENT_TOOL,
+        ASK_TOOL,
+        EXIT_TOOL,
+        DECIDE_TOOL,
+        MAP_TOOL,
+        REDUCE_TOOL,
+    ] {
+        assert!(
+            described.iter().any(|d| d == name),
+            "control step '{name}' is not in the catalog: {described:?}"
+        );
+        assert!(
+            is_control_step(name),
+            "'{name}' is described as a control step but not recognised as one"
+        );
+    }
+    assert_eq!(described.len(), 6, "{described:?}");
+}
+
+#[test]
+fn a_control_step_is_never_mistaken_for_an_invokable_tool() {
+    // `is_control_step` gates the "you cannot test this" refusal and the
+    // listing's own group, so a false positive would hide a real tool.
+    for name in [
+        "plan_and_execute",
+        "plan__report",
+        "user__git_log",
+        "t__search",
+    ] {
+        assert!(!is_control_step(name), "'{name}' is not a control step");
+    }
+}
+
+#[test]
+fn control_step_descriptions_carry_a_usable_input_schema() {
+    // A description without a schema is not discovery — the agent still
+    // has to guess the field names.
+    for def in control_step_defs() {
+        let schema = &def.input_schema;
+        assert_eq!(
+            schema["type"], "object",
+            "{}: input schema is not an object",
+            def.name
+        );
+        assert!(
+            schema["properties"]
+                .as_object()
+                .is_some_and(|p| !p.is_empty()),
+            "{}: input schema declares no properties",
+            def.name
+        );
+        assert!(
+            !def.description.trim().is_empty(),
+            "{}: no description",
+            def.name
+        );
+    }
+}
+
+#[test]
+fn a_body_bearing_control_step_names_every_step_legal_in_its_body() {
+    // These descriptions are prompt surface AND the catalog an agent
+    // reads. When `ask` landed they still said "may contain an agent
+    // step", which is how a planner learns a legal step is illegal.
+    for def in control_step_defs() {
+        if ![DECIDE_TOOL, MAP_TOOL, REDUCE_TOOL].contains(&def.name.as_str()) {
+            continue;
+        }
+        for legal in [AGENT_TOOL, ASK_TOOL] {
+            assert!(
+                def.description.contains(&format!("`{legal}`")),
+                "{}'s description does not mention that `{legal}` is legal in its body",
+                def.name
+            );
+        }
+    }
+}
