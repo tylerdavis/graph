@@ -1,13 +1,19 @@
 # exec tool (side-effecting): persist one release's inferred changelog
-# front matter as changelog.d/<version>/summary.md (+ migration.md when
-# migration is needed). The migration conditional lives here rather than
-# in a decide step — it is one branch of a single write, not control
-# flow the plan needs to see.
+# front matter as docs/snippets/changelog/<version>/summary.mdx (+
+# migration.mdx when migration is needed). Snippets are Mintlify
+# snippets — imported by docs/changelog.mdx, never published as pages —
+# so they are the single copy of this content. The migration prompt is
+# wrapped in a four-backtick fence HERE so importing the snippet renders
+# a copyable code block (the prompt itself may contain three-backtick
+# fences). The migration conditional lives here rather than in a decide
+# step — it is one branch of a single write, not control flow the plan
+# needs to see.
 name: write_changelog_snippet
 description: >
-  Write changelog.d/<version>/summary.md, plus migration.md when
-  migration_needed is "true". Overwrites — callers gate on
-  snippet_status first so curated snippets are never clobbered.
+  Write docs/snippets/changelog/<version>/summary.mdx, plus a
+  fence-wrapped migration.mdx when migration_needed is "true".
+  Overwrites — callers gate on snippet_status first so curated snippets
+  are never clobbered.
 kind: exec
 command: bash
 args:
@@ -15,12 +21,13 @@ args:
   - "pipefail"
   - |
     version=$1 summary=$2 needed=$3 prompt=$4
-    mkdir -p "changelog.d/$version"
-    printf '%s\n' "$summary" > "changelog.d/$version/summary.md"
-    written='["summary.md"]'
+    dir="docs/snippets/changelog/$version"
+    mkdir -p "$dir"
+    printf '%s\n' "$summary" > "$dir/summary.mdx"
+    written='["summary.mdx"]'
     if [ "$needed" = "true" ]; then
-      printf '%s\n' "$prompt" > "changelog.d/$version/migration.md"
-      written='["summary.md","migration.md"]'
+      { printf '%s\n' '````markdown'; printf '%s\n' "$prompt"; printf '%s\n' '````'; } > "$dir/migration.mdx"
+      written='["summary.mdx","migration.mdx"]'
     fi
     jq -n --arg version "$version" --argjson written "$written" \
       '{version: $version, written: $written}'

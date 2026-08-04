@@ -1,19 +1,39 @@
-# exec tool: does a committed changelog.d/<version>/ snippet already
-# exist? Snippets are generated once and then curated by hand, so an
-# existing directory is a gate ("never regenerate"), not an error —
-# {exists: true} is a value the plan's exit gate reads.
+# exec tool: the state of one release's docs/snippets/changelog/<version>/
+# snippets. Serves two callers: changelog_entry's never-regenerate guard
+# (exists) and compose_changelog's structure decisions (has_summary /
+# has_migration — the page imports snippets rather than embedding them,
+# so compose needs presence, not content). The summary is validated here
+# because it renders as MDX when imported: a bare { or < outside
+# backticks is a JSX parse error that breaks the whole docs build — fail
+# loudly with the file named instead. The migration snippet is exempt:
+# it wraps its own fenced code block.
 name: snippet_status
 description: >
-  Whether changelog.d/<version>/ already holds generated snippets.
-  {exists: true} means the release's entry was generated (and possibly
-  hand-curated) — callers must not regenerate it.
+  Whether docs/snippets/changelog/<version>/ holds generated snippets:
+  {exists, has_summary, has_migration}. exists true means the release's
+  entry was generated (and possibly hand-curated) — callers must not
+  regenerate it. Validates the summary is MDX-safe (no bare < or {
+  outside backticks), failing loudly when it is not.
 kind: exec
 command: bash
 args:
-  - "-ceu"
+  - "-ceuo"
+  - "pipefail"
   - |
-    if [ -d "changelog.d/$1" ]; then exists=true; else exists=false; fi
-    jq -n --argjson exists "$exists" '{exists: $exists}'
+    dir="docs/snippets/changelog/$1"
+    exists=false has_summary=false has_migration=false
+    [ -d "$dir" ] && exists=true
+    if [ -f "$dir/summary.mdx" ]; then
+      if sed 's/`[^`]*`//g' "$dir/summary.mdx" | grep -q '[<{]'; then
+        echo "$dir/summary.mdx contains a bare < or { outside backticks — wrap code in backticks; MDX parses bare braces as JSX" >&2
+        exit 1
+      fi
+      has_summary=true
+    fi
+    [ -f "$dir/migration.mdx" ] && has_migration=true
+    jq -n --argjson exists "$exists" --argjson has_summary "$has_summary" \
+      --argjson has_migration "$has_migration" \
+      '{exists: $exists, has_summary: $has_summary, has_migration: $has_migration}'
   - snippet_status
   - "{{input.version}}"
 output: json
@@ -27,4 +47,6 @@ input_schema:
 output_schema:
   type: object
   properties:
-    exists: { type: boolean }
+    exists:        { type: boolean }
+    has_summary:   { type: boolean }
+    has_migration: { type: boolean }
