@@ -40,7 +40,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/tylerdavis/graph:v0.10.0
+      image: ghcr.io/tylerdavis/graph:v0.11.0
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -52,18 +52,16 @@ jobs:
       - name: Docs drift gate
         run: graph plan run docs_drift --input base="$BASE" --input head="$HEAD"
 
-  # The reviewer. Needs the first release after v0.10.0: the plan reads
-  # and syncs its findings as review threads via gh_pr_review_threads /
-  # gh_pr_thread_sync, which earlier images don't ship — bump the image
-  # pin here when that release exists (until then this job fails to load
-  # the plan; it is advisory, not a gate).
+  # The reviewer. Needs >= v0.11.0: the plan reads and syncs its findings
+  # as review threads via gh_pr_review_threads / gh_pr_thread_sync,
+  # which earlier images don't ship.
   graph-review-9000:
     if: >-
       !github.event.pull_request.draft &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/tylerdavis/graph:v0.10.0
+      image: ghcr.io/tylerdavis/graph:v0.11.0
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
