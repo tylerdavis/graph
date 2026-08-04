@@ -217,7 +217,7 @@ Merges are excluded by default: on a squash-merge history they add nothing, and 
 
 ### `builtin__git_changed_files`
 
-Files changed between two refs, filtered to a path prefix, with a count — the cheap input for gating before any LLM call. Read-only. Fails loudly on bad refs rather than returning an empty list a gate would misread.
+Files changed between two refs (merge-base diff), filtered to a path prefix — the cheap input for gating before any LLM call, and the grounding for review plans that read files at the head. Read-only. Fails loudly on bad refs rather than returning an empty list a gate would misread; no changes is `{files: [], count: 0, changes: []}`, not an error.
 
 | Input | Type |  |
 | --- | --- | --- |
@@ -229,6 +229,11 @@ Files changed between two refs, filtered to a path prefix, with a count — the 
 | --- | --- | --- |
 | `files` | array of string | matching paths |
 | `count` | integer | `files.length`, ready for `eq`/`gt` gates |
+| `changes` | array of object | one `{path, status, old_path, additions, deletions, binary}` per file |
+
+`status` is `added`, `modified`, `deleted`, `renamed`, `copied`, or `type_changed`; `old_path` is the previous path for renamed/copied entries and `null` otherwise. Rename detection is pinned on (`-M`) so a rename is always one `renamed` entry, never a delete+add pair that varies with the machine's `diff.renames` config. `additions`/`deletions` are line counts (`0` with `binary: true` for binary files).
+
+A **deleted** file's path appears in `files` and `changes` — it changed — but does not exist at `head`, so [`git_file`](#builtin-git_file) at the head sha fails on it by design. Select before you read: [`filter`](/plans/selection) the `changes` to `status ne deleted` and map `git_file` over `{{Ex.items}}` reading `{{item.path}}`. The same applies to a `renamed` entry's `old_path`.
 
 ### `builtin__git_file`
 

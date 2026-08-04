@@ -1,21 +1,55 @@
 # github pack: changed files between two refs, filtered by prefix.
 # pipefail matters: a bad ref must fail the step, not yield an empty list
 # that downstream gates would misread as "nothing changed".
+# -M is explicit so rename detection does not depend on the machine's
+# diff.renames config: a rename is always one `renamed` entry with both
+# paths, never a delete+add pair on one machine and not another.
+# --name-status and --numstat emit entries in the same diff order, so the
+# two passes join by index (a 0x1e record separator splits them).
 name: git_changed_files
 description: >
   Files changed between two git refs (merge-base diff), filtered to a path
-  prefix ("" for all), with a count. Useful for gating on whether an area
-  of the repository was touched.
+  prefix ("" for all). `files`/`count` list the paths; `changes` carries one
+  {path, status, old_path, additions, deletions, binary} object per file —
+  status is added|modified|deleted|renamed|copied|type_changed, and old_path
+  is set for renamed/copied. A deleted file's path is listed but does not
+  exist at the head ref: before mapping git_file over the result, `filter`
+  the changes with where {value: "{{item.status}}", op: ne, to: deleted}
+  and read {{item.path}}. No changes is {files: [], count: 0, changes: []},
+  not an error.
 kind: exec
 command: bash
 args:
   - "-ceuo"
   - "pipefail"
   - |
-    git diff --name-only "$1...$2" | jq -R -s --arg prefix "$3" '
-      (split("\n") | map(select(length > 0))
-         | map(select(startswith($prefix)))) as $m
-      | {files: $m, count: ($m | length)}'
+    {
+      git diff --name-status -M "$1...$2"
+      printf '\x1e'
+      git diff --numstat -M "$1...$2"
+    } | jq -Rs --arg prefix "$3" '
+      split("\u001e") as [$ns, $num]
+      | (($ns // "") | split("\n") | map(select(length > 0))) as $status_lines
+      | (($num // "") | split("\n") | map(select(length > 0))) as $numstat_lines
+      | [ range($status_lines | length)
+          | ($status_lines[.] | split("\t")) as $s
+          | (($numstat_lines[.] // "") | split("\t")) as $n
+          | ($s[0]) as $code
+          | { path: (if ($code | test("^[RC]")) then $s[2] else $s[1] end),
+              status: (if $code == "A" then "added"
+                       elif $code == "M" then "modified"
+                       elif $code == "D" then "deleted"
+                       elif ($code | startswith("R")) then "renamed"
+                       elif ($code | startswith("C")) then "copied"
+                       elif $code == "T" then "type_changed"
+                       else $code end),
+              old_path: (if ($code | test("^[RC]")) then $s[1] else null end),
+              additions: (if ($n[0] // "-") == "-" then 0 else ($n[0] | tonumber) end),
+              deletions: (if ($n[1] // "-") == "-" then 0 else ($n[1] | tonumber) end),
+              binary: (($n[0] // "-") == "-") }
+        ]
+      | map(select(.path | startswith($prefix)))
+      | {files: map(.path), count: length, changes: .}'
   - git_changed_files
   - "{{input.base}}"
   - "{{input.head}}"
@@ -35,3 +69,14 @@ output_schema:
   properties:
     files: { type: array, items: { type: string } }
     count: { type: integer }
+    changes:
+      type: array
+      items:
+        type: object
+        properties:
+          path:      { type: string }
+          status:    { type: string, enum: [added, modified, deleted, renamed, copied, type_changed] }
+          old_path:  { type: ["string", "null"], description: Previous path, for renamed/copied entries }
+          additions: { type: integer, description: Lines added (0 for binary) }
+          deletions: { type: integer, description: Lines deleted (0 for binary) }
+          binary:    { type: boolean }

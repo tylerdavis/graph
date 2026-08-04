@@ -122,13 +122,18 @@ steps:
       status: success
       message: nothing to review
   - id: E4
+    tool_name: filter                 # deleted files have no contents at head
+    input:
+      over: "{{E1.changes}}"
+      where: { value: "{{item.status}}", op: ne, to: deleted }
+  - id: E4b
     tool_name: map                    # full file contents at head, 8 at a time
     input:
-      over: "{{E1.files}}"
+      over: "{{E4.items}}"
       concurrency: 8
       do:
         tool_name: builtin__git_file
-        input: { path: "{{item}}", ref: "{{E0.head_sha}}", max_bytes: 30000 }
+        input: { path: "{{item.path}}", ref: "{{E0.head_sha}}", max_bytes: 30000 }
   - id: E5
     tool_name: builtin__infer         # the rubric: eight passes + output schema
     input:
@@ -186,7 +191,7 @@ Before trusting a plan like this with write access, step through it on a real PR
 - **Ordering is asked for, not computed.** The template dialect can't sort, so the schema asks the model for `blocker_ordinal` and a severity-ordered `passes` array, and the templates iterate in the order they arrive. Logic belongs in the steps or the schema — never the markdown.
 - **Declare the output schema — it's enforced.** The schema pins `passes` to exactly eight (`minItems`/`maxItems`) and marks every finding field required. Models occasionally omit required fields even under provider-forced structured output; graph validates the result against the declared schema and runs one `repair`-role fix-up, so `{{E5.overall_framing}}` can never be a missing key at render time.
 - **Review the whole diff.** The diff is scoped to nothing (`paths: "."`) minus generated files — an early version reviewed only `crates/` and `docs/`, which blinded it to the highest-leverage changes in an infra PR: workflows, plans, and the exec tools they run.
-- **Ground absence claims in the complete file list, never the diff.** The diff is byte-capped and git orders hunks by path, so on a big PR the `docs/` hunks are exactly what falls off the end — an early version reported "docs not updated" false positives on a PR whose docs edits sat past the truncation point. The fix is layered: `git_changed_files` (E1) feeds the reviewer a complete, never-truncated file list, the `map` over `git_file` (E4) gives it whole files rather than hunks, `git_diff` appends a visible `[diff truncated: …]` marker when it cuts, and the rubric judges docs-parity and test-parity only from the complete list.
+- **Ground absence claims in the complete file list, never the diff.** The diff is byte-capped and git orders hunks by path, so on a big PR the `docs/` hunks are exactly what falls off the end — an early version reported "docs not updated" false positives on a PR whose docs edits sat past the truncation point. The fix is layered: `git_changed_files` (E1) feeds the reviewer a complete, never-truncated file list, the `filter` (E4) drops deleted entries whose contents can't exist at head — so the `map` over `git_file` (E4b) reads whole files rather than hunks without dying on a deletion, and its results stay index-aligned with `{{E4.items}}` by construction — `git_diff` appends a visible `[diff truncated: …]` marker when it cuts, and the rubric judges docs-parity and test-parity only from the complete list.
 - **Ask the model to refute itself.** The instruction closes with a gate: try to disprove each blocker against the diff and demote what doesn't survive, and mark a pass `unverified` rather than `pass` for anything you couldn't check. A false clear costs as much as a false blocker.
 - **Findings flow through the pipeline, enriched at each step.** `reshape` (E6) adds `path`/`body` to each finding without dropping the original fields; `gh_pr_inline_comments` (E7) passes those extras through and adds `url` where a comment posted. So the blockers list (E8) renders from one array — severity and label from the review, the link from the post — with no join logic, which the [template dialect](/plans/template-language) couldn't express anyway. Findings the model couldn't pin to a line (or whose line the API rejects) simply come back without `url`, and the inverted section renders them as plain text.
 - **Repeated runs refresh everything in place.** Both posting tools take a distinct `marker`, embed it as a hidden tag, and find-and-edit (or delete-then-repost) the comment carrying it. Each push updates the review instead of stacking. Prefer a marker even for a lone plan: without one `gh_pr_comment` falls back to `--edit-last`, which keys on the token identity, so the day a second plan comments on the same PR as the same bot the two summaries start overwriting each other. One marker per plan per comment surface.
