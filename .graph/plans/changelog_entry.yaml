@@ -1,18 +1,38 @@
 identifier: changelog_entry
 name: changelog_entry
-description: Writes the inferred docs-changelog front matter for one release — a user-facing summary plus, only when consumers must act, a self-contained migration prompt — from that release's CHANGELOG section. Run by scripts/changelog-entry.sh at release time; the output is committed as changelog.d/<version>/ and curated by hand from then on.
+description: Generates one release's docs-changelog front matter — a user-facing summary plus, only when consumers must act, a self-contained migration prompt — and persists it as changelog.d/<version>/. Idempotent by design; an existing snippet directory means the entry was generated (and possibly hand-curated), so the plan exits without touching it. Run by scripts/release.sh at release time, after CHANGELOG.md is regenerated.
 input_schema:
   type: object
-  required: [version, commits]
+  required: [version]
   properties:
     version:
       type: string
-      description: Release tag, e.g. v0.10.0
-    commits:
-      type: string
-      description: The release's CHANGELOG.md section — grouped conventional-commit subjects
+      description: Release tag, e.g. v0.10.0 — must have a section in CHANGELOG.md
 steps:
   - id: E0
+    tool_name: user__snippet_status
+    input:
+      version: '{{input.version}}'
+    reasoning: Snippets are generated once and then curated by hand — find out whether this release already has one before spending any inference.
+  - id: E1
+    tool_name: exit
+    input:
+      when:
+        value: '{{E0.exists}}'
+        op: eq
+        to: true
+      status: success
+      message: 'changelog.d/{{input.version}} already exists — curated snippets are never regenerated'
+      output:
+        version: '{{input.version}}'
+        regenerated: false
+    reasoning: The never-regenerate guard. Curated snippets are the source of truth; exiting success (not error) keeps release automation flowing.
+  - id: E2
+    tool_name: user__changelog_section
+    input:
+      version: '{{input.version}}'
+    reasoning: The release's grouped commit subjects from the freshly regenerated CHANGELOG.md — the evidence the inference works from.
+  - id: E3
     tool_name: builtin__infer
     input:
       instruction: |-
@@ -21,7 +41,7 @@ steps:
         RELEASE: {{input.version}}
 
         GROUPED COMMIT SUBJECTS FOR THIS RELEASE:
-        {{input.commits}}
+        {{E2.text}}
 
         Produce:
 
@@ -36,7 +56,7 @@ steps:
         properties:
           summary:
             type: string
-            description: 2-4 sentences of user-facing prose for the changelog entry
+            description: 2-4 sentences of user-facing MDX-safe prose for the changelog entry
           migration_needed:
             type: boolean
             description: true only when existing plans/tools/CI require action
@@ -44,7 +64,16 @@ steps:
             type: string
             description: Self-contained coding-agent prompt; empty string when migration_needed is false
     reasoning: One structured inference over the release's grouped commit subjects produces the summary, the migration verdict, and (only when warranted) the migration prompt.
+  - id: E4
+    tool_name: user__write_changelog_snippet
+    input:
+      version: '{{input.version}}'
+      summary: '{{E3.summary}}'
+      migration_needed: '{{E3.migration_needed}}'
+      migration_prompt: '{{E3.migration_prompt}}'
+    reasoning: Persist the front matter as the committed snippet the compose_changelog plan reads. From here on the files are curated by hand — review before pushing.
 output:
-  summary: '{{E0.summary}}'
-  migration_needed: '{{E0.migration_needed}}'
-  migration_prompt: '{{E0.migration_prompt}}'
+  version: '{{input.version}}'
+  regenerated: true
+  migration_needed: '{{E3.migration_needed}}'
+  written: '{{E4.written}}'

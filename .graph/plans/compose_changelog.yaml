@@ -1,0 +1,73 @@
+identifier: compose_changelog
+name: compose_changelog
+description: Composes docs/changelog.mdx from git-cliff's release context plus the committed changelog.d/ snippets — one Mintlify <Update> per release, fronted by its inferred summary, with a copyable migration-prompt Accordion when the release requires action. Deterministic given the snippets (zero inference), so it is safe to re-run any time; that is also the curation loop — edit a snippet, re-run this, commit both. Run by scripts/release.sh with tag=v<new> at release time.
+input_schema:
+  type: object
+  required: [tag]
+  properties:
+    tag:
+      type: string
+      description: About-to-be-cut tag at release time (e.g. v0.11.0); "" to compose the tagged history only
+      default: ''
+steps:
+  - id: E0
+    tool_name: user__cliff_context
+    input:
+      tag: '{{input.tag}}'
+    reasoning: Every release as template-ready data — version, human date, alphabetically grouped MDX-escaped subjects — newest first, plus a version-null entry for unreleased commits.
+  - id: E1
+    tool_name: filter
+    input:
+      over: '{{E0.releases}}'
+      where:
+        value: '{{item.version}}'
+        op: not_empty
+    reasoning: The docs publish released behavior only — drop the version-null unreleased entry.
+  - id: E2
+    tool_name: map
+    input:
+      over: '{{E1.items}}'
+      concurrency: 4
+      do:
+        - id: B0
+          tool_name: user__read_snippet
+          input:
+            version: '{{item.version}}'
+        - id: B1
+          tool_name: builtin__reshape
+          input:
+            shape:
+              text: |-
+                <Update label="{{item.version}}" description="{{item.date}}">
+                {{B0.summary}}
+
+                {{#item.groups}}### {{name}}
+
+                {{#subjects}}- {{subject}}
+                {{/subjects}}
+                {{/item.groups}}{{#B0.has_migration}}<Accordion title="Migration required — a prompt for your coding agent" icon="wand-magic-sparkles">
+                Existing plans may need updating. Copy this prompt into your coding agent in the repository that carries your plans:
+
+                ````markdown
+                {{B0.migration}}
+                ````
+                </Accordion>
+                {{/B0.has_migration}}</Update>
+    reasoning: One <Update> block per release — snippet read (which also enforces MDX safety, failing loudly with the file named) then a pure template render. Body results stay index-aligned with the release list by construction.
+  - id: E3
+    tool_name: user__write_changelog_page
+    input:
+      content: |-
+        ---
+        title: "Changelog"
+        icon: "clock-rotate-left"
+        rss: true
+        ---
+
+        {{#E2.results}}{{text}}
+
+        {{/E2.results}}
+    reasoning: Assemble the page — static frontmatter plus the rendered blocks, newest release first — and write it to the one path the tool permits.
+output:
+  path: '{{E3.path}}'
+  releases: '{{E1.count}}'

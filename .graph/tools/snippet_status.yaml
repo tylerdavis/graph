@@ -1,0 +1,30 @@
+# exec tool: does a committed changelog.d/<version>/ snippet already
+# exist? Snippets are generated once and then curated by hand, so an
+# existing directory is a gate ("never regenerate"), not an error —
+# {exists: true} is a value the plan's exit gate reads.
+name: snippet_status
+description: >
+  Whether changelog.d/<version>/ already holds generated snippets.
+  {exists: true} means the release's entry was generated (and possibly
+  hand-curated) — callers must not regenerate it.
+kind: exec
+command: bash
+args:
+  - "-ceu"
+  - |
+    if [ -d "changelog.d/$1" ]; then exists=true; else exists=false; fi
+    jq -n --argjson exists "$exists" '{exists: $exists}'
+  - snippet_status
+  - "{{input.version}}"
+output: json
+timeout_secs: 10
+read_only: true
+input_schema:
+  type: object
+  required: [version]
+  properties:
+    version: { type: string, description: Release tag, e.g. v0.10.0 }
+output_schema:
+  type: object
+  properties:
+    exists: { type: boolean }

@@ -1,0 +1,47 @@
+# exec tool (side-effecting): persist one release's inferred changelog
+# front matter as changelog.d/<version>/summary.md (+ migration.md when
+# migration is needed). The migration conditional lives here rather than
+# in a decide step — it is one branch of a single write, not control
+# flow the plan needs to see.
+name: write_changelog_snippet
+description: >
+  Write changelog.d/<version>/summary.md, plus migration.md when
+  migration_needed is "true". Overwrites — callers gate on
+  snippet_status first so curated snippets are never clobbered.
+kind: exec
+command: bash
+args:
+  - "-ceuo"
+  - "pipefail"
+  - |
+    version=$1 summary=$2 needed=$3 prompt=$4
+    mkdir -p "changelog.d/$version"
+    printf '%s\n' "$summary" > "changelog.d/$version/summary.md"
+    written='["summary.md"]'
+    if [ "$needed" = "true" ]; then
+      printf '%s\n' "$prompt" > "changelog.d/$version/migration.md"
+      written='["summary.md","migration.md"]'
+    fi
+    jq -n --arg version "$version" --argjson written "$written" \
+      '{version: $version, written: $written}'
+  - write_changelog_snippet
+  - "{{input.version}}"
+  - "{{input.summary}}"
+  - "{{input.migration_needed}}"
+  - "{{input.migration_prompt}}"
+output: json
+timeout_secs: 10
+read_only: false
+input_schema:
+  type: object
+  required: [version, summary, migration_needed, migration_prompt]
+  properties:
+    version:          { type: string }
+    summary:          { type: string }
+    migration_needed: { type: boolean }
+    migration_prompt: { type: string, description: Ignored unless migration_needed }
+output_schema:
+  type: object
+  properties:
+    version: { type: string }
+    written: { type: array, items: { type: string } }
