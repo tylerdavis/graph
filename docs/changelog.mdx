@@ -7,40 +7,6 @@ rss: true
 <Update label="v0.10.0" description="August 4, 2026">
 This release adds MCP server support so graph's plans and authoring commands can be driven remotely, along with two new step types — ask (to pause a plan and get input from the user) and filter (to partition a list by a per-item condition) — and per-file change detail on git_changed_files. It also fixes a real correctness bug: plan YAML written with non-snake_case field names could pass authoring but fail at deeper nesting levels, so every plan field is now consistently written in snake_case at every depth, and stale revision-by-redraft behavior has been removed from both authoring surfaces. The plan commands now return structured outcomes instead of printing free-form text, and --json output is now uniform across the remaining commands (including tools list and tools show), which existing scripts and CI parsing free-form output should account for.
 
-### Added
-
-- add --json to graph tools list
-- add --json to graph tools show
-- serve graph's plans and authoring commands over MCP
-- stream progress and honor cancellation
-- ask steps — put a question to the user from inside a plan
-- filter steps — partition a list with a per-item gate
-- per-file change objects on git_changed_files
-
-### Changed
-
-- return outcomes from the plan commands instead of printing
-- convert the remaining commands and make --json uniform
-
-### Documentation
-
-- add a plan authoring skill for the CLI commands
-- point the authoring loop and quickstart at the plan authoring skill
-- make the authoring skill draft-first
-- frame the skill around the whole plan lifecycle
-- document graph as an MCP server
-- close out the MCP roadmap and point the skill at the server
-- explain why the draft arm cannot use and_then
-
-### Fixed
-
-- write every plan field in snake_case, at every depth
-- remove revision-by-redraft from both authoring surfaces
-- don't load a project the user never pointed at
-- honour the documented ask retry budget
-- serve the control steps from the tool catalog
-- keep MCP writes inside the server's own config layer
-
 <Accordion title="Migration required — a prompt for your coding agent" icon="wand-magic-sparkles">
 Existing plans may need updating. Copy this prompt into your coding agent in the repository that carries your plans:
 
@@ -184,6 +150,41 @@ entry carries the origin.
    reason.
 ````
 </Accordion>
+
+### Added
+
+- add --json to graph tools list
+- add --json to graph tools show
+- serve graph's plans and authoring commands over MCP
+- stream progress and honor cancellation
+- ask steps — put a question to the user from inside a plan
+- filter steps — partition a list with a per-item gate
+- per-file change objects on git_changed_files
+
+### Changed
+
+- return outcomes from the plan commands instead of printing
+- convert the remaining commands and make --json uniform
+
+### Documentation
+
+- add a plan authoring skill for the CLI commands
+- point the authoring loop and quickstart at the plan authoring skill
+- make the authoring skill draft-first
+- frame the skill around the whole plan lifecycle
+- document graph as an MCP server
+- close out the MCP roadmap and point the skill at the server
+- explain why the draft arm cannot use and_then
+
+### Fixed
+
+- write every plan field in snake_case, at every depth
+- remove revision-by-redraft from both authoring surfaces
+- don't load a project the user never pointed at
+- honour the documented ask retry budget
+- serve the control steps from the tool catalog
+- keep MCP writes inside the server's own config layer
+
 </Update>
 
 <Update label="v0.9.0" description="July 30, 2026">

@@ -41,18 +41,19 @@ steps:
                 <Update label="{{item.version}}" description="{{item.date}}">
                 {{B0.summary}}
 
-                {{#item.groups}}### {{name}}
-
-                {{#subjects}}- {{subject}}
-                {{/subjects}}
-                {{/item.groups}}{{#B0.has_migration}}<Accordion title="Migration required — a prompt for your coding agent" icon="wand-magic-sparkles">
+                {{#B0.has_migration}}<Accordion title="Migration required — a prompt for your coding agent" icon="wand-magic-sparkles">
                 Existing plans may need updating. Copy this prompt into your coding agent in the repository that carries your plans:
 
                 ````markdown
                 {{B0.migration}}
                 ````
                 </Accordion>
-                {{/B0.has_migration}}</Update>
+
+                {{/B0.has_migration}}{{#item.groups}}### {{name}}
+
+                {{#subjects}}- {{subject}}
+                {{/subjects}}
+                {{/item.groups}}</Update>
     reasoning: One <Update> block per release — snippet read (which also enforces MDX safety, failing loudly with the file named) then a pure template render. Body results stay index-aligned with the release list by construction.
   - id: E3
     tool_name: user__write_changelog_page
