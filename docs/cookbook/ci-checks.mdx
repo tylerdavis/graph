@@ -115,12 +115,6 @@ steps:
     tool_name: builtin__git_diff
     input: { base: "{{E0.base_sha}}", head: "{{E0.head_sha}}",
              paths: ".", exclude: "Cargo.lock CHANGELOG.md", max_bytes: 300000 }
-  - id: E3
-    tool_name: exit
-    input:
-      when: { value: "{{E2.text}}", op: empty }
-      status: success
-      message: nothing to review
   - id: E3b
     tool_name: filter                 # deleted files have no contents at head
     input:
@@ -141,10 +135,25 @@ steps:
     tool_name: builtin__infer         # transition audit: resolve / decline / none
     input:
       instruction: |
-        ... decide, for each open finding, whether the code at head shows it
-        fixed (resolve), a human reply dismisses it (decline), or it stays
-        open — insufficient evidence keeps it open ...
+        ... decide, for each open finding, whether the file contents at head
+        show it fixed (resolve — a mid-PR fix leaves no diff hunk, and an
+        empty diff means everything was reverted), a human reply dismisses
+        it (decline), or it stays open — insufficient evidence keeps it open ...
       output_schema: { type: object, properties: { findings: ... } }
+  - id: E4d
+    tool_name: builtin__gh_pr_thread_sync   # transitions only, before the gate
+    input:
+      pr: "{{input.pr}}"
+      head_sha: "{{E0.head_sha}}"
+      marker: "graph_review_9000:finding"
+      creates: []
+      threads: "{{E4c.findings}}"
+  - id: E3
+    tool_name: exit                   # after thread hygiene, so reverts settle
+    input:
+      when: { value: "{{E2.text}}", op: empty }
+      status: success
+      message: nothing to review
   - id: E5
     tool_name: builtin__infer         # the rubric: eight passes + output schema
     input:
@@ -169,13 +178,13 @@ steps:
               > **{{item.severity_label}}: {{item.finding}}**
               > {{item.explanation}}
   - id: E7
-    tool_name: builtin__gh_pr_thread_sync   # post new, transition existing
+    tool_name: builtin__gh_pr_thread_sync   # creates only; E4d did transitions
     input:
       pr: "{{input.pr}}"
       head_sha: "{{E0.head_sha}}"
       marker: "graph_review_9000:finding"
       creates: "{{E6.results}}"
-      threads: "{{E4c.findings}}"
+      threads: []
   - id: E8
     tool_name: builtin__gh_pr_comment
     input:
@@ -212,7 +221,9 @@ Before trusting a plan like this with write access, step through it on a real PR
 - **Ask the model to refute itself.** The instruction closes with a gate: try to disprove each blocker against the diff and demote what doesn't survive, and mark a pass `unverified` rather than `pass` for anything you couldn't check. A false clear costs as much as a false blocker.
 - **Findings flow through the pipeline, enriched at each step.** `reshape` (E6) adds `path`/`body`/`payload` to each finding without dropping the original fields; `gh_pr_thread_sync` (E7) passes those extras through and adds `url` where a comment posted. So the blockers list (E8) renders from one array — severity and label from the review, the link from the post — with no join logic, which the [template dialect](/plans/template-language) couldn't express anyway. Findings the model couldn't pin to a line (or whose line the API rejects) simply come back without `url`, and the inverted section renders them as plain text.
 - **Findings are threads with a lifecycle, not comments to repost.** Each finding's comment embeds a hidden JSON payload (its label, severity, file, line, headline); `gh_pr_review_threads` (E4b) reads them back next run with thread states — open, resolved, declined (a human closed or dismissed it). Open threads and human replies are never deleted, so a conversation on a finding survives every push.
-- **Resolution is judged against the code, not against re-detection.** A dedicated audit call (E4c) transitions an open finding only when the diff and file contents at head show the fix, and treats insufficient evidence as "stays open" — if it instead resolved whatever the reviewer failed to re-find, one flaky review pass would silently close real findings. Declines come only from explicit human replies, never from silence. The reviewer (E5) then sees the known findings purely as a suppression list: report only what's new.
+- **Resolution is judged against the code, not against re-detection.** A dedicated audit call (E4c) transitions an open finding only when the code at head shows the fix, and treats insufficient evidence as "stays open" — if it instead resolved whatever the reviewer failed to re-find, one flaky review pass would silently close real findings. Declines come only from explicit human replies, never from silence. The reviewer (E5) then sees the known findings purely as a suppression list: report only what's new.
+- **The file contents at head are the resolution evidence, not the diff.** A fix that lands in a later commit of the same PR leaves no hunk in the cumulative base-to-head diff — the flagged region simply stops appearing — so the audit is told to judge from the finding's location in the full file contents. Live calibration: the first mixed-state run kept a fixed finding open precisely because the instruction let the model wait for a diff hunk that could never exist.
+- **Thread hygiene runs before the nothing-to-review gate.** The pull → audit → transitions sync (E4b/E4c/E4d) sit ahead of the empty-diff exit, and the sync's two halves are split across it (E4d transitions, E7 creates). A fully reverted PR has an empty diff — exactly the case where every open finding just got fixed — so gating the lifecycle behind the exit would strand resolved-in-practice threads open forever, blocking merges on repos that require conversation resolution.
 - **The summary comment still refreshes in place.** `gh_pr_comment` (E8) takes its own `marker`, embeds it as a hidden tag, and find-and-edits the comment carrying it. Prefer a marker even for a lone plan: without one it falls back to `--edit-last`, which keys on the token identity, so the day a second plan comments on the same PR as the same bot the two summaries start overwriting each other. One marker per plan per comment surface.
 - **Inline comments stay advisory — but resolution now means something.** They post as plain review comments, not a `REQUEST_CHANGES` review, so they only gate merging on repos with _Require conversation resolution before merging_ enabled — and on those repos the lifecycle pulls its weight: fixed findings resolve themselves out of the gate's way, while a finding the author disagrees with is one human "resolve conversation" click (read back as `declined`, never re-raised).
 
