@@ -2,6 +2,31 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
+## v0.11.0 — 2026-08-04
+
+
+### Added
+
+- add gh_pr_review_threads and gh_pr_thread_sync to the github pack
+- track graph_review_9000 findings as living review threads
+
+### Documentation
+
+- publish a release changelog page, generated in lockstep with releases
+- correct the escaping-mechanism comment in cliff-docs.toml
+- infer a per-release summary and migration prompt via a graph plan
+- keep inferred summaries MDX-safe
+- drop the changelog page description and intro line
+- replace the changelog shell scripts with graph plans
+- place the migration prompt between summary and commit lists
+- restyle changelog summaries as themed prose
+- reference changelog snippets instead of embedding them
+
+### Fixed
+
+- release script keeps the docs release_version in step
+- keep literal template syntax out of the changelog_entry instruction
+
 ## v0.10.0 — 2026-08-04
 
 

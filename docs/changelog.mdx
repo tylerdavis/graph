@@ -4,6 +4,7 @@ icon: "clock-rotate-left"
 rss: true
 ---
 
+import SummaryV0_11_0 from '/snippets/changelog/v0.11.0/summary.mdx';
 import SummaryV0_10_0 from '/snippets/changelog/v0.10.0/summary.mdx';
 import MigrationV0_10_0 from '/snippets/changelog/v0.10.0/migration.mdx';
 import SummaryV0_9_0 from '/snippets/changelog/v0.9.0/summary.mdx';
@@ -17,6 +18,33 @@ import SummaryV0_4_0 from '/snippets/changelog/v0.4.0/summary.mdx';
 import SummaryV0_3_0 from '/snippets/changelog/v0.3.0/summary.mdx';
 import SummaryV0_2_0 from '/snippets/changelog/v0.2.0/summary.mdx';
 import SummaryV0_1_0 from '/snippets/changelog/v0.1.0/summary.mdx';
+
+<Update label="v0.11.0" description="August 4, 2026">
+<SummaryV0_11_0 />
+
+### Added
+
+- add gh_pr_review_threads and gh_pr_thread_sync to the github pack
+- track graph_review_9000 findings as living review threads
+
+### Documentation
+
+- publish a release changelog page, generated in lockstep with releases
+- correct the escaping-mechanism comment in cliff-docs.toml
+- infer a per-release summary and migration prompt via a graph plan
+- keep inferred summaries MDX-safe
+- drop the changelog page description and intro line
+- replace the changelog shell scripts with graph plans
+- place the migration prompt between summary and commit lists
+- restyle changelog summaries as themed prose
+- reference changelog snippets instead of embedding them
+
+### Fixed
+
+- release script keeps the docs release_version in step
+- keep literal template syntax out of the changelog_entry instruction
+
+</Update>
 
 <Update label="v0.10.0" description="August 4, 2026">
 <SummaryV0_10_0 />
