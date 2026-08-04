@@ -16,6 +16,17 @@ skeleton=$(mktemp)
 trap 'rm -f "$skeleton"' EXIT
 git-cliff -c cliff-docs.toml "$@" -o "$skeleton"
 
+# Summaries render as MDX, where a bare { or < is a JSX parse error that
+# breaks the whole docs build (migration prompts are exempt — they land
+# inside a fenced code block). Fail here, with the file named, instead.
+for f in changelog.d/*/summary.md; do
+  [ -e "$f" ] || continue
+  if sed 's/`[^`]*`//g' "$f" | grep -q '[<{]'; then
+    echo "$f contains a bare < or { outside backticks — wrap code (flags, fields, {{templates}}) in backticks; MDX parses bare braces as JSX" >&2
+    exit 1
+  fi
+done
+
 {
   while IFS= read -r line; do
     case "$line" in
