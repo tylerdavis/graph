@@ -1,1 +1,3 @@
-This release improves the `graph tools list` output, grouping tools together with a tighter, more scannable layout. It's a purely cosmetic change to CLI output and doesn't affect plans, tool definitions, or any other user-facing behavior.
+#### Clearer tool listings
+
+`graph tools list` now groups related tools together and displays them in a tighter, easier-to-scan layout.

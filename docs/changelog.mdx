@@ -5,7 +5,17 @@ rss: true
 ---
 
 <Update label="v0.10.0" description="August 4, 2026">
-This release adds MCP server support so graph's plans and authoring commands can be driven remotely, along with two new step types — ask (to pause a plan and get input from the user) and filter (to partition a list by a per-item condition) — and per-file change detail on git_changed_files. It also fixes a real correctness bug: plan YAML written with non-snake_case field names could pass authoring but fail at deeper nesting levels, so every plan field is now consistently written in snake_case at every depth, and stale revision-by-redraft behavior has been removed from both authoring surfaces. The plan commands now return structured outcomes instead of printing free-form text, and --json output is now uniform across the remaining commands (including tools list and tools show), which existing scripts and CI parsing free-form output should account for.
+#### Run plans from anywhere
+graph now serves its plans over MCP, so editors, agents, and other MCP clients can run and author plans without touching the terminal.
+
+#### Smarter control flow
+Plans can pause to ask a person for input — and declare what happens when nobody is there — and can narrow a list down before working through it, which keeps automations from tripping over items they can't handle.
+
+#### Sharper diff awareness
+Changed-file listings now say what happened to each file, not just that it changed.
+
+#### A cleaner scripting surface
+Command output is structured and consistent across the CLI; scripts that scraped the old text output should switch to `--json`.
 
 <Accordion title="Migration required — a prompt for your coding agent" icon="wand-magic-sparkles">
 Existing plans may need updating. Copy this prompt into your coding agent in the repository that carries your plans:
@@ -188,7 +198,14 @@ entry carries the origin.
 </Update>
 
 <Update label="v0.9.0" description="July 30, 2026">
-This release adds model fallbacks so plans can automatically fail over to another provider on an outage, a new agent control step for directing agent behavior mid-plan, and command-line management of plans alongside a new Slack pack and expanded GitHub pack (gh_release, git_log). Plan authoring rules now live in graph-core and drafting proceeds one validated step at a time. Fixes address exit-gate step status display, agent step validation gaps, exit code propagation, stdout hygiene for plan list and validate, and reshape re-rendering, along with enabling the Slack pack by default in repo-carried config. Documentation was substantially reorganized around a plans-first structure with new workbench screenshots and clearer quickstart guidance.
+#### Ride out provider outages
+Model entries can declare fallbacks, so a failing provider fails over to the next instead of failing your run.
+
+#### Let a step figure it out
+The new agent step runs a bounded tool-calling loop inside a plan for the parts you cannot script ahead of time — and still returns typed results the rest of the plan can reference.
+
+#### More places to plug in
+GitHub release and log tools, a Slack pack for posting messages, and full plan management from the command line.
 
 ### Added
 
@@ -232,7 +249,7 @@ This release adds model fallbacks so plans can automatically fail over to anothe
 </Update>
 
 <Update label="v0.8.1" description="July 17, 2026">
-This release improves the plan workbench TUI: the root node now shows plan metadata, its input schema, and finish status, and scrolling through the steps and tool list with the mouse wheel is smoother and more accurate, with selection now moving correctly and the highlight properly hidden when it scrolls out of view. It also fixes the gh_pr_ticket default pattern so it now requires a separator, avoiding overly loose matches.
+A plan's root node in the workbench now shows its metadata, inputs, and finish up front, alongside a handful of scrolling and selection fixes.
 
 ### Added
 
@@ -248,7 +265,14 @@ This release improves the plan workbench TUI: the root node now shows plan metad
 </Update>
 
 <Update label="v0.8.0" description="July 17, 2026">
-This release focuses on making the plan workbench more reliable and usable: mouse support (click to focus, switch tabs, select rows, wheel-scroll), clearer trace visualization with correctly ordered and timed spans, and a more robust draft workflow that validates each step incrementally and lets you paste, edit, or repair drafts rather than losing work. Tool resolution now happens against the catalog before a run starts, so missing or misconfigured tools are caught up front instead of failing mid-plan, and failed steps now carry their real error into the aborted run result. New capabilities include named model selection for prompt tools and inference, per-gate model overrides on exit/decide steps, a data pack with a reshape tool for shape projection, and metadata editing for input schema, required servers, and silent finish. Several fixes address dim-text rendering, PR reviewer false positives on truncated diffs, and workbench iteration budget resets.
+#### Steadier plan drafting
+Drafts are built incrementally — an outline, then one validated step at a time — and invalid drafts can be edited or repaired instead of discarded.
+
+#### Pick the right model per call
+Prompt tools, inference steps, and gates can each name a model, so cheap checks stay cheap and hard calls get the strong model.
+
+#### Sturdier CI reviews
+The PR-review building blocks grew marker-keyed comments, ticket extraction, and file reading at a ref, and tool resolution is now checked before a plan spends a single step.
 
 ### Added
 
@@ -281,7 +305,14 @@ This release focuses on making the plan workbench more reliable and usable: mous
 </Update>
 
 <Update label="v0.7.0" description="July 15, 2026">
-v0.7.0 introduces the plan workbench, a dual-pane TUI for drafting and test-running plans with built-in research tools (read_file, grep, glob) and precise editing tools (update_metadata, add_step, update_step, delete_step), plus debug logging and improved step/finish-stage views. Storage moves from LadybugDB to file-based storage, config becomes project-first (config init and default search paths now target ./.graph), and step ids can be any unique identifier rather than requiring the E-number scheme. This release also fixes several correctness issues: draft saves can no longer clobber a different plan's file, a single broken plan file no longer takes down the whole catalog, section-scoped bare keys are no longer mistakenly treated as roots in plan validation, and workbench scrolling now correctly reaches wrapped content with PgUp/PgDn as the sole scroll binding.
+#### A workbench for plans
+A dual-pane TUI for drafting and test-running plans: research the project, make precise step-level edits, and watch runs unfold without leaving the terminal.
+
+#### Simpler storage
+Plan and thread state now lives in plain files — nothing to install or run alongside graph.
+
+#### Projects carry their setup
+Config discovery is project-first, so a repository can ship its own graph setup, and step ids can be any descriptive identifier.
 
 ### Added
 
@@ -312,7 +343,17 @@ v0.7.0 introduces the plan workbench, a dual-pane TUI for drafting and test-runn
 </Update>
 
 <Update label="v0.6.0" description="July 11, 2026">
-v0.6.0 adds conditional and iterative control flow to plans: decide steps can now fork execution into then/else branches, and map/reduce steps let a plan run a body across a list of items and fold the results. Plan authors gate branching with an if condition rather than the earlier decide-only keyword. For code review workflows, pr_review can now anchor findings as inline diff comments instead of only top-level notes.
+#### Branch execution with decide steps
+
+Plans can now include `decide` steps that fork execution into `then` and `else` branches based on a gate, letting you author plans with conditional logic instead of separate plans per outcome. The gate keyword for a `decide` step is `if`.
+
+#### Iterate over lists with map and reduce
+
+`map` and `reduce` steps run a body of steps over each item in a list, so repetitive per-item work no longer needs to be unrolled manually in the plan.
+
+#### Inline PR review comments
+
+The `pr_review` tool now anchors its findings as inline diff comments on the pull request, rather than only surfacing them elsewhere.
 
 ### Added
 
@@ -324,7 +365,9 @@ v0.6.0 adds conditional and iterative control flow to plans: decide steps can no
 </Update>
 
 <Update label="v0.5.0" description="July 10, 2026">
-This release improves the `graph tools list` output, grouping tools together with a tighter, more scannable layout. It's a purely cosmetic change to CLI output and doesn't affect plans, tool definitions, or any other user-facing behavior.
+#### Clearer tool listings
+
+`graph tools list` now groups related tools together and displays them in a tighter, easier-to-scan layout.
 
 ### Added
 
@@ -333,7 +376,7 @@ This release improves the `graph tools list` output, grouping tools together wit
 </Update>
 
 <Update label="v0.4.1" description="July 10, 2026">
-This release organizes `graph mcp tools` output by server, making it easier to scan available tools when multiple MCP servers are configured. It also fixes release packaging so binaries and other assets are always attached before a release is published, eliminating a class of incomplete releases. The README has been rewritten with clearer guidance, and the project is now under the MIT license.
+`graph mcp tools` now groups its output by server, and release publishing is atomic — assets can no longer go missing from a published release.
 
 ### Added
 
@@ -350,7 +393,11 @@ This release organizes `graph mcp tools` output by server, making it easier to s
 </Update>
 
 <Update label="v0.4.0" description="July 10, 2026">
-This release adds release container images, so CI operators can pull a versioned graph image instead of building from source. Search and vector retrieval extensions are now vendored directly into the binary, removing any external dependency for those features. Bundled tool packs are now exposed under a dedicated builtin__ namespace, with a new Built-ins docs page explaining what's available, and the documentation gains a CI cookbook and a broader cookbook section organized by solution category for plan authors looking for worked examples.
+#### Run graph without building it
+Published container images make graph drop-in for CI and containerized environments, and search extensions are vendored into the binary so nothing needs installing alongside it.
+
+#### Built-ins, organized
+Bundled tools now live under one namespace with a dedicated docs page, and new cookbook sections collect worked examples by solution.
 
 ### Added
 
@@ -366,7 +413,9 @@ This release adds release container images, so CI operators can pull a versioned
 </Update>
 
 <Update label="v0.3.0" description="July 10, 2026">
-This release adds bundled tool packs, so common tool calls are available out of the box without writing custom tool definitions, along with support for annotating GitHub Actions failures directly in workflow output. It also fixes a version-bump bug in the release script, aligning the workspace version metadata with v0.2.0.
+#### Bundled tool packs and CI failure annotations
+
+`graph` now ships with tool packs included, so plans can call common tools without separate setup. Running plans in GitHub Actions also produces failure annotations, making it easier to spot what went wrong directly in the workflow run.
 
 ### Added
 
@@ -379,7 +428,13 @@ This release adds bundled tool packs, so common tool calls are available out of 
 </Update>
 
 <Update label="v0.2.0" description="July 10, 2026">
-This release adds two new additive capabilities for plan authors: exit gates, which let a plan end early with an explicit success or error state, and plan composability, which allows one plan to call another as a step. Together these enable building smaller, reusable plans that compose into larger workflows and stop early when a condition is met, rather than requiring every plan to be a single monolithic pipeline. Documentation (CLAUDE.md) has been updated to reflect composability, exit gates, storage, and the build process.
+#### End plans early, on purpose
+
+Plans can now use exit gates to stop execution with an explicit success or error state, instead of running to the end or failing on an unrelated step.
+
+#### Build plans from other plans
+
+Plans can now call other plans, so you can compose larger workflows out of smaller, reusable pieces rather than duplicating steps across files.
 
 ### Added
 
@@ -393,7 +448,7 @@ This release adds two new additive capabilities for plan authors: exit gates, wh
 </Update>
 
 <Update label="v0.1.0" description="July 10, 2026">
-This is the first release of graph: a CLI for authoring and running validated YAML plans as pipelines of tool calls. It brings a full agent loop (ask/chat/tools commands) backed by Anthropic and OpenAI-compatible providers, an MCP client/server layer with stdio and streamable-http transports and tool discovery, and a plan pipeline covering planning, validation, execution, and an optional solver with bus-driven replanning. Plans can define their own exec, cypher, and prompt-based tools, use a typed `{{Ex.path}}` templating dialect, persist threads across runs, and be invoked as tools themselves via plan_and_execute. The release also ships a Mintlify documentation site, a layered config system, JSON-based plan/tool run inputs, run tracing via tools_used and GRAPH_EVENTS, and a codified semver/changelog/release process.
+The first release of graph: author plans — YAML pipelines of tool calls with data flowing between steps — validate them, and run them from the terminal. A built-in agent loop backs `ask` and `chat` for conversational work, tools come from your own definitions or any MCP server, and configuration is layered so a repository can carry its own setup.
 
 ### Added
 

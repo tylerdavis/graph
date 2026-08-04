@@ -1,1 +1,5 @@
-This release adds release container images, so CI operators can pull a versioned graph image instead of building from source. Search and vector retrieval extensions are now vendored directly into the binary, removing any external dependency for those features. Bundled tool packs are now exposed under a dedicated builtin__ namespace, with a new Built-ins docs page explaining what's available, and the documentation gains a CI cookbook and a broader cookbook section organized by solution category for plan authors looking for worked examples.
+#### Run graph without building it
+Published container images make graph drop-in for CI and containerized environments, and search extensions are vendored into the binary so nothing needs installing alongside it.
+
+#### Built-ins, organized
+Bundled tools now live under one namespace with a dedicated docs page, and new cookbook sections collect worked examples by solution.

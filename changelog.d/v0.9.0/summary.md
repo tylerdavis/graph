@@ -1,1 +1,8 @@
-This release adds model fallbacks so plans can automatically fail over to another provider on an outage, a new agent control step for directing agent behavior mid-plan, and command-line management of plans alongside a new Slack pack and expanded GitHub pack (gh_release, git_log). Plan authoring rules now live in graph-core and drafting proceeds one validated step at a time. Fixes address exit-gate step status display, agent step validation gaps, exit code propagation, stdout hygiene for plan list and validate, and reshape re-rendering, along with enabling the Slack pack by default in repo-carried config. Documentation was substantially reorganized around a plans-first structure with new workbench screenshots and clearer quickstart guidance.
+#### Ride out provider outages
+Model entries can declare fallbacks, so a failing provider fails over to the next instead of failing your run.
+
+#### Let a step figure it out
+The new agent step runs a bounded tool-calling loop inside a plan for the parts you cannot script ahead of time — and still returns typed results the rest of the plan can reference.
+
+#### More places to plug in
+GitHub release and log tools, a Slack pack for posting messages, and full plan management from the command line.

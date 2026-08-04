@@ -1,1 +1,11 @@
-v0.6.0 adds conditional and iterative control flow to plans: decide steps can now fork execution into then/else branches, and map/reduce steps let a plan run a body across a list of items and fold the results. Plan authors gate branching with an if condition rather than the earlier decide-only keyword. For code review workflows, pr_review can now anchor findings as inline diff comments instead of only top-level notes.
+#### Branch execution with decide steps
+
+Plans can now include `decide` steps that fork execution into `then` and `else` branches based on a gate, letting you author plans with conditional logic instead of separate plans per outcome. The gate keyword for a `decide` step is `if`.
+
+#### Iterate over lists with map and reduce
+
+`map` and `reduce` steps run a body of steps over each item in a list, so repetitive per-item work no longer needs to be unrolled manually in the plan.
+
+#### Inline PR review comments
+
+The `pr_review` tool now anchors its findings as inline diff comments on the pull request, rather than only surfacing them elsewhere.

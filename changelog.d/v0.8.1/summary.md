@@ -1,1 +1,1 @@
-This release improves the plan workbench TUI: the root node now shows plan metadata, its input schema, and finish status, and scrolling through the steps and tool list with the mouse wheel is smoother and more accurate, with selection now moving correctly and the highlight properly hidden when it scrolls out of view. It also fixes the gh_pr_ticket default pattern so it now requires a separator, avoiding overly loose matches.
+A plan's root node in the workbench now shows its metadata, inputs, and finish up front, alongside a handful of scrolling and selection fixes.

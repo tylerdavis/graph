@@ -1,1 +1,8 @@
-v0.7.0 introduces the plan workbench, a dual-pane TUI for drafting and test-running plans with built-in research tools (read_file, grep, glob) and precise editing tools (update_metadata, add_step, update_step, delete_step), plus debug logging and improved step/finish-stage views. Storage moves from LadybugDB to file-based storage, config becomes project-first (config init and default search paths now target ./.graph), and step ids can be any unique identifier rather than requiring the E-number scheme. This release also fixes several correctness issues: draft saves can no longer clobber a different plan's file, a single broken plan file no longer takes down the whole catalog, section-scoped bare keys are no longer mistakenly treated as roots in plan validation, and workbench scrolling now correctly reaches wrapped content with PgUp/PgDn as the sole scroll binding.
+#### A workbench for plans
+A dual-pane TUI for drafting and test-running plans: research the project, make precise step-level edits, and watch runs unfold without leaving the terminal.
+
+#### Simpler storage
+Plan and thread state now lives in plain files — nothing to install or run alongside graph.
+
+#### Projects carry their setup
+Config discovery is project-first, so a repository can ship its own graph setup, and step ids can be any descriptive identifier.

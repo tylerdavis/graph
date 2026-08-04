@@ -1,1 +1,7 @@
-This release adds two new additive capabilities for plan authors: exit gates, which let a plan end early with an explicit success or error state, and plan composability, which allows one plan to call another as a step. Together these enable building smaller, reusable plans that compose into larger workflows and stop early when a condition is met, rather than requiring every plan to be a single monolithic pipeline. Documentation (CLAUDE.md) has been updated to reflect composability, exit gates, storage, and the build process.
+#### End plans early, on purpose
+
+Plans can now use exit gates to stop execution with an explicit success or error state, instead of running to the end or failing on an unrelated step.
+
+#### Build plans from other plans
+
+Plans can now call other plans, so you can compose larger workflows out of smaller, reusable pieces rather than duplicating steps across files.

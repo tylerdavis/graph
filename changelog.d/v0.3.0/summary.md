@@ -1,1 +1,3 @@
-This release adds bundled tool packs, so common tool calls are available out of the box without writing custom tool definitions, along with support for annotating GitHub Actions failures directly in workflow output. It also fixes a version-bump bug in the release script, aligning the workspace version metadata with v0.2.0.
+#### Bundled tool packs and CI failure annotations
+
+`graph` now ships with tool packs included, so plans can call common tools without separate setup. Running plans in GitHub Actions also produces failure annotations, making it easier to spot what went wrong directly in the workflow run.

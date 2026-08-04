@@ -1,1 +1,1 @@
-This release organizes `graph mcp tools` output by server, making it easier to scan available tools when multiple MCP servers are configured. It also fixes release packaging so binaries and other assets are always attached before a release is published, eliminating a class of incomplete releases. The README has been rewritten with clearer guidance, and the project is now under the MIT license.
+`graph mcp tools` now groups its output by server, and release publishing is atomic — assets can no longer go missing from a published release.

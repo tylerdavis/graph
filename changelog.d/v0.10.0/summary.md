@@ -1,1 +1,11 @@
-This release adds MCP server support so graph's plans and authoring commands can be driven remotely, along with two new step types — ask (to pause a plan and get input from the user) and filter (to partition a list by a per-item condition) — and per-file change detail on git_changed_files. It also fixes a real correctness bug: plan YAML written with non-snake_case field names could pass authoring but fail at deeper nesting levels, so every plan field is now consistently written in snake_case at every depth, and stale revision-by-redraft behavior has been removed from both authoring surfaces. The plan commands now return structured outcomes instead of printing free-form text, and --json output is now uniform across the remaining commands (including tools list and tools show), which existing scripts and CI parsing free-form output should account for.
+#### Run plans from anywhere
+graph now serves its plans over MCP, so editors, agents, and other MCP clients can run and author plans without touching the terminal.
+
+#### Smarter control flow
+Plans can pause to ask a person for input — and declare what happens when nobody is there — and can narrow a list down before working through it, which keeps automations from tripping over items they can't handle.
+
+#### Sharper diff awareness
+Changed-file listings now say what happened to each file, not just that it changed.
+
+#### A cleaner scripting surface
+Command output is structured and consistent across the CLI; scripts that scraped the old text output should switch to `--json`.

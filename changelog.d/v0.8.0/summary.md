@@ -1,1 +1,8 @@
-This release focuses on making the plan workbench more reliable and usable: mouse support (click to focus, switch tabs, select rows, wheel-scroll), clearer trace visualization with correctly ordered and timed spans, and a more robust draft workflow that validates each step incrementally and lets you paste, edit, or repair drafts rather than losing work. Tool resolution now happens against the catalog before a run starts, so missing or misconfigured tools are caught up front instead of failing mid-plan, and failed steps now carry their real error into the aborted run result. New capabilities include named model selection for prompt tools and inference, per-gate model overrides on exit/decide steps, a data pack with a reshape tool for shape projection, and metadata editing for input schema, required servers, and silent finish. Several fixes address dim-text rendering, PR reviewer false positives on truncated diffs, and workbench iteration budget resets.
+#### Steadier plan drafting
+Drafts are built incrementally — an outline, then one validated step at a time — and invalid drafts can be edited or repaired instead of discarded.
+
+#### Pick the right model per call
+Prompt tools, inference steps, and gates can each name a model, so cheap checks stay cheap and hard calls get the strong model.
+
+#### Sturdier CI reviews
+The PR-review building blocks grew marker-keyed comments, ticket extraction, and file reading at a ref, and tool resolution is now checked before a plan spends a single step.
