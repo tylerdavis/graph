@@ -42,7 +42,13 @@ pub async fn run(command: PlanCommand) -> Result<()> {
             output,
             json,
         } => report(
-            plan_edit::new_plan(&identifier, name.as_deref(), description.as_deref(), output)?,
+            plan_edit::new_plan(
+                &Runtime::init()?,
+                &identifier,
+                name.as_deref(),
+                description.as_deref(),
+                output,
+            )?,
             json,
         ),
         PlanCommand::Draft {
@@ -52,7 +58,8 @@ pub async fn run(command: PlanCommand) -> Result<()> {
             stdout,
             json,
         } => {
-            let outcome = plan_edit::draft(&goal, from.as_deref(), output, stdout).await?;
+            let outcome =
+                plan_edit::draft(&Runtime::init()?, &goal, from.as_deref(), output, stdout).await?;
             // `--stdout` asks for the document itself, so it outranks
             // `--json`: a caller who wanted raw YAML did not want it wrapped.
             report(outcome, json && !stdout)
@@ -62,15 +69,21 @@ pub async fn run(command: PlanCommand) -> Result<()> {
             attribute,
             value,
             json,
-        } => report(plan_edit::set(&target, attribute, &value)?, json),
+        } => report(
+            plan_edit::set(&Runtime::init()?, &target, attribute, &value)?,
+            json,
+        ),
         PlanCommand::Unset {
             target,
             attribute,
             json,
-        } => report(plan_edit::unset(&target, attribute)?, json),
+        } => report(
+            plan_edit::unset(&Runtime::init()?, &target, attribute)?,
+            json,
+        ),
         PlanCommand::Step { command } => {
             let json = command.json();
-            report(plan_edit::step(command)?, json)
+            report(plan_edit::step(&Runtime::init()?, command)?, json)
         }
     }
 }

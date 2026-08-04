@@ -44,6 +44,8 @@ Use `--dir .` when you are launching by hand and mean the current directory.
 
 The global layer is anchored to your home directory, so it does not depend on where anything was started. Only the project layer does, which is why only the project layer requires you to name it.
 
+**Writes follow the same rule.** The authoring tools (`graph_plan_new`, `graph_plan_draft`, `graph_plan_set`, `graph_plan_step_*`) write into the first configured plans directory of whichever layer set is active: `~/.config/graph/plans` without `--dir`, and the project's `./.graph/plans` with it. A client's working directory is never a destination, and no authoring tool takes a path argument — where a plan is written is the user's decision, expressed with `--dir`, not the calling agent's.
+
 <Note>
 `[plans].paths` *replaces* the default list rather than adding to it. A project config that pins `paths = ["./.graph/plans"]` drops `~/.config/graph/plans`, and those global plans stop being served.
 </Note>
