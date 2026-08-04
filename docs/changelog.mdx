@@ -9,6 +9,8 @@ Generated from [conventional commits](https://github.com/tylerdavis/graph/blob/m
 
 
 <Update label="v0.10.0" description="August 4, 2026">
+This release adds MCP server support so graph's plans and authoring commands can be driven remotely, along with two new step types — ask (to pause a plan and get input from the user) and filter (to partition a list by a per-item condition) — and per-file change detail on git_changed_files. It also fixes a real correctness bug: plan YAML written with non-snake_case field names could pass authoring but fail at deeper nesting levels, so every plan field is now consistently written in snake_case at every depth, and stale revision-by-redraft behavior has been removed from both authoring surfaces. The plan commands now return structured outcomes instead of printing free-form text, and --json output is now uniform across the remaining commands (including tools list and tools show), which existing scripts and CI parsing free-form output should account for.
+
 
 ### Added
 
@@ -44,9 +46,155 @@ Generated from [conventional commits](https://github.com/tylerdavis/graph/blob/m
 - serve the control steps from the tool catalog
 - keep MCP writes inside the server's own config layer
 
+
+<Accordion title="Migration required — a prompt for your coding agent" icon="wand-magic-sparkles">
+Existing plans may need updating. Copy this prompt into your coding agent in the repository that carries your plans:
+
+````markdown
+# Migrate graph plans to v0.10.0
+
+You are upgrading the graph plans in this repository — and, if the user asks,
+their global library in `~/.config/graph/plans/` — to graph v0.10.0. The
+release is fully backward compatible: any plan you leave untouched keeps
+working. But one common composition is *latently broken* and must be
+migrated wherever it appears, and two workaround patterns can now be
+simplified. Be conservative: apply only the migrations below; do not
+restructure unrelated steps.
+
+## Prerequisites
+
+- `graph --version` must be ≥ 0.10.0 wherever these plans run.
+- If plans run in CI from the container image
+  (`ghcr.io/tylerdavis/graph:vX.Y.Z`), the image pin must move to ≥ v0.10.0
+  **in the same PR** as any plan change that uses the new features — plans
+  load from the repo checkout, but the engine comes from the pinned image,
+  so they must move atomically. Check `.github/workflows/` for pins.
+
+## What v0.10.0 adds (facts to work from)
+
+**1. A `filter` control step** — partitions a list by evaluating a gate once
+per element:
+
+```yaml
+- id: E2
+  tool_name: filter
+  input:
+    over: "{{E1.changes}}"          # must render to an array
+    where:                          # per-element; {{item}}/{{index}} in scope
+      value: "{{item.status}}"
+      op: ne                        # eq|ne|gt|lt|gte|lte|empty|not_empty|contains
+      to: deleted
+```
+
+- Exactly one of `where` (logical, zero LLM calls) or `infer` (a yes/no
+  question judged per element — costs one judge call per item; optional
+  `concurrency`, and `model` to pin the verdict model).
+- Result: `{items: […], count, dropped: […], dropped_count}` — both halves,
+  input order. Empty input or an empty result is a value, not an error.
+- `filter` is the one control step allowed **inside** `decide`/`map`/`reduce`
+  bodies. There, its own `{{item}}`/`{{index}}` shadow the enclosing body's
+  inside the gate — reference the outer element only in `over`.
+- A gate referencing a field an element lacks fails the step (plans fail
+  hard). Filter before iterating rather than expecting per-item failures.
+
+**2. `builtin__git_changed_files` now returns `changes`** alongside the
+unchanged `files`/`count`: one object per file —
+`{path, status, old_path, additions, deletions, binary}` — where `status` is
+`added|modified|deleted|renamed|copied|type_changed` and `old_path` is set
+for renames/copies. Rename detection is now pinned on (`-M`): a rename is
+always a single `renamed` entry for its new path, no longer varying with the
+machine's `diff.renames` config.
+
+## Migration 1 — REQUIRED: reading changed files at a ref
+
+Find every plan where `git_changed_files` output feeds a `map` over
+`builtin__git_file` (or any tool that reads a path at a ref). Grep for
+plans containing both `git_changed_files` and `git_file`, and for
+`over:` referencing `.files`. This composition crashes on any diff
+containing a deletion (the path no longer exists at `head`).
+
+Before:
+
+```yaml
+- id: E1
+  tool_name: builtin__git_changed_files
+  input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "" }
+- id: E4
+  tool_name: map
+  input:
+    over: "{{E1.files}}"
+    do:
+      tool_name: builtin__git_file
+      input: { path: "{{item}}", ref: "{{input.head}}" }
+```
+
+After (insert a filter; note `{{item}}` becomes `{{item.path}}`):
+
+```yaml
+- id: E1
+  tool_name: builtin__git_changed_files
+  input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "" }
+- id: E1b
+  tool_name: filter
+  input:
+    over: "{{E1.changes}}"
+    where: { value: "{{item.status}}", op: ne, to: deleted }
+- id: E4
+  tool_name: map
+  input:
+    over: "{{E1b.items}}"
+    do:
+      tool_name: builtin__git_file
+      input: { path: "{{item.path}}", ref: "{{input.head}}" }
+```
+
+**Critical companion fix:** if a later prompt/template enumerates the file
+list and pairs it positionally with the map's results ("numbered to match
+the contents below"), rebuild that numbered list from the SAME array the
+map iterates (`{{#E1b.items}}{{@index}}. {{path}}{{/E1b.items}}`) — never
+from `{{E1.files}}`, which would desynchronize paths from contents. Keep
+deletions visible by adding a separate overview section iterating
+`{{#E1.changes}}` (path, status, `+{{additions}}/-{{deletions}}`) so the
+migration adds context rather than hiding it.
+
+## Migration 2 — RECOMMENDED: retire selection workarounds
+
+- **User exec tools that exist only to filter** a prior step's list (jq/grep
+  wrappers, e.g. around `git diff --diff-filter`): replace with a `filter`
+  step over the structured field, and delete the tool if nothing else uses
+  it.
+- **Whole-list LLM selection** (an `infer` step asked "which of these are
+  X?" returning a subset): replace with `filter` + `infer` asking the
+  question per item. Mind the cost — one judge call per element — and set
+  `concurrency`. Keep whole-list inference only for genuinely cross-item
+  questions (ranking, dedup).
+- Do NOT soften tools that fail loudly on missing data as a substitute —
+  loud failure on a truly unexpected path is the designed behavior; `filter`
+  exists so plans stop asking for paths that cannot exist.
+
+## Migration 3 — AWARENESS: rename semantics
+
+If any plan gates on `count` or pattern-matches `files` in a repo where
+`diff.renames` was disabled, note that renames now surface as one entry
+(new path) instead of a delete+add pair. `old_path` on the `renamed`
+entry carries the origin.
+
+## Verify
+
+1. `graph plan validate <name>` for every plan you touched — must pass.
+2. Where feasible, run the plan against a scratch input in a repo that
+   contains a deletion and a rename (use `GRAPH_STORAGE=memory` and a
+   temp `.graph/config.toml` to keep real state out of the run).
+3. Report per plan: what pattern was found, what changed, and validation
+   status. List plans you inspected and deliberately left alone, with the
+   reason.
+````
+</Accordion>
 </Update>
 
 <Update label="v0.9.0" description="July 30, 2026">
+This release adds model fallbacks so plans can automatically fail over to another provider on an outage, a new agent control step for directing agent behavior mid-plan, and command-line management of plans alongside a new Slack pack and expanded GitHub pack (gh_release, git_log). Plan authoring rules now live in graph-core and drafting proceeds one validated step at a time. Fixes address exit-gate step status display, agent step validation gaps, exit code propagation, stdout hygiene for plan list and validate, and reshape re-rendering, along with enabling the Slack pack by default in repo-carried config. Documentation was substantially reorganized around a plans-first structure with new workbench screenshots and clearer quickstart guidance.
+
 
 ### Added
 
@@ -90,6 +238,8 @@ Generated from [conventional commits](https://github.com/tylerdavis/graph/blob/m
 </Update>
 
 <Update label="v0.8.1" description="July 17, 2026">
+This release improves the plan workbench TUI: the root node now shows plan metadata, its input schema, and finish status, and scrolling through the steps and tool list with the mouse wheel is smoother and more accurate, with selection now moving correctly and the highlight properly hidden when it scrolls out of view. It also fixes the gh_pr_ticket default pattern so it now requires a separator, avoiding overly loose matches.
+
 
 ### Added
 
@@ -105,6 +255,8 @@ Generated from [conventional commits](https://github.com/tylerdavis/graph/blob/m
 </Update>
 
 <Update label="v0.8.0" description="July 17, 2026">
+This release focuses on making the plan workbench more reliable and usable: mouse support (click to focus, switch tabs, select rows, wheel-scroll), clearer trace visualization with correctly ordered and timed spans, and a more robust draft workflow that validates each step incrementally and lets you paste, edit, or repair drafts rather than losing work. Tool resolution now happens against the catalog before a run starts, so missing or misconfigured tools are caught up front instead of failing mid-plan, and failed steps now carry their real error into the aborted run result. New capabilities include named model selection for prompt tools and inference, per-gate model overrides on exit/decide steps, a data pack with a reshape tool for shape projection, and metadata editing for input schema, required servers, and silent finish. Several fixes address dim-text rendering, PR reviewer false positives on truncated diffs, and workbench iteration budget resets.
+
 
 ### Added
 
@@ -137,6 +289,8 @@ Generated from [conventional commits](https://github.com/tylerdavis/graph/blob/m
 </Update>
 
 <Update label="v0.7.0" description="July 15, 2026">
+v0.7.0 introduces the plan workbench, a dual-pane TUI for drafting and test-running plans with built-in research tools (read_file, grep, glob) and precise editing tools (update_metadata, add_step, update_step, delete_step), plus debug logging and improved step/finish-stage views. Storage moves from LadybugDB to file-based storage, config becomes project-first (config init and default search paths now target ./.graph), and step ids can be any unique identifier rather than requiring the E-number scheme. This release also fixes several correctness issues: draft saves can no longer clobber a different plan's file, a single broken plan file no longer takes down the whole catalog, section-scoped bare keys are no longer mistakenly treated as roots in plan validation, and workbench scrolling now correctly reaches wrapped content with PgUp/PgDn as the sole scroll binding.
+
 
 ### Added
 
@@ -167,6 +321,8 @@ Generated from [conventional commits](https://github.com/tylerdavis/graph/blob/m
 </Update>
 
 <Update label="v0.6.0" description="July 11, 2026">
+v0.6.0 adds conditional and iterative control flow to plans: decide steps can now fork execution into then/else branches, and map/reduce steps let a plan run a body across a list of items and fold the results. Plan authors gate branching with an if condition rather than the earlier decide-only keyword. For code review workflows, pr_review can now anchor findings as inline diff comments instead of only top-level notes.
+
 
 ### Added
 
@@ -178,6 +334,8 @@ Generated from [conventional commits](https://github.com/tylerdavis/graph/blob/m
 </Update>
 
 <Update label="v0.5.0" description="July 10, 2026">
+This release improves the `graph tools list` output, grouping tools together with a tighter, more scannable layout. It's a purely cosmetic change to CLI output and doesn't affect plans, tool definitions, or any other user-facing behavior.
+
 
 ### Added
 
@@ -186,6 +344,8 @@ Generated from [conventional commits](https://github.com/tylerdavis/graph/blob/m
 </Update>
 
 <Update label="v0.4.1" description="July 10, 2026">
+This release organizes `graph mcp tools` output by server, making it easier to scan available tools when multiple MCP servers are configured. It also fixes release packaging so binaries and other assets are always attached before a release is published, eliminating a class of incomplete releases. The README has been rewritten with clearer guidance, and the project is now under the MIT license.
+
 
 ### Added
 
@@ -202,6 +362,8 @@ Generated from [conventional commits](https://github.com/tylerdavis/graph/blob/m
 </Update>
 
 <Update label="v0.4.0" description="July 10, 2026">
+This release adds release container images, so CI operators can pull a versioned graph image instead of building from source. Search and vector retrieval extensions are now vendored directly into the binary, removing any external dependency for those features. Bundled tool packs are now exposed under a dedicated builtin__ namespace, with a new Built-ins docs page explaining what's available, and the documentation gains a CI cookbook and a broader cookbook section organized by solution category for plan authors looking for worked examples.
+
 
 ### Added
 
@@ -217,6 +379,8 @@ Generated from [conventional commits](https://github.com/tylerdavis/graph/blob/m
 </Update>
 
 <Update label="v0.3.0" description="July 10, 2026">
+This release adds bundled tool packs, so common tool calls are available out of the box without writing custom tool definitions, along with support for annotating GitHub Actions failures directly in workflow output. It also fixes a version-bump bug in the release script, aligning the workspace version metadata with v0.2.0.
+
 
 ### Added
 
@@ -229,6 +393,8 @@ Generated from [conventional commits](https://github.com/tylerdavis/graph/blob/m
 </Update>
 
 <Update label="v0.2.0" description="July 10, 2026">
+This release adds two new additive capabilities for plan authors: exit gates, which let a plan end early with an explicit success or error state, and plan composability, which allows one plan to call another as a step. Together these enable building smaller, reusable plans that compose into larger workflows and stop early when a condition is met, rather than requiring every plan to be a single monolithic pipeline. Documentation (CLAUDE.md) has been updated to reflect composability, exit gates, storage, and the build process.
+
 
 ### Added
 
@@ -242,6 +408,8 @@ Generated from [conventional commits](https://github.com/tylerdavis/graph/blob/m
 </Update>
 
 <Update label="v0.1.0" description="July 10, 2026">
+This is the first release of graph: a CLI for authoring and running validated YAML plans as pipelines of tool calls. It brings a full agent loop (ask/chat/tools commands) backed by Anthropic and OpenAI-compatible providers, an MCP client/server layer with stdio and streamable-http transports and tool discovery, and a plan pipeline covering planning, validation, execution, and an optional solver with bus-driven replanning. Plans can define their own exec, cypher, and prompt-based tools, use a typed {{Ex.path}} templating dialect, persist threads across runs, and be invoked as tools themselves via plan_and_execute. The release also ships a Mintlify documentation site, a layered config system, JSON-based plan/tool run inputs, run tracing via tools_used and GRAPH_EVENTS, and a codified semver/changelog/release process.
+
 
 ### Added
 

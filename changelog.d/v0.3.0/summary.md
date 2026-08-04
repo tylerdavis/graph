@@ -1,0 +1,1 @@
+This release adds bundled tool packs, so common tool calls are available out of the box without writing custom tool definitions, along with support for annotating GitHub Actions failures directly in workflow output. It also fixes a version-bump bug in the release script, aligning the workspace version metadata with v0.2.0.

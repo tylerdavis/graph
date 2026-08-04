@@ -51,11 +51,14 @@ fi
 
 git-cliff --tag "v$new" -o CHANGELOG.md
 # The docs changelog is the same commit history rendered as Mintlify
-# <Update> components — regenerated in full so it can never drift from
-# CHANGELOG.md or the tags.
-git-cliff --tag "v$new" -c cliff-docs.toml -o docs/changelog.mdx
+# <Update> components, fronted by an inferred per-release summary (and a
+# migration prompt when consumers must act) generated once by the
+# changelog_entry plan and committed under changelog.d/ — recomposed in
+# full here so the page can never drift from CHANGELOG.md or the tags.
+scripts/changelog-entry.sh "v$new"
+scripts/docs-changelog.sh --tag "v$new"
 
-git add Cargo.toml Cargo.lock CHANGELOG.md docs/docs.json docs/changelog.mdx
+git add Cargo.toml Cargo.lock CHANGELOG.md docs/docs.json docs/changelog.mdx changelog.d
 git commit -q -m "chore(release): v$new"
 git tag -a "v$new" -m "graph v$new"
 git push -q origin main "v$new"

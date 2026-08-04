@@ -1,0 +1,50 @@
+identifier: changelog_entry
+name: changelog_entry
+description: Writes the inferred docs-changelog front matter for one release — a user-facing summary plus, only when consumers must act, a self-contained migration prompt — from that release's CHANGELOG section. Run by scripts/changelog-entry.sh at release time; the output is committed as changelog.d/<version>/ and curated by hand from then on.
+input_schema:
+  type: object
+  required: [version, commits]
+  properties:
+    version:
+      type: string
+      description: Release tag, e.g. v0.10.0
+    commits:
+      type: string
+      description: The release's CHANGELOG.md section — grouped conventional-commit subjects
+steps:
+  - id: E0
+    tool_name: builtin__infer
+    input:
+      instruction: |-
+        You write the changelog front matter for one release of graph, a Rust CLI that runs plans — validated, reviewable YAML pipelines of tool calls — with an agent loop, a plan workbench TUI, MCP client/server support, and bundled tool packs. The audience is graph's users: plan authors and CI operators, not graph's own developers.
+
+        RELEASE: {{input.version}}
+
+        GROUPED COMMIT SUBJECTS FOR THIS RELEASE:
+        {{input.commits}}
+
+        Produce:
+
+        1. `summary` — 2 to 4 plain-prose sentences on what this release means for a user. Lead with the headline capability or fix; fold minor items into a clause or drop them. Do not restate commit subjects — write what they add up to. No marketing language, no exclamation marks.
+
+        2. `migration_needed` — true ONLY when an existing user artifact requires action to stay correct: a breaking change to the CLI surface, config format, plan/tool document formats, or template dialect; a previously-working pattern whose behavior changed; or a new capability that existing plans should adopt because their current shape is latently broken (crashes or produces wrong results on real inputs). A purely additive feature nobody must adopt is false. If a change alters a capability that was itself INTRODUCED in this same release's commit list, there is nothing pre-existing to migrate — false. Be conservative — a false true wastes every reader's attention, and a human reviews your verdict before it publishes.
+
+        3. `migration_prompt` — the empty string when migration_needed is false. Otherwise a complete, self-contained prompt the user pastes into their coding agent (Claude Code, Cursor, etc.) in the repository that carries their plans. The agent cannot access graph's documentation, so the prompt must carry everything: the exact facts of what changed (field, step, and tool names with their shapes), how to FIND affected plans/tools/workflows (concrete grep patterns), the exact before→after rewrite as YAML snippets, edge cases, and how to verify (`graph plan validate`, and a scratch run where feasible). Never invent file names, config keys, or YAML shapes the commit subjects don't evidence — if the subjects alone don't give you enough certainty to write the exact rewrite, set migration_needed false and let the human releaser author the prompt instead of publishing speculation. Instruct only the migrations this release actually requires, and tell the agent to be conservative and report what it changed and what it deliberately left alone.
+      output_schema:
+        type: object
+        required: [summary, migration_needed, migration_prompt]
+        properties:
+          summary:
+            type: string
+            description: 2-4 sentences of user-facing prose for the changelog entry
+          migration_needed:
+            type: boolean
+            description: true only when existing plans/tools/CI require action
+          migration_prompt:
+            type: string
+            description: Self-contained coding-agent prompt; empty string when migration_needed is false
+    reasoning: One structured inference over the release's grouped commit subjects produces the summary, the migration verdict, and (only when warranted) the migration prompt.
+output:
+  summary: '{{E0.summary}}'
+  migration_needed: '{{E0.migration_needed}}'
+  migration_prompt: '{{E0.migration_prompt}}'
