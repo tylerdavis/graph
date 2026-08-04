@@ -20,8 +20,8 @@ Generated from [conventional commits](https://github.com/tylerdavis/graph/blob/m
 
 """
 # Unreleased commits are deliberately absent ({% if version %}): the docs
-# publish released behavior only. The literal {%- raw -%} guards keep MDX
-# safe: < and { in a commit subject would otherwise parse as JSX.
+# publish released behavior only. The replace() filters keep MDX safe:
+# < and { in a commit subject would otherwise parse as JSX.
 body = """
 {% if version %}
 <Update label="{{ version }}" description="{{ timestamp | date(format="%B %-d, %Y") }}">
