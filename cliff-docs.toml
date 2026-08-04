@@ -14,12 +14,9 @@
 header = """
 ---
 title: "Changelog"
-description: "What shipped in each graph release"
 icon: "clock-rotate-left"
 rss: true
 ---
-
-Generated from [conventional commits](https://github.com/tylerdavis/graph/blob/main/RELEASING.md) on every release.
 
 """
 # Unreleased commits are deliberately absent ({% if version %}): the docs
