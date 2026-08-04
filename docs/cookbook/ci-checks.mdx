@@ -41,7 +41,7 @@ No install step (the release workflow publishes the image), no shell logic (plan
 
 **Repo-carried setup.** graph layers `./.graph/config.toml` over the global config and loads `./.graph/{plans,tools}/`, so the repo carries everything the checks need — config (secrets as `${ENV}` references that fail loudly when missing), plans, and the rubric tool — all reviewed like any other code.
 
-**The github tool pack.** `[tools] packs = ["github"]` enables the [bundled tools](/tools/builtins) the plans build on: `git_changed_files`, `git_diff`, `git_file`, `git_grep`, `gh_pr_meta`, `gh_pr_comment`, `gh_pr_inline_comments`, `gh_pr_ticket`.
+**The github tool pack.** `[tools] packs = ["github"]` enables the [bundled tools](/tools/builtins) the plans build on: `git_changed_files`, `git_diff`, `git_file`, `git_grep`, `git_log`, `gh_pr_meta`, `gh_pr_comment`, `gh_pr_inline_comments`, `gh_pr_review_threads`, `gh_pr_thread_sync`, `gh_pr_ticket`, `gh_release`.
 
 ## `docs_drift` — an inferred gate as a merge check
 
@@ -101,7 +101,7 @@ output:
 
 ## `graph_review_9000` — a self-contained reviewer
 
-The plan fetches its own context, reviews across eight passes, anchors findings as inline diff comments, and posts its own summary comment linking to them. The CI step is `graph plan run graph_review_9000 --input pr="$PR"` — nothing else:
+The plan fetches its own context, reviews across eight passes, and maintains its findings as living review threads: prior findings are read back with their thread states, audited for transitions (fixed in code → resolved with a reply, dismissed by a human → declined), and fed to the reviewer as known context, so only genuinely new findings post as inline comments — open threads and human replies are never deleted. A summary comment with lifecycle counts refreshes in place. The CI step is `graph plan run graph_review_9000 --input pr="$PR"` — nothing else:
 
 ```yaml
 steps:
@@ -121,27 +121,39 @@ steps:
       when: { value: "{{E2.text}}", op: empty }
       status: success
       message: nothing to review
-  - id: E4
+  - id: E3b
     tool_name: filter                 # deleted files have no contents at head
     input:
       over: "{{E1.changes}}"
       where: { value: "{{item.status}}", op: ne, to: deleted }
-  - id: E4b
+  - id: E4
     tool_name: map                    # full file contents at head, 8 at a time
     input:
-      over: "{{E4.items}}"
+      over: "{{E3b.items}}"
       concurrency: 8
       do:
         tool_name: builtin__git_file
         input: { path: "{{item.path}}", ref: "{{E0.head_sha}}", max_bytes: 30000 }
+  - id: E4b
+    tool_name: builtin__gh_pr_review_threads  # prior findings + thread states
+    input: { pr: "{{input.pr}}", marker: "graph_review_9000:finding" }
+  - id: E4c
+    tool_name: builtin__infer         # transition audit: resolve / decline / none
+    input:
+      instruction: |
+        ... decide, for each open finding, whether the code at head shows it
+        fixed (resolve), a human reply dismisses it (decline), or it stays
+        open — insufficient evidence keeps it open ...
+      output_schema: { type: object, properties: { findings: ... } }
   - id: E5
     tool_name: builtin__infer         # the rubric: eight passes + output schema
     input:
       instruction: |
-        You are a principal engineer ... (the eight passes, inline)
+        You are a principal engineer ... (the eight passes, inline, plus the
+        known findings from E4c: report only genuinely NEW findings)
       output_schema: { type: object, properties: { passes: ..., findings: ... } }
   - id: E6
-    tool_name: map                    # findings -> alert-style comment bodies
+    tool_name: map                    # findings -> comment bodies + payloads
     input:
       over: "{{E5.findings}}"
       concurrency: 8
@@ -151,17 +163,19 @@ steps:
           shape:
             path: "{{item.file}}"
             line: "{{item.line}}"
+            payload: { label: "{{item.label}}", severity: "{{item.severity}}", ... }
             body: |
               > [!{{item.alert_type}}]
               > **{{item.severity_label}}: {{item.finding}}**
               > {{item.explanation}}
   - id: E7
-    tool_name: builtin__gh_pr_inline_comments
+    tool_name: builtin__gh_pr_thread_sync   # post new, transition existing
     input:
       pr: "{{input.pr}}"
       head_sha: "{{E0.head_sha}}"
-      marker: "graph_review_9000:inline"
-      comments: "{{E6.results}}"
+      marker: "graph_review_9000:finding"
+      creates: "{{E6.results}}"
+      threads: "{{E4c.findings}}"
   - id: E8
     tool_name: builtin__gh_pr_comment
     input:
@@ -175,6 +189,9 @@ steps:
         |---|---|---|
         {{#E5.passes}}| {{number}} | {{area}} | {{status_emoji}} {{status_label}} |
         {{/E5.passes}}
+
+        🧵 {{E7.created_count}} new · {{E7.still_open_count}} open ·
+        {{E7.resolved_now_count}} resolved · {{E7.declined_now_count}} declined
 ```
 
 Before trusting a plan like this with write access, step through it on a real PR in the [workbench](/workbench/plan-workbench) — a breakpoint on the posting steps shows exactly what would be sent:
@@ -191,11 +208,13 @@ Before trusting a plan like this with write access, step through it on a real PR
 - **Ordering is asked for, not computed.** The template dialect can't sort, so the schema asks the model for `blocker_ordinal` and a severity-ordered `passes` array, and the templates iterate in the order they arrive. Logic belongs in the steps or the schema — never the markdown.
 - **Declare the output schema — it's enforced.** The schema pins `passes` to exactly eight (`minItems`/`maxItems`) and marks every finding field required. Models occasionally omit required fields even under provider-forced structured output; graph validates the result against the declared schema and runs one `repair`-role fix-up, so `{{E5.overall_framing}}` can never be a missing key at render time.
 - **Review the whole diff.** The diff is scoped to nothing (`paths: "."`) minus generated files — an early version reviewed only `crates/` and `docs/`, which blinded it to the highest-leverage changes in an infra PR: workflows, plans, and the exec tools they run.
-- **Ground absence claims in the complete file list, never the diff.** The diff is byte-capped and git orders hunks by path, so on a big PR the `docs/` hunks are exactly what falls off the end — an early version reported "docs not updated" false positives on a PR whose docs edits sat past the truncation point. The fix is layered: `git_changed_files` (E1) feeds the reviewer a complete, never-truncated file list, the `filter` (E4) drops deleted entries whose contents can't exist at head — so the `map` over `git_file` (E4b) reads whole files rather than hunks without dying on a deletion, and its results stay index-aligned with `{{E4.items}}` by construction — `git_diff` appends a visible `[diff truncated: …]` marker when it cuts, and the rubric judges docs-parity and test-parity only from the complete list.
+- **Ground absence claims in the complete file list, never the diff.** The diff is byte-capped and git orders hunks by path, so on a big PR the `docs/` hunks are exactly what falls off the end — an early version reported "docs not updated" false positives on a PR whose docs edits sat past the truncation point. The fix is layered: `git_changed_files` (E1) feeds the reviewer a complete, never-truncated file list, the `filter` (E3b) drops deleted entries whose contents can't exist at head — so the `map` over `git_file` (E4) reads whole files rather than hunks without dying on a deletion, and its results stay index-aligned with `{{E3b.items}}` by construction — `git_diff` appends a visible `[diff truncated: …]` marker when it cuts, and the rubric judges docs-parity and test-parity only from the complete list.
 - **Ask the model to refute itself.** The instruction closes with a gate: try to disprove each blocker against the diff and demote what doesn't survive, and mark a pass `unverified` rather than `pass` for anything you couldn't check. A false clear costs as much as a false blocker.
-- **Findings flow through the pipeline, enriched at each step.** `reshape` (E6) adds `path`/`body` to each finding without dropping the original fields; `gh_pr_inline_comments` (E7) passes those extras through and adds `url` where a comment posted. So the blockers list (E8) renders from one array — severity and label from the review, the link from the post — with no join logic, which the [template dialect](/plans/template-language) couldn't express anyway. Findings the model couldn't pin to a line (or whose line the API rejects) simply come back without `url`, and the inverted section renders them as plain text.
-- **Repeated runs refresh everything in place.** Both posting tools take a distinct `marker`, embed it as a hidden tag, and find-and-edit (or delete-then-repost) the comment carrying it. Each push updates the review instead of stacking. Prefer a marker even for a lone plan: without one `gh_pr_comment` falls back to `--edit-last`, which keys on the token identity, so the day a second plan comments on the same PR as the same bot the two summaries start overwriting each other. One marker per plan per comment surface.
-- **Inline comments stay advisory.** They post as plain review comments, not a `REQUEST_CHANGES` review — they only gate merging on repos with _Require conversation resolution before merging_ enabled.
+- **Findings flow through the pipeline, enriched at each step.** `reshape` (E6) adds `path`/`body`/`payload` to each finding without dropping the original fields; `gh_pr_thread_sync` (E7) passes those extras through and adds `url` where a comment posted. So the blockers list (E8) renders from one array — severity and label from the review, the link from the post — with no join logic, which the [template dialect](/plans/template-language) couldn't express anyway. Findings the model couldn't pin to a line (or whose line the API rejects) simply come back without `url`, and the inverted section renders them as plain text.
+- **Findings are threads with a lifecycle, not comments to repost.** Each finding's comment embeds a hidden JSON payload (its label, severity, file, line, headline); `gh_pr_review_threads` (E4b) reads them back next run with thread states — open, resolved, declined (a human closed or dismissed it). Open threads and human replies are never deleted, so a conversation on a finding survives every push.
+- **Resolution is judged against the code, not against re-detection.** A dedicated audit call (E4c) transitions an open finding only when the diff and file contents at head show the fix, and treats insufficient evidence as "stays open" — if it instead resolved whatever the reviewer failed to re-find, one flaky review pass would silently close real findings. Declines come only from explicit human replies, never from silence. The reviewer (E5) then sees the known findings purely as a suppression list: report only what's new.
+- **The summary comment still refreshes in place.** `gh_pr_comment` (E8) takes its own `marker`, embeds it as a hidden tag, and find-and-edits the comment carrying it. Prefer a marker even for a lone plan: without one it falls back to `--edit-last`, which keys on the token identity, so the day a second plan comments on the same PR as the same bot the two summaries start overwriting each other. One marker per plan per comment surface.
+- **Inline comments stay advisory — but resolution now means something.** They post as plain review comments, not a `REQUEST_CHANGES` review, so they only gate merging on repos with _Require conversation resolution before merging_ enabled — and on those repos the lifecycle pulls its weight: fixed findings resolve themselves out of the gate's way, while a finding the author disagrees with is one human "resolve conversation" click (read back as `declined`, never re-raised).
 
 ## The workflow
 
@@ -204,7 +223,7 @@ The full file is `.github/workflows/graph-checks.yaml`; the notable choices:
 - **The release image is the runtime.** `container: ghcr.io/tylerdavis/graph:vX.Y.Z` carries graph plus `git`, `jq`, and `gh` (pinned from official releases — distro packages lag the JSON fields and flags the pack tools use) and the `safe.directory` git config that Actions' foreign-owned workspace mounts require. The image tag is the version pin; `packages: read` plus `GITHUB_TOKEN` credentials pull it while private.
 - **`GRAPH_EVENTS=github`** makes a failing plan annotate the run itself — the one sanctioned case of graph writing non-deliverable output to stdout, failure-paths only ([details](/reference/scripting-contract#streams)).
 - **Guards are cheap and layered**: drafts skipped, fork PRs skipped (they have no `ANTHROPIC_API_KEY`, and the `${VAR}` reference in the repo config fails loudly as the backstop), one concurrency group per PR with cancel-in-progress.
-- **Cost per PR**: worst case one `judge`-role call (docs-drift) plus one review call, the latter carrying full file contents alongside the diff; docs-only PRs pay only the review; drafts pay nothing.
+- **Cost per PR**: worst case one `judge`-role call (docs-drift) plus two review-sized calls — the transition audit and the review itself, each carrying full file contents alongside the diff (the audit needs the same grounding to verify a fix; on a first review it carries the context and an empty findings list); docs-only PRs pay only the review side; drafts pay nothing.
 - **One job per plan, no `needs` between them.** The two jobs are independent and run in parallel; only docs-drift can fail the check (exit 4). The reviewer always exits 0 — its comments are the deliverable, not a gate.
 
 Want the reviewer to comment under its own name and avatar instead of **github-actions\[bot\]**? That's a token swap — see [A custom bot identity](/cookbook/bot-identity).
