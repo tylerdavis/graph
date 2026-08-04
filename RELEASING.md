@@ -11,8 +11,10 @@ mise run release:patch    # or release:minor / release:major
 This bumps the single workspace version in `Cargo.toml` and the docs'
 `release_version` variable in `docs/docs.json` (the installation page,
 download cards, and cookbook image pins render from it), regenerates
-`CHANGELOG.md` from conventional commits (git-cliff), commits as
-`chore(release): vX.Y.Z`, tags `vX.Y.Z`, and pushes. The pushed tag triggers
+`CHANGELOG.md` and the docs changelog page `docs/changelog.mdx` (same
+commits, rendered as Mintlify `<Update>` components via `cliff-docs.toml`;
+never edit it by hand), commits as `chore(release): vX.Y.Z`, tags
+`vX.Y.Z`, and pushes. The pushed tag triggers
 `.github/workflows/release.yaml`, which builds and uploads release binaries
 (macOS arm64, Linux x86_64) with checksums to the GitHub release.
 

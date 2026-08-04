@@ -50,8 +50,12 @@ if [ "$level" != "current" ]; then
 fi
 
 git-cliff --tag "v$new" -o CHANGELOG.md
+# The docs changelog is the same commit history rendered as Mintlify
+# <Update> components — regenerated in full so it can never drift from
+# CHANGELOG.md or the tags.
+git-cliff --tag "v$new" -c cliff-docs.toml -o docs/changelog.mdx
 
-git add Cargo.toml Cargo.lock CHANGELOG.md docs/docs.json
+git add Cargo.toml Cargo.lock CHANGELOG.md docs/docs.json docs/changelog.mdx
 git commit -q -m "chore(release): v$new"
 git tag -a "v$new" -m "graph v$new"
 git push -q origin main "v$new"

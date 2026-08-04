@@ -85,6 +85,10 @@
       {
         "group": "Architecture",
         "pages": ["architecture/execution-model", "architecture/storage"]
+      },
+      {
+        "group": "Changelog",
+        "pages": ["changelog"]
       }
     ]
   },
