@@ -1,0 +1,72 @@
+# exec tool: git-cliff's release context, digested for logic-less
+# templating — the jq does everything the template dialect deliberately
+# cannot: date formatting (gmtime; %e then squeezing the pad space, since
+# BSD strftime lacks %-d), group_by (alphabetical, matching the rendered
+# CHANGELOG), subject extraction, and MDX escaping of < and { so a
+# commit subject can never break the docs build. Unreleased commits
+# surface as a release with version: null — the composing plan's filter
+# step drops them.
+name: cliff_context
+description: >
+  Releases from git-cliff as template-ready data: one {version, date,
+  groups: [{name, subjects}]} per release, newest first, subjects
+  MDX-escaped. Pass tag to include an about-to-be-cut release; "" for
+  the tagged history only. An entry with a null version carries the
+  unreleased commits — filter it out with a `filter` step.
+kind: exec
+command: bash
+args:
+  - "-ceuo"
+  - "pipefail"
+  - |
+    if [ -n "$1" ]; then
+      context=$(git-cliff -c cliff.toml --tag "$1" --context)
+    else
+      context=$(git-cliff -c cliff.toml --context)
+    fi
+    jq '{releases: [ .[] | {
+      version: .version,
+      ident: (if .version then (.version | sub("^v"; "V") | gsub("[.-]"; "_")) else null end),
+      date: (if .timestamp then (.timestamp | gmtime | strftime("%B %e, %Y") | gsub("  "; " ")) else null end),
+      groups: (.commits
+        | map(select(.group != null))
+        | group_by(.group)
+        | map({name: .[0].group,
+               subjects: map({subject: (.message | split("\n")[0]
+                             | gsub("<"; "&lt;") | gsub("\\{"; "&#123;"))})}))
+    } ]}' <<<"$context"
+  - cliff_context
+  - "{{input.tag}}"
+output: json
+timeout_secs: 30
+read_only: true
+input_schema:
+  type: object
+  required: [tag]
+  properties:
+    tag:
+      type: string
+      description: Tag for an unreleased-but-about-to-be-cut version (release time); "" for tagged history only
+output_schema:
+  type: object
+  properties:
+    releases:
+      type: array
+      items:
+        type: object
+        properties:
+          version: { type: ["string", "null"] }
+          ident:   { type: ["string", "null"], description: MDX-component-safe version, e.g. V0_10_0 }
+          date:    { type: ["string", "null"] }
+          groups:
+            type: array
+            items:
+              type: object
+              properties:
+                name:     { type: string }
+                subjects:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      subject: { type: string }

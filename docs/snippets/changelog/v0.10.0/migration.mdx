@@ -1,0 +1,139 @@
+````markdown
+# Migrate graph plans to v0.10.0
+
+You are upgrading the graph plans in this repository — and, if the user asks,
+their global library in `~/.config/graph/plans/` — to graph v0.10.0. The
+release is fully backward compatible: any plan you leave untouched keeps
+working. But one common composition is *latently broken* and must be
+migrated wherever it appears, and two workaround patterns can now be
+simplified. Be conservative: apply only the migrations below; do not
+restructure unrelated steps.
+
+## Prerequisites
+
+- `graph --version` must be ≥ 0.10.0 wherever these plans run.
+- If plans run in CI from the container image
+  (`ghcr.io/tylerdavis/graph:vX.Y.Z`), the image pin must move to ≥ v0.10.0
+  **in the same PR** as any plan change that uses the new features — plans
+  load from the repo checkout, but the engine comes from the pinned image,
+  so they must move atomically. Check `.github/workflows/` for pins.
+
+## What v0.10.0 adds (facts to work from)
+
+**1. A `filter` control step** — partitions a list by evaluating a gate once
+per element:
+
+```yaml
+- id: E2
+  tool_name: filter
+  input:
+    over: "{{E1.changes}}"          # must render to an array
+    where:                          # per-element; {{item}}/{{index}} in scope
+      value: "{{item.status}}"
+      op: ne                        # eq|ne|gt|lt|gte|lte|empty|not_empty|contains
+      to: deleted
+```
+
+- Exactly one of `where` (logical, zero LLM calls) or `infer` (a yes/no
+  question judged per element — costs one judge call per item; optional
+  `concurrency`, and `model` to pin the verdict model).
+- Result: `{items: […], count, dropped: […], dropped_count}` — both halves,
+  input order. Empty input or an empty result is a value, not an error.
+- `filter` is the one control step allowed **inside** `decide`/`map`/`reduce`
+  bodies. There, its own `{{item}}`/`{{index}}` shadow the enclosing body's
+  inside the gate — reference the outer element only in `over`.
+- A gate referencing a field an element lacks fails the step (plans fail
+  hard). Filter before iterating rather than expecting per-item failures.
+
+**2. `builtin__git_changed_files` now returns `changes`** alongside the
+unchanged `files`/`count`: one object per file —
+`{path, status, old_path, additions, deletions, binary}` — where `status` is
+`added|modified|deleted|renamed|copied|type_changed` and `old_path` is set
+for renames/copies. Rename detection is now pinned on (`-M`): a rename is
+always a single `renamed` entry for its new path, no longer varying with the
+machine's `diff.renames` config.
+
+## Migration 1 — REQUIRED: reading changed files at a ref
+
+Find every plan where `git_changed_files` output feeds a `map` over
+`builtin__git_file` (or any tool that reads a path at a ref). Grep for
+plans containing both `git_changed_files` and `git_file`, and for
+`over:` referencing `.files`. This composition crashes on any diff
+containing a deletion (the path no longer exists at `head`).
+
+Before:
+
+```yaml
+- id: E1
+  tool_name: builtin__git_changed_files
+  input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "" }
+- id: E4
+  tool_name: map
+  input:
+    over: "{{E1.files}}"
+    do:
+      tool_name: builtin__git_file
+      input: { path: "{{item}}", ref: "{{input.head}}" }
+```
+
+After (insert a filter; note `{{item}}` becomes `{{item.path}}`):
+
+```yaml
+- id: E1
+  tool_name: builtin__git_changed_files
+  input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "" }
+- id: E1b
+  tool_name: filter
+  input:
+    over: "{{E1.changes}}"
+    where: { value: "{{item.status}}", op: ne, to: deleted }
+- id: E4
+  tool_name: map
+  input:
+    over: "{{E1b.items}}"
+    do:
+      tool_name: builtin__git_file
+      input: { path: "{{item.path}}", ref: "{{input.head}}" }
+```
+
+**Critical companion fix:** if a later prompt/template enumerates the file
+list and pairs it positionally with the map's results ("numbered to match
+the contents below"), rebuild that numbered list from the SAME array the
+map iterates (`{{#E1b.items}}{{@index}}. {{path}}{{/E1b.items}}`) — never
+from `{{E1.files}}`, which would desynchronize paths from contents. Keep
+deletions visible by adding a separate overview section iterating
+`{{#E1.changes}}` (path, status, `+{{additions}}/-{{deletions}}`) so the
+migration adds context rather than hiding it.
+
+## Migration 2 — RECOMMENDED: retire selection workarounds
+
+- **User exec tools that exist only to filter** a prior step's list (jq/grep
+  wrappers, e.g. around `git diff --diff-filter`): replace with a `filter`
+  step over the structured field, and delete the tool if nothing else uses
+  it.
+- **Whole-list LLM selection** (an `infer` step asked "which of these are
+  X?" returning a subset): replace with `filter` + `infer` asking the
+  question per item. Mind the cost — one judge call per element — and set
+  `concurrency`. Keep whole-list inference only for genuinely cross-item
+  questions (ranking, dedup).
+- Do NOT soften tools that fail loudly on missing data as a substitute —
+  loud failure on a truly unexpected path is the designed behavior; `filter`
+  exists so plans stop asking for paths that cannot exist.
+
+## Migration 3 — AWARENESS: rename semantics
+
+If any plan gates on `count` or pattern-matches `files` in a repo where
+`diff.renames` was disabled, note that renames now surface as one entry
+(new path) instead of a delete+add pair. `old_path` on the `renamed`
+entry carries the origin.
+
+## Verify
+
+1. `graph plan validate <name>` for every plan you touched — must pass.
+2. Where feasible, run the plan against a scratch input in a repo that
+   contains a deletion and a rename (use `GRAPH_STORAGE=memory` and a
+   temp `.graph/config.toml` to keep real state out of the run).
+3. Report per plan: what pattern was found, what changed, and validation
+   status. List plans you inspected and deliberately left alone, with the
+   reason.
+````

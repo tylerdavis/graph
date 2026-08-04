@@ -1,0 +1,77 @@
+identifier: compose_changelog
+name: compose_changelog
+description: Composes docs/changelog.mdx from git-cliff's release context plus the committed docs/snippets/changelog/ snippets — one Mintlify <Update> per release that IMPORTS its inferred summary (and migration prompt, when the release requires action) as Mintlify snippets rather than embedding them, so each piece of prose exists in exactly one file. Deterministic and zero-inference, safe to re-run any time; that is also the curation loop — edit a snippet, re-run this, commit both. Run by scripts/release.sh with tag=v<new> at release time.
+input_schema:
+  type: object
+  required: [tag]
+  properties:
+    tag:
+      type: string
+      description: About-to-be-cut tag at release time (e.g. v0.11.0); "" to compose the tagged history only
+      default: ''
+steps:
+  - id: E0
+    tool_name: user__cliff_context
+    input:
+      tag: '{{input.tag}}'
+    reasoning: Every release as template-ready data — version, an MDX-component-safe ident, human date, alphabetically grouped MDX-escaped subjects — newest first, plus a version-null entry for unreleased commits.
+  - id: E1
+    tool_name: filter
+    input:
+      over: '{{E0.releases}}'
+      where:
+        value: '{{item.version}}'
+        op: not_empty
+    reasoning: The docs publish released behavior only — drop the version-null unreleased entry.
+  - id: E2
+    tool_name: map
+    input:
+      over: '{{E1.items}}'
+      concurrency: 4
+      do:
+        - id: B0
+          tool_name: user__snippet_status
+          input:
+            version: '{{item.version}}'
+        - id: B1
+          tool_name: builtin__reshape
+          input:
+            shape:
+              imports: |-
+                {{#B0.has_summary}}import Summary{{item.ident}} from '/snippets/changelog/{{item.version}}/summary.mdx';
+                {{/B0.has_summary}}{{#B0.has_migration}}import Migration{{item.ident}} from '/snippets/changelog/{{item.version}}/migration.mdx';
+                {{/B0.has_migration}}
+              block: |-
+                <Update label="{{item.version}}" description="{{item.date}}">
+                {{#B0.has_summary}}<Summary{{item.ident}} />
+
+                {{/B0.has_summary}}{{#B0.has_migration}}<Accordion title="Migration required — a prompt for your coding agent" icon="wand-magic-sparkles">
+                Existing plans may need updating. Copy this prompt into your coding agent in the repository that carries your plans:
+
+                <Migration{{item.ident}} />
+                </Accordion>
+
+                {{/B0.has_migration}}{{#item.groups}}### {{name}}
+
+                {{#subjects}}- {{subject}}
+                {{/subjects}}
+                {{/item.groups}}</Update>
+    reasoning: Per release, presence flags from snippet_status (which also enforces MDX safety on the summary, failing loudly with the file named) drive an import line and an <Update> block that references the snippet components — content stays in the snippet files.
+  - id: E3
+    tool_name: user__write_changelog_page
+    input:
+      content: |-
+        ---
+        title: "Changelog"
+        icon: "clock-rotate-left"
+        rss: true
+        ---
+
+        {{#E2.results}}{{imports}}{{/E2.results}}
+        {{#E2.results}}{{block}}
+
+        {{/E2.results}}
+    reasoning: Assemble the page — static frontmatter, every import (MDX requires them before content), then the blocks newest-first — and write it to the one path the tool permits.
+output:
+  path: '{{E3.path}}'
+  releases: '{{E1.count}}'

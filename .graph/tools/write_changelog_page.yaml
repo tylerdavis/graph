@@ -1,0 +1,31 @@
+# exec tool (side-effecting): write the composed changelog page. The
+# destination is fixed here rather than taken as input — this tool can
+# write exactly one file, which is the whole point of wrapping the write
+# in a tool instead of accepting arbitrary paths.
+name: write_changelog_page
+description: >
+  Write fully-composed MDX content to docs/changelog.mdx (the only path
+  this tool can write). The content must be complete — frontmatter
+  included; nothing is added or checked here.
+kind: exec
+command: bash
+args:
+  - "-ceu"
+  - |
+    printf '%s' "$1" > docs/changelog.mdx
+    jq -n '{path: "docs/changelog.mdx", bytes: '"$(wc -c < docs/changelog.mdx | tr -d ' ')"'}'
+  - write_changelog_page
+  - "{{input.content}}"
+output: json
+timeout_secs: 10
+read_only: false
+input_schema:
+  type: object
+  required: [content]
+  properties:
+    content: { type: string, description: The complete page, frontmatter included }
+output_schema:
+  type: object
+  properties:
+    path:  { type: string }
+    bytes: { type: integer }
