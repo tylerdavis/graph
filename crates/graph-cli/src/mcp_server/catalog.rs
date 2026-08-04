@@ -160,7 +160,7 @@ pub fn authoring_tools() -> Vec<Tool> {
                 "properties": {
                     "target": target_property(),
                     "id": {"type": "string", "description": "Step id — how later steps reference it as {{<id>.field}}."},
-                    "tool": {"type": "string", "description": "A tool name from graph_tools_list, or a control step: exit, agent, ask, decide, map, reduce."},
+                    "tool": {"type": "string", "description": "A tool name from graph_tools_list, or a control step: exit, agent, ask, decide, filter, map, reduce."},
                     "input": {"type": "object", "description": "The step's input object. Leaf strings may be templates over earlier results, e.g. {{E1.field}} or {{input.x}}."},
                     "reasoning": {"type": "string", "description": "Why this step exists, carried into the plan for readers."},
                     "before": {"type": "string", "description": "Insert before this step id instead of appending."},

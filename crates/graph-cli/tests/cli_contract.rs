@@ -277,7 +277,7 @@ fn the_catalog_serves_the_control_steps_an_author_has_to_write() {
     let envelope = run.json();
     let tools = envelope["tools"].as_array().expect("tools array");
 
-    for name in ["exit", "ask", "agent", "decide", "map", "reduce"] {
+    for name in ["exit", "ask", "agent", "decide", "filter", "map", "reduce"] {
         let found = tools
             .iter()
             .find(|tool| tool["name"] == serde_json::json!(name))

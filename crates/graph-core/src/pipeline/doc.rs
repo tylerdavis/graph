@@ -226,13 +226,14 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
             && step.tool_name != super::AGENT_TOOL
             && step.tool_name != super::ASK_TOOL
             && step.tool_name != super::DECIDE_TOOL
+            && step.tool_name != super::FILTER_TOOL
             && step.tool_name != super::MAP_TOOL
             && step.tool_name != super::REDUCE_TOOL
         {
             return Err(format!(
                 "step {} tool '{}' is not a namespaced tool name (like \
                  linear__list_issues) or one of the control steps: \
-                 exit, agent, ask, decide, map, reduce, plan_and_execute",
+                 exit, agent, ask, decide, filter, map, reduce, plan_and_execute",
                 step.id, step.tool_name
             ));
         }
@@ -254,6 +255,9 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
                 &step.id,
                 &mut problems,
             ),
+            name if name == super::FILTER_TOOL => {
+                super::filter::validate_filter_input(&step.input, &seen, &step.id, &mut problems)
+            }
             name if name == super::MAP_TOOL => super::iterate::validate_map_input(
                 &step.input,
                 &seen,
@@ -532,7 +536,7 @@ solver:
         let err = doc_from(&DOC.replace("linear__list_issues", "gate")).unwrap_err();
         assert!(err.contains("'gate'"), "{err}");
         assert!(
-            err.contains("exit, agent, ask, decide, map, reduce, plan_and_execute"),
+            err.contains("exit, agent, ask, decide, filter, map, reduce, plan_and_execute"),
             "{err}"
         );
     }

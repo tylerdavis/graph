@@ -14,7 +14,7 @@ Every capability in graph is a tool in a single catalog, visible to the agent, t
 | `plan__project_status` | a plan document — [plans](/plans/overview) |
 | `plan_and_execute` | reserved: [on-the-fly planning](/plans/the-planner) |
 
-A plan step's `tool_name` may also be one of the six **control steps** — [`exit`](/plans/exit-gates), [`ask`](/plans/ask-step), [`agent`](/plans/agent-step), [`decide`](/plans/branching), and [`map`/`reduce`](/plans/iteration). They are bare names with no namespace, and they are not tools: the executor evaluates them, so they belong to no registry and cannot be invoked. They are listed and described alongside the catalog anyway, under the `(control)` source, because writing a step needs their input schemas exactly as much as a tool's.
+A plan step's `tool_name` may also be one of the seven **control steps** — [`exit`](/plans/exit-gates), [`ask`](/plans/ask-step), [`agent`](/plans/agent-step), [`decide`](/plans/branching), [`filter`](/plans/selection), and [`map`/`reduce`](/plans/iteration). They are bare names with no namespace, and they are not tools: the executor evaluates them, so they belong to no registry and cannot be invoked. They are listed and described alongside the catalog anyway, under the `(control)` source, because writing a step needs their input schemas exactly as much as a tool's.
 
 ## Inspecting and invoking
 

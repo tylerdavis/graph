@@ -21,7 +21,7 @@
 use super::body::{parse_branch, Branch};
 use super::doc::PlanDoc;
 use super::plan::Plan;
-use super::{AGENT_TOOL, ASK_TOOL, DECIDE_TOOL, EXIT_TOOL, MAP_TOOL, REDUCE_TOOL};
+use super::{AGENT_TOOL, ASK_TOOL, DECIDE_TOOL, EXIT_TOOL, FILTER_TOOL, MAP_TOOL, REDUCE_TOOL};
 use std::collections::BTreeSet;
 
 /// Glob matching over tool names, with `*` as "any run of characters",
@@ -286,7 +286,7 @@ fn check_tool(
     check: &mut CatalogCheck,
 ) {
     match tool {
-        AGENT_TOOL | ASK_TOOL | EXIT_TOOL | DECIDE_TOOL | MAP_TOOL | REDUCE_TOOL
+        AGENT_TOOL | ASK_TOOL | EXIT_TOOL | DECIDE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL
         | "plan_and_execute" => {}
         _ if super::plan::workbench_tool_problem(tool).is_some() => {
             // The static layer rejects these with the full explanation;

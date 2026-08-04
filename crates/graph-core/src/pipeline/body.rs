@@ -7,9 +7,10 @@
 //! merge are keyed on it), but their work counts in `steps_executed`.
 
 use super::exit::PlanExit;
+use super::filter::FilterFail;
 use super::plan::{check_step_id, Step};
 use super::state::{BusEntry, BusKind};
-use super::{Pipeline, AGENT_TOOL, ASK_TOOL, EXIT_TOOL};
+use super::{Pipeline, AGENT_TOOL, ASK_TOOL, EXIT_TOOL, FILTER_TOOL};
 use crate::template::{render_input, RenderError, Roots};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -64,12 +65,12 @@ pub fn parse_branch(name: &str, raw: &Value) -> Result<Branch, String> {
 /// steps, iteration bodies may not.
 pub fn body_schema(allow_exit: bool) -> Value {
     let tool_name_doc = if allow_exit {
-        "Exact tool name; may be plan__* for a multi-step body, agent, or exit \
-         (ends the WHOLE plan from inside the branch). Never decide, map, or \
-         reduce."
+        "Exact tool name; may be plan__* for a multi-step body, agent, filter, \
+         or exit (ends the WHOLE plan from inside the branch). Never decide, \
+         map, or reduce."
     } else {
-        "Exact tool name; may be plan__* for a multi-step body, or agent. \
-         Never exit, decide, map, or reduce."
+        "Exact tool name; may be plan__* for a multi-step body, agent, or \
+         filter. Never exit, decide, map, or reduce."
     };
     json!({
         "oneOf": [
@@ -135,6 +136,10 @@ pub fn validate_body(
                 super::agent::validate_agent_input(&call.input, &body_seen, step_id, problems);
             } else if call.tool_name == super::ASK_TOOL {
                 super::ask::validate_ask_input(&call.input, &body_seen, step_id, problems);
+            } else if call.tool_name == FILTER_TOOL {
+                // A nested filter's gate shadows this body's pseudo-roots;
+                // its validator layers its own `item`/`index` on top.
+                super::filter::validate_filter_input(&call.input, &body_seen, step_id, problems);
             } else {
                 for value in call.input.values() {
                     super::check_templates(value, &body_seen, step_id, problems);
@@ -165,6 +170,13 @@ pub fn validate_body(
                     super::agent::validate_agent_input(&step.input, &body_seen, &step.id, problems);
                 } else if step.tool_name == super::ASK_TOOL {
                     super::ask::validate_ask_input(&step.input, &body_seen, &step.id, problems);
+                } else if step.tool_name == FILTER_TOOL {
+                    super::filter::validate_filter_input(
+                        &step.input,
+                        &body_seen,
+                        &step.id,
+                        problems,
+                    );
                 } else {
                     for value in step.input.values() {
                         super::check_templates(value, &body_seen, &step.id, problems);
@@ -193,7 +205,9 @@ fn check_body_tool(
         }
         return;
     }
-    if tool == super::AGENT_TOOL || tool == super::ASK_TOOL {
+    if tool == super::AGENT_TOOL || tool == super::ASK_TOOL || tool == FILTER_TOOL {
+        // `filter` is the one nestable control step: pure selection — no
+        // dispatch, no gate, no body of its own.
         return;
     }
     if let Some(problem) = super::plan::workbench_tool_problem(tool) {
@@ -273,6 +287,22 @@ fn agent_body_error(
         super::agent::AgentFail::Empty(error) => BodyFail::Render(error),
         super::agent::AgentFail::Failed(message) => BodyFail::Tool(format!("{label}: {message}")),
         super::agent::AgentFail::Aborted(error) => BodyFail::Aborted(error),
+    };
+    BodyError::fail(fail, steps_executed, bus)
+}
+
+/// Map a filter step's failure onto the body error channel, with the same
+/// `Empty`-stays-`Render` rule as [`agent_body_error`]. A filter never
+/// dispatches, so it has no abort channel.
+fn filter_body_error(
+    fail: FilterFail,
+    label: &str,
+    steps_executed: usize,
+    bus: Vec<BusEntry>,
+) -> BodyError {
+    let fail = match fail {
+        FilterFail::Empty(error) => BodyFail::Render(error),
+        FilterFail::Failed(message) => BodyFail::Tool(format!("{label}: {message}")),
     };
     BodyError::fail(fail, steps_executed, bus)
 }
@@ -357,6 +387,24 @@ impl Pipeline {
                         )),
                     };
                 }
+                if call.tool_name == FILTER_TOOL {
+                    // A filter renders its gate per item against a scope
+                    // layered over this body's — its own {{item}}/{{index}}
+                    // shadow the enclosing body's inside the gate.
+                    return match self.eval_body_filter(&path, &call.input, &scope).await {
+                        Ok(result) => Ok(BodyRun {
+                            result,
+                            steps_executed: 1,
+                            bus: Vec::new(),
+                        }),
+                        Err(fail) => Err(filter_body_error(
+                            fail,
+                            &format!("{label} (filter)"),
+                            0,
+                            Vec::new(),
+                        )),
+                    };
+                }
                 let rendered =
                     render_input(&Value::Object(call.input.clone()), &Roots::new(&scope))
                         .map_err(|e| BodyError::fail(BodyFail::Render(e), 0, Vec::new()))?;
@@ -427,6 +475,18 @@ impl Pipeline {
                                 ));
                             }
                         }
+                    } else if body_step.tool_name == FILTER_TOOL {
+                        match self.eval_body_filter(&path, &body_step.input, &scope).await {
+                            Ok(result) => result,
+                            Err(fail) => {
+                                return Err(filter_body_error(
+                                    fail,
+                                    &format!("{label} step {} (filter)", body_step.id),
+                                    steps_executed,
+                                    bus,
+                                ));
+                            }
+                        }
                     } else {
                         let rendered = render_input(
                             &Value::Object(body_step.input.clone()),
@@ -486,6 +546,51 @@ impl Pipeline {
 }
 
 impl Pipeline {
+    /// Evaluate a `filter` step inside a body, with the same event
+    /// envelope the top-level control path emits. The step events carry
+    /// the RAW input — like every control step, the gate renders lazily
+    /// (per item), so there is no rendered input to report up front.
+    async fn eval_body_filter(
+        &self,
+        path: &super::StepPath,
+        raw_input: &Map<String, Value>,
+        scope: &Map<String, Value>,
+    ) -> Result<Value, FilterFail> {
+        let path_text = path.to_string();
+        let raw = Value::Object(raw_input.clone());
+        self.events
+            .step_started(&self.call_stack, &path_text, FILTER_TOOL, &raw);
+        let started = std::time::Instant::now();
+        let eval = self.run_filter_scoped(raw_input, scope).await;
+        match &eval {
+            Ok(result) => self.events.step_finished(
+                &self.call_stack,
+                &path_text,
+                FILTER_TOOL,
+                result,
+                false,
+                started.elapsed(),
+            ),
+            Err(fail) => {
+                let message = match fail {
+                    FilterFail::Empty(error) => {
+                        json!({"error": error.to_string(), "emptyData": true})
+                    }
+                    FilterFail::Failed(message) => json!({"error": message}),
+                };
+                self.events.step_finished(
+                    &self.call_stack,
+                    &path_text,
+                    FILTER_TOOL,
+                    &message,
+                    true,
+                    started.elapsed(),
+                );
+            }
+        }
+        eval
+    }
+
     /// Evaluate an `exit` step inside a body, with the same event envelope
     /// the top-level exit path emits. The exit's `step` is the full body
     /// path (e.g. `E4/then/bail`).

@@ -108,7 +108,7 @@ with side effects unprompted.";
 const CONTROL_STEP_NAMING: &str = "\n\n# Control steps\n\
 Step toolNames are namespaced `server__tool` names from the catalog \
 (e.g. linear__list_issues), plus ONLY these bare control steps: exit, \
-agent, ask, decide, map, and reduce. Plan steps may only reference \
+agent, ask, decide, filter, map, and reduce. Plan steps may only reference \
 runtime tool namespaces — the workbench__ tools are yours alone and are \
 never valid as a step's toolName. There is no `gate`, `assert`, \
 or `exit_gate` tool and no `gate:` field. A plan finishes with `solver` \
