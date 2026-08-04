@@ -1402,6 +1402,240 @@ async fn concurrent_map_completes_all_items_in_order() {
     assert_eq!(issues, 5, "every item ran");
 }
 
+#[tokio::test]
+async fn filter_where_partitions_in_input_order() {
+    let registry = search_registry(json!({"changes": [
+        {"path": "a.rs", "status": "modified"},
+        {"path": "b.json", "status": "deleted"},
+        {"path": "c.md", "status": "added"},
+    ]}));
+    let (pipeline, provider) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "filter", "input": {
+            "over": "{{E0.changes}}",
+            "where": {"value": "{{item.status}}", "op": "ne", "to": "deleted"},
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let filter = &outcome.state.results["E1"];
+    assert_eq!(filter["count"], json!(2));
+    assert_eq!(
+        filter["items"],
+        json!([
+            {"path": "a.rs", "status": "modified"},
+            {"path": "c.md", "status": "added"},
+        ]),
+        "kept elements, input order"
+    );
+    assert_eq!(filter["dropped_count"], json!(1));
+    assert_eq!(
+        filter["dropped"],
+        json!([{"path": "b.json", "status": "deleted"}]),
+        "both halves of the partition are addressable"
+    );
+    assert!(
+        provider.requests.lock().unwrap().is_empty(),
+        "`where` costs no LLM calls"
+    );
+}
+
+#[tokio::test]
+async fn filter_infer_judges_each_item() {
+    let registry = search_registry(json!({"values": [
+        {"title": "fix the bug"},
+        {"title": "update readme"},
+        {"title": "fix the crash"},
+    ]}));
+    let (pipeline, provider) = pipeline(
+        vec![
+            structured(json!({"verdict": true, "reason": "code change"})),
+            structured(json!({"verdict": false, "reason": "docs only"})),
+            structured(json!({"verdict": true, "reason": "code change"})),
+        ],
+        registry,
+        1,
+    );
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "filter", "input": {
+            "over": "{{E0.values}}",
+            "infer": "Is \"{{item.title}}\" a code change?",
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let filter = &outcome.state.results["E1"];
+    assert_eq!(filter["count"], json!(2));
+    assert_eq!(
+        filter["items"],
+        json!([{"title": "fix the bug"}, {"title": "fix the crash"}]),
+    );
+    assert_eq!(filter["dropped"], json!([{"title": "update readme"}]));
+    // Each verdict saw its own item, rendered.
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3, "one judge call per item");
+    assert!(matches!(
+        &requests[1].messages[0],
+        graph_llm::types::ChatMessage::User { content } if content.contains("update readme")
+    ));
+}
+
+#[tokio::test]
+async fn concurrent_filter_infer_judges_every_item() {
+    let values: Vec<Value> = (0..5).map(|n| json!({"id": format!("v{n}")})).collect();
+    let registry = search_registry(json!({"values": values}));
+    // Identical verdicts: partition is order-independent under concurrency.
+    let verdicts = (0..5)
+        .map(|_| structured(json!({"verdict": true, "reason": "keep"})))
+        .collect();
+    let (pipeline, provider) = pipeline(verdicts, registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "filter", "input": {
+            "over": "{{E0.values}}",
+            "infer": "keep {{item.id}}?",
+            "concurrency": 3,
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    let filter = &outcome.state.results["E1"];
+    assert_eq!(filter["count"], json!(5), "every item judged and kept");
+    assert_eq!(filter["dropped_count"], json!(0));
+    let expected: Vec<Value> = (0..5).map(|n| json!({"id": format!("v{n}")})).collect();
+    assert_eq!(
+        filter["items"],
+        json!(expected),
+        "input order regardless of concurrency"
+    );
+    assert_eq!(provider.requests.lock().unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn filter_over_empty_list_is_a_value_not_an_error() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "filter", "input": {
+            "over": "{{E0.values}}",
+            "infer": "keep {{item}}?",
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    let filter = &outcome.state.results["E1"];
+    assert_eq!(filter["count"], json!(0));
+    assert_eq!(filter["items"], json!([]));
+    assert!(
+        provider.requests.lock().unwrap().is_empty(),
+        "no items, no judge calls"
+    );
+}
+
+#[tokio::test]
+async fn filter_where_on_a_missing_field_fails_hard() {
+    let registry = search_registry(json!({"values": [{"id": "a"}]}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "filter", "input": {
+            "over": "{{E0.values}}",
+            "where": {"value": "{{item.status}}", "op": "ne", "to": "deleted"},
+        }},
+    ]))
+    .unwrap();
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    match err {
+        PipelineError::StepFailed { step, tool, .. } => {
+            assert_eq!(step, "E1");
+            assert_eq!(tool, "filter");
+        }
+        other => panic!("expected StepFailed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn filter_nested_in_map_body_shadows_the_outer_item() {
+    let registry = search_registry(json!({"values": [
+        {"id": "p1", "children": [{"size": 3}, {"size": 0}]},
+        {"id": "p2", "children": [{"size": 0}]},
+    ]}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    // The nested filter's `over` reads the OUTER {{item.children}}; its
+    // `where` reads the INNER {{item.size}} — shadowed per candidate.
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": {"toolName": "filter", "input": {
+                "over": "{{item.children}}",
+                "where": {"value": "{{item.size}}", "op": "gt", "to": 0},
+            }},
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    let map = &outcome.state.results["E1"];
+    assert_eq!(map["count"], json!(2));
+    assert_eq!(map["results"][0]["items"], json!([{"size": 3}]));
+    assert_eq!(map["results"][0]["dropped"], json!([{"size": 0}]));
+    assert_eq!(map["results"][1]["count"], json!(0), "p2 keeps nothing");
+}
+
+#[tokio::test]
+async fn filter_in_decide_branch_and_planner_catalog() {
+    let registry = search_registry(json!({"values": [{"n": 1}, {"n": 5}]}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "decide", "input": {
+            "if": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
+            "then": {"toolName": "filter", "input": {
+                "over": "{{E0.values}}",
+                "where": {"value": "{{item.n}}", "op": "gt", "to": 2},
+            }},
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    let decide = &outcome.state.results["E1"];
+    assert_eq!(decide["branch"], json!("then"));
+    assert_eq!(decide["result"]["items"], json!([{"n": 5}]));
+
+    // The planner is offered the filter step alongside its siblings.
+    let (tools_text, _) = pipeline.planner_catalog().await;
+    assert!(
+        tools_text.contains("\"name\":\"filter\""),
+        "planner catalog lists filter"
+    );
+}
+
 /// Registry with the mock tools plus the real `data` pack, so
 /// `builtin__reshape` runs its actual code path behind the pipeline's
 /// render.
@@ -4029,6 +4263,7 @@ fn every_control_step_is_described_in_the_catalog() {
         ASK_TOOL,
         EXIT_TOOL,
         DECIDE_TOOL,
+        FILTER_TOOL,
         MAP_TOOL,
         REDUCE_TOOL,
     ] {
@@ -4041,7 +4276,7 @@ fn every_control_step_is_described_in_the_catalog() {
             "'{name}' is described as a control step but not recognised as one"
         );
     }
-    assert_eq!(described.len(), 6, "{described:?}");
+    assert_eq!(described.len(), 7, "{described:?}");
 }
 
 #[test]
@@ -4093,7 +4328,7 @@ fn a_body_bearing_control_step_names_every_step_legal_in_its_body() {
         if ![DECIDE_TOOL, MAP_TOOL, REDUCE_TOOL].contains(&def.name.as_str()) {
             continue;
         }
-        for legal in [AGENT_TOOL, ASK_TOOL] {
+        for legal in [AGENT_TOOL, ASK_TOOL, FILTER_TOOL] {
             assert!(
                 def.description.contains(&format!("`{legal}`")),
                 "{}'s description does not mention that `{legal}` is legal in its body",

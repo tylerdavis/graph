@@ -1,0 +1,87 @@
+---
+title: "Selection"
+description: "Partition a list with a per-item gate using filter"
+icon: "filter"
+---
+
+
+A `filter` step partitions a list: every element is evaluated against a per-item gate, and the step yields both halves — `items` (passed, input order) and `dropped` (did not). It takes `over` (anything that renders to an array) and exactly one of `where` (a logical condition, [the same grammar](/plans/exit-gates#the-gate) `exit` and `decide` use) or `infer` (a yes/no question judged per item). Where `map` answers "do this for each of these", `filter` answers "which of these should the next step even see?"
+
+```yaml
+steps:
+  - id: E0
+    tool_name: builtin__git_changed_files
+    input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "" }
+
+  - id: E1
+    tool_name: filter
+    input:
+      over: "{{E0.changes}}"               # must render to an array
+      where:                               # evaluated once per element
+        value: "{{item.status}}"
+        op: ne
+        to: deleted
+
+  - id: E2                                 # deleted paths never reach git_file
+    tool_name: map
+    input:
+      over: "{{E1.items}}"
+      concurrency: 8
+      do:
+        tool_name: builtin__git_file
+        input: { path: "{{item.path}}", ref: "{{input.head}}", max_bytes: 30000 }
+```
+
+The canonical use is exactly this shape: **select before iterating**, so a later call never receives an element it cannot handle — and so every list derived from `{{E1.items}}` downstream (a numbered prompt listing, a map's results) stays aligned with it by construction.
+
+## The gate and its scope
+
+The gate is evaluated once per element with two pseudo-roots in scope: `{{item}}` (the element) and `{{index}}` (0-based position). It may also reference plan `input` and any earlier top-level step. `where` is the shared condition grammar — `value`/`op`/`to` with `eq`, `ne`, `gt`, `lt`, `gte`, `lte`, `empty`, `not_empty`, `contains`. `infer` asks the [`judge` role](/models/models-and-providers#model-roles) a yes/no question per item; `model` pins those verdicts to a named model or role, and `concurrency` (default 1) runs them in parallel. A `where` gate costs no inference at all.
+
+Like every control step, only `over` renders up front; the gate renders per item, when that item's scope exists — validation rejects `{{item}}` in `over` for exactly that reason.
+
+## The step result
+
+```json
+{ "count": 2, "items": [ …, … ], "dropped": [ … ], "dropped_count": 1 }
+```
+
+Both halves are returned on purpose: selection narrows what runs next, never what is known. A prompt can still enumerate `{{Ex.dropped}}` (say, listing deleted files a review should mention) while iteration proceeds over `{{Ex.items}}`.
+
+An empty `over` array is not an error — `{count: 0, items: [], dropped: [], dropped_count: 0}` — and neither is a filter that keeps nothing. Guard with an [`exit` gate](/plans/exit-gates) on `{{Ex.count}}` when an empty selection should stop the plan. A non-array `over` is a plan defect (hard failure in your plans, replan for the planner), and so is a gate that references a field an element does not have.
+
+## Inside bodies
+
+Unlike `exit`, `decide`, `map`, and `reduce`, a `filter` may appear **inside** a `decide` branch or a `map`/`reduce` body — it is pure selection: no tool dispatch, no [execution-gate](/workbench/plan-workbench#the-debugger) consultation, no body of its own, so the reasons control steps stay out of bodies do not apply to it.
+
+Inside a body, the filter's own `{{item}}`/`{{index}}` shadow the enclosing body's within the gate — innermost wins. Reference the outer element in `over`, where the filter's pseudo-roots do not yet exist:
+
+```yaml
+# For each PR, keep only its large files. Outer {{item}} in `over`;
+# inner {{item}} (each file) in `where`.
+- id: E1
+  tool_name: map
+  input:
+    over: "{{E0.pull_requests}}"
+    do:
+      tool_name: filter
+      input:
+        over: "{{item.files}}"
+        where: { value: "{{item.additions}}", op: "gt", to: 500 }
+```
+
+## Failure and cost
+
+A gate that fails to evaluate — a missing field, a non-number under an ordering op, a judge error — fails the whole step, attributed with the item index (`` item 3: … ``). Human-authored plans fail hard as always; planner-authored plans replan with that context. `EmptyData` raised while rendering degrades normally ([errors](/plans/errors-and-replanning)). Under `infer` with `concurrency`, verdicts already in flight drain on failure; unstarted items are skipped — same policy as [`map`](/plans/iteration#concurrency).
+
+| Surface | Behavior |
+|---|---|
+| empty `over` | `{count: 0, items: [], dropped: [], dropped_count: 0}` — plan continues |
+| non-array `over` | plan defect: hard error (your plans) or replan (`plan_and_execute`) |
+| ordering | `items` and `dropped` both preserve input order |
+| gate fails on an item | step fails, item index named; in-flight `infer` verdicts drain |
+| trace events | one `filter` event bracketing the run; `infer` adds judge-model calls |
+| `steps_executed` / envelopes | the step counts as 1 (its verdicts are not tool calls) |
+| cost | `where`: 0 inference · `infer`: one judge call per item |
+
+In the [workbench](/workbench/plan-workbench), a filter renders as a `▽` junction. Because it never dispatches, the debugger's execution gate does not pause on it — set a breakpoint on the step itself to inspect the partition.

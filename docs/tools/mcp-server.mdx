@@ -69,7 +69,7 @@ A plan hidden by [`requires_servers`](/plans/overview) on this machine is not se
 
 `graph_plan_list`, `graph_plan_show`, `graph_plan_validate`, `graph_plan_new`, `graph_plan_draft`, `graph_plan_set`, `graph_plan_unset`, `graph_plan_step_add`, `graph_plan_step_update`, `graph_plan_step_rename`, `graph_plan_step_rm`, `graph_tools_list`, `graph_tools_show`, `graph_tools_test`.
 
-`graph_tools_list` and `graph_tools_show` return the complete vocabulary a step's `tool` field may name: the namespaced tools **and** the six control steps under the `(control)` source. That matters more over MCP than on a terminal — the server does not serve graph's documentation, so an agent that cannot get `exit`'s or `ask`'s schema from `graph_tools_show` has nowhere to look but graph's source.
+`graph_tools_list` and `graph_tools_show` return the complete vocabulary a step's `tool` field may name: the namespaced tools **and** the seven control steps under the `(control)` source. That matters more over MCP than on a terminal — the server does not serve graph's documentation, so an agent that cannot get `exit`'s or `ask`'s schema from `graph_tools_show` has nowhere to look but graph's source.
 
 These are the [plan authoring](/plans/authoring) CLI, one tool per verb, so an agent can build and check a plan without a shell. Every edit goes through the same validation guard as the command line: an edit that would break the plan is refused, with the problems it would have introduced.
 

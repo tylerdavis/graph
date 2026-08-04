@@ -47,7 +47,7 @@ Optional fields you never set are omitted rather than written as `null`/`[]`.
 
 ## Control steps
 
-Five reserved `tool_name`s are executor-intercepted, never dispatched to a registry. Their `input` is the control grammar — snake_case like everything else, and the only part of a step's `input` graph normalizes, since every other tool's arguments belong to that tool:
+Seven reserved `tool_name`s are executor-intercepted, never dispatched to a registry. Their `input` is the control grammar — snake_case like everything else, and the only part of a step's `input` graph normalizes, since every other tool's arguments belong to that tool:
 
 ### `exit` — [end the plan early](/plans/exit-gates)
 
@@ -69,6 +69,18 @@ Five reserved `tool_name`s are executor-intercepted, never dispatched to a regis
 | `model` | no | as on `exit`; may itself be a template |
 | `then` | yes | body (below), run when the gate holds |
 | `else` | no | body, run otherwise |
+
+### `filter` — [partition a list](/plans/selection)
+
+| Field | Required | Notes |
+|---|---|---|
+| `over` | yes | template that must render to an array |
+| `where` | exactly one of `where`/`infer` | logical gate (same grammar as `when`), evaluated per element with `{{item}}`/`{{index}}` in scope |
+| `infer` | 〃 | yes/no question judged per element by the `judge` role |
+| `model` | no | as on `exit`; applies to every `infer` verdict |
+| `concurrency` | no | max `infer` verdicts in flight; default 1; ignored for `where` |
+
+Legal everywhere, including inside `decide` branches and `map`/`reduce` bodies — the one nestable control step (it makes no tool call). Inside a body its `{{item}}`/`{{index}}` shadow the enclosing body's within the gate.
 
 ### `map` / `reduce` — [run a body per item](/plans/iteration)
 
@@ -103,7 +115,7 @@ Legal everywhere, including inside `decide` branches and `map`/`reduce` bodies.
 
 Legal everywhere, including inside `decide` branches and `map`/`reduce` bodies. Whether a human is reachable depends on the host, not the plan, so `when_unanswered` is what keeps one plan runnable both interactively and in CI.
 
-## Gate grammar (`when` / `if`)
+## Gate grammar (`when` / `if` / `where`)
 
 A single comparison: `{ value, op, to }`, where `value` is usually a template ([typed splice](/plans/template-language#typed-splice) keeps numbers numeric).
 
@@ -121,7 +133,7 @@ Either form:
 - **A single tool call** — `{tool_name, input}`, no id. Any catalog tool, including `plan__*` and `plan_and_execute`.
 - **An inline step list** — normal steps with ids, run in order, with same-branch/same-iteration dataflow. Body ids must not reuse top-level ids and are invisible outside the body.
 
-Bodies must not contain `decide`, `map`, or `reduce` (branches may contain `exit`; map/reduce bodies may not). For nested control flow, call a `plan__*` sub-plan — cycles are detected and nesting is capped at 8.
+Bodies must not contain `decide`, `map`, or `reduce` (branches may contain `exit`; map/reduce bodies may not). `agent`, `ask`, and `filter` are legal in any body. For other nested control flow, call a `plan__*` sub-plan — cycles are detected and nesting is capped at 8.
 
 ## Step results of control steps
 
@@ -131,5 +143,6 @@ Bodies must not contain `decide`, `map`, or `reduce` (branches may contain `exit
 | `agent` | `{output, iterations, tools_called, final}` — `output` conforms to `output_schema` when `final` is true; when the budget ran out first, `final` is `false` and `output` is `{}` |
 | `ask` | `{answer, answered, reason?}` — `answer` conforms to `output_schema`; `answered` is false when the `default` was used, and `reason` is then `"declined"` or `"unavailable"` |
 | `decide` | `{branch, verdict, reason, result}` — `result` is the branch's single-call result or its last step's result |
+| `filter` | `{count, items: […], dropped: […], dropped_count}` — both halves of the partition, input order |
 | `map` | `{count, results: […]}` in input order |
 | `reduce` | `{count, result}` — the final accumulator |

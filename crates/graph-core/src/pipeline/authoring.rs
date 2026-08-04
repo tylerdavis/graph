@@ -71,6 +71,9 @@ pub fn validate_steps(plan: &Plan) -> Vec<String> {
             super::ASK_TOOL => {
                 super::ask::validate_ask_input(&step.input, &seen, &step.id, &mut problems)
             }
+            super::FILTER_TOOL => {
+                super::filter::validate_filter_input(&step.input, &seen, &step.id, &mut problems)
+            }
             super::DECIDE_TOOL => super::decision::validate_decide_input(
                 &step.input,
                 &seen,

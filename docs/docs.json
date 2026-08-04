@@ -29,6 +29,7 @@
           "plans/finish-modes",
           "plans/exit-gates",
           "plans/branching",
+          "plans/selection",
           "plans/iteration",
           "plans/agent-step",
           "plans/ask-step",

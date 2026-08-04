@@ -19,6 +19,7 @@ pub mod condition;
 pub mod decision;
 pub mod doc;
 pub mod exit;
+pub mod filter;
 pub mod gate;
 pub mod interlocutor;
 pub mod iterate;
@@ -35,6 +36,7 @@ pub use authoring::{EditAccepted, EditRejected, WriteError};
 pub use catalog::{CatalogCheck, ToolCatalog};
 pub use decision::DECIDE_TOOL;
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
+pub use filter::FILTER_TOOL;
 pub use gate::{ErrorDecision, ExecutionGate, GateContext, GateDecision, StepPath};
 pub use interlocutor::{AskOutcome, AskRequest, Interlocutor};
 pub use iterate::{MAP_TOOL, REDUCE_TOOL};
@@ -154,6 +156,7 @@ pub fn control_step_defs() -> Vec<crate::tools::ToolDef> {
         ask::ask_tool_def(),
         exit::exit_tool_def(),
         decision::decide_tool_def(),
+        filter::filter_tool_def(),
         iterate::map_tool_def(),
         iterate::reduce_tool_def(),
     ]
@@ -164,7 +167,7 @@ pub fn control_step_defs() -> Vec<crate::tools::ToolDef> {
 pub fn is_control_step(name: &str) -> bool {
     matches!(
         name,
-        AGENT_TOOL | ASK_TOOL | EXIT_TOOL | DECIDE_TOOL | MAP_TOOL | REDUCE_TOOL
+        AGENT_TOOL | ASK_TOOL | EXIT_TOOL | DECIDE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL
     )
 }
 
@@ -607,8 +610,8 @@ impl Pipeline {
     // ── Planner ──────────────────────────────────────────────────────────
 
     /// Gather the planner-facing tool catalog shared by every system-prompt
-    /// builder: registry tools, the control-step defs (exit/decide/map/
-    /// reduce, in that order), and `plan__*` docs for plans not already on
+    /// builder: registry tools, the control-step defs (exit/decide/filter/
+    /// map/reduce, in that order), and `plan__*` docs for plans not already on
     /// the call stack, described against the shape cache (read fresh here so
     /// each planning attempt sees the latest observed shapes). Returns the
     /// described-tools text and the pretty-printed step schema.
@@ -742,7 +745,7 @@ impl Pipeline {
             // (decide) or per item (map/reduce). Their step events carry
             // the raw input for the same reason.
             let control = match step.tool_name.as_str() {
-                AGENT_TOOL | ASK_TOOL | DECIDE_TOOL | MAP_TOOL | REDUCE_TOOL => {
+                AGENT_TOOL | ASK_TOOL | DECIDE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL => {
                     self.events.step_started(
                         &self.call_stack,
                         &step.id,
@@ -754,6 +757,7 @@ impl Pipeline {
                         AGENT_TOOL => self.run_agent(&step, state).await,
                         ASK_TOOL => self.run_ask(&step, state).await,
                         DECIDE_TOOL => self.run_decide(&step, state).await,
+                        FILTER_TOOL => self.run_filter(&step, state).await,
                         MAP_TOOL => self.run_map(&step, state).await,
                         _ => self.run_reduce(&step, state).await,
                     };

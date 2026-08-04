@@ -7,7 +7,7 @@ use super::plan_ws::{
     DraftingProgress, PlanWorkspace, RowKey, RunLine, StepRow, StepStatus, WsTab,
 };
 use graph_core::pipeline::{
-    AGENT_TOOL, DECIDE_TOOL, EXIT_TOOL, MAP_TOOL, MAX_STEP_ATTEMPTS, REDUCE_TOOL,
+    AGENT_TOOL, DECIDE_TOOL, EXIT_TOOL, FILTER_TOOL, MAP_TOOL, MAX_STEP_ATTEMPTS, REDUCE_TOOL,
 };
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -202,6 +202,7 @@ fn branch_color(body: &str) -> Color {
 fn control_icon(tool: &str) -> Option<(&'static str, Color)> {
     match tool {
         DECIDE_TOOL => Some(("⑂", Color::Blue)),
+        FILTER_TOOL => Some(("▽", Color::Cyan)),
         MAP_TOOL => Some(("⟳", Color::Cyan)),
         REDUCE_TOOL => Some(("∑", Color::Cyan)),
         EXIT_TOOL => Some(("⎋", Color::Magenta)),
