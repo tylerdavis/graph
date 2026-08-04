@@ -2,6 +2,43 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
+## v0.10.0 — 2026-08-04
+
+
+### Added
+
+- add --json to graph tools list
+- add --json to graph tools show
+- serve graph's plans and authoring commands over MCP
+- stream progress and honor cancellation
+- ask steps — put a question to the user from inside a plan
+- filter steps — partition a list with a per-item gate
+- per-file change objects on git_changed_files
+
+### Changed
+
+- return outcomes from the plan commands instead of printing
+- convert the remaining commands and make --json uniform
+
+### Documentation
+
+- add a plan authoring skill for the CLI commands
+- point the authoring loop and quickstart at the plan authoring skill
+- make the authoring skill draft-first
+- frame the skill around the whole plan lifecycle
+- document graph as an MCP server
+- close out the MCP roadmap and point the skill at the server
+- explain why the draft arm cannot use and_then
+
+### Fixed
+
+- write every plan field in snake_case, at every depth
+- remove revision-by-redraft from both authoring surfaces
+- don't load a project the user never pointed at
+- honour the documented ask retry budget
+- serve the control steps from the tool catalog
+- keep MCP writes inside the server's own config layer
+
 ## v0.9.0 — 2026-07-30
 
 
