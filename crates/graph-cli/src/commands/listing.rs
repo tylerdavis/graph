@@ -6,8 +6,14 @@ use graph_mcp::NAMESPACE_SEPARATOR;
 use serde_json::{json, Value};
 
 /// The source a namespaced tool belongs to (`linear__list_issues` →
-/// `linear`). Bare names like `plan_and_execute` are core.
+/// `linear`). Bare names like `plan_and_execute` are core, and the control
+/// steps get a group of their own — they share the bare-name namespace but
+/// are step vocabulary, not tools anything can invoke, and a caller that
+/// cannot tell them apart will try to `tools test` one.
 fn source_of(name: &str) -> &str {
+    if graph_core::pipeline::is_control_step(name) {
+        return "(control)";
+    }
     name.split_once(NAMESPACE_SEPARATOR)
         .map_or("(core)", |(source, _)| source)
 }

@@ -207,19 +207,25 @@ pub fn authoring_tools() -> Vec<Tool> {
         ),
         tool(
             "graph_tools_list",
-            "List every tool a plan step may call on this machine, with the namespaced name \
-             (`server__tool`, `user__tool`, `builtin__tool`, `plan__id`) that a step's \
-             `tool` field must use. Schemas are omitted — use graph_tools_show for one tool.",
+            "List everything a plan step's `tool` field may name on this machine: invokable \
+             tools under their namespaced name (`server__tool`, `user__tool`, \
+             `builtin__tool`, `plan__id`), plus the bare control steps under the \
+             `(control)` source — exit, ask, agent, decide, map, reduce. This is the \
+             complete vocabulary; nothing else is a legal step tool, and the control steps \
+             are documented here rather than anywhere on disk. Schemas are omitted — use \
+             graph_tools_show for one entry.",
             json!({"type": "object", "properties": {}}),
         ),
         tool(
             "graph_tools_show",
-            "Show one tool's description and schemas. `inputSchema` is what a plan step's \
-             input object must satisfy. Every key is always present, null when absent.",
+            "Show one tool's or control step's description and schemas. `inputSchema` is \
+             what a plan step's input object must satisfy — call this before writing any \
+             step, including `exit`, `ask`, `agent`, `decide`, `map`, and `reduce`, whose \
+             grammar is only described here. Every key is always present, null when absent.",
             json!({
                 "type": "object",
                 "required": ["name"],
-                "properties": {"name": {"type": "string", "description": "The namespaced tool name."}}
+                "properties": {"name": {"type": "string", "description": "A namespaced tool name, or a control step: exit, ask, agent, decide, map, reduce."}}
             }),
         ),
         tool(
@@ -227,7 +233,8 @@ pub fn authoring_tools() -> Vec<Tool> {
             "Invoke one tool directly and return what it produced. Use this to learn a \
              tool's real output shape before writing a template path against it, instead of \
              guessing at field names. A tool that reports failure comes back with \
-             `isError: true` rather than as a call failure.",
+             `isError: true` rather than as a call failure. Control steps cannot be tested \
+             this way — the plan executor evaluates them; run a plan instead.",
             json!({
                 "type": "object",
                 "required": ["name"],
