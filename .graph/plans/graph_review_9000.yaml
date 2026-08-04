@@ -196,7 +196,7 @@ steps:
     tools:
     - builtin__git_grep
     - builtin__git_file
-    max_iterations: 12
+    max_iterations: 60
     output_schema:
       type: object
       required:

@@ -161,7 +161,7 @@ steps:
         ... find what the diff touches but does not show — callers,
         implementations, tests of the changed symbols — at the head sha ...
       tools: ["builtin__git_grep", "builtin__git_file"]
-      max_iterations: 12
+      max_iterations: 60
       output_schema: { type: object, properties: { entries: ..., notes: ... } }
   - id: E5
     tool_name: builtin__infer         # the rubric: eight passes + output schema
