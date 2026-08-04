@@ -1525,6 +1525,40 @@ async fn concurrent_filter_infer_judges_every_item() {
 }
 
 #[tokio::test]
+async fn filter_infer_model_override_selects_named_model_for_every_verdict() {
+    let registry = search_registry(json!({"values": [{"id": "a"}, {"id": "b"}]}));
+    let (pipeline, provider) = pipeline_with_named(
+        vec![
+            structured(json!({"verdict": true, "reason": "yes"})),
+            structured(json!({"verdict": false, "reason": "no"})),
+        ],
+        registry,
+        1,
+        named_model("haiku-fast"),
+    );
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "filter", "input": {
+            "over": "{{E0.values}}",
+            "infer": "keep {{item.id}}?",
+            "model": "fast",
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    assert_eq!(outcome.state.results["E1"]["count"], json!(1));
+    // Every per-item verdict used the named model, not the judge/default.
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests.iter() {
+        assert_eq!(request.model, "haiku-fast");
+    }
+}
+
+#[tokio::test]
 async fn filter_over_empty_list_is_a_value_not_an_error() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, provider) = pipeline(vec![], registry, 1);
