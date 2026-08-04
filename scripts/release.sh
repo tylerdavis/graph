@@ -40,11 +40,18 @@ if [ "$level" != "current" ]; then
   grep -q "^version = \"$new\"\$" Cargo.toml || { echo "version bump failed" >&2; exit 1; }
   # Refresh Cargo.lock's version entries.
   cargo update -q --workspace
+  # Keep the docs in step: {{release_version}} feeds the installation
+  # page, download cards, and cookbook image pins. Key-anchored so a
+  # drifted value fails the grep below instead of shipping stale docs —
+  # and since the release commit now touches docs/, it also triggers the
+  # Mintlify rebuild that publishes the new version string.
+  sed -i.bak "s/\"release_version\": \"v[^\"]*\"/\"release_version\": \"v$new\"/" docs/docs.json && rm docs/docs.json.bak
+  grep -q "\"release_version\": \"v$new\"" docs/docs.json || { echo "docs release_version bump failed" >&2; exit 1; }
 fi
 
 git-cliff --tag "v$new" -o CHANGELOG.md
 
-git add Cargo.toml Cargo.lock CHANGELOG.md
+git add Cargo.toml Cargo.lock CHANGELOG.md docs/docs.json
 git commit -q -m "chore(release): v$new"
 git tag -a "v$new" -m "graph v$new"
 git push -q origin main "v$new"
