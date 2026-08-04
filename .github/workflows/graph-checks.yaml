@@ -3,9 +3,10 @@
 # so there is no install step; all logic lives in the repo-carried plans
 # (./.graph/) and the bundled github tool pack. GRAPH_EVENTS=github turns
 # failing gates into run annotations. docs-drift fails the check (exit 4)
-# on undocumented behavior changes; graph-review-9000 posts its eight-pass
-# findings as inline comments plus a summary comment, each refreshed in
-# place on every push via its own marker.
+# on undocumented behavior changes; graph-review-9000 maintains its
+# eight-pass findings as living review threads (new findings post, fixed
+# ones resolve with a reply, human-dismissed ones stay declined) plus a
+# marker-keyed summary comment refreshed in place on every push.
 name: graph checks
 
 on:
@@ -51,9 +52,11 @@ jobs:
       - name: Docs drift gate
         run: graph plan run docs_drift --input base="$BASE" --input head="$HEAD"
 
-  # The reviewer. Needs >= v0.10.0: it filters git_changed_files'
-  # per-file `changes` (neither the `filter` step nor that field exists
-  # in earlier images) so PRs with deletions review instead of crash.
+  # The reviewer. Needs the first release after v0.10.0: the plan reads
+  # and syncs its findings as review threads via gh_pr_review_threads /
+  # gh_pr_thread_sync, which earlier images don't ship — bump the image
+  # pin here when that release exists (until then this job fails to load
+  # the plan; it is advisory, not a gate).
   graph-review-9000:
     if: >-
       !github.event.pull_request.draft &&

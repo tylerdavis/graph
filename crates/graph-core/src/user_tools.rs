@@ -137,6 +137,8 @@ const PACKS: &[(&str, &[&str])] = &[
             include_str!("packs/github/gh_pr_meta.yaml"),
             include_str!("packs/github/gh_pr_comment.yaml"),
             include_str!("packs/github/gh_pr_inline_comments.yaml"),
+            include_str!("packs/github/gh_pr_review_threads.yaml"),
+            include_str!("packs/github/gh_pr_thread_sync.yaml"),
             include_str!("packs/github/gh_pr_ticket.yaml"),
             include_str!("packs/github/gh_release.yaml"),
             include_str!("packs/github/git_diff.yaml"),
