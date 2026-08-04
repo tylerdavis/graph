@@ -8,7 +8,9 @@ graph uses semantic versioning, driven by conventional commits.
 mise run release:patch    # or release:minor / release:major
 ```
 
-This bumps the single workspace version in `Cargo.toml`, regenerates
+This bumps the single workspace version in `Cargo.toml` and the docs'
+`release_version` variable in `docs/docs.json` (the installation page,
+download cards, and cookbook image pins render from it), regenerates
 `CHANGELOG.md` from conventional commits (git-cliff), commits as
 `chore(release): vX.Y.Z`, tags `vX.Y.Z`, and pushes. The pushed tag triggers
 `.github/workflows/release.yaml`, which builds and uploads release binaries
