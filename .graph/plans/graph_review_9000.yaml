@@ -172,6 +172,71 @@ steps:
       op: empty
       value: '{{E2.text}}'
   reasoning: Nothing to review on an empty diff — but only after the thread lifecycle above has settled prior findings, which is exactly the reverted-PR case this gate used to strand.
+- id: E4e
+  tool_name: agent
+  input:
+    prompt: |-
+      You are the context scout for a PR review of graph-cli (a Rust cargo workspace). The review that follows sees the PR diff and the full contents of changed files — but nothing else in the repository. Your job is to fill that gap: find the callers, implementations, trait impls, tests, and config/doc references that the diff TOUCHES BUT DOES NOT SHOW, so the reviewer can judge blast radius without guessing.
+
+      Work from the diff below. For each symbol whose signature, behavior, or contract this PR changes (functions, methods, structs and their fields, tool names, config keys, plan step ids, error messages other code matches on):
+      - use builtin__git_grep to find where it is used, implemented, or tested elsewhere in the repository (search at the head sha)
+      - use builtin__git_file (ref = head sha) to read just enough surrounding code to say WHY a site matters to this review
+      - prefer breadth over depth: the reviewer needs to know a caller exists and what it assumes, not its whole body
+
+      Skip sites inside the changed files themselves (the reviewer already has their full contents). Skip pure renames fully contained in the diff. If nothing outside the changed files references the changed symbols, return an empty entries array — never invent relevance.
+
+      HEAD SHA (use as ref in both tools): {{E0.head_sha}}
+
+      CHANGED FILES:
+      {{#E1.changes}}- {{path}} ({{status}})
+      {{/E1.changes}}
+
+      DIFF (excludes Cargo.lock, CHANGELOG.md):
+      {{E2.text}}
+    tools:
+    - builtin__git_grep
+    - builtin__git_file
+    max_iterations: 12
+    output_schema:
+      type: object
+      required:
+      - entries
+      - notes
+      properties:
+        entries:
+          type: array
+          items:
+            type: object
+            required:
+            - symbol
+            - relation
+            - path
+            - line
+            - evidence
+            - why
+            properties:
+              symbol:
+                type: string
+                description: The changed symbol this entry is about
+              relation:
+                type: string
+                description: caller | implementation | trait impl | test | config | docs
+              path:
+                type: string
+                description: Repo-relative path of the referencing site (outside the changed files)
+              line:
+                type: integer
+                description: Line number of the site; 0 when unknown
+              evidence:
+                type: string
+                description: ONE line of code from the site, verbatim
+              why:
+                type: string
+                description: One sentence — what this site assumes, or what would break
+        notes:
+          type: string
+          description: 1-2 sentences on coverage — what was searched, and anything that could not be confirmed
+  reasoning: Bounded agent loop (the pipeline's agent control step) that searches the repository at head for context the diff cannot show — callers, implementations, tests, config references of the changed symbols — using read-only git tools only. Its dossier gives the review (E5) evidence for blast-radius judgments that previously came back 'cannot verify from what's provided'. Budget exhaustion yields final=false with an empty output; E5's template guards on final, so a failed scout degrades the review's evidence, never the run.
 - id: E5
   tool_name: builtin__infer
   input:
@@ -202,6 +267,15 @@ steps:
       {{text}}
 
       {{/E4.results}}
+
+      REPO CONTEXT DOSSIER — call sites, implementations, and tests OUTSIDE the changed files, gathered by a scout agent that searched the repository at the head sha (an empty list means nothing outside the diff references the changed symbols; the whole section is absent when the scout ran out of budget):
+      {{#E4e.final}}{{#E4e.output.entries}}- [{{relation}}] {{symbol}} — {{path}}:{{line}} — {{why}}
+        > {{evidence}}
+      {{/E4e.output.entries}}
+      Scout coverage: {{E4e.output.notes}}
+      {{/E4e.final}}
+
+      Use the dossier as evidence, especially in passes 2, 4, and 6: a changed contract whose caller in the dossier still assumes the old behavior is a finding; a blast-radius claim you cannot verify from the diff, the file contents, or the dossier stays 'unverified' rather than asserted.
 
       There is no external issue tracker integration in this plan — ground scope/intent judgments in the PR title and body only, never fabricate a ticket or requirement that isn't stated there.
 
