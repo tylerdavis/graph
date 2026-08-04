@@ -176,6 +176,38 @@ Output: `{ "comments": [...] }` — the input entries in order, each with `url` 
 
 Inline comments never block a merge by themselves: they post as plain review comments (not a `REQUEST_CHANGES` review), so they only gate merging on repos with *Require conversation resolution before merging* enabled.
 
+Delete-and-repost is stateless by design — nothing survives between runs, including human replies on the comments. When findings should live across runs as conversations (stay open, get replied to, resolve when fixed), use the thread-lifecycle pair below instead: [`gh_pr_thread_sync`](#builtin-gh_pr_thread_sync) to post and transition, [`gh_pr_review_threads`](#builtin-gh_pr_review_threads) to read back.
+
+### `builtin__gh_pr_review_threads`
+
+The read half of the thread-lifecycle pair: list the review threads a plan previously posted on a PR, as structured findings. A thread is recognized by the hidden `<!-- <marker> {json} -->` payload tag [`gh_pr_thread_sync`](#builtin-gh_pr_thread_sync) embeds in its first comment; everything else on the PR is ignored. The embedded payload merges with thread metadata into one flat object per finding, so downstream templates reference `{{label}}`, `{{severity}}`, etc. directly. Read-only.
+
+Each finding's `state` is a heuristic from GitHub's resolution data: an unresolved thread is `open`; a thread resolved by the same login that posted it is `resolved` (our own automation closed it); a thread resolved by anyone else is `declined` (a human closed it). Replies after the first comment come along verbatim (`replies: [{author, body}]`) so an inference step can read a "wontfix" for what it is.
+
+| Input | Type |  |
+| --- | --- | --- |
+| `pr` | integer | required |
+| `marker` | string | required — the payload tag prefix the findings were posted with |
+
+Output: `{ "findings": [...], "count", "open_count", "skipped", "has_findings" }` — each finding is the payload's keys plus `thread_id`, `state`, `path`, `line`, `is_outdated`, `url`, `replies`, and `reply_count`. Tagged threads whose payload is missing or lacks the keys `label`, `severity`, `invariant`, `file`, `line`, `finding` are skipped (counted in `skipped`, never fatal) — they can't round-trip.
+
+### `builtin__gh_pr_thread_sync`
+
+The write half of the thread-lifecycle pair: post new findings as inline comments and apply per-thread transitions to existing ones — in one call, without ever deleting an open thread or a human reply. New comments embed the `marker`'s hidden JSON payload so [`gh_pr_review_threads`](#builtin-gh_pr_review_threads) can read them back on the next run. Each create and each transition is its own API call, so one failure can't sink the rest: a failed transition comes back `applied: false` and the thread simply stays open. **Side-effecting** (`read_only: false`).
+
+| Input | Type |  |
+| --- | --- | --- |
+| `pr` | integer | required |
+| `head_sha` | string | required — commit new comments anchor to (the PR head) |
+| `marker` | string | required — payload tag prefix; use one per plan (e.g. `"graph:pr_review:finding"`) |
+| `creates` | array | required — new findings: `{path, line?, side?, body, payload}`; extra keys pass through |
+| `threads` | array | required — existing findings: `{thread_id, transition, note?}`; extra keys pass through |
+| `sweep_marker` | string | optional — a legacy delete-and-repost marker whose comments are deleted first; a one-time migration aid, omit in the steady state |
+
+A create's `payload` is the structured finding embedded as the hidden tag — keep it small and flat, and make sure it carries the keys `gh_pr_review_threads` requires. Entries without a `line`, or whose anchor the API rejects, pass through unposted, exactly like `gh_pr_inline_comments`. A thread's `transition` is `none` (leave untouched), `resolve`, or `decline` — both of the latter reply with `note` (a sensible default when empty) and resolve the thread via GraphQL, so the distinction is the message, not the mechanics.
+
+Output: `{ "creates": [...], "threads": [...], "created_count", "resolved_now_count", "declined_now_count", "still_open_count", "transitions_count", "has_creates", "has_transitions" }` — the input entries in order (`creates` gain `url` when posted; `threads` gain `applied` and `transitioned`), plus the lifecycle counts, so a summary comment renders from this tool's output alone.
+
 ### `builtin__git_diff`
 
 Unified diff between two refs (merge-base three-dot diff), path-scoped, truncated to a byte budget — sized for LLM consumption. A diff over budget ends with a `[diff truncated: showing X of Y bytes]` marker line, so a consumer can tell a complete diff from a cut one; an unresolvable ref fails the call instead of returning an empty diff. Read-only. Needs a checkout with enough history to resolve both refs (`fetch-depth: 0` in CI).

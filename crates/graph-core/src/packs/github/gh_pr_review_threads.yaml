@@ -1,0 +1,113 @@
+# github pack: read a PR's review threads back as structured findings.
+# Threads are recognized by a hidden payload tag in their first comment
+# (`<!-- <marker> {json} -->`, as posted by gh_pr_thread_sync); anything
+# else on the PR is ignored. The embedded JSON merges with thread metadata
+# into one flat finding object, so templates can reference {{label}},
+# {{severity}}, etc. without dotting through a payload key. State is a
+# heuristic from GitHub's resolution data: unresolved → open; resolved by
+# the same login that posted the finding → resolved (our automation);
+# resolved by anyone else → declined (a human closed it). Replies after the
+# first comment come along verbatim for downstream inference to read.
+# Threads whose payload is missing, unparsable, or lacks the required keys
+# are skipped (counted, never fatal) — they can't round-trip.
+name: gh_pr_review_threads
+description: >
+  List the review threads a plan previously posted on a pull request, as
+  structured findings. Each thread whose first comment carries the marker's
+  hidden JSON payload comes back as that payload merged with thread state
+  (open, resolved, declined — resolved-by-poster vs resolved-by-human),
+  thread id, anchor, url, and any human replies. Threads without a
+  parsable payload are skipped and counted. Read-only.
+kind: exec
+command: bash
+args:
+  - "-ceu"
+  - |
+    pr="$1"; marker="$2"
+    owner=$(gh repo view --json owner --jq .owner.login)
+    name=$(gh repo view --json name --jq .name)
+    query='query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
+      repository(owner:$owner,name:$name){
+        pullRequest(number:$pr){
+          reviewThreads(first:100, after:$endCursor){
+            pageInfo{hasNextPage endCursor}
+            nodes{id isResolved isOutdated path line
+              resolvedBy{login}
+              comments(first:100){nodes{url body author{login}}}}}}}}'
+    gh api graphql --paginate --slurp -f query="$query" \
+      -F owner="$owner" -F name="$name" -F pr="$pr" \
+      | jq --arg m "$marker" '
+          def payload($body):
+            try ($body
+                 | split("<!-- " + $m + " ")[1]
+                 | split(" -->")[0]
+                 | fromjson)
+            catch null;
+          [.[].data.repository.pullRequest.reviewThreads.nodes[]
+           | . as $t
+           | (.comments.nodes[0] // null) as $first
+           | select($first != null)
+           | payload($first.body) as $p
+           | select(($p | type) == "object")] as $tagged
+          | [$tagged[]
+             | . as $t
+             | (.comments.nodes[0]) as $first
+             | payload($first.body) as $p
+             | select(((["label","severity","invariant","file","line",
+                         "finding"]) - ($p | keys)) == [])
+             | $p + {
+                 thread_id: $t.id,
+                 state: (if $t.isResolved
+                         then (if ($t.resolvedBy.login // "")
+                                  == ($first.author.login // "?")
+                               then "resolved" else "declined" end)
+                         else "open" end),
+                 path: $t.path,
+                 line: ($t.line // $p.line),
+                 is_outdated: $t.isOutdated,
+                 url: $first.url,
+                 replies: [$t.comments.nodes[1:][]
+                           | {author: (.author.login // "unknown"), body}],
+                 reply_count: (($t.comments.nodes | length) - 1)
+               }] as $findings
+          | {findings: $findings,
+             count: ($findings | length),
+             open_count: ([$findings[] | select(.state == "open")] | length),
+             skipped: (($tagged | length) - ($findings | length)),
+             has_findings: (($findings | length) > 0)}'
+  - gh_pr_review_threads
+  - "{{input.pr}}"
+  - "{{input.marker}}"
+output: json
+timeout_secs: 60
+read_only: true
+input_schema:
+  type: object
+  required: [pr, marker]
+  properties:
+    pr: { type: integer, description: Pull request number }
+    marker:
+      type: string
+      description: >
+        Payload tag prefix to look for — the same marker the findings were
+        posted with via gh_pr_thread_sync (e.g. "graph:pr_review:finding").
+        Only threads whose first comment embeds `<!-- <marker> {json} -->`
+        are returned.
+output_schema:
+  type: object
+  properties:
+    findings:
+      type: array
+      description: >
+        One entry per recognized thread — the embedded payload's keys
+        (label, severity, invariant, file, line, finding, ...) flattened
+        together with thread_id, state (open|resolved|declined), path,
+        line, is_outdated, url, replies ([{author, body}]), reply_count.
+    count: { type: integer, description: Recognized threads returned }
+    open_count: { type: integer, description: Findings currently open }
+    skipped:
+      type: integer
+      description: >
+        Marker-tagged threads dropped because their payload lacked the
+        required keys.
+    has_findings: { type: boolean, description: True when findings is non-empty }

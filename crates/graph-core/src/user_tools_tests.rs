@@ -196,6 +196,8 @@ fn github_pack_loads_and_validates() {
             "gh_pr_meta",
             "gh_pr_comment",
             "gh_pr_inline_comments",
+            "gh_pr_review_threads",
+            "gh_pr_thread_sync",
             "gh_pr_ticket",
             "gh_release",
             "git_diff",
@@ -208,7 +210,10 @@ fn github_pack_loads_and_validates() {
     // The comment tools post; everything else is read-only.
     for doc in &docs {
         let read_only = doc.read_only.unwrap_or(false);
-        let posts = matches!(doc.name.as_str(), "gh_pr_comment" | "gh_pr_inline_comments");
+        let posts = matches!(
+            doc.name.as_str(),
+            "gh_pr_comment" | "gh_pr_inline_comments" | "gh_pr_thread_sync"
+        );
         assert_eq!(read_only, !posts, "{}", doc.name);
     }
 }
@@ -267,6 +272,66 @@ fn git_log_keeps_commits_whose_subject_has_no_pr_number() {
     assert!(
         script.contains("| .n | tonumber) // null)"),
         "pr must fall back to null when capture matches nothing: {script}"
+    );
+}
+
+#[test]
+fn gh_pr_review_threads_requires_the_payload_keys_thread_sync_embeds() {
+    // The round-trip contract: gh_pr_thread_sync embeds a finding payload,
+    // gh_pr_review_threads only returns threads whose payload carries the
+    // required keys. If the required set drifts from what callers embed,
+    // findings silently vanish from the read side (skipped, not errored) —
+    // pin the set so a change to either side is a conscious one.
+    let docs = load_pack_tools(&["github".to_string()]).unwrap();
+    let threads = docs
+        .iter()
+        .find(|d| d.name == "gh_pr_review_threads")
+        .unwrap();
+    let ToolKind::Exec { args, .. } = &threads.kind else {
+        panic!("gh_pr_review_threads is an exec tool");
+    };
+    let script = args.join("\n");
+    assert!(
+        script.contains(r#"["label","severity","invariant","file","line","#),
+        "required payload keys changed — update embedders to match: {script}"
+    );
+}
+
+#[tokio::test]
+async fn gh_pr_thread_sync_with_nothing_to_do_reports_empty_lifecycle() {
+    // Empty creates + threads and no sweep_marker must not touch gh at all:
+    // every loop renders zero iterations, and the aggregation still emits
+    // the full lifecycle shape E8-style templates depend on.
+    let docs = load_pack_tools(&["github".to_string()]).unwrap();
+    let registry = UserToolRegistry::builtins(docs, router());
+
+    let outcome = registry
+        .invoke(
+            "builtin__gh_pr_thread_sync",
+            json!({
+                "pr": 1,
+                "head_sha": "deadbeef",
+                "marker": "test:finding",
+                "creates": [],
+                "threads": []
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    assert_eq!(
+        outcome.result,
+        json!({
+            "creates": [],
+            "threads": [],
+            "created_count": 0,
+            "resolved_now_count": 0,
+            "declined_now_count": 0,
+            "still_open_count": 0,
+            "transitions_count": 0,
+            "has_creates": false,
+            "has_transitions": false
+        })
     );
 }
 

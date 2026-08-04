@@ -59,7 +59,7 @@ repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
 # No [storage] section: CI sets GRAPH_STORAGE=memory.
 
 [tools]
-packs = ["github"]   # git_changed_files, git_diff, gh_pr_meta, gh_pr_comment, gh_pr_inline_comments
+packs = ["github"]   # git_changed_files, git_diff, gh_pr_meta, gh_pr_comment, gh_pr_thread_sync, ...
 ```
 
 Then author one plan per check under `.graph/plans/`. Adapt from the live references — [`docs_drift.yaml`](https://github.com/tylerdavis/graph/blob/main/.graph/plans/docs_drift.yaml) (gate) and [`graph_review_9000.yaml`](https://github.com/tylerdavis/graph/blob/main/.graph/plans/graph_review_9000.yaml) (reporter) — rather than writing from scratch. A minimal gate skeleton:

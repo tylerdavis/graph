@@ -1,0 +1,201 @@
+# github pack: sync a plan's review threads on a PR — the stateful
+# counterpart to gh_pr_inline_comments' delete-and-repost. New findings
+# post as inline comments whose body carries a hidden `<!-- <marker>
+# {json} -->` payload (read back by gh_pr_review_threads on the next run);
+# existing threads receive their decided transition: a reply plus GraphQL
+# resolveReviewThread for "resolve" and "decline", nothing for "none" —
+# open threads and their human replies are left standing, never deleted.
+# Each thread and each create is its own API call, so one failure can't
+# sink the rest: a failed transition comes back applied=false and the
+# thread just stays open. Entries keep their extra keys, and the output
+# carries the lifecycle counts, so callers can render summaries from this
+# tool's output alone. The optional sweep_marker deletes comments left by
+# a previous delete-and-repost scheme (e.g. gh_pr_inline_comments) — a
+# one-time migration aid, not part of the steady state.
+name: gh_pr_thread_sync
+description: >
+  Sync inline review threads on a pull request. Posts each new finding as
+  an inline comment embedding the marker's hidden JSON payload (so
+  gh_pr_review_threads can read it back), and applies per-thread
+  transitions to existing findings — "resolve" and "decline" reply on the
+  thread and resolve it, "none" leaves it untouched. Never deletes open
+  threads or human replies. Returns the entries with urls/applied flags
+  plus lifecycle counts. Side-effecting.
+kind: exec
+command: bash
+args:
+  - "-ceu"
+  - |
+    pr="$1"; sha="$2"; marker="$3"; creates="$4"; threads="$5"; sweep="$6"
+
+    # One-time migration sweep: clear comments left by a previous
+    # delete-and-repost marker so old and new schemes don't stack.
+    if [ -n "$sweep" ]; then
+      gh api "repos/{owner}/{repo}/pulls/$pr/comments" --paginate 2>/dev/null \
+        | jq -r --arg tag "<!-- $sweep -->" \
+            '.[] | select(.body | contains($tag)) | .id' \
+        | while IFS= read -r id; do
+            gh api -X DELETE "repos/{owner}/{repo}/pulls/comments/$id" \
+              >/dev/null 2>&1 || true
+          done
+    fi
+
+    reply_q='mutation($tid:ID!,$body:String!){
+      addPullRequestReviewThreadReply(
+        input:{pullRequestReviewThreadId:$tid,body:$body}){comment{id}}}'
+    resolve_q='mutation($tid:ID!){
+      resolveReviewThread(input:{threadId:$tid}){thread{id}}}'
+
+    out_threads=$(jq -c '.[]' <<<"$threads" | while IFS= read -r t; do
+      tr=$(jq -r '.transition' <<<"$t")
+      applied=false
+      if [ "$tr" = "resolve" ] || [ "$tr" = "decline" ]; then
+        tid=$(jq -r '.thread_id' <<<"$t")
+        note=$(jq -r '.note // ""' <<<"$t")
+        if [ -z "$note" ]; then
+          if [ "$tr" = "resolve" ]; then
+            note="No longer detected at head — resolving."
+          else
+            note="Acknowledged — treating as declined; won't be re-raised."
+          fi
+        fi
+        gh api graphql -f query="$reply_q" -f tid="$tid" \
+          -f body="🤖 $note" >/dev/null 2>&1 || true
+        if gh api graphql -f query="$resolve_q" -f tid="$tid" \
+             >/dev/null 2>&1; then
+          applied=true
+        fi
+      fi
+      jq -c --argjson ok "$applied" \
+        '. + {applied: $ok,
+              transitioned: ((.transition != "none") and $ok)}' <<<"$t"
+    done | jq -s '.')
+
+    out_creates=$(jq -c '.[]' <<<"$creates" | while IFS= read -r entry; do
+      url=""
+      if [ "$(jq -r '.line != null' <<<"$entry")" = "true" ]; then
+        url=$(jq --arg sha "$sha" --arg m "$marker" \
+                '{commit_id: $sha, path, line, side: (.side // "RIGHT"),
+                  body: (.body + "\n\n<!-- " + $m + " "
+                         + ((.payload // {}) | tojson) + " -->")}' <<<"$entry" \
+          | gh api -X POST "repos/{owner}/{repo}/pulls/$pr/comments" \
+              --input - --jq .html_url 2>/dev/null) || url=""
+      fi
+      jq -c --arg url "$url" \
+        'if $url == "" then . else . + {url: $url} end' <<<"$entry"
+    done | jq -s '.')
+
+    jq -n --argjson creates "$out_creates" --argjson threads "$out_threads" '
+      {creates: $creates,
+       threads: $threads,
+       created_count: ([$creates[] | select(.url != null)] | length),
+       resolved_now_count:
+         ([$threads[] | select(.transitioned and .transition == "resolve")]
+          | length),
+       declined_now_count:
+         ([$threads[] | select(.transitioned and .transition == "decline")]
+          | length),
+       still_open_count:
+         ([$threads[] | select(.state == "open"
+             or ((.transition != "none") and (.applied | not)))] | length),
+       transitions_count: ([$threads[] | select(.transitioned)] | length),
+       has_creates: (($creates | length) > 0),
+       has_transitions: (any($threads[]; .transitioned))}'
+  - gh_pr_thread_sync
+  - "{{input.pr}}"
+  - "{{input.head_sha}}"
+  - "{{input.marker}}"
+  - "{{input.creates}}"
+  - "{{input.threads}}"
+  - "{{input.sweep_marker}}"
+output: json
+timeout_secs: 120
+read_only: false
+input_schema:
+  type: object
+  required: [pr, head_sha, marker, creates, threads]
+  properties:
+    pr:       { type: integer, description: Pull request number }
+    head_sha: { type: string, description: Commit new comments anchor to — the PR head sha }
+    marker:
+      type: string
+      description: >
+        Payload tag prefix embedded in every new comment as
+        `<!-- <marker> {json} -->`; pass the same marker to
+        gh_pr_review_threads to read the findings back. Use one marker
+        per plan, e.g. "graph:pr_review:finding".
+    creates:
+      type: array
+      description: >
+        New findings to post as inline comments. Keys beyond
+        path/line/side/body/payload are ignored for posting but preserved
+        in the output.
+      items:
+        type: object
+        required: [path, body, payload]
+        properties:
+          path: { type: string, description: File path within the diff }
+          line:
+            type: integer
+            description: >
+              Line in the new file; must be part of the diff. Omit when
+              unknown — the entry passes through unposted.
+          side: { type: string, enum: [LEFT, RIGHT], description: Diff side; defaults to RIGHT }
+          body: { type: string, description: Markdown comment body }
+          payload:
+            type: object
+            description: >
+              Structured finding embedded as the hidden payload tag —
+              what gh_pr_review_threads returns on later runs. Keep it
+              small and flat (label, severity, file, line, finding, ...).
+    threads:
+      type: array
+      description: >
+        Existing findings with their decided transitions (from
+        gh_pr_review_threads plus a transition-audit step). Extra keys
+        pass through to the output.
+      items:
+        type: object
+        required: [thread_id, transition]
+        properties:
+          thread_id: { type: string, description: GraphQL review-thread node id }
+          transition:
+            type: string
+            enum: [none, resolve, decline]
+            description: >
+              none leaves the thread untouched; resolve and decline both
+              reply with the note and resolve the thread.
+          note:
+            type: string
+            description: >
+              One-sentence reply posted before resolving; a default is
+              used when empty.
+    sweep_marker:
+      type: string
+      default: ""
+      description: >
+        Optional migration aid — a legacy delete-and-repost marker (e.g.
+        the one previously used with gh_pr_inline_comments) whose
+        comments are deleted before syncing. Omit in the steady state.
+output_schema:
+  type: object
+  properties:
+    creates:
+      type: array
+      description: >
+        The creates entries in order, each with url added when its
+        comment posted; entries without a line, or rejected by the API,
+        come back without one.
+    threads:
+      type: array
+      description: >
+        The threads entries in order, each with applied (the transition's
+        API calls succeeded) and transitioned (a non-none transition was
+        applied) added.
+    created_count:      { type: integer, description: New comments actually posted }
+    resolved_now_count: { type: integer, description: Threads resolved this run }
+    declined_now_count: { type: integer, description: Threads declined (and resolved) this run }
+    still_open_count:   { type: integer, description: Threads left open, including failed transitions }
+    transitions_count:  { type: integer, description: Threads whose transition applied }
+    has_creates:        { type: boolean, description: True when creates is non-empty }
+    has_transitions:    { type: boolean, description: True when any transition applied }
