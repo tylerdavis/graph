@@ -39,6 +39,15 @@ steps:
     when:
       op: empty
       value: '{{E2.text}}'
+- id: E3b
+  tool_name: filter
+  input:
+    over: '{{E1.changes}}'
+    where:
+      op: ne
+      to: deleted
+      value: '{{item.status}}'
+  reasoning: Keep only changed files that still exist at the head sha — a deleted file has no contents there, and mapping git_file over it fails the plan (issue #94). Deletions stay visible to the reviewer via the E1.changes overview; this step only decides what gets fetched.
 - id: E4
   tool_name: map
   input:
@@ -46,11 +55,11 @@ steps:
     do:
       input:
         max_bytes: 30000
-        path: '{{item}}'
+        path: '{{item.path}}'
         ref: '{{E0.head_sha}}'
       tool_name: builtin__git_file
-    over: '{{E1.files}}'
-  reasoning: Fetch the full content of every changed file at the head sha, in parallel, so the reviewer LLM can see surrounding code rather than just diff hunks.
+    over: '{{E3b.items}}'
+  reasoning: Fetch the full content of every still-present changed file at the head sha, in parallel, so the reviewer LLM can see surrounding code rather than just diff hunks. Results are index-aligned with E3b.items by construction.
 - id: E5
   tool_name: builtin__infer
   input:
@@ -64,16 +73,20 @@ steps:
       PR BODY:
       {{E0.body}}
 
-      CHANGED FILES ({{E1.count}} total, numbered to match the file contents below):
-      {{#E1.files}}{{@index}}. {{item}}
-      {{/E1.files}}
+      FILE CHANGES ({{E1.count}} total — every changed file with its status and line delta; deleted and renamed files included):
+      {{#E1.changes}}- {{path}} — {{status}} (+{{additions}}/-{{deletions}})
+      {{/E1.changes}}
+
+      FILES WITH CONTENTS ({{E3b.count}} — the FILE CHANGES minus deleted files, which have no contents at the head sha; numbered to match FULL FILE CONTENTS below):
+      {{#E3b.items}}{{@index}}. {{path}}
+      {{/E3b.items}}
 
       DIFF (may be excerpted/truncated; excludes Cargo.lock, CHANGELOG.md):
       {{E2.text}}
 
-      FULL FILE CONTENTS AT HEAD SHA, in the same order as the CHANGED FILES list above (for context beyond diff hunks; some may be truncated by byte budget):
+      FULL FILE CONTENTS AT HEAD SHA, in the same order as the FILES WITH CONTENTS list above (for context beyond diff hunks; some may be truncated by byte budget):
       {{#E4.results}}
-      ===== file #{{@index}} (see CHANGED FILES list above for its path) =====
+      ===== file #{{@index}} (see FILES WITH CONTENTS above for its path) =====
       {{text}}
 
       {{/E4.results}}
@@ -92,7 +105,7 @@ steps:
 
       PASS 5 — Plan composition & model routing correctness (ONLY if the diff touches plan__* composition, Pipeline::call_plan/call_planner, ModelRouter, model roles, or graph-llm provider/failover code — otherwise this pass is not applicable): plan-calls-plan cycle detection and the depth cap (8) still hold; a role (chat/planner/solver/repair/judge/embedder) still falls back to `default` when unset; the planner prompt stays byte-identical across a session (prompt-cache invariant) — a change that makes the outline/step prompt vary run-to-run for reasons other than the declared "Draft Under Revision" section is a defect; cross-provider failover (`fallbacks` on model entries) still surfaces the underlying error when all fallbacks are exhausted rather than swallowing it.
 
-      PASS 6 — Test coverage: for every behavioral change, confirm a test actually exercises it — not just that a test file was touched. The risky path specifically must be covered (a new control-step branch, a new error variant, a new template construct, a new gate/abort path). Flag behavior added with no test at all, and mock-heavy tests that would still pass if the real code broke. Don't demand tests for pure doc/comment/copy changes. The CHANGED FILES list is complete, so a behavioral change with no test-file change is observable — but an untouched existing test you cannot see here may already cover it; when that's plausible, mark this pass 'unverified' and say what to check rather than asserting a gap.
+      PASS 6 — Test coverage: for every behavioral change, confirm a test actually exercises it — not just that a test file was touched. The risky path specifically must be covered (a new control-step branch, a new error variant, a new template construct, a new gate/abort path). Flag behavior added with no test at all, and mock-heavy tests that would still pass if the real code broke. Don't demand tests for pure doc/comment/copy changes. The FILE CHANGES list is complete, so a behavioral change with no test-file change is observable — but an untouched existing test you cannot see here may already cover it; when that's plausible, mark this pass 'unverified' and say what to check rather than asserting a gap.
 
       PASS 7 — Repo conventions & docs parity: conventional-commit-style intent reflected in the PR (the changelog is generated from commit subjects); no large unrelated reformatting/churn bundled into this PR; the diff follows the idioms of the surrounding code (naming, structure, patterns already established in the files shown above); per CLAUDE.md, any user-visible behavior change (CLI surface, plan/tool file formats, template semantics, error handling, exit codes, prompts the planner sees, configuration) must land with a docs/ update in the same PR — flag a missing one here as a likely bug or blocker depending on severity (a separate docs_drift CI gate also checks this mechanically; this pass is about judgment, not duplicating that gate verbatim).
 
@@ -103,7 +116,7 @@ steps:
       Each finding renders as a GitHub Markdown alert-style inline PR comment (a blockquote alert with a bold headline and explanation, then a concrete Fix with a code block, then a collapsible one-shot agent-fix block) — build every finding's fields with that rendering in mind:
 
       - `invariant`: one of 'Pass 1: Stated Intent', 'Pass 2: Pipeline/Control-Step Invariants', 'Pass 3: Template/Shape Engine', 'Pass 4: Rust/Async/Storage Footguns', 'Pass 5: Plan Composition/Model Routing', 'Pass 6: Test Coverage', 'Pass 7: Repo Conventions/Docs Parity', 'Pass 8: CLI Surface/Copy'.
-      - `file`: the real file path, resolved via the CHANGED FILES list. `line`: integer line number in the new file that this finding anchors to. This field is REQUIRED and must always be present — if you cannot confidently determine a specific line number, set it to 0 (a sentinel meaning "unanchored"); never omit the key.
+      - `file`: the real file path, resolved via the FILE CHANGES list. `line`: integer line number in the new file that this finding anchors to. This field is REQUIRED and must always be present — if you cannot confidently determine a specific line number, set it to 0 (a sentinel meaning "unanchored"); never omit the key.
       - `severity`: 'blocker' | 'likely bug' | 'cleanup' (blocker = merge-blocking correctness/invariant-violation issue; likely bug = probably wrong but not certainly merge-blocking; cleanup = style/minor/copy). A violation of the pipeline error policy, control-step semantics, or a resource-lifecycle invariant (MCP shutdown, Store access, file-store concurrency) is 'blocker' even on an otherwise small PR. A deliberate, intentional convention deviation is NOT 'blocker' — it's at most 'likely bug' or 'cleanup'.
       - `severity_label`: human-facing label matching severity exactly — 'Blocker' for blocker, 'Likely bug' for likely bug, 'Cleanup' for cleanup.
       - `alert_type`: the GitHub Markdown alert type matching severity exactly — 'WARNING' for blocker, 'IMPORTANT' for likely bug, 'NOTE' for cleanup.
