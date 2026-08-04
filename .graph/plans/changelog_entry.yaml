@@ -56,7 +56,7 @@ steps:
         properties:
           summary:
             type: string
-            description: 2-4 sentences of user-facing MDX-safe prose for the changelog entry
+            description: Themed MDX-safe summary — '####' h4 headings naming each theme in user-benefit language, each followed by 1-2 plain sentences; a trivial patch is 1-2 sentences with no headings
           migration_needed:
             type: boolean
             description: true only when existing plans/tools/CI require action
