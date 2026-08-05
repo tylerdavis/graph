@@ -52,6 +52,15 @@ The global layer is anchored to your home directory, so it does not depend on wh
 
 If the server ends up with no plans at all, it says so — on stderr, and in the MCP `instructions` the calling model reads, along with the `--dir` fix.
 
+## When the config is broken
+
+A server that dies before the MCP handshake is the worst failure mode this surface has: the client reports "connection failed", stderr goes to client logs no model reads, and the agent gets nothing to act on. So `graph mcp serve` never exits over a bad config — it serves anyway and puts the *why* where the agent will see it:
+
+- **A missing provider key** (`api_key = "${ANTHROPIC_API_KEY}"` with the variable unset) doesn't degrade the server at all. Config loading defers the error to the entry that owns it: authoring tools, `graph_plan_list`, and plans that run [without inference](/plans/finish-modes) all work, and the calls that do need a model (`graph_plan_draft`, solver-mode plans) fail naming the variable and the config path that wants it.
+- **A config that cannot load** (parse error, missing variable outside `[providers.*]`/`[mcp.*]`) still gets a running server: the load error is appended to the MCP `instructions` at initialize, and every tool call returns it. The config is re-read per request, so fixing the file or the environment heals the server in place — no restart.
+
+The environment that matters is the one the MCP *client* launches the server with — a key exported in your shell profile is not necessarily set there. Most clients accept an `env` block next to `command`/`args` in the server entry.
+
 ## What gets served
 
 Two populations, deliberately named apart.

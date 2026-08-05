@@ -57,27 +57,40 @@ pub async fn serve(dir: Option<PathBuf>) -> Result<()> {
     }
     project::set_pinned(dir.is_some());
 
-    // Fail before the transport opens rather than answering `initialize` and
-    // then erroring on every call.
-    let runtime = runtime()?;
-    let plans = runtime.plan_docs().docs.len();
-    match (&dir, plans) {
-        (Some(dir), _) => tracing::info!(
-            "serving {plans} plan(s) from {} plus the global config",
-            dir.display()
+    // A config that fails to load is NOT a reason to die before the
+    // transport opens: an exit here happens before `initialize`, so the
+    // client reports only "connection failed" and the agent behind it never
+    // learns why (stderr goes to client logs, which no model reads). Serve
+    // anyway — the runtime is rebuilt per request, so every tool call
+    // returns the load error verbatim, and `get_info` puts it in the
+    // instructions the model does read. Fixing the config (or the
+    // environment) heals the server in place, without a restart.
+    match runtime() {
+        Err(error) => tracing::error!(
+            "configuration failed to load — serving anyway so callers are \
+             told why instead of seeing a dead connection: {error:#}"
         ),
-        // The quiet failure this server can have: looks connected, has
-        // nothing to offer, and never says why.
-        (None, 0) => tracing::warn!(
-            "no plans found. Only the global config (~/.config/graph) is \
-             loaded — the directory this server was started in is ignored \
-             unless you pass --dir, because a client chooses that directory, \
-             not you. Re-launch with `--dir <project>` to serve its plans."
-        ),
-        (None, _) => tracing::info!(
-            "serving {plans} plan(s) from the global config; pass --dir \
-             <project> to add a project's plans"
-        ),
+        Ok(runtime) => {
+            let plans = runtime.plan_docs().docs.len();
+            match (&dir, plans) {
+                (Some(dir), _) => tracing::info!(
+                    "serving {plans} plan(s) from {} plus the global config",
+                    dir.display()
+                ),
+                // The quiet failure this server can have: looks connected,
+                // has nothing to offer, and never says why.
+                (None, 0) => tracing::warn!(
+                    "no plans found. Only the global config (~/.config/graph) is \
+                     loaded — the directory this server was started in is ignored \
+                     unless you pass --dir, because a client chooses that directory, \
+                     not you. Re-launch with `--dir <project>` to serve its plans."
+                ),
+                (None, _) => tracing::info!(
+                    "serving {plans} plan(s) from the global config; pass --dir \
+                     <project> to add a project's plans"
+                ),
+            }
+        }
     }
 
     let service = GraphServer::new().serve(rmcp::transport::stdio()).await?;
@@ -102,11 +115,6 @@ impl GraphServer {
         Self {
             writes: Arc::new(Mutex::new(())),
         }
-    }
-
-    /// How many plans this server is currently offering.
-    fn plan_count(&self) -> usize {
-        runtime().map(|r| r.plan_docs().docs.len()).unwrap_or(0)
     }
 }
 
@@ -371,18 +379,32 @@ impl ServerHandler for GraphServer {
                  replaces every step, so it discards whatever was already right."
                 .into(),
         );
-        // An empty catalog is the server's quietest failure: it looks
-        // connected and has nothing to offer. Say so where the model will
-        // read it, and say what to do about it.
-        if self.plan_count() == 0 && !project::is_pinned() {
-            let instructions = info.instructions.take().unwrap_or_default();
-            info.instructions = Some(format!(
-                "{instructions}\n\nNOTE: no plans are available. This server was started \
-                 without --dir, so only the user's global configuration \
-                 (~/.config/graph) is loaded and no project's plans are \
-                 served. If the user expected plans from a project, tell them \
-                 to relaunch it as `graph mcp serve --dir <project>`."
-            ));
+        // The two quiet failures this server can have, said where the model
+        // will actually read them. A config that does not load would
+        // otherwise look exactly like a working server whose every call
+        // fails; an empty catalog looks connected with nothing to offer.
+        match runtime() {
+            Err(error) => {
+                let instructions = info.instructions.take().unwrap_or_default();
+                info.instructions = Some(format!(
+                    "{instructions}\n\nNOTE: this server's configuration failed to load: \
+                     {error:#}. Every tool call will return this error until it is \
+                     fixed. Tell the user — the fix usually means setting the named \
+                     environment variable where this MCP server is launched, or \
+                     editing the config file. No restart is needed once fixed."
+                ));
+            }
+            Ok(runtime) if runtime.plan_docs().docs.is_empty() && !project::is_pinned() => {
+                let instructions = info.instructions.take().unwrap_or_default();
+                info.instructions = Some(format!(
+                    "{instructions}\n\nNOTE: no plans are available. This server was started \
+                     without --dir, so only the user's global configuration \
+                     (~/.config/graph) is loaded and no project's plans are \
+                     served. If the user expected plans from a project, tell them \
+                     to relaunch it as `graph mcp serve --dir <project>`."
+                ));
+            }
+            Ok(_) => {}
         }
         info
     }

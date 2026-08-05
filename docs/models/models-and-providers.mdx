@@ -25,6 +25,8 @@ base_url = "http://localhost:11434/v1"    # Ollama, vLLM, LM Studio…
 | `openai_compat` | any OpenAI-compatible endpoint — Ollama, vLLM, LM Studio, hosted gateways |
 | `bedrock` | AWS Bedrock — **roadmap**; the config key is accepted but the provider is a stub |
 
+A provider whose config can't be honored — most commonly an unset `${VAR}` behind its `api_key`, or the `bedrock` stub — is **configured but not usable**: the config still loads and every command that never resolves a model to it keeps working, while the first call that does errors naming the reason (for a missing variable, the variable and the config path that references it).
+
 Requests retry transient failures (429, 5xx, connection errors, timeouts) up to 3 attempts with backoff. **Structured output** uses each provider's native mechanism — a forced tool on Anthropic, `json_schema` with a `json_object` fallback on OpenAI-compatible servers that reject strict schema mode — and a result that fails to parse or validate gets one `repair`-role fix-up pass before erroring. Anthropic requests retry once without `temperature` when a model rejects the parameter.
 
 ## Roles

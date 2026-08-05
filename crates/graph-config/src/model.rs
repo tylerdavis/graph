@@ -94,6 +94,41 @@ impl Default for Settings {
     }
 }
 
+/// A `${VAR}` reference whose variable was unset when the config loaded.
+///
+/// Recorded instead of failing the load, for the sections whose values are
+/// only needed when the entry is actually *used* (`[providers.*]`,
+/// `[mcp.*]`). The value keeps its literal `${VAR}` text; the component that
+/// owns the entry reports this — with the variable name — the moment the
+/// entry is exercised.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingEnv {
+    /// The field inside the entry, e.g. `api_key` or `headers.Authorization`.
+    pub field: String,
+    /// The environment variable that was not set.
+    pub var: String,
+}
+
+impl MissingEnv {
+    /// One sentence naming the variable and where the config references it,
+    /// e.g. `environment variable ANTHROPIC_API_KEY (providers.anthropic.api_key) is not set`.
+    pub fn describe(&self, entry: &str) -> String {
+        format!(
+            "environment variable {} ({entry}.{}) is not set",
+            self.var, self.field
+        )
+    }
+}
+
+/// Render every [`MissingEnv`] of one entry as a single reason string.
+pub fn describe_missing_env(entry: &str, missing: &[MissingEnv]) -> String {
+    missing
+        .iter()
+        .map(|m| m.describe(entry))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
@@ -107,6 +142,10 @@ pub struct ProviderConfig {
     pub region: Option<String>,
     /// Bedrock only: AWS shared-config profile name.
     pub profile: Option<String>,
+    /// Unset `${VAR}` references in this entry, recorded at load. A provider
+    /// with any is unusable and says so when a model resolves to it.
+    #[serde(skip)]
+    pub missing_env: Vec<MissingEnv>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,6 +318,11 @@ pub struct McpServerConfig {
     /// Output schema/example overrides keyed by tool name.
     #[serde(default)]
     pub tool_overrides: BTreeMap<String, ToolOverride>,
+    /// Unset `${VAR}` references in this entry, recorded at load. A server
+    /// with any refuses to connect and says so — a missing token must not
+    /// silently become an empty header or child environment variable.
+    #[serde(skip)]
+    pub missing_env: Vec<MissingEnv>,
 }
 
 impl McpServerConfig {
