@@ -159,6 +159,19 @@ impl ServerHandle {
     }
 
     async fn establish(&self) -> Result<Connection, ToolError> {
+        // A `${VAR}` that was unset at config load is deferred to exactly
+        // here: connecting would hand the server an empty secret (or the
+        // literal `${VAR}` text), so refuse with the variable's name instead.
+        if !self.config.missing_env.is_empty() {
+            return Err(ToolError::Transport(format!(
+                "mcp server '{}' cannot connect: {}",
+                self.name,
+                graph_config::describe_missing_env(
+                    &format!("mcp.{}", self.name),
+                    &self.config.missing_env
+                ),
+            )));
+        }
         let info = client_info();
         let client: Client = if let Some(command) = &self.config.command {
             let cmd = tokio::process::Command::new(command);
@@ -290,6 +303,34 @@ mod tests {
         assert_eq!(extract_result(None, vec![]), json!({}));
     }
 
+    #[tokio::test]
+    async fn a_server_with_an_unset_env_var_refuses_to_connect_naming_the_var() {
+        // The config loaded anyway (the deferral in graph-config); the
+        // refusal must land here, before a child process is spawned with an
+        // empty secret, and must say which variable to set.
+        let config = McpServerConfig {
+            command: Some("true".into()),
+            args: vec![],
+            env: Default::default(),
+            url: None,
+            headers: Default::default(),
+            include_tools: None,
+            exclude_tools: vec![],
+            tool_overrides: Default::default(),
+            missing_env: vec![graph_config::MissingEnv {
+                field: "env.GITHUB_PERSONAL_ACCESS_TOKEN".into(),
+                var: "GITHUB_TOKEN".into(),
+            }],
+        };
+        let manager = McpManager::new([("github".to_string(), config)].into_iter().collect());
+        let error = manager.connect("github").await.expect_err("must refuse");
+        let message = error.to_string();
+        assert!(
+            message.contains("GITHUB_TOKEN") && message.contains("mcp.github"),
+            "{message}"
+        );
+    }
+
     #[test]
     fn include_exclude_filters_apply() {
         let config = McpServerConfig {
@@ -301,6 +342,7 @@ mod tests {
             include_tools: Some(vec!["a".into(), "b".into()]),
             exclude_tools: vec!["b".into()],
             tool_overrides: Default::default(),
+            missing_env: Vec::new(),
         };
         let handle = ServerHandle {
             name: "test".into(),

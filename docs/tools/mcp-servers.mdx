@@ -29,7 +29,7 @@ url = "https://mcp.linear.app/mcp"
 headers = { Authorization = "Bearer ${LINEAR_API_KEY}" }
 ```
 
-`command` and `url` are mutually exclusive; `${VAR}` in `env`/`headers` values resolves from your environment at load time and fails loudly when unset.
+`command` and `url` are mutually exclusive; `${VAR}` in `env`/`headers` values resolves from your environment at load time. If a variable is unset, the server refuses to connect — naming the variable — rather than starting with an empty secret; the rest of the config (and every other server) keeps working.
 
 <Note>
 Auth is static headers/env — servers requiring an interactive OAuth flow aren't supported directly. Many hosted servers (Linear included) accept API keys as bearer tokens.

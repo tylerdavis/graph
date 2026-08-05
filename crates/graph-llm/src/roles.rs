@@ -10,6 +10,12 @@ use std::sync::Arc;
 
 pub struct ModelRouter {
     providers: HashMap<String, Arc<dyn ChatProvider>>,
+    /// Providers that are configured but cannot be built as configured —
+    /// an unset `${VAR}` behind a secret, an unsupported kind — keyed to
+    /// the reason. Kept out of `providers` so resolving one errors with
+    /// that reason at the moment of use, instead of the whole config
+    /// failing to load over an entry the command may never touch.
+    unavailable: HashMap<String, String>,
     roles: graph_config::ModelRoles,
 }
 
@@ -19,12 +25,27 @@ impl ModelRouter {
         providers: HashMap<String, Arc<dyn ChatProvider>>,
         roles: graph_config::ModelRoles,
     ) -> Self {
-        Self { providers, roles }
+        Self {
+            providers,
+            unavailable: HashMap::new(),
+            roles,
+        }
     }
 
     pub fn from_config(config: &Config) -> Result<Self, LlmError> {
         let mut providers: HashMap<String, Arc<dyn ChatProvider>> = HashMap::new();
+        let mut unavailable: HashMap<String, String> = HashMap::new();
         for (name, provider) in &config.providers {
+            if !provider.missing_env.is_empty() {
+                unavailable.insert(
+                    name.clone(),
+                    graph_config::describe_missing_env(
+                        &format!("providers.{name}"),
+                        &provider.missing_env,
+                    ),
+                );
+                continue;
+            }
             let instance: Arc<dyn ChatProvider> = match provider.kind {
                 ProviderKind::Anthropic => Arc::new(AnthropicProvider::new(
                     provider.api_key.clone().unwrap_or_default(),
@@ -37,35 +58,42 @@ impl ModelRouter {
                         .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
                     provider.api_key.clone(),
                 )),
-                ProviderKind::OpenaiCompat => {
-                    let base_url = provider.base_url.clone().ok_or_else(|| {
-                        LlmError::Unsupported(format!(
-                            "provider '{name}': openai_compat requires base_url"
-                        ))
-                    })?;
-                    Arc::new(OpenAiCompatProvider::new(
+                ProviderKind::OpenaiCompat => match provider.base_url.clone() {
+                    Some(base_url) => Arc::new(OpenAiCompatProvider::new(
                         base_url,
                         provider.api_key.clone(),
-                    ))
-                }
+                    )),
+                    None => {
+                        unavailable
+                            .insert(name.clone(), "openai_compat requires base_url".to_string());
+                        continue;
+                    }
+                },
                 ProviderKind::Bedrock => {
-                    return Err(LlmError::Unsupported(format!(
-                        "provider '{name}': bedrock support lands in a later phase"
-                    )))
+                    unavailable.insert(
+                        name.clone(),
+                        "bedrock support lands in a later phase".to_string(),
+                    );
+                    continue;
                 }
             };
             providers.insert(name.clone(), instance);
         }
         let router = Self {
             providers,
+            unavailable,
             roles: config.models.clone(),
         };
         // A typo'd fallback provider would otherwise surface only at the
         // moment of an outage — exactly when the fallback was supposed to
-        // save the run. Fail at startup instead.
+        // save the run. Fail at startup instead. Unavailable providers are
+        // configured, not typo'd: they pass this check and report their own
+        // reason if the fallback is ever resolved.
         for choice in router.roles.all_choices() {
             for fallback in &choice.fallbacks {
-                if !router.providers.contains_key(&fallback.provider) {
+                if !router.providers.contains_key(&fallback.provider)
+                    && !router.unavailable.contains_key(&fallback.provider)
+                {
                     return Err(LlmError::UnknownProvider(fallback.provider.clone()));
                 }
             }
@@ -73,15 +101,28 @@ impl ModelRouter {
         Ok(router)
     }
 
+    /// The provider under this name, or why there isn't one: unavailable
+    /// beats unknown, because "your key is unset" is actionable where
+    /// "not configured" sends someone off to check spelling.
+    fn provider(&self, name: &str) -> Result<&Arc<dyn ChatProvider>, LlmError> {
+        if let Some(provider) = self.providers.get(name) {
+            return Ok(provider);
+        }
+        match self.unavailable.get(name) {
+            Some(reason) => Err(LlmError::ProviderUnavailable {
+                provider: name.to_string(),
+                reason: reason.clone(),
+            }),
+            None => Err(LlmError::UnknownProvider(name.to_string())),
+        }
+    }
+
     pub fn resolve(&self, role: Role) -> Result<(Arc<dyn ChatProvider>, &ModelChoice), LlmError> {
         let choice = self
             .roles
             .resolve(role)
             .ok_or_else(|| LlmError::NoModelForRole(format!("{role:?}")))?;
-        let provider = self
-            .providers
-            .get(&choice.provider)
-            .ok_or_else(|| LlmError::UnknownProvider(choice.provider.clone()))?;
+        let provider = self.provider(&choice.provider)?;
         Ok((self.with_failover(Arc::clone(provider), choice)?, choice))
     }
 
@@ -101,10 +142,7 @@ impl ModelRouter {
             .fallbacks
             .iter()
             .map(|fallback| {
-                let provider = self
-                    .providers
-                    .get(&fallback.provider)
-                    .ok_or_else(|| LlmError::UnknownProvider(fallback.provider.clone()))?;
+                let provider = self.provider(&fallback.provider)?;
                 Ok(Candidate {
                     provider: Arc::clone(provider),
                     provider_name: fallback.provider.clone(),
@@ -138,10 +176,7 @@ impl ModelRouter {
                     names.join(", ")
                 },
             })?;
-        let provider = self
-            .providers
-            .get(&choice.provider)
-            .ok_or_else(|| LlmError::UnknownProvider(choice.provider.clone()))?;
+        let provider = self.provider(&choice.provider)?;
         Ok((self.with_failover(Arc::clone(provider), choice)?, choice))
     }
 
@@ -273,6 +308,41 @@ mod tests {
     }
 
     #[test]
+    fn a_provider_with_an_unset_env_var_errors_at_resolve_naming_the_var() {
+        // The config loads and the router builds — a missing key must not
+        // take down commands that never call a model. The command that does
+        // gets the variable name and the config path that wants it.
+        let mut config = Config::default();
+        config.providers.insert(
+            "anthropic".into(),
+            graph_config::ProviderConfig {
+                kind: ProviderKind::Anthropic,
+                api_key: Some("${ANTHROPIC_API_KEY}".into()),
+                base_url: None,
+                region: None,
+                profile: None,
+                missing_env: vec![graph_config::MissingEnv {
+                    field: "api_key".into(),
+                    var: "ANTHROPIC_API_KEY".into(),
+                }],
+            },
+        );
+        config.models.default = Some(choice("anthropic", "m", vec![]));
+
+        let router = ModelRouter::from_config(&config).expect("router still builds");
+        let error = match router.resolve(Role::Chat) {
+            Ok(_) => panic!("resolve must fail"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("ANTHROPIC_API_KEY")
+                && message.contains("providers.anthropic.api_key"),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn from_config_rejects_unknown_fallback_providers_at_startup() {
         let mut config = Config::default();
         config.providers.insert(
@@ -283,6 +353,7 @@ mod tests {
                 base_url: None,
                 region: None,
                 profile: None,
+                missing_env: Vec::new(),
             },
         );
         config.models.default = Some(choice(

@@ -11,7 +11,10 @@ Config is layered TOML — later wins, tables deep-merge:
 3. Environment variables (`GRAPH_STORAGE`, `GRAPH_LOG`)
 4. CLI flags
 
-`${VAR}` in any string value resolves from the environment at load time and **errors when unset** — secrets never silently become empty strings.
+`${VAR}` in any string value resolves from the environment at load time. An unset variable never silently becomes an empty string — but *when* it errors depends on where it sits:
+
+- **Inside `[providers.*]` or `[mcp.*]`** the error is deferred to the moment that provider or server is actually used: the value keeps its literal `${VAR}` text, everything that doesn't need the secret (plan authoring, listing, `graph mcp serve`, key-free plans) keeps working, and the first call that does need it fails naming the variable and the config path that references it.
+- **Anywhere else** (paths, prompts, settings) an unset variable still fails the load immediately — a `data_dir` carrying literal `${VAR}` text would be silently wrong everywhere.
 
 ## `[settings]`
 
