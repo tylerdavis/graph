@@ -240,6 +240,13 @@ steps:
       to: true
       value: '{{item.scoutworthy}}'
   reasoning: Dispatch scouts only at groups whose changes something in the repository could actually reference. Withholding the budget structurally beats trusting each scout to give up early — a prose-only PR spends the grouping call and zero scout rounds. The dropped half stays visible to E5, so the reviewer knows which groups went deliberately unscouted.
+- id: E4g
+  tool_name: builtin__git_file
+  input:
+    max_bytes: 30000
+    path: CLAUDE.md
+    ref: '{{E0.head_sha}}'
+  reasoning: The repo's own orientation — crate map, invariants, conventions — read at the head sha so each scout aims its searches at the right crates and recognizes which documented invariants a call site depends on, instead of discovering the repository's shape from scratch inside its round budget.
 - id: E4f
   tool_name: map
   input:
@@ -265,6 +272,9 @@ steps:
           - prefer breadth over depth: the reviewer needs to know a caller exists and what it assumes, not its whole body
 
           Report only sites OUTSIDE the changed files listed above (the reviewer already has their full contents). Skip pure renames. If nothing outside references this group's symbols, return an empty entries array — never invent relevance. If this group's changes turn out to be prose, prompt text, documentation, or configuration with no code symbols other code could reference, return an empty entries array IMMEDIATELY — searching the repository for fragments of English is never useful. Echo the group name exactly as given.
+
+          REPO ORIENTATION (the repository's CLAUDE.md at head — its own map of crates, invariants, and conventions; use it to aim searches at the right crates and to recognize when a site you find depends on a documented invariant, which is exactly what the `why` field should say):
+          {{E4g.text}}
 
           HEAD SHA (use as ref in both tools): {{E0.head_sha}}
         tools:

@@ -167,6 +167,9 @@ steps:
     input:
       over: "{{E4e.groups}}"
       where: { value: "{{item.scoutworthy}}", op: eq, to: true }
+  - id: E4g
+    tool_name: builtin__git_file      # CLAUDE.md at head: orientation for scouts
+    input: { path: "CLAUDE.md", ref: "{{E0.head_sha}}", max_bytes: 30000 }
   - id: E4f
     tool_name: map                    # one context scout per group, 4 at a time
     input:
