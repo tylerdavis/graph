@@ -183,6 +183,7 @@ steps:
       - focus: one sentence — what changed and what a scout should investigate about how the rest of the repository depends on it
       - file_list: the changed files in this group, newline-separated repo-relative paths
       - symbol_list: the changed symbols in this group whose signature, behavior, or contract this PR touches (functions, methods, structs and their fields, tool names, config keys, plan step ids, error messages other code matches on), newline-separated
+      - scoutworthy: true ONLY when the group changes code symbols that other code could reference — something a caller, implementation, test, or config elsewhere in the repository might depend on. Prose, prompt text, documentation, comments, and configuration-only changes are NOT scoutworthy: searching the repository for fragments of English is never useful. A group that is not scoutworthy gets an empty symbol_list.
 
       Every changed file belongs to exactly one group.
 
@@ -210,6 +211,7 @@ steps:
             - focus
             - file_list
             - symbol_list
+            - scoutworthy
             properties:
               name:
                 type: string
@@ -222,10 +224,29 @@ steps:
                 description: Newline-separated repo-relative paths of this group's changed files
               symbol_list:
                 type: string
-                description: Newline-separated changed symbols in this group
+                description: Newline-separated changed symbols in this group; empty when not scoutworthy
+              scoutworthy:
+                type: boolean
+                description: True only when the group changes code symbols other code could reference; false for prose/prompt/docs/config-only changes
         notes:
           type: string
-  reasoning: Cluster the diff into functional groups so each scout in E4f investigates one coherent change with a focused prompt, instead of one scout spreading its budget across an entire mixed PR. Flat newline-joined string fields (file_list, symbol_list) keep the per-group templates logic-less.
+  reasoning: Cluster the diff into functional groups so each scout in E4f investigates one coherent change with a focused prompt, instead of one scout spreading its budget across an entire mixed PR. Flat newline-joined string fields (file_list, symbol_list) keep the per-group templates logic-less. The scoutworthy flag feeds E4e2 — prose-only groups have nothing a repository search can find, and burning a scout's budget proving that is pure waste.
+- id: E4e2
+  tool_name: filter
+  input:
+    over: '{{E4e.groups}}'
+    where:
+      op: eq
+      to: true
+      value: '{{item.scoutworthy}}'
+  reasoning: Dispatch scouts only at groups whose changes something in the repository could actually reference. Withholding the budget structurally beats trusting each scout to give up early — a prose-only PR spends the grouping call and zero scout rounds. The dropped half stays visible to E5, so the reviewer knows which groups went deliberately unscouted.
+- id: E4g
+  tool_name: builtin__git_file
+  input:
+    max_bytes: 30000
+    path: CLAUDE.md
+    ref: '{{E0.head_sha}}'
+  reasoning: The repo's own orientation — crate map, invariants, conventions — read at the head sha so each scout aims its searches at the right crates and recognizes which documented invariants a call site depends on, instead of discovering the repository's shape from scratch inside its round budget.
 - id: E4f
   tool_name: map
   input:
@@ -250,13 +271,16 @@ steps:
           - use builtin__git_file (ref = head sha) to read just enough surrounding code to say WHY a site matters to this review — including the group's own changed files if you need to see what actually changed
           - prefer breadth over depth: the reviewer needs to know a caller exists and what it assumes, not its whole body
 
-          Report only sites OUTSIDE the changed files listed above (the reviewer already has their full contents). Skip pure renames. If nothing outside references this group's symbols, return an empty entries array — never invent relevance. Echo the group name exactly as given.
+          Report only sites OUTSIDE the changed files listed above (the reviewer already has their full contents). Skip pure renames. If nothing outside references this group's symbols, return an empty entries array — never invent relevance. If this group's changes turn out to be prose, prompt text, documentation, or configuration with no code symbols other code could reference, return an empty entries array IMMEDIATELY — searching the repository for fragments of English is never useful. Echo the group name exactly as given.
+
+          REPO ORIENTATION (the repository's CLAUDE.md at head — its own map of crates, invariants, and conventions; use it to aim searches at the right crates and to recognize when a site you find depends on a documented invariant, which is exactly what the `why` field should say):
+          {{E4g.text}}
 
           HEAD SHA (use as ref in both tools): {{E0.head_sha}}
         tools:
         - builtin__git_grep
         - builtin__git_file
-        max_iterations: 60
+        max_iterations: 18
         output_schema:
           type: object
           required:
@@ -300,8 +324,8 @@ steps:
             notes:
               type: string
               description: 1-2 sentences on coverage — what was searched, and anything that could not be confirmed
-    over: '{{E4e.groups}}'
-  reasoning: One bounded agent loop per functional group, up to four in parallel — each scout searches the repository at head with read-only git tools for its group's callers, implementations, and tests, and returns a dossier echoing its group name. Results are index-aligned with E4e.groups; a scout that exhausts its budget yields final=false and E5's per-dossier guard skips it, so a failed group costs its evidence, never the run.
+    over: '{{E4e2.items}}'
+  reasoning: One bounded agent loop per scoutworthy functional group, up to four in parallel — each scout searches the repository at head with read-only git tools for its group's callers, implementations, and tests, and returns a dossier echoing its group name. Results are index-aligned with E4e.groups; a scout that exhausts its budget yields final=false and E5's per-dossier guard skips it, so a failed group costs its evidence, never the run.
 - id: E5
   tool_name: builtin__infer
   input:
@@ -333,7 +357,9 @@ steps:
 
       {{/E4.results}}
 
-      REPO CONTEXT DOSSIERS — the diff was clustered into functional groups, and a scout agent searched the repository at the head sha for each group's call sites, implementations, and tests OUTSIDE the changed files. One dossier per group (an empty entries list means nothing outside the diff references that group's symbols; a group whose scout ran out of budget is absent):
+      REPO CONTEXT DOSSIERS — the diff was clustered into functional groups, and a scout agent searched the repository at the head sha for each scoutworthy group's call sites, implementations, and tests OUTSIDE the changed files. One dossier per scouted group (an empty entries list means nothing outside the diff references that group's symbols; a group whose scout ran out of budget is absent):
+      {{#E4e2.dropped}}(group "{{name}}" was deliberately not scouted: its changes are prose/docs/config with no code symbols other code could reference)
+      {{/E4e2.dropped}}
       {{#E4f.results}}{{#final}}{{#output}}
       --- dossier: {{group}}
       {{#entries}}- [{{relation}}] {{symbol}} — {{path}}:{{line}} — {{why}}
@@ -371,6 +397,11 @@ steps:
 
       === FINDINGS (individual, cited claims — feed the inline PR comments) ===
 
+      THE BAR FOR A FINDING: every finding asserts a defect you VERIFIED against the provided evidence — the diff, the file contents, or the dossiers. If stating a claim honestly requires 'may', 'might', 'possibly', 'appears to', or 'cannot confirm/verify', it is NOT a finding: it belongs, at most, in the relevant pass's summary with that pass marked 'unverified'. Three corollaries:
+      - The PR body is the author's STATED INTENT — check the code against it, but never treat the body's own caveats, open questions, or notes-to-self as evidence of a defect in the code. A caveat the diff already addresses is nothing at all.
+      - Configuration that lives outside the repository — repo or org secrets, external service settings, branch protection — cannot be verified from anything provided here and never yields a finding, at any severity.
+      - Hedged severity is not a substitute for evidence: 'likely bug' means a VERIFIED defect whose consequence is probable, never an unverified suspicion.
+
       Each finding renders as a GitHub Markdown alert-style inline PR comment (a blockquote alert with a bold headline and explanation, then a concrete Fix with a code block, then a collapsible one-shot agent-fix block) — build every finding's fields with that rendering in mind:
 
       - `invariant`: one of 'Pass 1: Stated Intent', 'Pass 2: Pipeline/Control-Step Invariants', 'Pass 3: Template/Shape Engine', 'Pass 4: Rust/Async/Storage Footguns', 'Pass 5: Plan Composition/Model Routing', 'Pass 6: Test Coverage', 'Pass 7: Repo Conventions/Docs Parity', 'Pass 8: CLI Surface/Copy'.
@@ -389,7 +420,7 @@ steps:
 
       Omit findings that found nothing to flag — do not manufacture a finding just to have one per pass.
 
-      FINAL GATE — refute your own blockers: before emitting output, take each blocker-severity finding and try to disprove it against the provided diff and file contents — look for the guard, check, or handling that would make it a non-issue, and demote to 'likely bug' or drop any blocker that does not survive. Apply the same skepticism to clearances: marking a pass 'pass' takes the same evidence as flagging a finding — if you cannot verify it from what's provided, use 'unverified', not 'pass'. A false blocker and a false clear are both more expensive than a missed nit.
+      FINAL GATE — refute your own findings: before emitting output, take EVERY finding, at every severity, and try to disprove it against the provided diff, file contents, and dossiers — look for the guard, check, later-commit fix, or handling that would make it a non-issue. A blocker that survives as a real defect but not a merge-blocking one demotes to 'likely bug'; a finding at ANY severity that fails the verification bar above is DROPPED, never demoted — demotion is for real defects with lower stakes, not for doubt. Apply the same skepticism to clearances: marking a pass 'pass' takes the same evidence as flagging a finding — if you cannot verify it from what's provided, use 'unverified', not 'pass'. A false finding and a false clear are both more expensive than a missed nit.
 
       === PR-LEVEL SUMMARY (organizes the final comment by SEVERITY, not by pass) ===
 
@@ -685,8 +716,6 @@ steps:
       {{/is_na_or_pass}}{{/E5.passes}}
       </details>
       {{/E5.has_na_or_pass}}
-
-      <!-- graph_review_9000:summary -->
     marker: graph_review_9000:summary
     pr: '{{input.pr}}'
   reasoning: Final summary comment leading with the PR-level framing alert, then the at-a-glance table of all eight passes ordered by severity, then the finding-lifecycle counts, then a blockers list linking to the inline comments posted in E7, then this run's thread transitions and the collapsible unverified and na/pass sections. Stable marker so repeated runs refresh this comment in place.
