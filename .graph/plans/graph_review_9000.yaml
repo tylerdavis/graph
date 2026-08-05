@@ -31,14 +31,6 @@ steps:
     max_bytes: 300000
     paths: .
   reasoning: Fetch the unified diff (excluding the lockfile and generated changelog) to ground the review. Needed before checking emptiness and before the LLM review pass.
-- id: E3
-  tool_name: exit
-  input:
-    message: No meaningful diff found for PR {{input.pr}} (after excluding Cargo.lock/CHANGELOG.md) — nothing to review.
-    status: success
-    when:
-      op: empty
-      value: '{{E2.text}}'
 - id: E3b
   tool_name: filter
   input:
@@ -75,7 +67,8 @@ steps:
       Rules:
       - Findings whose state is already 'resolved' or 'declined' are terminal: echo them unchanged with transition 'none' and note ''.
       - For 'open' findings:
-        - transition 'resolve' when the diff and file contents at head show the specific issue has been FIXED. Verify against the code — you must see the fix; that a fix would be easy or likely is not enough. When the evidence is insufficient, keep the finding open.
+        - transition 'resolve' when the code at head shows the specific issue has been FIXED. The FULL FILE CONTENTS at head are the authoritative evidence: a fix that landed in a later commit of this same PR leaves NO diff hunk (the cumulative base-to-head diff never shows that region), so judge from the file contents at the finding's location — if the flagged pattern is gone there and the handling in its place is correct, that IS the fix; transition 'resolve'. Verify against the code — that a fix would be easy or likely is not enough. When the evidence is insufficient, keep the finding open.
+        - if the DIFF below is EMPTY, this PR no longer changes anything — its changes were reverted, so no open finding about them can still exist at head: transition every open finding to 'resolve' with a note saying the change was reverted.
         - transition 'decline' when a human reply on the thread indicates the author considered the finding and is declining it (intentional, wontfix, a disagreement they clearly stand by). Only explicit reply content counts — never infer a decline from silence, thread age, or the code.
         - transition 'none' otherwise: the finding stays open.
       - state in your output is the RESULTING state: 'resolved' after a resolve, 'declined' after a decline, otherwise the current state unchanged.
@@ -159,7 +152,26 @@ steps:
       required:
       - findings
       type: object
-  reasoning: Audit each existing finding against the code at head and the thread's human replies, deciding transitions — resolve (fix verified in the code), decline (a human reply dismisses it), or none. Conservative by instruction — insufficient evidence keeps a finding open, and terminal states are echoed untouched. Runs before the review (E5) so the reviewer sees post-transition states, and feeds the thread updates applied by E7. Grounding a resolve in the actual code here, rather than in whether E5 happens to re-find the issue, keeps a flaky detection pass from silently closing real findings.
+  reasoning: Audit each existing finding against the code at head and the thread's human replies, deciding transitions — resolve (fix verified in the file contents at head, which are authoritative because a mid-PR fix leaves no cumulative diff hunk; an empty diff resolves everything as reverted), decline (a human reply dismisses it), or none. Conservative by instruction — insufficient evidence keeps a finding open, and terminal states are echoed untouched. Runs before the empty-diff exit so reverted PRs still settle their threads, and before the review (E5) so the reviewer sees post-transition states. Grounding a resolve in the actual code here, rather than in whether E5 happens to re-find the issue, keeps a flaky detection pass from silently closing real findings.
+- id: E4d
+  tool_name: builtin__gh_pr_thread_sync
+  input:
+    creates: []
+    head_sha: '{{E0.head_sha}}'
+    marker: graph_review_9000:finding
+    pr: '{{input.pr}}'
+    sweep_marker: graph_review_9000:inline
+    threads: '{{E4c.findings}}'
+  reasoning: Apply the audit's transitions immediately — reply + resolve for resolve/decline, untouched for none — before the empty-diff exit can end the run, so a fully reverted PR resolves its stale threads instead of stranding them. Creates are posted separately (E7) after the review; splitting the sync's two halves across the exit gate is what lets thread hygiene run on every push while the review itself only runs when there is a diff to review. Also sweeps any comments left by this plan's old delete-and-repost scheme.
+- id: E3
+  tool_name: exit
+  input:
+    message: No meaningful diff found for PR {{input.pr}} (after excluding Cargo.lock/CHANGELOG.md) — nothing to review; existing findings were still audited and synced.
+    status: success
+    when:
+      op: empty
+      value: '{{E2.text}}'
+  reasoning: Nothing to review on an empty diff — but only after the thread lifecycle above has settled prior findings, which is exactly the reverted-PR case this gate used to strand.
 - id: E5
   tool_name: builtin__infer
   input:
@@ -483,9 +495,8 @@ steps:
     head_sha: '{{E0.head_sha}}'
     marker: graph_review_9000:finding
     pr: '{{input.pr}}'
-    sweep_marker: graph_review_9000:inline
-    threads: '{{E4c.findings}}'
-  reasoning: Apply the run's thread lifecycle in one pass — post the new findings as inline comments carrying the graph_review_9000:finding payload tag (read back by E4b on the next run), and apply E4c's transitions to existing threads (reply + resolve for resolve/decline, untouched for none). Open threads and human replies are never deleted. The sweep_marker clears any comments left by this plan's old delete-and-repost scheme, making the first run under the new lifecycle self-migrating.
+    threads: []
+  reasoning: Post the review's new findings as inline comments carrying the graph_review_9000:finding payload tag, read back by E4b on the next run. Transitions to existing threads were already applied by E4d before the empty-diff gate; this call only creates.
 - id: E8
   tool_name: builtin__gh_pr_comment
   input:
@@ -500,7 +511,7 @@ steps:
       {{#E5.passes}}| {{number}} | {{area}} | {{status_emoji}} {{status_label}} |
       {{/E5.passes}}
 
-      🧵 {{E7.created_count}} new · {{E7.still_open_count}} open · {{E7.resolved_now_count}} resolved this run · {{E7.declined_now_count}} declined
+      🧵 {{E7.created_count}} new · {{E4d.still_open_count}} open · {{E4d.resolved_now_count}} resolved this run · {{E4d.declined_now_count}} declined
 
       {{#E5.has_blockers}}
       > [!CAUTION]
@@ -508,14 +519,14 @@ steps:
       {{#E7.creates}}{{#is_blocker}}> {{blocker_ordinal}}. **{{label}}.** {{finding}}{{#url}} ([details]({{url}})){{/url}}
       {{/is_blocker}}{{/E7.creates}}
       {{/E5.has_blockers}}
-      {{#E7.has_transitions}}
+      {{#E4d.has_transitions}}
       <details>
-      <summary>🧵 <b>Thread updates ({{E7.transitions_count}})</b></summary>
+      <summary>🧵 <b>Thread updates ({{E4d.transitions_count}})</b></summary>
 
-      {{#E7.threads}}{{#transitioned}}- **{{label}}** ({{file}}:{{line}}) → {{state}} — {{note}}
-      {{/transitioned}}{{/E7.threads}}
+      {{#E4d.threads}}{{#transitioned}}- **{{label}}** ({{file}}:{{line}}) → {{state}} — {{note}}
+      {{/transitioned}}{{/E4d.threads}}
       </details>
-      {{/E7.has_transitions}}
+      {{/E4d.has_transitions}}
       {{#E5.has_unverified}}
       <details>
       <summary>🟡 <b>Needs verification / intentional ({{E5.unverified_count}})</b></summary>
