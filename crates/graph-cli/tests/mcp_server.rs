@@ -538,11 +538,13 @@ fn an_unpinned_servers_writes_never_read_the_working_directorys_config() {
     // layered config, so a `.graph/config.toml` in the client's cwd could
     // contribute providers, model routing, `[mcp.*]` child processes, and
     // exec tools. A config that cannot even be expanded proves whether it
-    // was read at all.
+    // was read at all. The probe lives in `[settings]` deliberately: a
+    // missing `${VAR}` there still fails the load, where provider secrets
+    // now defer — a deferred probe would prove nothing.
     let scratch = Scratch::new();
     std::fs::write(
         scratch.path().join(".graph/config.toml"),
-        "[providers.evil]\ntype = \"anthropic\"\napi_key = \"${MUST_NOT_BE_READ_BY_GRAPH}\"\n",
+        "[settings]\ndata_dir = \"${MUST_NOT_BE_READ_BY_GRAPH}\"\n",
     )
     .expect("write a hostile project config");
 
@@ -602,6 +604,84 @@ fn an_unpinned_server_with_no_plans_explains_itself_to_the_model() {
         "{instructions}"
     );
     assert!(instructions.contains("--dir"), "{instructions}");
+}
+
+#[test]
+fn a_missing_provider_key_still_serves_and_the_error_names_the_variable() {
+    // The reported failure: a fresh project configures
+    // `api_key = "${ANTHROPIC_API_KEY}"`, the client launches the server in
+    // an environment without the variable, and the server used to die before
+    // `initialize` — the agent saw a dead connection and nothing else. Now
+    // the key's absence is deferred to the calls that need a model.
+    let scratch = Scratch::new();
+    scratch.write_config(
+        "[tools]\npacks = [\"data\"]\n\n\
+         [providers.anthropic]\ntype = \"anthropic\"\napi_key = \"${ANTHROPIC_API_KEY}\"\n\n\
+         [models]\ndefault = { provider = \"anthropic\", model = \"claude-sonnet-5\" }\n",
+    );
+    scratch.write_plan("echo_ok", ECHO_PLAN);
+    let mut session = Session::open(&scratch);
+
+    // Serving, authoring, and key-free execution all still work.
+    assert!(session.tool_names().contains(&"plan_echo_ok".to_string()));
+    let (body, is_error) = session.call_parts("plan_echo_ok", json!({"word": "hi"}));
+    assert!(!is_error, "an output-mode plan needs no key: {body}");
+    assert_eq!(body["output"], json!({"said": "hi"}));
+
+    // The one call that does need the model comes back naming the variable —
+    // the context the agent never had when the process just died.
+    let reply = session.request(
+        "tools/call",
+        json!({"name": "graph_plan_draft", "arguments": {"goal": "echo a word"}}),
+    );
+    let message = reply["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("ANTHROPIC_API_KEY") && message.contains("providers.anthropic"),
+        "the agent must be told which variable is unset: {reply}"
+    );
+}
+
+#[test]
+fn a_config_that_cannot_load_still_serves_and_explains_itself() {
+    // Any load-failing config (here: a missing variable outside the deferred
+    // sections) used to kill the process before the handshake. The server
+    // must come up anyway: the instructions carry the error at initialize,
+    // and every call returns it — context instead of a dead connection.
+    let scratch = Scratch::new();
+    scratch.write_config("[settings]\ndata_dir = \"${GRAPH_TEST_UNSET_DIR}\"\n");
+    let mut session = Session::open(&scratch);
+
+    let reply = session.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "probe", "version": "1"}
+        }),
+    );
+    let instructions = reply["result"]["instructions"].as_str().unwrap_or_default();
+    assert!(
+        instructions.contains("configuration failed to load")
+            && instructions.contains("GRAPH_TEST_UNSET_DIR"),
+        "{instructions}"
+    );
+
+    // The authoring tools are still listed, and calling one reports the
+    // load error rather than hanging or dying.
+    assert!(session
+        .tool_names()
+        .contains(&"graph_plan_list".to_string()));
+    let reply = session.request(
+        "tools/call",
+        json!({"name": "graph_plan_list", "arguments": {}}),
+    );
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("GRAPH_TEST_UNSET_DIR"),
+        "{reply}"
+    );
 }
 
 #[test]

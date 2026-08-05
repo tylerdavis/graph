@@ -203,7 +203,7 @@ Token-level solver deltas are deliberately not emitted.
 | `GRAPH_EVENTS` | `jsonl` — the event feed above. `github` — failure annotations for GitHub Actions (see Streams). |
 | `GRAPH_LOG` | [tracing filter](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for diagnostics on stderr (e.g. `GRAPH_LOG=debug`, `GRAPH_LOG=graph_mcp=trace`). Overrides `-v` flags. |
 | `GRAPH_WORKBENCH_LOG` | file path for the [workbench's debug log](/workbench/plan-workbench#debug-logging). Overrides `[workbench].log_path` and the `<data_dir>/workbench.log` default. |
-| anything referenced as `${VAR}` in config | provider keys, MCP auth, tool env — resolved at load, required |
+| anything referenced as `${VAR}` in config | resolved at load. Unset: provider/MCP entries error at first use naming the variable; anywhere else the load itself fails |
 
 ## Data locations
 

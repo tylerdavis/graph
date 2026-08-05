@@ -88,7 +88,7 @@ Not using an agent? The whole path is a few commands.
     ```
 
     <Tip>
-    `${VAR}` references fail loudly when the variable is unset — misconfigured secrets never silently send empty strings.
+    `${VAR}` references fail loudly when the variable is unset — misconfigured secrets never silently send empty strings. For provider and MCP entries the failure comes at first use rather than at load, naming the variable, so the rest of graph keeps working without the secret.
     </Tip>
   </Step>
 
