@@ -371,6 +371,11 @@ steps:
 
       === FINDINGS (individual, cited claims — feed the inline PR comments) ===
 
+      THE BAR FOR A FINDING: every finding asserts a defect you VERIFIED against the provided evidence — the diff, the file contents, or the dossiers. If stating a claim honestly requires 'may', 'might', 'possibly', 'appears to', or 'cannot confirm/verify', it is NOT a finding: it belongs, at most, in the relevant pass's summary with that pass marked 'unverified'. Three corollaries:
+      - The PR body is the author's STATED INTENT — check the code against it, but never treat the body's own caveats, open questions, or notes-to-self as evidence of a defect in the code. A caveat the diff already addresses is nothing at all.
+      - Configuration that lives outside the repository — repo or org secrets, external service settings, branch protection — cannot be verified from anything provided here and never yields a finding, at any severity.
+      - Hedged severity is not a substitute for evidence: 'likely bug' means a VERIFIED defect whose consequence is probable, never an unverified suspicion.
+
       Each finding renders as a GitHub Markdown alert-style inline PR comment (a blockquote alert with a bold headline and explanation, then a concrete Fix with a code block, then a collapsible one-shot agent-fix block) — build every finding's fields with that rendering in mind:
 
       - `invariant`: one of 'Pass 1: Stated Intent', 'Pass 2: Pipeline/Control-Step Invariants', 'Pass 3: Template/Shape Engine', 'Pass 4: Rust/Async/Storage Footguns', 'Pass 5: Plan Composition/Model Routing', 'Pass 6: Test Coverage', 'Pass 7: Repo Conventions/Docs Parity', 'Pass 8: CLI Surface/Copy'.
@@ -389,7 +394,7 @@ steps:
 
       Omit findings that found nothing to flag — do not manufacture a finding just to have one per pass.
 
-      FINAL GATE — refute your own blockers: before emitting output, take each blocker-severity finding and try to disprove it against the provided diff and file contents — look for the guard, check, or handling that would make it a non-issue, and demote to 'likely bug' or drop any blocker that does not survive. Apply the same skepticism to clearances: marking a pass 'pass' takes the same evidence as flagging a finding — if you cannot verify it from what's provided, use 'unverified', not 'pass'. A false blocker and a false clear are both more expensive than a missed nit.
+      FINAL GATE — refute your own findings: before emitting output, take EVERY finding, at every severity, and try to disprove it against the provided diff, file contents, and dossiers — look for the guard, check, later-commit fix, or handling that would make it a non-issue. A blocker that survives as a real defect but not a merge-blocking one demotes to 'likely bug'; a finding at ANY severity that fails the verification bar above is DROPPED, never demoted — demotion is for real defects with lower stakes, not for doubt. Apply the same skepticism to clearances: marking a pass 'pass' takes the same evidence as flagging a finding — if you cannot verify it from what's provided, use 'unverified', not 'pass'. A false finding and a false clear are both more expensive than a missed nit.
 
       === PR-LEVEL SUMMARY (organizes the final comment by SEVERITY, not by pass) ===
 
@@ -685,8 +690,6 @@ steps:
       {{/is_na_or_pass}}{{/E5.passes}}
       </details>
       {{/E5.has_na_or_pass}}
-
-      <!-- graph_review_9000:summary -->
     marker: graph_review_9000:summary
     pr: '{{input.pr}}'
   reasoning: Final summary comment leading with the PR-level framing alert, then the at-a-glance table of all eight passes ordered by severity, then the finding-lifecycle counts, then a blockers list linking to the inline comments posted in E7, then this run's thread transitions and the collapsible unverified and na/pass sections. Stable marker so repeated runs refresh this comment in place.
