@@ -638,22 +638,7 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions
             // and the finish (output) contract — not a step's I/O.
             push_plan_detail(&mut lines, doc);
         } else {
-            lines.push(Line::from(vec![
-                Span::styled(&row.id, ACCENT.add_modifier(Modifier::BOLD)),
-                Span::raw(" "),
-                Span::raw(&row.tool),
-            ]));
-            if let Some(reasoning) = &row.reasoning {
-                lines.push(Line::styled(reasoning.clone(), DIM));
-            }
-            lines.push(Line::default());
-            push_json_section(&mut lines, "input template", &row.input_template);
-            if let Some(rendered) = &row.rendered_input {
-                push_json_section(&mut lines, "rendered input", rendered);
-            }
-            if let Some(result) = &row.result {
-                push_json_section(&mut lines, "result", result);
-            }
+            push_step_detail(&mut lines, ws, row);
         }
     }
     render_scrolled(
@@ -816,15 +801,7 @@ fn draw_context_tab(frame: &mut Frame, ws: &PlanWorkspace, area: Rect, regions: 
         }
         lines.push(Line::default());
         push_json_section(&mut lines, "input schema", &tool.input_schema);
-        if let Some(schema) = &tool.output_schema {
-            push_json_section(&mut lines, "output schema", schema);
-        } else if let Some(shape) = ws.shapes.get(&tool.name) {
-            push_json_section(&mut lines, "observed output shape", &shape.schema);
-            push_json_section(&mut lines, "observed example", &shape.example);
-        }
-        if let Some(example) = &tool.output_example {
-            push_json_section(&mut lines, "output example", example);
-        }
+        push_output_contract(&mut lines, ws, &tool.name);
     }
     render_scrolled(
         frame,
@@ -1164,6 +1141,48 @@ fn push_json_section(lines: &mut Vec<Line>, title: &str, value: &serde_json::Val
     lines.push(Line::default());
 }
 
+/// A step row's detail: reasoning, the input template, what the tool
+/// returns while there is no real result to show yet, then the run's
+/// rendered input and result.
+fn push_step_detail(lines: &mut Vec<Line>, ws: &PlanWorkspace, row: &StepRow) {
+    lines.push(Line::from(vec![
+        Span::styled(row.id.clone(), ACCENT.add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+        Span::raw(row.tool.clone()),
+    ]));
+    if let Some(reasoning) = &row.reasoning {
+        lines.push(Line::styled(reasoning.clone(), DIM));
+    }
+    lines.push(Line::default());
+    push_json_section(lines, "input template", &row.input_template);
+    if row.result.is_none() {
+        push_output_contract(lines, ws, &row.tool);
+    }
+    if let Some(rendered) = &row.rendered_input {
+        push_json_section(lines, "rendered input", rendered);
+    }
+    if let Some(result) = &row.result {
+        push_json_section(lines, "result", result);
+    }
+}
+
+/// What a tool call returns, best knowledge first: the declared output
+/// schema, else the shape recorded from prior runs, plus any declared
+/// example (control steps like `map` describe their output this way).
+/// Silent when the tool is unknown and unrecorded.
+fn push_output_contract(lines: &mut Vec<Line>, ws: &PlanWorkspace, tool: &str) {
+    let def = ws.tools.iter().find(|t| t.name == tool);
+    if let Some(schema) = def.and_then(|d| d.output_schema.as_ref()) {
+        push_json_section(lines, "output schema", schema);
+    } else if let Some(shape) = ws.shapes.get(tool) {
+        push_json_section(lines, "observed output shape", &shape.schema);
+        push_json_section(lines, "observed example", &shape.example);
+    }
+    if let Some(example) = def.and_then(|d| d.output_example.as_ref()) {
+        push_json_section(lines, "output example", example);
+    }
+}
+
 /// The plan-node detail: identity and metadata prose, the declared input
 /// schema, and the finish (output) contract — a solver query, a structured
 /// output template, or a silent side-effect plan.
@@ -1403,6 +1422,114 @@ steps:
 "#,
         );
         assert!(silent.contains("silent — runs for side effects"));
+    }
+
+    fn step_detail_text(ws: &super::super::plan_ws::PlanWorkspace, index: usize) -> String {
+        let mut lines: Vec<super::Line> = Vec::new();
+        super::push_step_detail(&mut lines, ws, &ws.steps[index]);
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A workspace with one user tool known only by its recorded shape, one
+    /// declaring an output schema, and the control-step vocabulary — the
+    /// same catalog mix `Effect::LoadContext` assembles.
+    fn shaped_workspace() -> super::super::plan_ws::PlanWorkspace {
+        let doc: graph_core::pipeline::doc::PlanDoc = serde_yaml::from_str(
+            r#"
+identifier: demo
+name: Demo
+description: d
+steps:
+  - id: E0
+    tool_name: user__git_log
+    input: { limit: 5 }
+  - id: E1
+    tool_name: map
+    input:
+      over: "{{E0.commits}}"
+      do: { tool_name: user__summarize, input: { text: "{{item}}" } }
+solver:
+  queryToAnswer: q
+"#,
+        )
+        .unwrap();
+        let mut ws = super::super::plan_ws::PlanWorkspace::default();
+        ws.set_doc(doc);
+        let tool = |name: &str, output_schema: Option<serde_json::Value>| graph_core::ToolDef {
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: serde_json::json!({"type": "object"}),
+            output_schema,
+            output_example: None,
+            read_only: Some(true),
+        };
+        let mut tools = vec![
+            tool("user__git_log", None),
+            tool(
+                "user__summarize",
+                Some(serde_json::json!({"type": "object", "required": ["summary"]})),
+            ),
+        ];
+        tools.extend(graph_core::pipeline::control_step_defs());
+        ws.set_context(
+            tools,
+            vec![graph_core::ToolShape {
+                tool: "user__git_log".to_string(),
+                schema: serde_json::json!({"type": "object", "properties": {"commits": {}}}),
+                example: serde_json::json!({"commits": ["abc123"]}),
+                seen_count: 4,
+            }],
+        );
+        ws
+    }
+
+    fn row_index(ws: &super::super::plan_ws::PlanWorkspace, tool: &str) -> usize {
+        ws.steps.iter().position(|row| row.tool == tool).unwrap()
+    }
+
+    #[test]
+    fn step_detail_shows_the_output_contract_until_a_result_lands() {
+        let mut ws = shaped_workspace();
+
+        // A user tool with no declared schema: the recorded shape.
+        let git_log = row_index(&ws, "user__git_log");
+        let text = step_detail_text(&ws, git_log);
+        assert!(text.contains("input template:"));
+        assert!(text.contains("observed output shape:"));
+        assert!(text.contains("observed example:"));
+        assert!(text.contains("abc123"));
+
+        // Once the step has run, the real result replaces the prediction.
+        ws.steps[git_log].result = Some(serde_json::json!({"commits": ["def456"]}));
+        let text = step_detail_text(&ws, git_log);
+        assert!(!text.contains("observed output shape:"));
+        assert!(text.contains("result:"));
+        assert!(text.contains("def456"));
+    }
+
+    #[test]
+    fn step_detail_covers_declared_schemas_and_control_steps() {
+        let ws = shaped_workspace();
+
+        // A declared output schema wins over any recorded shape.
+        let text = step_detail_text(&ws, row_index(&ws, "user__summarize"));
+        assert!(text.contains("output schema:"));
+        assert!(text.contains("\"summary\""));
+        assert!(!text.contains("observed output shape:"));
+
+        // Control steps describe their output by example.
+        let text = step_detail_text(&ws, row_index(&ws, "map"));
+        assert!(text.contains("output example:"));
+        assert!(text.contains("\"results\""));
     }
 
     #[test]

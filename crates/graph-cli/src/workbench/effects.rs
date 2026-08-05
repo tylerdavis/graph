@@ -168,7 +168,12 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
 
         Effect::LoadContext => {
             tokio::spawn(async move {
-                let tools = ctx.catalog.tools().await.unwrap_or_default();
+                // The registry alone under-reports what the planner sees:
+                // control steps are executor-evaluated, never registered, so
+                // their descriptions are appended here just like the `tools`
+                // command surface does.
+                let mut tools = ctx.catalog.tools().await.unwrap_or_default();
+                tools.extend(graph_core::pipeline::control_step_defs());
                 let shapes = ctx.store.tool_shapes().await.unwrap_or_default();
                 let _ = ctx.tx.send(Msg::ContextLoaded { tools, shapes });
             });
