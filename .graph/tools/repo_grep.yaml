@@ -7,10 +7,13 @@
 name: repo_grep
 description: >
   Search tracked file contents at a git ref (POSIX extended regex), or the
-  working tree when `ref` is empty, optionally scoped to pathspecs. Returns
-  {matches, count, truncated} with every field always present — matches are
-  {path, line, text} objects, capped at max_matches with truncated flagging
-  the cut, and no match at all is {matches: [], count: 0}, not an error.
+  working tree when `ref` is empty, optionally scoped to pathspecs. A
+  working-tree search sees only tracked files — untracked new files are
+  invisible until staged with at least `git add -N`, same as the other
+  repo_* tools. Returns {matches, count, truncated} with every field always
+  present — matches are {path, line, text} objects, capped at max_matches
+  with truncated flagging the cut, and no match at all is
+  {matches: [], count: 0}, not an error.
 kind: exec
 command: bash
 args:
