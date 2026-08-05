@@ -154,6 +154,27 @@ steps:
       when: { value: "{{E2.text}}", op: empty }
       status: success
       message: nothing to review
+  - id: E4e
+    tool_name: builtin__infer         # cluster the diff into functional groups
+    input:
+      instruction: |
+        ... 1-6 coherent functional changes, each with a name, a focus,
+        and newline-joined file_list / symbol_list ...
+      output_schema: { type: object, properties: { groups: ... } }
+  - id: E4f
+    tool_name: map                    # one context scout per group, 4 at a time
+    input:
+      over: "{{E4e.groups}}"
+      concurrency: 4
+      do:
+        tool_name: agent              # callers, impls, tests for this group
+        input:
+          prompt: |
+            ... find what {{item.name}} touches but does not show — callers,
+            implementations, tests of {{item.symbol_list}} — at the head sha ...
+          tools: ["builtin__git_grep", "builtin__git_file"]
+          max_iterations: 60
+          output_schema: { type: object, properties: { group: ..., entries: ..., notes: ... } }
   - id: E5
     tool_name: builtin__infer         # the rubric: eight passes + output schema
     input:
@@ -223,6 +244,7 @@ Before trusting a plan like this with write access, step through it on a real PR
 - **Findings are threads with a lifecycle, not comments to repost.** Each finding's comment embeds a hidden JSON payload (its label, severity, file, line, headline); `gh_pr_review_threads` (E4b) reads them back next run with thread states — open, resolved, declined (a human closed or dismissed it). Open threads and human replies are never deleted, so a conversation on a finding survives every push.
 - **Resolution is judged against the code, not against re-detection.** A dedicated audit call (E4c) transitions an open finding only when the code at head shows the fix, and treats insufficient evidence as "stays open" — if it instead resolved whatever the reviewer failed to re-find, one flaky review pass would silently close real findings. Declines come only from explicit human replies, never from silence. The reviewer (E5) then sees the known findings purely as a suppression list: report only what's new.
 - **The file contents at head are the resolution evidence, not the diff.** A fix that lands in a later commit of the same PR leaves no hunk in the cumulative base-to-head diff — the flagged region simply stops appearing — so the audit is told to judge from the finding's location in the full file contents. Live calibration: the first mixed-state run kept a fixed finding open precisely because the instruction let the model wait for a diff hunk that could never exist.
+- **Blast radius is scouted, not guessed — one scout per functional change.** The diff and changed-file contents can't show who *calls* what changed. An inference (E4e) clusters the diff into functional groups (newline-joined `file_list`/`symbol_list` strings keep the per-group templates logic-less), then a `map` (E4f) runs an [`agent` step](/plans/agent-step) per group — a bounded loop over read-only `git_grep`/`git_file` chasing that group's callers, implementations, and tests at head — up to four in parallel, each returning a dossier that echoes its group name. The chain sits after the empty-diff gate (it only earns its cost when there's something to review), and E5 renders each dossier behind a `{{#final}}` guard, so a scout that exhausts its budget costs its group's evidence rather than the run. Focused scouts dig deeper than one generalist: on a two-change test PR the grouped scouts spent 50 and 23 rounds where a single scout had spent 4.
 - **Thread hygiene runs before the nothing-to-review gate.** The pull → audit → transitions sync (E4b/E4c/E4d) sit ahead of the empty-diff exit, and the sync's two halves are split across it (E4d transitions, E7 creates). A fully reverted PR has an empty diff — exactly the case where every open finding just got fixed — so gating the lifecycle behind the exit would strand resolved-in-practice threads open forever, blocking merges on repos that require conversation resolution.
 - **The summary comment still refreshes in place.** `gh_pr_comment` (E8) takes its own `marker`, embeds it as a hidden tag, and find-and-edits the comment carrying it. Prefer a marker even for a lone plan: without one it falls back to `--edit-last`, which keys on the token identity, so the day a second plan comments on the same PR as the same bot the two summaries start overwriting each other. One marker per plan per comment surface.
 - **Inline comments stay advisory — but resolution now means something.** They post as plain review comments, not a `REQUEST_CHANGES` review, so they only gate merging on repos with _Require conversation resolution before merging_ enabled — and on those repos the lifecycle pulls its weight: fixed findings resolve themselves out of the gate's way, while a finding the author disagrees with is one human "resolve conversation" click (read back as `declined`, never re-raised).
