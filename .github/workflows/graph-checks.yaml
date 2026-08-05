@@ -54,7 +54,12 @@ jobs:
 
   # The reviewer. Needs >= v0.11.0: the plan reads and syncs its findings
   # as review threads via gh_pr_review_threads / gh_pr_thread_sync,
-  # which earlier images don't ship.
+  # which earlier images don't ship. The plan run authenticates as the
+  # review App (see cookbook/bot-identity): the default Actions token
+  # cannot run the review-thread GraphQL mutations (resolveReviewThread /
+  # addPullRequestReviewThreadReply return "Resource not accessible by
+  # integration" even with pull-requests: write), so without the App
+  # token the plan's resolve/decline transitions silently no-op.
   graph-review-9000:
     if: >-
       !github.event.pull_request.draft &&
@@ -70,5 +75,13 @@ jobs:
         with:
           fetch-depth: 0            # the plan reads files at $HEAD via git_file
 
+      - uses: actions/create-github-app-token@v2
+        id: bot
+        with:
+          app-id: ${{ secrets.REVIEW_APP_ID }}
+          private-key: ${{ secrets.REVIEW_APP_KEY }}
+
       - name: Deep review and comment
         run: graph plan run graph_review_9000 --input pr="$PR"
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}   # the App, not github.token
