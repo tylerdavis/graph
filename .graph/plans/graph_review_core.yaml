@@ -78,12 +78,12 @@ steps:
     concurrency: 8
     do:
       input:
-        max_bytes: 30000
+        max_bytes: 60000
         path: '{{item.path}}'
         ref: '{{input.head}}'
       tool_name: user__repo_file
     over: '{{E3b.items}}'
-  reasoning: Fetch the full content of every still-present changed file — at the head ref, or from the working tree when head is empty — in parallel, so the reviewer LLM can see surrounding code rather than just diff hunks. Results are index-aligned with E3b.items by construction.
+  reasoning: Fetch the full content of every still-present changed file — at the head ref, or from the working tree when head is empty — in parallel, so the reviewer LLM can see surrounding code rather than just diff hunks. Results are index-aligned with E3b.items by construction. The 60KB budget exists so this repo's own plan YAMLs (the largest reviewed files) arrive whole — a truncated file forfeits absence claims about it under the finding bar, and live calibration showed a 30KB cap cutting exactly the output map a finding then mis-asserted was missing.
 - id: E4e
   tool_name: builtin__infer
   input:
@@ -309,8 +309,10 @@ steps:
 
       === FINDINGS (individual, cited claims — feed the review comments) ===
 
-      THE BAR FOR A FINDING: every finding asserts a defect you VERIFIED against the provided evidence — the diff, the file contents, or the dossiers. If stating a claim honestly requires 'may', 'might', 'possibly', 'appears to', or 'cannot confirm/verify', it is NOT a finding: it belongs, at most, in the relevant pass's summary with that pass marked 'unverified'. Three corollaries:
+      THE BAR FOR A FINDING: every finding asserts a defect you VERIFIED against the provided evidence — the diff, the file contents, or the dossiers. If stating a claim honestly requires 'may', 'might', 'possibly', 'appears to', or 'cannot confirm/verify', it is NOT a finding: it belongs, at most, in the relevant pass's summary with that pass marked 'unverified'. Five corollaries:
       - The description is the author's STATED INTENT — check the code against it, but never treat the description's own caveats, open questions, or notes-to-self as evidence of a defect in the code. A caveat the diff already addresses is nothing at all.
+      - Truncated evidence cannot support an absence claim. A file or diff ending in a '[file truncated: …]' / '[diff truncated: …]' marker is incomplete — the thing you cannot find in it (a key, a guard, a test, a docs update) may sit past the cut. Assert absence only from complete evidence (an untruncated file, the untruncated portion, the complete FILE CHANGES list); against truncated evidence the observation is 'unverified', at most.
+      - A documented, mitigated tradeoff is not a defect. When the diff itself both implements a mitigation and states the reliance (in step reasoning, code comments, or a plan description) — e.g. a caller-side gate two files keep in lockstep — reporting the tradeoff as a finding is noise: note it in the pass's summary as intentional instead, unless the mitigation itself is defective.
       - Configuration that lives outside the repository — repo or org secrets, external service settings, branch protection — cannot be verified from anything provided here and never yields a finding, at any severity.
       - Hedged severity is not a substitute for evidence: 'likely bug' means a VERIFIED defect whose consequence is probable, never an unverified suspicion.
 

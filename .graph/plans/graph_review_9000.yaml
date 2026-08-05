@@ -74,7 +74,7 @@ steps:
     title: '{{E0.title}}'
     body: '{{E0.body}}'
     known_findings: '{{G1.result.findings}}'
-  reasoning: The review engine — fetches its own evidence (changed files, diff, full contents at head), clusters the diff into functional groups, scouts each scoutworthy group's blast radius, and runs the eight-pass review with the audited findings as a suppression list. Returns the change-level framing, severity-ordered pass table, and only genuinely new findings.
+  reasoning: The review engine — fetches its own evidence (changed files, diff, full contents at head), clusters the diff into functional groups, scouts each scoutworthy group's blast radius, and runs the eight-pass review with the audited findings as a suppression list. Returns the change-level framing, severity-ordered pass table, and only genuinely new findings. Reading '{{C1.findings}}' (not '{{C1.output.findings}}') is deliberately safe here: E2's gate uses the same range and excludes as the core's own empty-diff exit, so the core never exits when called from this wrapper — keep the two gates in lockstep.
 - id: E6
   tool_name: map
   input:

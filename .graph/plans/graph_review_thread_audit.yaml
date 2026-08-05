@@ -57,7 +57,7 @@ steps:
     concurrency: 8
     do:
       input:
-        max_bytes: 30000
+        max_bytes: 60000
         path: '{{item.path}}'
         ref: '{{input.head}}'
       tool_name: builtin__git_file
@@ -72,7 +72,7 @@ steps:
       Rules:
       - Findings whose state is already 'resolved' or 'declined' are terminal: echo them unchanged with transition 'none' and note ''.
       - For 'open' findings:
-        - transition 'resolve' when the code at head shows the specific issue has been FIXED. The FULL FILE CONTENTS at head are the authoritative evidence: a fix that landed in a later commit of this same PR leaves NO diff hunk (the cumulative base-to-head diff never shows that region), so judge from the file contents at the finding's location — if the flagged pattern is gone there and the handling in its place is correct, that IS the fix; transition 'resolve'. Verify against the code — that a fix would be easy or likely is not enough. When the evidence is insufficient, keep the finding open.
+        - transition 'resolve' when the code at head shows the specific issue has been FIXED. The FULL FILE CONTENTS at head are the authoritative evidence: a fix that landed in a later commit of this same PR leaves NO diff hunk (the cumulative base-to-head diff never shows that region), so judge from the file contents at the finding's location — if the flagged pattern is gone there and the handling in its place is correct, that IS the fix; transition 'resolve'. Verify against the code — that a fix would be easy or likely is not enough. When the evidence is insufficient, keep the finding open. A file ending in a '[file truncated: …]' marker is incomplete evidence: if the finding's location falls past the cut, the evidence is insufficient — keep it open, and never resolve or keep-open based on something appearing ABSENT from a truncated file.
         - if the DIFF below is EMPTY, this PR no longer changes anything — its changes were reverted, so no open finding about them can still exist at head: transition every open finding to 'resolve' with a note saying the change was reverted.
         - transition 'decline' when a human reply on the thread indicates the author considered the finding and is declining it (intentional, wontfix, a disagreement they clearly stand by). Only explicit reply content counts — never infer a decline from silence, thread age, or the code.
         - transition 'none' otherwise: the finding stays open.
