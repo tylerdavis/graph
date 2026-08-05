@@ -26,8 +26,8 @@ The workbench needs an interactive terminal (it refuses to start otherwise); for
 
 | Tab | Contents |
 |---|---|
-| `1` plan | header (identifier, finish mode, validation state), the step list, and a detail pane showing the selected step's reasoning, input template, and — after a run — its rendered input and result JSON |
-| `2` context | the tool catalog and observed output shapes, exactly what the planner sees when drafting |
+| `1` plan | header (identifier, finish mode, validation state), the step list, and a detail pane showing the selected step's reasoning, input template, and what its tool returns (the declared output schema, else the observed output shape, plus control steps' output examples) — until a run replaces that prediction with the rendered input and result JSON |
+| `2` context | the tool catalog and observed output shapes — including the control-step vocabulary (`decide`, `map`, …) — exactly what the planner sees when drafting |
 | `3` run | the live transcript: step events, the streamed solver answer, and the final outcome |
 
 <Frame caption="The context tab: the namespaced catalog with read-only markers, and the selected tool's description and schemas in the detail pane.">
