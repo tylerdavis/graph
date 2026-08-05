@@ -183,6 +183,7 @@ steps:
       - focus: one sentence — what changed and what a scout should investigate about how the rest of the repository depends on it
       - file_list: the changed files in this group, newline-separated repo-relative paths
       - symbol_list: the changed symbols in this group whose signature, behavior, or contract this PR touches (functions, methods, structs and their fields, tool names, config keys, plan step ids, error messages other code matches on), newline-separated
+      - scoutworthy: true ONLY when the group changes code symbols that other code could reference — something a caller, implementation, test, or config elsewhere in the repository might depend on. Prose, prompt text, documentation, comments, and configuration-only changes are NOT scoutworthy: searching the repository for fragments of English is never useful. A group that is not scoutworthy gets an empty symbol_list.
 
       Every changed file belongs to exactly one group.
 
@@ -210,6 +211,7 @@ steps:
             - focus
             - file_list
             - symbol_list
+            - scoutworthy
             properties:
               name:
                 type: string
@@ -222,10 +224,22 @@ steps:
                 description: Newline-separated repo-relative paths of this group's changed files
               symbol_list:
                 type: string
-                description: Newline-separated changed symbols in this group
+                description: Newline-separated changed symbols in this group; empty when not scoutworthy
+              scoutworthy:
+                type: boolean
+                description: True only when the group changes code symbols other code could reference; false for prose/prompt/docs/config-only changes
         notes:
           type: string
-  reasoning: Cluster the diff into functional groups so each scout in E4f investigates one coherent change with a focused prompt, instead of one scout spreading its budget across an entire mixed PR. Flat newline-joined string fields (file_list, symbol_list) keep the per-group templates logic-less.
+  reasoning: Cluster the diff into functional groups so each scout in E4f investigates one coherent change with a focused prompt, instead of one scout spreading its budget across an entire mixed PR. Flat newline-joined string fields (file_list, symbol_list) keep the per-group templates logic-less. The scoutworthy flag feeds E4e2 — prose-only groups have nothing a repository search can find, and burning a scout's budget proving that is pure waste.
+- id: E4e2
+  tool_name: filter
+  input:
+    over: '{{E4e.groups}}'
+    where:
+      op: eq
+      to: true
+      value: '{{item.scoutworthy}}'
+  reasoning: Dispatch scouts only at groups whose changes something in the repository could actually reference. Withholding the budget structurally beats trusting each scout to give up early — a prose-only PR spends the grouping call and zero scout rounds. The dropped half stays visible to E5, so the reviewer knows which groups went deliberately unscouted.
 - id: E4f
   tool_name: map
   input:
@@ -250,13 +264,13 @@ steps:
           - use builtin__git_file (ref = head sha) to read just enough surrounding code to say WHY a site matters to this review — including the group's own changed files if you need to see what actually changed
           - prefer breadth over depth: the reviewer needs to know a caller exists and what it assumes, not its whole body
 
-          Report only sites OUTSIDE the changed files listed above (the reviewer already has their full contents). Skip pure renames. If nothing outside references this group's symbols, return an empty entries array — never invent relevance. Echo the group name exactly as given.
+          Report only sites OUTSIDE the changed files listed above (the reviewer already has their full contents). Skip pure renames. If nothing outside references this group's symbols, return an empty entries array — never invent relevance. If this group's changes turn out to be prose, prompt text, documentation, or configuration with no code symbols other code could reference, return an empty entries array IMMEDIATELY — searching the repository for fragments of English is never useful. Echo the group name exactly as given.
 
           HEAD SHA (use as ref in both tools): {{E0.head_sha}}
         tools:
         - builtin__git_grep
         - builtin__git_file
-        max_iterations: 60
+        max_iterations: 18
         output_schema:
           type: object
           required:
@@ -300,8 +314,8 @@ steps:
             notes:
               type: string
               description: 1-2 sentences on coverage — what was searched, and anything that could not be confirmed
-    over: '{{E4e.groups}}'
-  reasoning: One bounded agent loop per functional group, up to four in parallel — each scout searches the repository at head with read-only git tools for its group's callers, implementations, and tests, and returns a dossier echoing its group name. Results are index-aligned with E4e.groups; a scout that exhausts its budget yields final=false and E5's per-dossier guard skips it, so a failed group costs its evidence, never the run.
+    over: '{{E4e2.items}}'
+  reasoning: One bounded agent loop per scoutworthy functional group, up to four in parallel — each scout searches the repository at head with read-only git tools for its group's callers, implementations, and tests, and returns a dossier echoing its group name. Results are index-aligned with E4e.groups; a scout that exhausts its budget yields final=false and E5's per-dossier guard skips it, so a failed group costs its evidence, never the run.
 - id: E5
   tool_name: builtin__infer
   input:
@@ -333,7 +347,9 @@ steps:
 
       {{/E4.results}}
 
-      REPO CONTEXT DOSSIERS — the diff was clustered into functional groups, and a scout agent searched the repository at the head sha for each group's call sites, implementations, and tests OUTSIDE the changed files. One dossier per group (an empty entries list means nothing outside the diff references that group's symbols; a group whose scout ran out of budget is absent):
+      REPO CONTEXT DOSSIERS — the diff was clustered into functional groups, and a scout agent searched the repository at the head sha for each scoutworthy group's call sites, implementations, and tests OUTSIDE the changed files. One dossier per scouted group (an empty entries list means nothing outside the diff references that group's symbols; a group whose scout ran out of budget is absent):
+      {{#E4e2.dropped}}(group "{{name}}" was deliberately not scouted: its changes are prose/docs/config with no code symbols other code could reference)
+      {{/E4e2.dropped}}
       {{#E4f.results}}{{#final}}{{#output}}
       --- dossier: {{group}}
       {{#entries}}- [{{relation}}] {{symbol}} — {{path}}:{{line}} — {{why}}
