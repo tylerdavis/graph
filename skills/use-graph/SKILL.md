@@ -131,6 +131,23 @@ the three rules worth knowing before you load it:
    command edit reserializes the file anyway. `graph plan validate` is the
    verdict; `graph plan run` is the proof.
 
+## Plans are composable units
+
+Authoring a plan adds `plan__<identifier>` to the catalog, and plan steps can
+call anything in the catalog — including other plans. Composition is bounded
+and safe: the pipeline names cycles immediately and caps nesting at 8 levels
+([composition rules](https://github.com/tylerdavis/graph/blob/main/docs/tools/overview.mdx)).
+
+So don't build monoliths. **Break a plan apart when a piece is reusable on
+its own, or when the split makes organizational sense** — a sub-plan with a
+clear name, description, and input schema is easier to validate, test
+(`graph plan run` it directly), and reason about than the same steps inlined,
+and every caller gets it for free: other plans, `ask`/`chat`, the planner,
+and MCP clients all see the same `plan__*` tool. Composition is also the
+sanctioned way to put multi-step work inside a `map`/`reduce` body or a
+`decide` branch — bodies can't nest control steps, so factor the work into
+its own plan and call it per item.
+
 ## The workbench
 
 `graph wb plan [<name>]` opens the plan workbench — the dual-pane TUI for
