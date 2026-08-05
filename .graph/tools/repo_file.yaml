@@ -1,0 +1,45 @@
+# exec tool: worktree-capable variant of the github pack's git_file
+# (crates/graph-core/src/packs/github/git_file.yaml — keep the truncation
+# behavior in lockstep). Empty `ref` reads the file from the working tree;
+# a non-empty `ref` is the pack's `git show ref:path`. A missing path fails
+# the step loudly either way. Named repo_* to avoid shadowing the pack tool.
+name: repo_file
+description: >
+  Contents of a file at a git ref, or from the working tree when `ref` is
+  empty, truncated to a byte budget for LLM consumption. A truncated file
+  ends with a "[file truncated: showing X of Y bytes]" marker line; its
+  absence means the content is complete.
+kind: exec
+command: bash
+args:
+  - "-ceu"
+  - |
+    ref=$1 path=$2 max=$3
+    tmp=$(mktemp)
+    trap 'rm -f "$tmp"' EXIT
+    if [ -n "$ref" ]; then git show "$ref:$path" > "$tmp"; else cat -- "$path" > "$tmp"; fi
+    total=$(wc -c < "$tmp" | tr -d ' ')
+    head -c "$max" "$tmp"
+    if [ "$total" -gt "$max" ]; then
+      printf '\n\n[file truncated: showing %s of %s bytes]\n' "$max" "$total"
+    fi
+  - repo_file
+  - "{{input.ref}}"
+  - "{{input.path}}"
+  - "{{input.max_bytes}}"
+output: text
+timeout_secs: 30
+read_only: true
+input_schema:
+  type: object
+  required: [path]
+  properties:
+    ref:
+      type: string
+      default: ""
+      description: Ref or commit sha; "" reads the file from the working tree
+    path: { type: string, description: File path within the repository }
+    max_bytes:
+      type: integer
+      default: 200000
+      description: Truncate the content to this many bytes (a marker line flags truncation)

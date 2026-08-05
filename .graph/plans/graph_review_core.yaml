@@ -1,0 +1,542 @@
+identifier: graph_review_core
+name: graph_review_core
+description: Reviews a change set of the graph-cli repository against its own invariants (plan-pipeline error policy, control-step semantics, template dialect, async/storage safety, plan composition, docs-parity) as a principal engineer. Purely local — only git, no GitHub access or network side effects. With `head` set it reviews the committed range base...head; with `head` empty (the default) it reviews the working tree — staged and unstaged changes against the merge-base of `base` and HEAD (new files must be at least `git add -N`'d to be visible). Runs eight passes (stated intent vs diff, pipeline/control-step invariants, template & shape engine correctness, Rust/async/storage footguns, plan-composition & model-routing correctness, test coverage, repo conventions, CLI-facing surface & copy) grounded in the diff, full file contents, and per-group repository scouts. Accepts previously known findings as a suppression list so only genuinely new findings are returned. Returns structured JSON (overall framing, eight pass statuses ordered by severity, new findings). The review engine behind graph_review_9000; also runnable directly for a pre-push local review. On an empty diff it exits success with the same contract nested under the exit's output.
+input_schema:
+  type: object
+  required:
+  - base
+  properties:
+    base:
+      type: string
+      description: Base git ref or sha of the range to review (merge-base diff)
+    head:
+      type: string
+      default: ''
+      description: Head git ref or sha; '' (the default) reviews the working tree against merge-base(base, HEAD) — stage new files with `git add -N` first
+    title:
+      type: string
+      default: ''
+      description: The author's stated title for the change (PR title in CI); may be empty on local runs
+    body:
+      type: string
+      default: ''
+      description: The author's stated description/intent (PR body in CI); when empty, pass 1 reports intent as unverified
+    known_findings:
+      type: array
+      default: []
+      description: Previously recorded findings (objects with state, label, severity, invariant, file, line, finding) used purely as a suppression list — only genuinely new findings are returned
+steps:
+- id: E1
+  tool_name: user__repo_changed_files
+  input:
+    base: '{{input.base}}'
+    head: '{{input.head}}'
+    prefix: ''
+  reasoning: Get the complete list of changed files (never truncated) for the reviewed change set — committed range when head is set, working tree against merge-base otherwise — used for mapping over file contents and for the review's file listing.
+- id: E2
+  tool_name: user__repo_diff
+  input:
+    base: '{{input.base}}'
+    exclude: Cargo.lock CHANGELOG.md
+    head: '{{input.head}}'
+    max_bytes: 300000
+    paths: .
+  reasoning: Fetch the unified diff (excluding the lockfile and generated changelog) to ground the review. Needed before checking emptiness and before the LLM review pass.
+- id: E3
+  tool_name: exit
+  input:
+    message: No meaningful diff for the reviewed change set (base {{input.base}}, after excluding Cargo.lock/CHANGELOG.md) — nothing to review.
+    status: success
+    output:
+      reviewed: false
+      reason: empty_diff
+      overall_alert_type: NOTE
+      overall_framing: Empty diff after excluding Cargo.lock and CHANGELOG.md — nothing to review.
+      passes: []
+      has_blockers: false
+      blockers_count: 0
+      has_unverified: false
+      unverified_count: 0
+      has_na_or_pass: false
+      findings: []
+    when:
+      op: empty
+      value: '{{E2.text}}'
+  reasoning: Nothing to review on an empty diff. The exit's output carries the plan's normal contract with empty values (plus reviewed/reason discriminators) so callers that do hit this path still get parseable fields — note a fired exit nests this map under `output` in the caller's step result, so callers should pre-gate emptiness (as graph_review_9000 does) or branch on `exited`.
+- id: E3b
+  tool_name: filter
+  input:
+    over: '{{E1.changes}}'
+    where:
+      op: ne
+      to: deleted
+      value: '{{item.status}}'
+  reasoning: Keep only changed files that still exist in the reviewed state — a deleted file has no contents there, and mapping repo_file over it fails the plan (issue #94). Deletions stay visible to the reviewer via the E1.changes overview; this step only decides what gets fetched.
+- id: E4
+  tool_name: map
+  input:
+    concurrency: 8
+    do:
+      input:
+        max_bytes: 30000
+        path: '{{item.path}}'
+        ref: '{{input.head}}'
+      tool_name: user__repo_file
+    over: '{{E3b.items}}'
+  reasoning: Fetch the full content of every still-present changed file — at the head ref, or from the working tree when head is empty — in parallel, so the reviewer LLM can see surrounding code rather than just diff hunks. Results are index-aligned with E3b.items by construction.
+- id: E4e
+  tool_name: builtin__infer
+  input:
+    instruction: |-
+      Cluster this change set's changes into FUNCTIONAL GROUPS for a code review of graph-cli (a Rust cargo workspace). A group is one coherent functional change — a feature, a fix, a refactor, a docs/config adjustment — not a directory. Between 1 and 6 groups: a focused change is ONE group; never invent splits a reviewer wouldn't recognize.
+
+      For each group provide:
+      - name: 2-5 words naming the functional change
+      - focus: one sentence — what changed and what a scout should investigate about how the rest of the repository depends on it
+      - file_list: the changed files in this group, newline-separated repo-relative paths
+      - symbol_list: the changed symbols in this group whose signature, behavior, or contract this change touches (functions, methods, structs and their fields, tool names, config keys, plan step ids, error messages other code matches on), newline-separated
+      - scoutworthy: true ONLY when the group changes code symbols that other code could reference — something a caller, implementation, test, or config elsewhere in the repository might depend on. Prose, prompt text, documentation, comments, and configuration-only changes are NOT scoutworthy: searching the repository for fragments of English is never useful. A group that is not scoutworthy gets an empty symbol_list.
+
+      Every changed file belongs to exactly one group.
+
+      TITLE (may be empty): {{input.title}}
+
+      CHANGED FILES:
+      {{#E1.changes}}- {{path}} ({{status}})
+      {{/E1.changes}}
+
+      DIFF (excludes Cargo.lock, CHANGELOG.md):
+      {{E2.text}}
+    output_schema:
+      type: object
+      required:
+      - groups
+      properties:
+        groups:
+          type: array
+          minItems: 1
+          maxItems: 6
+          items:
+            type: object
+            required:
+            - name
+            - focus
+            - file_list
+            - symbol_list
+            - scoutworthy
+            properties:
+              name:
+                type: string
+                description: 2-5 words naming the functional change
+              focus:
+                type: string
+                description: One sentence — what changed and what to investigate
+              file_list:
+                type: string
+                description: Newline-separated repo-relative paths of this group's changed files
+              symbol_list:
+                type: string
+                description: Newline-separated changed symbols in this group; empty when not scoutworthy
+              scoutworthy:
+                type: boolean
+                description: True only when the group changes code symbols other code could reference; false for prose/prompt/docs/config-only changes
+        notes:
+          type: string
+  reasoning: Cluster the diff into functional groups so each scout in E4f investigates one coherent change with a focused prompt, instead of one scout spreading its budget across an entire mixed change set. Flat newline-joined string fields (file_list, symbol_list) keep the per-group templates logic-less. The scoutworthy flag feeds E4e2 — prose-only groups have nothing a repository search can find, and burning a scout's budget proving that is pure waste.
+- id: E4e2
+  tool_name: filter
+  input:
+    over: '{{E4e.groups}}'
+    where:
+      op: eq
+      to: true
+      value: '{{item.scoutworthy}}'
+  reasoning: Dispatch scouts only at groups whose changes something in the repository could actually reference. Withholding the budget structurally beats trusting each scout to give up early — a prose-only change spends the grouping call and zero scout rounds. The dropped half stays visible to E5, so the reviewer knows which groups went deliberately unscouted.
+- id: E4g
+  tool_name: user__repo_file
+  input:
+    max_bytes: 30000
+    path: CLAUDE.md
+    ref: '{{input.head}}'
+  reasoning: The repo's own orientation — crate map, invariants, conventions — read at the reviewed state so each scout aims its searches at the right crates and recognizes which documented invariants a call site depends on, instead of discovering the repository's shape from scratch inside its round budget.
+- id: E4f
+  tool_name: map
+  input:
+    concurrency: 6
+    do:
+      tool_name: agent
+      input:
+        prompt: |-
+          You are the context scout for ONE functional group of a change set under review in graph-cli (a Rust cargo workspace). The review sees the change's diff and the full contents of changed files — but nothing else in the repository. Your job, for THIS GROUP ONLY: find the callers, implementations, trait impls, tests, and config/doc references that the group's changes TOUCH BUT DO NOT SHOW, so the reviewer can judge blast radius without guessing.
+
+          GROUP: {{item.name}}
+          FOCUS: {{item.focus}}
+
+          CHANGED FILES IN THIS GROUP:
+          {{item.file_list}}
+
+          CHANGED SYMBOLS IN THIS GROUP:
+          {{item.symbol_list}}
+
+          Method:
+          - use user__repo_grep to find where each symbol is used, implemented, or tested elsewhere in the repository (search at the head ref)
+          - use user__repo_file (ref = head ref) to read just enough surrounding code to say WHY a site matters to this review — including the group's own changed files if you need to see what actually changed
+          - prefer breadth over depth: the reviewer needs to know a caller exists and what it assumes, not its whole body
+
+          Report only sites OUTSIDE the changed files listed above (the reviewer already has their full contents). Skip pure renames. If nothing outside references this group's symbols, return an empty entries array — never invent relevance. If this group's changes turn out to be prose, prompt text, documentation, or configuration with no code symbols other code could reference, return an empty entries array IMMEDIATELY — searching the repository for fragments of English is never useful. Echo the group name exactly as given.
+
+          REPO ORIENTATION (the repository's CLAUDE.md at the reviewed state — its own map of crates, invariants, and conventions; use it to aim searches at the right crates and to recognize when a site you find depends on a documented invariant, which is exactly what the `why` field should say):
+          {{E4g.text}}
+
+          HEAD REF (use as ref in both tools; empty means the working tree): {{input.head}}
+        tools:
+        - user__repo_grep
+        - user__repo_file
+        max_iterations: 18
+        output_schema:
+          type: object
+          required:
+          - group
+          - entries
+          - notes
+          properties:
+            group:
+              type: string
+              description: The group name, echoed exactly
+            entries:
+              type: array
+              items:
+                type: object
+                required:
+                - symbol
+                - relation
+                - path
+                - line
+                - evidence
+                - why
+                properties:
+                  symbol:
+                    type: string
+                    description: The changed symbol this entry is about
+                  relation:
+                    type: string
+                    description: caller | implementation | trait impl | test | config | docs
+                  path:
+                    type: string
+                    description: Repo-relative path of the referencing site (outside the group's changed files)
+                  line:
+                    type: integer
+                    description: Line number of the site; 0 when unknown
+                  evidence:
+                    type: string
+                    description: ONE line of code from the site, verbatim
+                  why:
+                    type: string
+                    description: One sentence — what this site assumes, or what would break
+            notes:
+              type: string
+              description: 1-2 sentences on coverage — what was searched, and anything that could not be confirmed
+    over: '{{E4e2.items}}'
+  reasoning: One bounded agent loop per scoutworthy functional group, up to six in parallel — each scout searches the repository at the reviewed state with read-only repo tools for its group's callers, implementations, and tests, and returns a dossier echoing its group name. Results are index-aligned with E4e.groups; a scout that exhausts its budget yields final=false and E5's per-dossier guard skips it, so a failed group costs its evidence, never the run.
+- id: E5
+  tool_name: builtin__infer
+  input:
+    instruction: |-
+      You are a principal engineer at the graph-cli project reviewing a change set against this repo's own invariants. graph-cli is a Rust workspace (six crates): graph-core (agent loop, plan pipeline, template engine, toolbox, user tools, Store/ToolRegistry traits, prompts, shape inference), graph-llm (ChatProvider trait, anthropic/openai_compat providers, retries, cross-provider failover, ModelRouter role→model), graph-mcp (rmcp client manager, server__tool namespacing, graceful shutdown), graph-store (FileStore/MemoryStore/RecordingRegistry), graph-config (layered TOML config), graph-cli (clap binary, REPL, sinks, the ratatui plan workbench TUI). Act with high rigor: verify every non-trivial claim against the provided diff and file contents; never guess. If a claim can't be verified from what's provided, say so explicitly instead of asserting it as fact.
+
+      Be concise everywhere. These findings become review comments read by a busy engineer — no filler, no hedging phrases, no restating context already captured in other fields (file, line, severity, invariant), no preamble like "It looks like" or "I noticed that". State the issue and its concrete impact in as few words as possible, then move on.
+
+      TITLE (the author's stated title; may be empty on a local run): {{input.title}}
+
+      DESCRIPTION (the author's stated intent; may be empty on a local run):
+      {{input.body}}
+
+      FILE CHANGES ({{E1.count}} total — every changed file with its status and line delta; deleted and renamed files included):
+      {{#E1.changes}}- {{path}} — {{status}} (+{{additions}}/-{{deletions}})
+      {{/E1.changes}}
+
+      FILES WITH CONTENTS ({{E3b.count}} — the FILE CHANGES minus deleted files, which have no contents in the reviewed state; numbered to match FULL FILE CONTENTS below):
+      {{#E3b.items}}{{@index}}. {{path}}
+      {{/E3b.items}}
+
+      DIFF (may be excerpted/truncated; excludes Cargo.lock, CHANGELOG.md):
+      {{E2.text}}
+
+      FULL FILE CONTENTS in the reviewed state, in the same order as the FILES WITH CONTENTS list above (for context beyond diff hunks; some may be truncated by byte budget):
+      {{#E4.results}}
+      ===== file #{{@index}} (see FILES WITH CONTENTS above for its path) =====
+      {{text}}
+
+      {{/E4.results}}
+
+      REPO CONTEXT DOSSIERS — the diff was clustered into functional groups, and a scout agent searched the repository at the reviewed state for each scoutworthy group's call sites, implementations, and tests OUTSIDE the changed files. One dossier per scouted group (an empty entries list means nothing outside the diff references that group's symbols; a group whose scout ran out of budget is absent):
+      {{#E4e2.dropped}}(group "{{name}}" was deliberately not scouted: its changes are prose/docs/config with no code symbols other code could reference)
+      {{/E4e2.dropped}}
+      {{#E4f.results}}{{#final}}{{#output}}
+      --- dossier: {{group}}
+      {{#entries}}- [{{relation}}] {{symbol}} — {{path}}:{{line}} — {{why}}
+        > {{evidence}}
+      {{/entries}}coverage: {{notes}}
+      {{/output}}{{/final}}{{/E4f.results}}
+
+      Use the dossiers as evidence, especially in passes 2, 4, and 6: a changed contract whose caller in a dossier still assumes the old behavior is a finding; a blast-radius claim you cannot verify from the diff, the file contents, or the dossiers stays 'unverified' rather than asserted.
+
+      There is no external issue tracker integration in this plan — ground scope/intent judgments in the stated title and description only, never fabricate a ticket or requirement that isn't stated there.
+
+      KNOWN FINDINGS (previously recorded for this change — e.g. as PR review threads, with current lifecycle states — the list may be empty when there is no history):
+      {{#input.known_findings}}- [{{state}}] {{label}} — {{file}}:{{line}} ({{severity}}): {{finding}}
+      {{/input.known_findings}}
+
+      Do NOT re-report any issue already covered by a known finding above, in ANY state: open findings are already tracked by the caller, declined findings were reviewed and dismissed by a human (re-raising one is noise), and resolved findings are fixed (if you believe one has regressed, say so in the relevant pass's summary instead of emitting a duplicate finding). Your findings array must contain only genuinely NEW findings. The pass status rules below key off that findings array; a still-open known finding belongs in its pass's summary text (the caller already carries the details), not in the array and not in the status.
+
+      Perform EIGHT review passes:
+
+      PASS 1 — Stated intent vs. diff: does the stated title/description describe what the diff actually does? Flag scope creep (unrelated changes bundled in), a description that overstates or misdescribes the change, or claimed behavior not actually implemented. If the description is empty/uninformative, this pass's status is 'unverified' and the summary must note that intent can't be checked against a description, without treating that as a defect in the code itself.
+
+      PASS 2 (HIGHEST PRIORITY) — Plan-pipeline & control-step invariants: verify the error policy is preserved — EmptyData (data ran out) vs BadPath (plan defect) are never conflated, human-authored plans (run_explicit) never replan, output/silent plans still fail hard on empty data unless an explicit exit gate pre-empts it. Verify control-step semantics: exit/decide share one gate grammar (when/if/infer) and a fired exit skips remaining steps AND the solver; decide's then/else and map/reduce's do share one body grammar, rendered lazily; no control-step nesting inside bodies (bodies must call plan__* instead of embedding decide/map/reduce); map's concurrency is the only parallelism (ordered buffered(n), failures drain in-flight rather than cancel); reduce is always sequential. Verify the execution gate contract: every real tool call funnels through the gate, control-step evaluation never does; aborts bypass replan/solver/error-summary. A change that violates any of these (e.g. a human-authored-plan path silently replanning, a control step evaluated through the tool dispatch gate, body steps leaking into state.results, blocking work inside what should be parallel map iterations) is a strong candidate for 'blocker'.
+
+      PASS 3 — Template & shape engine correctness (ONLY if the diff touches crates/graph-core/src/template/, shape inference in crates/graph-core/src/shapes.rs or store.rs's ToolShape, or the planner's shape-cache reads — otherwise this pass is not applicable): the template dialect must stay strict, typed, and logic-less (no branching/computation smuggled into templates — logic belongs in steps); a change to template semantics without a matching change to docs/plans/template-language.mdx is a defect (flag it here even though the repo also runs a separate docs-drift gate); the shape cache must be read fresh at each planning attempt, never snapshotted at construction; shape writes are last-writer-wins and seen_count is advisory only — don't introduce a read-modify-write race that depends on seen_count being exact.
+
+      PASS 4 — Rust/async/storage/MCP footguns: unwrap()/expect()/panic! introduced on a path reachable from user input or a real plan run (test-only code and clearly-unreachable invariants are fine — verify which before flagging); MCP child-process lifecycle — shutdown must go through McpManager::shutdown() before the tokio runtime drops (async-Drop cleanup does not run during teardown, so a dropped-without-shutdown manager orphans child processes); Store access only through Arc<dyn Store>, never a concrete backend type reached directly; FileStore concurrency invariants (temp-file+rename for whole-file writes, O_APPEND under a per-thread flock for message appends) not undermined by a change that writes some other way; no link flags added to env-wide RUSTFLAGS (breaks build scripts); ordinary Rust footguns — needless clone/allocation in hot paths, blocking calls inside async fns, incorrect Send/Sync bounds, silently-swallowed Results (`let _ =` on a fallible call that matters).
+
+      PASS 5 — Plan composition & model routing correctness (ONLY if the diff touches plan__* composition, Pipeline::call_plan/call_planner, ModelRouter, model roles, or graph-llm provider/failover code — otherwise this pass is not applicable): plan-calls-plan cycle detection and the depth cap (8) still hold; a role (chat/planner/solver/repair/judge/embedder) still falls back to `default` when unset; the planner prompt stays byte-identical across a session (prompt-cache invariant) — a change that makes the outline/step prompt vary run-to-run for reasons other than the declared "Draft Under Revision" section is a defect; cross-provider failover (`fallbacks` on model entries) still surfaces the underlying error when all fallbacks are exhausted rather than swallowing it.
+
+      PASS 6 — Test coverage: for every behavioral change, confirm a test actually exercises it — not just that a test file was touched. The risky path specifically must be covered (a new control-step branch, a new error variant, a new template construct, a new gate/abort path). Flag behavior added with no test at all, and mock-heavy tests that would still pass if the real code broke. Don't demand tests for pure doc/comment/copy changes. The FILE CHANGES list is complete, so a behavioral change with no test-file change is observable — but an untouched existing test you cannot see here may already cover it; when that's plausible, mark this pass 'unverified' and say what to check rather than asserting a gap.
+
+      PASS 7 — Repo conventions & docs parity: conventional-commit-style intent reflected in the change (the changelog is generated from commit subjects); no large unrelated reformatting/churn bundled into this change; the diff follows the idioms of the surrounding code (naming, structure, patterns already established in the files shown above); per CLAUDE.md, any user-visible behavior change (CLI surface, plan/tool file formats, template semantics, error handling, exit codes, prompts the planner sees, configuration) must land with a docs/ update in the same change — flag a missing one here as a likely bug or blocker depending on severity (a separate docs_drift CI gate also checks this mechanically; this pass is about judgment, not duplicating that gate verbatim).
+
+      PASS 8 — CLI-facing surface & copy: review any new or changed user-visible text — CLI help/usage strings, error messages, workbench TUI labels, prompts shown to the planner/solver — for grammar, spelling, clarity, and consistency with nearby copy. Also verify the streams contract: stdout carries only the deliverable (answer, output-mode JSON, --json envelopes), all progress/diagnostics go to stderr, and exit codes stay correct (0 ok, 1 failure, 3 needs-input, 4 exit-gate assertion) — a change that prints diagnostics to stdout or misuses an exit code belongs here. If there is no user-facing copy or stream/exit-code change in the diff at all, this pass is not applicable.
+
+      === FINDINGS (individual, cited claims — feed the review comments) ===
+
+      THE BAR FOR A FINDING: every finding asserts a defect you VERIFIED against the provided evidence — the diff, the file contents, or the dossiers. If stating a claim honestly requires 'may', 'might', 'possibly', 'appears to', or 'cannot confirm/verify', it is NOT a finding: it belongs, at most, in the relevant pass's summary with that pass marked 'unverified'. Three corollaries:
+      - The description is the author's STATED INTENT — check the code against it, but never treat the description's own caveats, open questions, or notes-to-self as evidence of a defect in the code. A caveat the diff already addresses is nothing at all.
+      - Configuration that lives outside the repository — repo or org secrets, external service settings, branch protection — cannot be verified from anything provided here and never yields a finding, at any severity.
+      - Hedged severity is not a substitute for evidence: 'likely bug' means a VERIFIED defect whose consequence is probable, never an unverified suspicion.
+
+      Each finding renders as a GitHub Markdown alert-style inline review comment (a blockquote alert with a bold headline and explanation, then a concrete Fix with a code block, then a collapsible one-shot agent-fix block) — build every finding's fields with that rendering in mind:
+
+      - `invariant`: one of 'Pass 1: Stated Intent', 'Pass 2: Pipeline/Control-Step Invariants', 'Pass 3: Template/Shape Engine', 'Pass 4: Rust/Async/Storage Footguns', 'Pass 5: Plan Composition/Model Routing', 'Pass 6: Test Coverage', 'Pass 7: Repo Conventions/Docs Parity', 'Pass 8: CLI Surface/Copy'.
+      - `file`: the real file path, resolved via the FILE CHANGES list. `line`: integer line number in the new file that this finding anchors to. This field is REQUIRED and must always be present — if you cannot confidently determine a specific line number, set it to 0 (a sentinel meaning "unanchored"); never omit the key.
+      - `severity`: 'blocker' | 'likely bug' | 'cleanup' (blocker = merge-blocking correctness/invariant-violation issue; likely bug = probably wrong but not certainly merge-blocking; cleanup = style/minor/copy). A violation of the pipeline error policy, control-step semantics, or a resource-lifecycle invariant (MCP shutdown, Store access, file-store concurrency) is 'blocker' even on an otherwise small change. A deliberate, intentional convention deviation is NOT 'blocker' — it's at most 'likely bug' or 'cleanup'.
+      - `severity_label`: human-facing label matching severity exactly — 'Blocker' for blocker, 'Likely bug' for likely bug, 'Cleanup' for cleanup.
+      - `alert_type`: the GitHub Markdown alert type matching severity exactly — 'WARNING' for blocker, 'IMPORTANT' for likely bug, 'NOTE' for cleanup.
+      - `label`: a very short (2-5 word) bold tag naming the finding, e.g. "Replan on human plan", "Missing docs update", "unwrap on user input". Used to lead off the finding in condensed lists.
+      - `is_blocker`: true iff severity is 'blocker'.
+      - `blocker_ordinal`: 1-based position of this finding among ONLY the blocker-severity findings, in the order they should be listed (use 0 for non-blocker findings). CRITICAL: findings with is_blocker=true MUST appear within the findings array in ascending blocker_ordinal order relative to one another (they need not be contiguous, but 1 must come before 2, which must come before 3, etc. among is_blocker=true entries) — downstream rendering relies on array order, not on any sort being performed later.
+      - `finding`: the bolded headline — ONE short sentence stating the core claim and its concrete impact (e.g. "`run_explicit` now calls the replan loop — violates the never-replan invariant for human-authored plans."). Use backticks for symbol/field/method names. This is a title, not a paragraph.
+      - `explanation`: 1-2 sentences directly beneath the headline: why it matters/concrete consequence, and if a framework/invariant claim is load-bearing for the finding (e.g. 'EmptyData and BadPath are being conflated', 'this bypasses the execution gate'), fold in a few-word verification tag (e.g. "(confirmed per file above)" or "(unable to verify from provided diff)") rather than asserting it unchecked. Reference the relevant repo invariant/convention by name if one applies (e.g. CLAUDE.md's docs-parity invariant, the prompt-cache invariant).
+      - `fix_markdown`: the full "Fix" writeup — one short instruction sentence naming the exact file (and function/line) and the change to make, followed by a small fenced code block (```diff for a diff-style suggestion, or the right language) showing the precise minimal fix, optionally followed by one trailing short sentence on how to confirm it. Do not include a leading '**Fix**' label — that is added by the template. Make the code block copy-pasteable and minimal, not a full patch.
+      - `fix_short`: the same fix compressed into ONE single-line plain-text sentence, imperative mood, no code block, no newlines.
+      - `agent_prompt`: a self-contained coding-agent task brief, MAXIMUM two sentences — sentence 1 names the exact file/function/line and the required change precisely enough to implement without further back-and-forth; sentence 2 (only if needed) states the acceptance criteria. Do not restate `finding` verbatim; no caveats or background.
+
+      Omit findings that found nothing to flag — do not manufacture a finding just to have one per pass.
+
+      FINAL GATE — refute your own findings: before emitting output, take EVERY finding, at every severity, and try to disprove it against the provided diff, file contents, and dossiers — look for the guard, check, later-commit fix, or handling that would make it a non-issue. A blocker that survives as a real defect but not a merge-blocking one demotes to 'likely bug'; a finding at ANY severity that fails the verification bar above is DROPPED, never demoted — demotion is for real defects with lower stakes, not for doubt. Apply the same skepticism to clearances: marking a pass 'pass' takes the same evidence as flagging a finding — if you cannot verify it from what's provided, use 'unverified', not 'pass'. A false finding and a false clear are both more expensive than a missed nit.
+
+      === CHANGE-LEVEL SUMMARY (organizes the final summary by SEVERITY, not by pass) ===
+
+      The final summary leads with a wrapper alert about the CHANGE AS A WHOLE (not its findings), then an at-a-glance table of the eight passes sorted by severity, then blockers concentrated in one place, then everything else collapsed. You must produce the structured fields for that:
+
+      - `overall_alert_type`: 'NOTE' (blue) if the change itself is benign — normal work, or an intentional scratch/experiment/refactor. 'CAUTION' (red) ONLY if the change itself is dangerous as a whole (e.g. it actively merges something that breaks the error policy, orphans MCP child processes, or silently changes template semantics without docs) — this is independent of whether individual findings are blockers; almost every change should be 'NOTE' here even if it contains blocker findings.
+      - `overall_framing`: ONE sentence framing what this change is (e.g. "Adds a new `map` concurrency option; touches pipeline iteration and template rendering."). No bot name prefix — that's added by the template.
+      - `passes`: an array of EXACTLY 8 objects, one per pass, ORDERED by severity — all 'blocker' passes first, then 'unverified', then 'na', then 'pass' (ties broken by ascending pass number). Each object:
+        - `number`: the pass number 1-8.
+        - `area`: exactly one of 'Stated Intent' (pass 1), 'Pipeline/Control-Step Invariants' (pass 2), 'Template/Shape Engine' (pass 3), 'Rust/Async/Storage Footguns' (pass 4), 'Plan Composition/Model Routing' (pass 5), 'Test Coverage' (pass 6), 'Repo Conventions/Docs Parity' (pass 7), 'CLI Surface/Copy' (pass 8).
+        - `status`: 'blocker' if this pass has at least one blocker-severity finding. 'na' if the pass's subject matter is genuinely absent from the diff (nothing to evaluate — typically pass 3 when the diff doesn't touch template/shapes, pass 5 when it doesn't touch plan composition/model routing/graph-llm, or pass 8 when there is no user-facing copy/stream/exit-code change at all). 'pass' if the subject matter is present, was fully evaluated, and there is nothing to flag. 'unverified' otherwise — use this when the pass has at least one non-blocker finding (likely bug or cleanup), OR something couldn't be confidently verified (e.g. an uninformative description for pass 1), OR there's a deliberate/intentional deviation worth flagging but not blocking.
+        - `status_label`: 'Blocker' / 'Unverified / Intentional' / 'N/A' / 'Pass' matching status exactly.
+        - `status_emoji`: '🔴' / '🟡' / '⚪' / '✅' matching status exactly (blocker/unverified/na/pass in that order).
+        - `is_unverified`: true iff status is 'unverified'.
+        - `is_na_or_pass`: true iff status is 'na' or 'pass'.
+        - `summary`: 1-2 sentences — for 'unverified' passes, the follow-up needed or the deviation noted; for 'na'/'pass' passes, brief reassurance/context a reviewer would only want if curious (e.g. "Not touched — diff doesn't touch plan composition or model routing.", "Clean — error policy and control-step semantics preserved.").
+      - `has_blockers`: true iff at least one finding has severity 'blocker'.
+      - `blockers_count`: count of blocker-severity findings.
+      - `has_unverified`: true iff at least one pass has status 'unverified'.
+      - `unverified_count`: count of passes with status 'unverified'.
+      - `has_na_or_pass`: true iff at least one pass has status 'na' or 'pass'.
+
+      Length limits, strictly enforced (hard caps, not targets — every finding, no exceptions, since a long response can get truncated):
+      - label: 2-5 words, no trailing period.
+      - finding: one sentence (two only if absolutely necessary), used as a headline.
+      - explanation: one to two sentences, no more.
+      - fix_markdown: a handful of lines total — one instruction sentence, a small code block (a few lines), optional one trailing sentence. Not a full patch.
+      - fix_short: one short sentence, imperative mood, single-line plain text, no code blocks, no newlines.
+      - agent_prompt: MAXIMUM two sentences, hard cap. Do not restate the finding text verbatim, do not add caveats or background.
+      - overall_framing: exactly ONE sentence.
+      - pass summary: one to two sentences, no more.
+
+      Produce structured output with: overall_alert_type, overall_framing, passes (exactly 8, ordered by severity as described), has_blockers, blockers_count, has_unverified, unverified_count, has_na_or_pass, and a flat findings array where each entry has: invariant, file, line, severity, severity_label, alert_type, label, is_blocker, blocker_ordinal, finding, explanation, fix_markdown, fix_short, and agent_prompt as described above.
+    output_schema:
+      properties:
+        blockers_count:
+          type: integer
+        findings:
+          items:
+            properties:
+              agent_prompt:
+                description: 'Self-contained coding-agent task brief, MAXIMUM 2 sentences (hard cap): exact file/function/line, required change, and (if needed) acceptance criteria.'
+                type: string
+              alert_type:
+                description: 'GitHub Markdown alert type matching severity: blocker->WARNING, likely bug->IMPORTANT, cleanup->NOTE.'
+                enum:
+                - WARNING
+                - IMPORTANT
+                - NOTE
+                type: string
+              blocker_ordinal:
+                description: 1-based position among blocker-severity findings only, and findings array order must respect this ordering; 0 for non-blocker findings.
+                type: integer
+              explanation:
+                description: '1-2 sentences beneath the headline: why it matters and how it was verified, or that it couldn''t be.'
+                type: string
+              file:
+                type: string
+              finding:
+                description: 'Bolded headline: one short sentence, the claim + concrete impact.'
+                type: string
+              fix_markdown:
+                description: 'Full Fix writeup: one instruction sentence naming the file/function, a small fenced code block with the precise fix, optional trailing confirmation sentence. No leading ''**Fix**'' label.'
+                type: string
+              fix_short:
+                description: One short imperative sentence with the concrete fix, no justification. Single-line plain text for the summary table.
+                type: string
+              invariant:
+                type: string
+              is_blocker:
+                description: true iff severity is 'blocker'.
+                type: boolean
+              label:
+                description: Short (2-5 word) bold tag naming the finding.
+                type: string
+              line:
+                description: Integer line number in the new file this finding anchors to. Always present — use 0 as a sentinel when genuinely unknown.
+                type: integer
+              severity:
+                enum:
+                - blocker
+                - likely bug
+                - cleanup
+                type: string
+              severity_label:
+                description: Human-facing severity label matching severity exactly.
+                enum:
+                - Blocker
+                - Likely bug
+                - Cleanup
+                type: string
+            required:
+            - invariant
+            - file
+            - line
+            - severity
+            - severity_label
+            - alert_type
+            - label
+            - is_blocker
+            - blocker_ordinal
+            - finding
+            - explanation
+            - fix_markdown
+            - fix_short
+            - agent_prompt
+            type: object
+          type: array
+        has_blockers:
+          type: boolean
+        has_na_or_pass:
+          type: boolean
+        has_unverified:
+          type: boolean
+        overall_alert_type:
+          description: 'Change-as-a-whole framing alert: NOTE for benign/normal/intentional work, CAUTION only if the change itself is dangerous.'
+          enum:
+          - NOTE
+          - CAUTION
+          type: string
+        overall_framing:
+          description: One sentence framing what this change is, no bot name prefix.
+          type: string
+        passes:
+          description: Exactly 8 objects, one per review pass, ordered by severity (blocker, unverified, na, pass; ties by ascending pass number).
+          items:
+            properties:
+              area:
+                enum:
+                - Stated Intent
+                - Pipeline/Control-Step Invariants
+                - Template/Shape Engine
+                - Rust/Async/Storage Footguns
+                - Plan Composition/Model Routing
+                - Test Coverage
+                - Repo Conventions/Docs Parity
+                - CLI Surface/Copy
+                type: string
+              is_na_or_pass:
+                type: boolean
+              is_unverified:
+                type: boolean
+              number:
+                type: integer
+              status:
+                enum:
+                - blocker
+                - unverified
+                - na
+                - pass
+                type: string
+              status_emoji:
+                enum:
+                - 🔴
+                - 🟡
+                - ⚪
+                - ✅
+                type: string
+              status_label:
+                enum:
+                - Blocker
+                - Unverified / Intentional
+                - N/A
+                - Pass
+                type: string
+              summary:
+                description: '1-2 sentences: follow-up/deviation for unverified, brief reassurance/context for na or pass.'
+                type: string
+            required:
+            - number
+            - area
+            - status
+            - status_label
+            - status_emoji
+            - is_unverified
+            - is_na_or_pass
+            - summary
+            type: object
+          maxItems: 8
+          minItems: 8
+          type: array
+        unverified_count:
+          type: integer
+      required:
+      - overall_alert_type
+      - overall_framing
+      - passes
+      - has_blockers
+      - blockers_count
+      - has_unverified
+      - unverified_count
+      - has_na_or_pass
+      - findings
+      type: object
+  reasoning: Single structured LLM review pass grounded in the change's metadata, full changed-file list, diff, and full file contents. Produces the change-level framing, eight severity-ordered pass summaries aligned to graph-cli's own invariants (pipeline error policy, control-step semantics, template/shape engine, Rust/async/storage/MCP footguns, plan composition/model routing, tests, docs-parity, CLI surface/copy), and a flat findings array returned to the caller (graph_review_9000 posts them as inline comments; a local run prints them as JSON). No external ticket tracker.
+output:
+  reviewed: true
+  reason: reviewed
+  overall_alert_type: '{{E5.overall_alert_type}}'
+  overall_framing: '{{E5.overall_framing}}'
+  passes: '{{E5.passes}}'
+  has_blockers: '{{E5.has_blockers}}'
+  blockers_count: '{{E5.blockers_count}}'
+  has_unverified: '{{E5.has_unverified}}'
+  unverified_count: '{{E5.unverified_count}}'
+  has_na_or_pass: '{{E5.has_na_or_pass}}'
+  findings: '{{E5.findings}}'

@@ -1,0 +1,180 @@
+identifier: graph_review_thread_audit
+name: graph_review_thread_audit
+description: Audits graph_review_9000's existing inline review threads on a GitHub PR against the code at the head sha — resolves findings whose fix is verified in the file contents (or all open findings when the diff is empty, i.e. the PR was reverted), declines findings a human reply dismissed, keeps the rest open — and applies the transitions (reply + resolve) via gh_pr_thread_sync. Conservative by instruction — insufficient evidence keeps a finding open, and terminal states are echoed untouched. Returns the audited findings plus lifecycle counts. GitHub-coupled (gh CLI + token); called by graph_review_9000 when prior findings exist. Deliberately has no exit steps, so its result shape is always the output map.
+input_schema:
+  type: object
+  required:
+  - pr
+  - base
+  - head
+  - findings
+  properties:
+    pr:
+      type: integer
+      description: Pull request number whose review threads the transitions apply to
+    base:
+      type: string
+      description: Base sha of the PR (for the cumulative diff)
+    head:
+      type: string
+      description: Head sha — resolution evidence is the file contents at this ref
+    title:
+      type: string
+      default: ''
+      description: PR title, context for the auditor
+    findings:
+      type: array
+      description: Existing findings as returned by builtin__gh_pr_review_threads (thread_id, state, label, severity, invariant, file, line, finding, replies)
+steps:
+- id: E1
+  tool_name: builtin__git_changed_files
+  input:
+    base: '{{input.base}}'
+    head: '{{input.head}}'
+    prefix: ''
+  reasoning: Get the complete list of changed files between base and head sha, used for mapping over file contents so the auditor can verify fixes in full files rather than diff hunks.
+- id: E2
+  tool_name: builtin__git_diff
+  input:
+    base: '{{input.base}}'
+    exclude: Cargo.lock CHANGELOG.md
+    head: '{{input.head}}'
+    max_bytes: 300000
+    paths: .
+  reasoning: Fetch the unified diff (excluding the lockfile and generated changelog). An EMPTY diff is meaningful here — it means the PR was reverted, and the audit instruction resolves every open finding accordingly.
+- id: E3b
+  tool_name: filter
+  input:
+    over: '{{E1.changes}}'
+    where:
+      op: ne
+      to: deleted
+      value: '{{item.status}}'
+  reasoning: Keep only changed files that still exist at the head sha — a deleted file has no contents there, and mapping git_file over it fails the plan. Deletions are irrelevant to fix-verification anyway; a finding in a deleted file has no code left to verify against.
+- id: E4
+  tool_name: map
+  input:
+    concurrency: 8
+    do:
+      input:
+        max_bytes: 30000
+        path: '{{item.path}}'
+        ref: '{{input.head}}'
+      tool_name: builtin__git_file
+    over: '{{E3b.items}}'
+  reasoning: Fetch the full content of every still-present changed file at the head sha, in parallel — the authoritative evidence for resolving findings, since a fix landed in a later commit of the same PR leaves no cumulative diff hunk. Results are index-aligned with E3b.items by construction.
+- id: E4c
+  tool_name: builtin__infer
+  input:
+    instruction: |-
+      You are the review-thread auditor for graph_review_9000, the graph-cli PR reviewer. Below are the findings it posted on PR {{input.pr}} as inline review threads, each with its current state and any human replies, followed by the PR's current diff and full file contents at head. Decide, for each finding, whether its state should transition, and echo the full list.
+
+      Rules:
+      - Findings whose state is already 'resolved' or 'declined' are terminal: echo them unchanged with transition 'none' and note ''.
+      - For 'open' findings:
+        - transition 'resolve' when the code at head shows the specific issue has been FIXED. The FULL FILE CONTENTS at head are the authoritative evidence: a fix that landed in a later commit of this same PR leaves NO diff hunk (the cumulative base-to-head diff never shows that region), so judge from the file contents at the finding's location — if the flagged pattern is gone there and the handling in its place is correct, that IS the fix; transition 'resolve'. Verify against the code — that a fix would be easy or likely is not enough. When the evidence is insufficient, keep the finding open.
+        - if the DIFF below is EMPTY, this PR no longer changes anything — its changes were reverted, so no open finding about them can still exist at head: transition every open finding to 'resolve' with a note saying the change was reverted.
+        - transition 'decline' when a human reply on the thread indicates the author considered the finding and is declining it (intentional, wontfix, a disagreement they clearly stand by). Only explicit reply content counts — never infer a decline from silence, thread age, or the code.
+        - transition 'none' otherwise: the finding stays open.
+      - state in your output is the RESULTING state: 'resolved' after a resolve, 'declined' after a decline, otherwise the current state unchanged.
+      - note: for resolve/decline, ONE short sentence to be posted as a reply on the thread (what fixed it, or acknowledging the dismissal); '' when transition is 'none'.
+      - Echo thread_id, label, severity, invariant, file, line, and finding EXACTLY as given — thread_id keys the thread update, and the rest feed the reviewer and the summary comment.
+      - If there are no existing findings below, return an empty findings array.
+
+      EXISTING FINDINGS:
+      {{#input.findings}}
+      --- thread {{thread_id}} · state: {{state}} · {{severity}} · {{file}}:{{line}}
+      label: {{label}}
+      finding: {{finding}}
+      replies on this thread:
+      {{#replies}}  - {{author}}: {{body}}
+      {{/replies}}
+      {{/input.findings}}
+
+      PR TITLE: {{input.title}}
+
+      DIFF (base..head, current — excludes Cargo.lock, CHANGELOG.md):
+      {{E2.text}}
+
+      FULL FILE CONTENTS AT HEAD SHA (numbered; paths listed first):
+      {{#E3b.items}}{{@index}}. {{path}}
+      {{/E3b.items}}
+      {{#E4.results}}
+      ===== file #{{@index}} (see the numbered path list above) =====
+      {{text}}
+
+      {{/E4.results}}
+    output_schema:
+      properties:
+        findings:
+          items:
+            properties:
+              file:
+                type: string
+              finding:
+                description: The finding headline, echoed exactly as given.
+                type: string
+              invariant:
+                type: string
+              label:
+                type: string
+              line:
+                type: integer
+              note:
+                description: One-sentence thread reply for resolve/decline; '' when transition is 'none'.
+                type: string
+              severity:
+                type: string
+              state:
+                description: The RESULTING state after the transition.
+                enum:
+                - open
+                - resolved
+                - declined
+                type: string
+              thread_id:
+                description: GraphQL review-thread node id, echoed exactly as given.
+                type: string
+              transition:
+                enum:
+                - none
+                - resolve
+                - decline
+                type: string
+            required:
+            - thread_id
+            - state
+            - transition
+            - note
+            - label
+            - severity
+            - invariant
+            - file
+            - line
+            - finding
+            type: object
+          type: array
+      required:
+      - findings
+      type: object
+  reasoning: Audit each existing finding against the code at head and the thread's human replies, deciding transitions — resolve (fix verified in the file contents at head, which are authoritative because a mid-PR fix leaves no cumulative diff hunk; an empty diff resolves everything as reverted), decline (a human reply dismisses it), or none. Conservative by instruction — insufficient evidence keeps a finding open, and terminal states are echoed untouched. Grounding a resolve in the actual code here, rather than in whether the reviewer happens to re-find the issue, keeps a flaky detection pass from silently closing real findings.
+- id: E4d
+  tool_name: builtin__gh_pr_thread_sync
+  input:
+    creates: []
+    head_sha: '{{input.head}}'
+    marker: graph_review_9000:finding
+    pr: '{{input.pr}}'
+    sweep_marker: graph_review_9000:inline
+    threads: '{{E4c.findings}}'
+  reasoning: Apply the audit's transitions — reply + resolve for resolve/decline, untouched for none. Creates are posted by the caller after its review; this plan only settles existing threads, which is what lets thread hygiene run even on runs where the review itself is skipped (empty diff / reverted PR). The marker must stay graph_review_9000:finding — existing threads key on it. sweep_marker is a one-time migration sweep of comments from the pre-v0.11.0 delete-and-repost scheme; drop it (here and in graph_review_9000's create sync) once open PRs predating 2026-08-04 are closed.
+# The output map below is a contract mirrored by the else-branch reshape in
+# graph_review_9000's decide step — keep the two key sets in lockstep.
+output:
+  findings: '{{E4c.findings}}'
+  threads: '{{E4d.threads}}'
+  still_open_count: '{{E4d.still_open_count}}'
+  resolved_now_count: '{{E4d.resolved_now_count}}'
+  declined_now_count: '{{E4d.declined_now_count}}'
+  transitions_count: '{{E4d.transitions_count}}'
+  has_transitions: '{{E4d.has_transitions}}'

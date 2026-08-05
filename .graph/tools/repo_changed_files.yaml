@@ -1,0 +1,92 @@
+# exec tool: worktree-capable variant of the github pack's git_changed_files
+# (crates/graph-core/src/packs/github/git_changed_files.yaml — keep the jq
+# shaping in lockstep). Empty `head` compares the working tree (staged +
+# unstaged; untracked files only after `git add -N`) against the merge-base
+# of `base` and HEAD; a non-empty `head` is the pack's three-dot range diff.
+# Named repo_* rather than git_* on purpose: a user tool named git_changed_files
+# would shadow the pack tool and break the plans that still use it.
+name: repo_changed_files
+description: >
+  Files changed in a range or in the working tree, filtered to a path prefix
+  ("" for all). With `head` set, diffs base...head (merge-base range diff,
+  committed refs). With `head` empty, diffs the working tree — staged and
+  unstaged changes — against the merge-base of `base` and HEAD; untracked
+  files appear only after `git add -N`. `files`/`count` list the paths;
+  `changes` carries one {path, status, old_path, additions, deletions,
+  binary} object per file — status is
+  added|modified|deleted|renamed|copied|type_changed. A deleted file's path
+  is listed but has no readable contents: before mapping repo_file over the
+  result, `filter` the changes with where {value: "{{item.status}}", op: ne,
+  to: deleted}. No changes is {files: [], count: 0, changes: []}, not an
+  error.
+kind: exec
+command: bash
+args:
+  - "-ceuo"
+  - "pipefail"
+  - |
+    base=$1 head=$2 prefix=$3
+    if [ -n "$head" ]; then range="$base...$head"; else range=$(git merge-base "$base" HEAD); fi
+    {
+      git diff --name-status -M "$range"
+      printf '\x1e'
+      git diff --numstat -M "$range"
+    } | jq -Rs --arg prefix "$prefix" '
+      split("\u001e") as [$ns, $num]
+      | (($ns // "") | split("\n") | map(select(length > 0))) as $status_lines
+      | (($num // "") | split("\n") | map(select(length > 0))) as $numstat_lines
+      | [ range($status_lines | length)
+          | ($status_lines[.] | split("\t")) as $s
+          | (($numstat_lines[.] // "") | split("\t")) as $n
+          | ($s[0]) as $code
+          | { path: (if ($code | test("^[RC]")) then $s[2] else $s[1] end),
+              status: (if $code == "A" then "added"
+                       elif $code == "M" then "modified"
+                       elif $code == "D" then "deleted"
+                       elif ($code | startswith("R")) then "renamed"
+                       elif ($code | startswith("C")) then "copied"
+                       elif $code == "T" then "type_changed"
+                       else $code end),
+              old_path: (if ($code | test("^[RC]")) then $s[1] else null end),
+              additions: (if ($n[0] // "-") == "-" then 0 else ($n[0] | tonumber) end),
+              deletions: (if ($n[1] // "-") == "-" then 0 else ($n[1] | tonumber) end),
+              binary: (($n[0] // "-") == "-") }
+        ]
+      | map(select(.path | startswith($prefix)))
+      | {files: map(.path), count: length, changes: .}'
+  - repo_changed_files
+  - "{{input.base}}"
+  - "{{input.head}}"
+  - "{{input.prefix}}"
+output: json
+timeout_secs: 30
+read_only: true
+input_schema:
+  type: object
+  required: [base]
+  properties:
+    base:   { type: string, description: Base ref or commit sha }
+    head:
+      type: string
+      default: ""
+      description: Head ref or commit sha; "" diffs the working tree against merge-base(base, HEAD)
+    prefix:
+      type: string
+      default: ""
+      description: Path prefix filter; "" matches every file
+output_schema:
+  type: object
+  properties:
+    files: { type: array, items: { type: string } }
+    count: { type: integer }
+    changes:
+      type: array
+      items:
+        type: object
+        properties:
+          path:      { type: string }
+          status:    { type: string, enum: [added, modified, deleted, renamed, copied, type_changed] }
+          old_path:  { type: ["string", "null"], description: Previous path, for renamed/copied entries }
+          additions: { type: integer, description: Lines added (0 for binary) }
+          deletions: { type: integer, description: Lines deleted (0 for binary) }
+          binary:    { type: boolean }
