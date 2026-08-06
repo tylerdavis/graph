@@ -128,7 +128,7 @@ steps:
     over: '{{C1.findings}}'
   reasoning: Convert the core review's findings into thread-sync create entries — path plus an alert-style markdown body built from severity, finding, explanation, fix, and agent prompt, and a structured payload that gh_pr_thread_sync embeds as a hidden tag so gh_pr_review_threads can read the finding back on the next run.
 - id: E7
-  tool_name: builtin__gh_pr_thread_sync
+  tool_name: user__gh_pr_thread_sync
   input:
     creates: '{{E6.results}}'
     head_sha: '{{E0.head_sha}}'
@@ -153,6 +153,8 @@ steps:
 
       🧵 {{E7.created_count}} new · {{G1.result.still_open_count}} open · {{G1.result.resolved_now_count}} resolved this run · {{G1.result.declined_now_count}} declined
 
+      {{#G1.result.threads}}{{#error}}> ⚠️ transition failed — **{{label}}**: `{{error}}`
+      {{/error}}{{/G1.result.threads}}
       {{#C1.has_blockers}}
       > [!CAUTION]
       > **Would block merge — {{C1.blockers_count}} new finding(s)**

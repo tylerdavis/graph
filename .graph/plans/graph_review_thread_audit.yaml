@@ -159,7 +159,7 @@ steps:
       type: object
   reasoning: Audit each existing finding against the code at head and the thread's human replies, deciding transitions — resolve (fix verified in the file contents at head, which are authoritative because a mid-PR fix leaves no cumulative diff hunk; an empty diff resolves everything as reverted), decline (a human reply dismisses it), or none. Conservative by instruction — insufficient evidence keeps a finding open, and terminal states are echoed untouched. Grounding a resolve in the actual code here, rather than in whether the reviewer happens to re-find the issue, keeps a flaky detection pass from silently closing real findings.
 - id: E4d
-  tool_name: builtin__gh_pr_thread_sync
+  tool_name: user__gh_pr_thread_sync
   input:
     creates: []
     head_sha: '{{input.head}}'
@@ -167,7 +167,7 @@ steps:
     pr: '{{input.pr}}'
     sweep_marker: graph_review_9000:inline
     threads: '{{E4c.findings}}'
-  reasoning: Apply the audit's transitions — reply + resolve for resolve/decline, untouched for none. Creates are posted by the caller after its review; this plan only settles existing threads, which is what lets thread hygiene run even on runs where the review itself is skipped (empty diff / reverted PR). The marker must stay graph_review_9000:finding — existing threads key on it. sweep_marker is a one-time migration sweep of comments from the pre-v0.11.0 delete-and-repost scheme; drop it (here and in graph_review_9000's create sync) once open PRs predating 2026-08-04 are closed.
+  reasoning: Apply the audit's transitions — resolve + reply for resolve/decline, untouched for none. Uses the repo-local user__gh_pr_thread_sync override (resolve-first so a failing resolve mutation can't re-post the note every run, and the failure's error surfaces in the output — issue #111). Creates are posted by the caller after its review; this plan only settles existing threads, which is what lets thread hygiene run even on runs where the review itself is skipped (empty diff / reverted PR). The marker must stay graph_review_9000:finding — existing threads key on it. sweep_marker is a one-time migration sweep of comments from the pre-v0.11.0 delete-and-repost scheme; drop it (here and in graph_review_9000's create sync) once open PRs predating 2026-08-04 are closed.
 # The output map below is a contract mirrored by the else-branch reshape in
 # graph_review_9000's decide step — keep the two key sets in lockstep.
 output:
