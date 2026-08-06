@@ -370,7 +370,9 @@ steps:
       - overall_framing: exactly ONE sentence.
       - pass summary: one to two sentences, no more.
 
-      Produce structured output with: overall_alert_type, overall_framing, passes (exactly 8, ordered by severity as described), has_blockers, blockers_count, has_unverified, unverified_count, has_na_or_pass, and a flat findings array where each entry has: invariant, file, line, severity, severity_label, alert_type, label, is_blocker, blocker_ordinal, finding, explanation, fix_markdown, fix_short, and agent_prompt as described above.
+      Every finding must also carry `verified_defect`: true ONLY when the finding asserts a defect that this change introduces or worsens, verified against the evidence, that you assert WITHOUT hedges or concessions. Pre-existing accepted limitations, correct-but-undocumented behavior, observations you had to soften, and comment-only suggestions are all `verified_defect: false`. Set it honestly — a downstream filter step discards every `false` finding mechanically, so a finding you cannot mark true is already not going to post; put its substance in the pass summary instead and save yourself the writing.
+
+      Produce structured output with: overall_alert_type, overall_framing, passes (exactly 8, ordered by severity as described), has_blockers, blockers_count, has_unverified, unverified_count, has_na_or_pass, and a flat findings array where each entry has: invariant, file, line, severity, severity_label, alert_type, label, is_blocker, blocker_ordinal, verified_defect, finding, explanation, fix_markdown, fix_short, and agent_prompt as described above. Compute the counts and pass statuses over the findings that remain after removing `verified_defect: false` entries — they must describe what will actually post.
     output_schema:
       properties:
         blockers_count:
@@ -429,6 +431,9 @@ steps:
                 - Likely bug
                 - Cleanup
                 type: string
+              verified_defect:
+                description: true ONLY for a hedge-free, concession-free defect this change introduces or worsens, verified against the evidence. false entries are mechanically discarded downstream.
+                type: boolean
             required:
             - invariant
             - file
@@ -439,6 +444,7 @@ steps:
             - label
             - is_blocker
             - blocker_ordinal
+            - verified_defect
             - finding
             - explanation
             - fix_markdown
@@ -533,6 +539,15 @@ steps:
       - findings
       type: object
   reasoning: Single structured LLM review pass grounded in the change's metadata, full changed-file list, diff, and full file contents. Produces the change-level framing, eight severity-ordered pass summaries aligned to graph-cli's own invariants (pipeline error policy, control-step semantics, template/shape engine, Rust/async/storage/MCP footguns, plan composition/model routing, tests, docs-parity, CLI surface/copy), and a flat findings array returned to the caller (graph_review_9000 posts them as inline comments; a local run prints them as JSON). No external ticket tracker.
+- id: E5b
+  tool_name: filter
+  input:
+    over: '{{E5.findings}}'
+    where:
+      op: eq
+      to: true
+      value: '{{item.verified_defect}}'
+  reasoning: 'Mechanical enforcement of the finding bar: only findings the reviewer asserted as verified defects (verified_defect true) survive to the output. Three rounds of live calibration showed prose rules alone don''t hold — self-hedged and self-conceding findings kept shipping under new phrasings ("probably acceptable", "not a defect", "kept as unverified/cleanup-level") — so the bar is now a schema field the model must commit to plus a filter it cannot argue with. Logic in steps, not in instructions.'
 output:
   reviewed: true
   reason: reviewed
@@ -544,4 +559,4 @@ output:
   has_unverified: '{{E5.has_unverified}}'
   unverified_count: '{{E5.unverified_count}}'
   has_na_or_pass: '{{E5.has_na_or_pass}}'
-  findings: '{{E5.findings}}'
+  findings: '{{E5b.items}}'
