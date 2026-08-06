@@ -1,0 +1,54 @@
+# exec tool: worktree-capable variant of the github pack's git_diff
+# (crates/graph-core/src/packs/github/git_diff.yaml — keep the truncation
+# behavior in lockstep). Empty `head` diffs the working tree (staged +
+# unstaged; untracked files only after `git add -N`) against the merge-base
+# of `base` and HEAD; a non-empty `head` is the pack's three-dot range diff.
+# Named repo_* to avoid shadowing the pack tool.
+name: repo_diff
+description: >
+  Unified diff of a range or of the working tree, optionally scoped to
+  paths, with excludes, truncated to a byte budget for LLM consumption.
+  With `head` set, diffs base...head (merge-base range diff). With `head`
+  empty, diffs the working tree — staged and unstaged changes — against the
+  merge-base of `base` and HEAD; untracked files appear only after
+  `git add -N`. A truncated diff ends with a "[diff truncated: showing X of
+  Y bytes]" marker line; its absence means the diff is complete.
+kind: exec
+command: bash
+args:
+  - "-ceu"
+  - |
+    base=$1 head=$2 paths=$3 exclude=$4 max=$5
+    if [ -n "$head" ]; then range="$base...$head"; else range=$(git merge-base "$base" HEAD); fi
+    spec=()
+    for p in $paths; do spec+=("$p"); done
+    for e in $exclude; do spec+=(":(exclude)$e"); done
+    tmp=$(mktemp)
+    trap 'rm -f "$tmp"' EXIT
+    git diff "$range" -- "${spec[@]}" > "$tmp"
+    total=$(wc -c < "$tmp" | tr -d ' ')
+    head -c "$max" "$tmp"
+    if [ "$total" -gt "$max" ]; then
+      printf '\n\n[diff truncated: showing %s of %s bytes]\n' "$max" "$total"
+    fi
+  - repo_diff
+  - "{{input.base}}"
+  - "{{input.head}}"
+  - "{{input.paths}}"
+  - "{{input.exclude}}"
+  - "{{input.max_bytes}}"
+output: text
+timeout_secs: 30
+read_only: true
+input_schema:
+  type: object
+  required: [base, paths, exclude, max_bytes]
+  properties:
+    base:      { type: string, description: Base ref or commit sha }
+    head:
+      type: string
+      default: ""
+      description: Head ref or commit sha; "" diffs the working tree against merge-base(base, HEAD)
+    paths:     { type: string, description: Space-separated pathspecs; "." for everything }
+    exclude:   { type: string, description: Space-separated paths to exclude; "" for none }
+    max_bytes: { type: integer, description: Truncate the diff to this many bytes (a marker line flags truncation) }

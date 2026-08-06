@@ -1,12 +1,15 @@
 # Dogfood: graph's own plans gate graph's PRs, one `graph plan run` per job.
 # Jobs run inside the release container image (graph + git/jq/gh baked in),
 # so there is no install step; all logic lives in the repo-carried plans
-# (./.graph/) and the bundled github tool pack. GRAPH_EVENTS=github turns
-# failing gates into run annotations. docs-drift fails the check (exit 4)
-# on undocumented behavior changes; graph-review-9000 maintains its
-# eight-pass findings as living review threads (new findings post, fixed
-# ones resolve with a reply, human-dismissed ones stay declined) plus a
-# marker-keyed summary comment refreshed in place on every push.
+# and tools (./.graph/) and the bundled github tool pack. GRAPH_EVENTS=github
+# turns failing gates into run annotations. docs-drift fails the check
+# (exit 4) on undocumented behavior changes; graph-review-9000 composes
+# plan__graph_review_core (the locally runnable review engine) with
+# plan__graph_review_thread_audit (thread lifecycle, decide-gated to runs
+# with prior findings), maintaining its eight-pass findings as living
+# review threads (new findings post, fixed ones resolve with a reply,
+# human-dismissed ones stay declined) plus a marker-keyed summary comment
+# refreshed in place on every push.
 name: graph checks
 
 on:
@@ -52,8 +55,11 @@ jobs:
       - name: Docs drift gate
         run: graph plan run docs_drift --input base="$BASE" --input head="$HEAD"
 
-  # The reviewer. Needs >= v0.11.0: the plan reads and syncs its findings
-  # as review threads via gh_pr_review_threads / gh_pr_thread_sync,
+  # The reviewer: graph_review_9000 wraps plan__graph_review_core (the
+  # engine, also runnable locally over a worktree) and
+  # plan__graph_review_thread_audit (thread transitions). Needs >= v0.11.0:
+  # the plans read and sync findings as review threads via
+  # gh_pr_review_threads / gh_pr_thread_sync,
   # which earlier images don't ship. The plan run authenticates as the
   # review App (see cookbook/bot-identity): the default Actions token
   # cannot run the review-thread GraphQL mutations (resolveReviewThread /
