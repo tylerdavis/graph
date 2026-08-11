@@ -516,6 +516,24 @@ steps:
       to: true
       value: '{{item.verified_defect}}'
   reasoning: 'Mechanical enforcement of the finding bar: only findings the reviewer asserted as verified defects (verified_defect true) survive to the output. Three rounds of live calibration showed prose rules alone don''t hold — self-hedged and self-conceding findings kept shipping under new phrasings ("probably acceptable", "not a defect", "kept as unverified/cleanup-level") — so the bar is now a schema field the model must commit to plus a filter it cannot argue with. Logic in steps, not in instructions.'
+- id: E5c
+  tool_name: filter
+  input:
+    over: '{{E5b.items}}'
+    where:
+      op: eq
+      to: true
+      value: '{{item.is_blocker}}'
+  reasoning: 'Derive the blocker count instead of asking for it. E5 reported blockers_count 3 while emitting four findings carrying is_blocker true and verified_defect true, ordinals 1-4 — the summary comment renders that number next to the inline comments that actually post, so the two disagreed in public. Counting is arithmetic over a list the plan already holds, which is a step''s job, not a model''s. Filtered over E5b.items rather than E5.findings so the count describes what survives the finding bar and therefore what posts.'
+- id: E5d
+  tool_name: filter
+  input:
+    over: '{{E5.passes}}'
+    where:
+      op: eq
+      to: true
+      value: '{{item.is_unverified}}'
+  reasoning: Same derivation for the unverified pass count, over the pass list rather than the findings — the summary renders it as the label of a collapsed section, so a wrong number there misstates how much the review left unsettled.
 output:
   reviewed: true
   reason: reviewed
@@ -523,8 +541,8 @@ output:
   overall_framing: '{{E5.overall_framing}}'
   passes: '{{E5.passes}}'
   has_blockers: '{{E5.has_blockers}}'
-  blockers_count: '{{E5.blockers_count}}'
+  blockers_count: '{{E5c.count}}'
   has_unverified: '{{E5.has_unverified}}'
-  unverified_count: '{{E5.unverified_count}}'
+  unverified_count: '{{E5d.count}}'
   has_na_or_pass: '{{E5.has_na_or_pass}}'
   findings: '{{E5b.items}}'
