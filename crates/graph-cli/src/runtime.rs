@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use graph_core::pipeline::{doc::LoadedPlans, ExecutionGate, Interlocutor, Pipeline, ToolCatalog};
 use graph_core::toolbox::AgentToolbox;
+use graph_core::usage::UsageLedger;
 use graph_core::user_tools::UserToolRegistry;
 use graph_core::{Agent, CompositeRegistry, EventSink, Store, ThreadMeta, ToolRegistry};
 use graph_llm::ModelRouter;
@@ -24,6 +25,10 @@ pub struct Runtime {
     pub config: graph_config::Config,
     pub registry: Arc<McpManager>,
     router: Arc<ModelRouter>,
+    /// Tally for every model call this runtime's router serves — plan steps,
+    /// agent rounds, prompt tools, and the chat loop alike. Drain it with
+    /// [`UsageLedger::take`] at the end of a run or turn.
+    pub usage: Arc<UsageLedger>,
     /// One warning per skipped plan file per command, even though several
     /// components (pipeline, toolbox, commands) each load the catalog.
     plans_warned: std::sync::atomic::AtomicBool,
@@ -43,12 +48,17 @@ impl Runtime {
             config,
             sources: Vec::new(),
         };
-        let router = ModelRouter::from_config(&loaded.config)?;
+        // The meter has to be installed before anything resolves a provider —
+        // resolution is when providers get wrapped, so a meter added later
+        // would silently miss whatever was already handed out.
+        let usage = Arc::new(UsageLedger::new(loaded.config.pricing.clone()));
+        let router = ModelRouter::from_config(&loaded.config)?.with_meter(usage.clone());
         let registry = Arc::new(McpManager::new(loaded.config.mcp.clone()));
         Ok(Self {
             config: loaded.config,
             registry,
             router: Arc::new(router),
+            usage,
             plans_warned: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -326,6 +336,7 @@ impl Runtime {
             user_context,
             current_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
             max_attempts: self.config.settings.planning_attempts.max(1),
+            usage: self.usage.clone(),
         }))
     }
 

@@ -89,3 +89,85 @@ Semantics:
 - A call moves to the next candidate only on **outage-shaped errors** — the transient class the retry layer recognizes — and only after the failing provider's own retries are exhausted. Permanent errors (4xx, parse/schema failures) propagate immediately: a bad request would fail everywhere, and a fallback would only mask it.
 - Streaming fails over only while the stream is being established; once tokens flow, a mid-stream error surfaces as-is.
 - Fallbacks apply wherever the entry resolves — the agent loop, every pipeline role, structured output, and named-model calls. Each failover is logged as a warning on stderr.
+
+## Prompt caching
+
+Caching is **on by default** wherever the provider supports it. There is no
+per-call-site opt-in, because the economics are lopsided: a missed cache hit
+re-bills the whole prefix at the full rate, while a wasted cache write costs
+1.25× on one call's input, once. A prefix below the provider's minimum simply
+isn't cached — no write, no premium, no error.
+
+On Anthropic, graph places two of the four permitted breakpoints:
+
+1. On the **system prompt**. Render order is `tools` → `system` → `messages`,
+   so one marker there covers the tool definitions too.
+2. A rolling marker on the **tail of the conversation**, so round *N* of a
+   multi-round loop reads everything through round *N−1* at ~0.1× instead of
+   re-sending it at full price.
+
+The second one is what matters for [`agent` steps](/plans/agent-step): without
+it, an 18-round agent re-sends its whole growing conversation 18 times.
+Anything that calls a model repeatedly over a stable prefix benefits — agent
+rounds, the `chat`/`ask` loop, [plan drafting](/workbench/plan-workbench)
+(one structured call per step over an identical prompt), the planner's replan
+attempts, and per-item `infer` gates.
+
+OpenAI-compatible providers cache automatically, server-side, with no request
+parameter — nothing to configure and no write premium, which is why they
+report `cache_creation_input_tokens: 0` and only ever show cache *reads*.
+
+### Verifying it works
+
+**A broken cache reports no error.** It just leaves `cache_read_input_tokens`
+at zero forever, while you keep paying full price. Check the per-step figures
+in the run report:
+
+```bash
+graph plan run my_plan --json | jq '.usage.by_step[]
+  | {path, cache_read_input_tokens, cache_creation_input_tokens}'
+```
+
+A step that makes several calls and shows writes on every one with zero reads
+has a prefix that changes between calls. The usual causes: a timestamp or
+generated id near the front of the prompt, or a shared-prefix/varying-suffix
+shape where the varying part isn't last. The second is worth knowing about for
+plan authoring — a `builtin__infer` under a `map` interpolates `{{item}}` into
+its `instruction`, so if the item lands in the middle of the prompt every item
+writes its own entry and none are ever read. Put the stable instruction first
+and `{{item}}` at the end.
+
+Three limits to keep in mind: the minimum cacheable prefix is model-dependent
+(1024 tokens on `claude-sonnet-5`); a breakpoint looks back at most 20 content
+blocks, which a round making many tool calls can exceed; and caches are
+**model-scoped**, so [failing over](#provider-failover) to another model starts
+cold by design.
+
+## Reasoning blocks
+
+Where a provider returns reasoning blocks — Anthropic's `thinking` and
+`redacted_thinking` — graph keeps them verbatim and replays them unchanged on
+the next turn. That is the documented multi-turn contract (the API rejects
+blocks whose content has been modified), and it is what lets a multi-round
+[`agent` step](/plans/agent-step) build on its own reasoning instead of
+re-deriving it every round.
+
+The blocks are opaque: graph stores and replays them, never inspects or renders
+them. Adaptive thinking is on by default on current models, and `max_tokens`
+caps thinking and visible output *together* — worth remembering when a step
+must emit a large object.
+
+## Token metering
+
+Every model call is metered at the router, so [what a run spent](/reference/scripting-contract#what-a-run-spent)
+covers all of it — planner, solver, repair passes, judge gates, agent rounds,
+prompt tools, and drafting alike. Two consequences worth knowing:
+
+- A **failed-over** call is attributed to the model that actually answered,
+  not the one that was asked for. An attempt that errored before returning
+  tokens isn't recorded at all, because it wasn't billed.
+- Metering can **under-count** in one narrow case. Both providers may re-POST
+  a fully valid request inside a single call — Anthropic when a model rejects
+  `temperature`, OpenAI-compat when `json_schema` mode falls back to
+  `json_object`. Only the successful attempt reports usage, so those rare
+  paths bill slightly more than they meter.

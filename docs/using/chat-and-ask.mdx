@@ -25,10 +25,21 @@ graph ask "…" --thread 62dac762e251                       # continue a specifi
   {
     "content": "…the answer…",
     "tool_calls_made": 3,
-    "usage": { "input_tokens": 2055, "output_tokens": 100 },
+    "usage": {
+      "calls": 4,
+      "input_tokens": 2055,
+      "output_tokens": 100,
+      "cost_usd": 0.0077,
+      "by_step": [{ "path": "chat", "calls": 4, "cost_usd": 0.0077 }],
+      "by_model": [{ "provider": "anthropic", "model": "claude-sonnet-5", "calls": 4 }]
+    },
     "thread_id": "62dac762e251"
   }
   ```
+  `usage` covers the whole turn, including tokens spent inside any `plan__*`
+  tool the agent called — its solver and its steps, not just the agent's own
+  rounds. `cost_usd` appears only when [`[pricing]`](/reference/configuration#pricing--per-model-token-prices)
+  is configured; the full shape is in [what a run spent](/reference/scripting-contract#what-a-run-spent).
 - **`--no-stream`** prints the final answer only, without token streaming.
 
 <Warning>
@@ -50,6 +61,10 @@ Slash commands inside the REPL:
 | `/thread` | show the current thread id and title |
 | `/state` | dump the conversation (including tool calls) as JSON |
 | `/quit`, `/exit`, `/q` | leave (Ctrl-D also works) |
+
+Each completed turn prints a dim one-line usage summary to stderr — calls,
+tokens, and cost when [`[pricing]`](/reference/configuration#pricing--per-model-token-prices)
+is set. It is per turn, not cumulative for the session.
 
 A failed turn keeps the session alive and rolls the conversation back so a retry starts clean. On exit you get a copy-pasteable resume hint:
 

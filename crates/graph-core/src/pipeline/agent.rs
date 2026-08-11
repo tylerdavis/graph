@@ -12,6 +12,7 @@ use super::gate::StepPath;
 use super::{ExecutionEnd, Pipeline, RunState, Step};
 use crate::template::{render_str, RenderError, Roots};
 use crate::tools::{ToolDef, ToolRegistry};
+use crate::usage::CallSite;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -417,6 +418,13 @@ impl Pipeline {
         let mut tools_called: Vec<ToolCallEntry> = Vec::new();
         let mut round: u32 = 0;
 
+        // Every round *and* every schema-repair pass this agent triggers bills
+        // to this step. Repair is the easy one to lose: it is uncapped, runs
+        // on a different model, and is invisible in the round count.
+        let site = CallSite::role(model_name)
+            .at(path.to_string())
+            .in_plans(&self.call_stack);
+
         loop {
             if round >= max_iterations {
                 // Budget spent without a conforming answer: report what
@@ -447,15 +455,18 @@ impl Pipeline {
             // Retries and cross-provider failover live in graph-llm, under
             // every provider call — transparent here, and they never
             // consume a round.
-            let response = self
-                .router
-                .chat_named(model_name, request)
+            let response = site
+                .clone()
+                .scope(self.router.chat_named(model_name, request))
                 .await
                 .map_err(|e| AgentFail::Failed(format!("LLM call failed: {e}")))?;
 
             messages.push(ChatMessage::Assistant {
                 content: response.content.clone(),
                 tool_calls: response.tool_calls.clone(),
+                // Carried forward so the model keeps its own
+                // reasoning across rounds instead of re-deriving it.
+                thinking: response.thinking.clone(),
             });
 
             if response.tool_calls.is_empty() {
@@ -475,7 +486,13 @@ impl Pipeline {
                     continue;
                 }
 
-                match parse_and_validate_structured_output(&text, &output_schema, &self.router)
+                match site
+                    .clone()
+                    .scope(parse_and_validate_structured_output(
+                        &text,
+                        &output_schema,
+                        &self.router,
+                    ))
                     .await
                 {
                     Ok(output) => {

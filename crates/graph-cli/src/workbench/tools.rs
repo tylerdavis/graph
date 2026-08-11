@@ -896,6 +896,7 @@ mod tests {
             user_context: String::new(),
             current_date: String::new(),
             max_attempts: 1,
+            usage: std::sync::Arc::new(graph_core::usage::UsageLedger::unpriced()),
         })
     }
 
@@ -1802,6 +1803,7 @@ steps:
                     .map(|value| graph_llm::types::ChatResponse {
                         content: None,
                         tool_calls: vec![],
+                        thinking: Vec::new(),
                         structured: Some(value),
                         stop_reason: graph_llm::types::StopReason::EndTurn,
                         usage: graph_llm::types::Usage::default(),
@@ -1838,6 +1840,7 @@ steps:
             user_context: String::new(),
             current_date: String::new(),
             max_attempts: 1,
+            usage: std::sync::Arc::new(graph_core::usage::UsageLedger::unpriced()),
         });
         (pipeline, provider)
     }

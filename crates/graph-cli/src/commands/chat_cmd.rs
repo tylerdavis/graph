@@ -21,6 +21,7 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
         interlocutor: crate::interlocutor::tty(),
         ..Default::default()
     };
+    runtime.usage.attach_events(events.clone());
     let toolbox = runtime.toolbox_with(&store, events.clone(), hooks).await?;
     let agent = runtime.agent(events, toolbox)?;
 
@@ -59,6 +60,12 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
                 match agent.run_turn(&mut messages).await {
                     Ok(_) => {
                         println!();
+                        // Per turn, not per session: the ledger drains, so
+                        // each turn reports its own spend.
+                        let usage = runtime.usage.take();
+                        if !usage.is_empty() && !crate::output::jsonl_events() {
+                            eprintln!("\x1b[2m{}\x1b[0m", usage.summary());
+                        }
                         if let Err(e) =
                             persist_turn(store.as_ref(), &mut thread, &line, &messages[pre_len..])
                                 .await

@@ -205,6 +205,9 @@ async fn run_plan_workbench(
 
     // Plan runs report through their own sink; gated runs add a UiGate.
     let run_sink: Arc<dyn EventSink> = Arc::new(chat::ChannelSink::plan_run(tx.clone()));
+    // Either ChannelSink would do: both feed the same channel, and usage is
+    // the one event they report identically regardless of kind.
+    runtime.usage.attach_events(run_sink.clone());
     let pipeline = runtime.pipeline(&store, run_sink).await?;
 
     // The draft is shared between the reducer's world (via messages), the

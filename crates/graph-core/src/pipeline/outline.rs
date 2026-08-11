@@ -96,14 +96,14 @@ impl Pipeline {
         let mut messages = vec![ChatMessage::User {
             content: prompts::outline_request(query),
         }];
-        let outline: PlanOutline = self
-            .router
-            .get_structured(
+        let outline: PlanOutline = crate::usage::CallSite::role("planner")
+            .at("draft/outline")
+            .scope(self.router.get_structured(
                 Role::Planner,
                 system.clone(),
                 messages.clone(),
                 "plan_outline",
-            )
+            ))
             .await?;
         if outline.items.is_empty() {
             return Err(PipelineError::InvalidPlan("outline has no items".into()));
@@ -111,6 +111,7 @@ impl Pipeline {
         self.events.draft_outline(&json!(outline.items));
         messages.push(ChatMessage::Assistant {
             content: Some(serde_json::to_string(&outline).unwrap_or_default()),
+            thinking: Vec::new(),
             tool_calls: vec![],
         });
 
@@ -158,9 +159,14 @@ impl Pipeline {
                 let mut call_messages = messages.clone();
                 call_messages.push(request.clone());
                 call_messages.extend(retry_tail.iter().cloned());
-                let step_draft: StepDraft = self
-                    .router
-                    .get_structured(Role::Planner, system.clone(), call_messages, "plan_step")
+                let step_draft: StepDraft = crate::usage::CallSite::role("planner")
+                    .at(format!("draft/step.{index}"))
+                    .scope(self.router.get_structured(
+                        Role::Planner,
+                        system.clone(),
+                        call_messages,
+                        "plan_step",
+                    ))
                     .await?;
 
                 let Some(step) = step_draft.step.clone() else {
@@ -189,6 +195,7 @@ impl Pipeline {
                         messages.push(request.clone());
                         messages.push(ChatMessage::Assistant {
                             content: Some(serde_json::to_string(&step_draft).unwrap_or_default()),
+                            thinking: Vec::new(),
                             tool_calls: vec![],
                         });
                         plan = candidate;
@@ -268,6 +275,7 @@ fn push_correction(
 ) {
     retry_tail.push(ChatMessage::Assistant {
         content: Some(serde_json::to_string(step_draft).unwrap_or_default()),
+        thinking: Vec::new(),
         tool_calls: vec![],
     });
     retry_tail.push(ChatMessage::User {

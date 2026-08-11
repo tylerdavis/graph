@@ -142,6 +142,7 @@ mod tests {
         ChatResponse {
             content: Some(text.to_string()),
             tool_calls: Vec::new(),
+            thinking: Vec::new(),
             structured: None,
             stop_reason: StopReason::EndTurn,
             usage: Usage::default(),

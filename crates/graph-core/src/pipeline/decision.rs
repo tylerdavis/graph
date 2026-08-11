@@ -213,13 +213,16 @@ impl Pipeline {
         self.events
             .tool_started(DECIDE_TOOL, &Value::Object(gate_payload));
         let started = std::time::Instant::now();
-        let eval = evaluate_gate(
-            condition.as_ref(),
-            infer.as_deref(),
-            model.as_deref(),
-            &self.router,
-        )
-        .await;
+        let eval = crate::usage::CallSite::role("judge")
+            .at(&step.id)
+            .in_plans(&self.call_stack)
+            .scope(evaluate_gate(
+                condition.as_ref(),
+                infer.as_deref(),
+                model.as_deref(),
+                &self.router,
+            ))
+            .await;
         self.events
             .tool_finished(DECIDE_TOOL, started.elapsed(), eval.is_err());
         let (triggered, reason) = eval.map_err(|e| failed(format!("decide step: {e}")))?;

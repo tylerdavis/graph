@@ -1,9 +1,10 @@
 //! Role → provider/model resolution from configuration.
 
 use crate::failover::{Candidate, FailoverProvider};
+use crate::metering::MeteredProvider;
 use crate::providers::{AnthropicProvider, OpenAiCompatProvider};
 use crate::types::{ChatRequest, ChatResponse, EventStream};
-use crate::{ChatProvider, LlmError};
+use crate::{ChatProvider, LlmError, UsageMeter};
 use graph_config::{Config, ModelChoice, ProviderKind, Role};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,6 +18,9 @@ pub struct ModelRouter {
     /// failing to load over an entry the command may never touch.
     unavailable: HashMap<String, String>,
     roles: graph_config::ModelRoles,
+    /// Installed by [`ModelRouter::with_meter`]. `None` means no metering,
+    /// which is the default so tests and embedders pay nothing for it.
+    meter: Option<Arc<dyn UsageMeter>>,
 }
 
 impl ModelRouter {
@@ -29,7 +33,18 @@ impl ModelRouter {
             providers,
             unavailable: HashMap::new(),
             roles,
+            meter: None,
         }
+    }
+
+    /// Report every call this router resolves to `meter`.
+    ///
+    /// Must be installed before any `resolve`/`chat` call — providers are
+    /// wrapped at resolve time, so a meter added afterwards would silently
+    /// miss anything already handed out.
+    pub fn with_meter(mut self, meter: Arc<dyn UsageMeter>) -> Self {
+        self.meter = Some(meter);
+        self
     }
 
     pub fn from_config(config: &Config) -> Result<Self, LlmError> {
@@ -83,6 +98,7 @@ impl ModelRouter {
             providers,
             unavailable,
             roles: config.models.clone(),
+            meter: None,
         };
         // A typo'd fallback provider would otherwise surface only at the
         // moment of an outage — exactly when the fallback was supposed to
@@ -126,6 +142,22 @@ impl ModelRouter {
         Ok((self.with_failover(Arc::clone(provider), choice)?, choice))
     }
 
+    /// Wrap a provider in the usage meter, when one is installed. Applied to
+    /// each failover candidate *individually* rather than around the whole
+    /// chain: `FailoverProvider` rewrites `req.model` per candidate, so a
+    /// meter on the outside would attribute tokens to the model that was
+    /// asked for instead of the one that answered.
+    fn metered(&self, provider: Arc<dyn ChatProvider>, name: &str) -> Arc<dyn ChatProvider> {
+        match &self.meter {
+            Some(meter) => Arc::new(MeteredProvider::new(
+                provider,
+                name.to_string(),
+                Arc::clone(meter),
+            )),
+            None => provider,
+        }
+    }
+
     /// Wrap `primary` with the choice's failover chain, if it has one. The
     /// returned provider is a drop-in `ChatProvider`: callers keep applying
     /// the primary's model/temperature to requests, and the wrapper rewrites
@@ -135,6 +167,7 @@ impl ModelRouter {
         primary: Arc<dyn ChatProvider>,
         choice: &ModelChoice,
     ) -> Result<Arc<dyn ChatProvider>, LlmError> {
+        let primary = self.metered(primary, &choice.provider);
         if choice.fallbacks.is_empty() {
             return Ok(primary);
         }
@@ -144,7 +177,7 @@ impl ModelRouter {
             .map(|fallback| {
                 let provider = self.provider(&fallback.provider)?;
                 Ok(Candidate {
-                    provider: Arc::clone(provider),
+                    provider: self.metered(Arc::clone(provider), &fallback.provider),
                     provider_name: fallback.provider.clone(),
                     model: fallback.model.clone(),
                     temperature: fallback.temperature,
@@ -246,9 +279,14 @@ mod tests {
             Ok(ChatResponse {
                 content: Some(format!("{}:{}", self.tag, req.model)),
                 tool_calls: Vec::new(),
+                thinking: Vec::new(),
                 structured: None,
                 stop_reason: StopReason::EndTurn,
-                usage: Usage::default(),
+                usage: Usage {
+                    input_tokens: 11,
+                    output_tokens: 3,
+                    ..Default::default()
+                },
             })
         }
 
@@ -305,6 +343,63 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.content.as_deref(), Some("up:backup-model"));
+    }
+
+    #[tokio::test]
+    async fn metering_attributes_a_failed_over_call_to_the_model_that_served_it() {
+        #[derive(Default)]
+        struct Recorder(std::sync::Mutex<Vec<crate::LlmCall>>);
+        impl UsageMeter for Recorder {
+            fn record(&self, call: crate::LlmCall) {
+                self.0.lock().unwrap().push(call);
+            }
+        }
+
+        let mut providers: HashMap<String, Arc<dyn ChatProvider>> = HashMap::new();
+        providers.insert(
+            "down".into(),
+            Arc::new(TaggedProvider {
+                tag: "down",
+                healthy: false,
+            }),
+        );
+        providers.insert(
+            "up".into(),
+            Arc::new(TaggedProvider {
+                tag: "up",
+                healthy: true,
+            }),
+        );
+        let roles = graph_config::ModelRoles {
+            default: Some(choice(
+                "down",
+                "primary-model",
+                vec![FallbackChoice {
+                    provider: "up".into(),
+                    model: "backup-model".into(),
+                    temperature: None,
+                }],
+            )),
+            ..Default::default()
+        };
+        let meter = Arc::new(Recorder::default());
+        let router = ModelRouter::with_providers(providers, roles).with_meter(meter.clone());
+
+        router
+            .chat(Role::Chat, ChatRequest::default())
+            .await
+            .unwrap();
+
+        let calls = meter.0.lock().unwrap();
+        // The primary 503'd and was never billed, so it must not be metered
+        // either — only the attempt that produced tokens counts.
+        assert_eq!(calls.len(), 1);
+        // And it is attributed to the fallback that actually answered, not to
+        // the primary the caller asked for. This is why the meter wraps each
+        // candidate rather than the failover chain as a whole.
+        assert_eq!(calls[0].provider, "up");
+        assert_eq!(calls[0].model, "backup-model");
+        assert_eq!(calls[0].usage.input_tokens, 11);
     }
 
     #[test]

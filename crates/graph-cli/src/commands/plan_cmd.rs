@@ -294,7 +294,10 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         interlocutor: crate::interlocutor::tty(),
         ..Default::default()
     };
-    let pipeline = runtime.pipeline_with(&store, events, hooks).await?;
+    // Stream each model call to the sink as it lands, so `GRAPH_EVENTS=jsonl`
+    // carries per-call detail and not just the end-of-run totals.
+    runtime.usage.attach_events(events.clone());
+    let pipeline = runtime.pipeline_with(&store, events.clone(), hooks).await?;
     let query = format!("Run the '{}' plan", doc.name);
     let finish = doc.finish();
     let result = pipeline
@@ -302,9 +305,31 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         .await;
     runtime.shutdown().await;
 
+    // Under GRAPH_EVENTS=jsonl the `usage_summary` event carries the report
+    // and stderr is one JSON object per line, so a prose summary there would
+    // corrupt the feed.
+    let jsonl = crate::output::jsonl_events();
+
+    // Drained here rather than inside the pipeline: nested plan calls re-enter
+    // `run_explicit` against this same ledger, so this is the only place that
+    // knows the whole run is over. Taken before the error branch — a failed
+    // run has still spent the tokens, and that is exactly when you want to
+    // know how many.
+    let usage = runtime.usage.take();
+    if !usage.is_empty() {
+        events.usage_summary(&usage);
+    }
+
     let outcome = match result {
         Ok(outcome) => outcome,
         Err(err) => {
+            // Printed even under --json, unlike the success path: a failed run
+            // emits no envelope, so stderr is the only place left to report
+            // what it spent — and an expensive run that died is precisely when
+            // the number matters. stdout stays empty either way.
+            if !jsonl && !usage.is_empty() {
+                eprintln!("  {}", usage.summary());
+            }
             annotate(&format!("plan '{name}' failed: {err:#}"));
             return Err(err.into());
         }
@@ -322,6 +347,7 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
                 "plan": doc.identifier,
                 "steps_executed": outcome.state.steps_executed(),
                 "exit": outcome.exit,
+                "usage": (!usage.is_empty()).then_some(&usage),
             }))?
         );
     } else if let Some(exit) = &outcome.exit {
@@ -345,6 +371,11 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
     } else {
         // Solver output already streamed; just terminate the line.
         println!();
+    }
+    // stderr, like every other progress line — stdout stays the deliverable.
+    // Skipped under --json, where the envelope above already carries it.
+    if !json && !jsonl && !usage.is_empty() {
+        eprintln!("  {}", usage.summary());
     }
     if exited_error {
         if let Some(exit) = &outcome.exit {

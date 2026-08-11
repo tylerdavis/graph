@@ -20,6 +20,7 @@ fn router() -> Arc<ModelRouter> {
                 .as_ref()
                 .map(|_| json!({"category": "bug"}));
             Ok(ChatResponse {
+                thinking: Vec::new(),
                 content: Some(format!(
                     "echo: {}",
                     match &req.messages[0] {
@@ -606,6 +607,7 @@ async fn caller_schema_without_type_gets_object_defaulted() {
         async fn chat(&self, req: ChatRequest) -> Result<ChatResponse, LlmError> {
             *self.0.lock().unwrap() = req.response_schema.as_ref().map(|s| s.schema.clone());
             Ok(ChatResponse {
+                thinking: Vec::new(),
                 content: None,
                 tool_calls: vec![],
                 structured: Some(json!({"pattern": "x", "reason": "y"})),
@@ -831,6 +833,7 @@ fn schema_router(chat_value: Value, repair_value: Value) -> Arc<ModelRouter> {
     impl ChatProvider for Fixed {
         async fn chat(&self, _req: ChatRequest) -> Result<ChatResponse, LlmError> {
             Ok(ChatResponse {
+                thinking: Vec::new(),
                 content: None,
                 tool_calls: vec![],
                 structured: Some(self.0.clone()),
@@ -931,6 +934,7 @@ fn named_model_router() -> Arc<ModelRouter> {
     impl ChatProvider for Echo {
         async fn chat(&self, req: ChatRequest) -> Result<ChatResponse, LlmError> {
             Ok(ChatResponse {
+                thinking: Vec::new(),
                 content: Some(format!("model={}", req.model)),
                 tool_calls: vec![],
                 structured: None,

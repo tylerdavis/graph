@@ -38,6 +38,7 @@ pub async fn run(args: AskArgs) -> Result<()> {
         interlocutor: crate::interlocutor::tty(),
         ..Default::default()
     };
+    runtime.usage.attach_events(events.clone());
     let toolbox = runtime.toolbox_with(&store, events.clone(), hooks).await?;
     let agent = runtime.agent(events, toolbox)?;
 
@@ -52,6 +53,10 @@ pub async fn run(args: AskArgs) -> Result<()> {
 
     let result = agent.run_turn(&mut messages).await;
     runtime.shutdown().await;
+    // The ledger, not `outcome.usage`: a turn that called a `plan__*` tool
+    // spent tokens in the solver and inside that plan's steps too, and the
+    // agent's own tally cannot see any of it.
+    let usage = runtime.usage.take();
     let outcome = result?;
 
     // Persist only successful turns; a new thread is created on demand.
@@ -68,7 +73,7 @@ pub async fn run(args: AskArgs) -> Result<()> {
             "content": outcome.text,
             "tool_calls_made": outcome.tool_calls_made,
             "tools_used": outcome.tools_used,
-            "usage": outcome.usage,
+            "usage": usage,
             "thread_id": thread.id,
         });
         println!("{}", serde_json::to_string_pretty(&envelope)?);
@@ -77,6 +82,11 @@ pub async fn run(args: AskArgs) -> Result<()> {
             println!();
         } else {
             println!("{}", outcome.text);
+        }
+        // Not under GRAPH_EVENTS=jsonl: stderr is the machine feed there,
+        // and the `usage_summary` event already carries this.
+        if !usage.is_empty() && !crate::output::jsonl_events() {
+            eprintln!("\x1b[2m{}\x1b[0m", usage.summary());
         }
         eprintln!(
             "\x1b[2mresume with `graph chat --thread {}`\x1b[0m",

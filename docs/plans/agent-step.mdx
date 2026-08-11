@@ -97,6 +97,30 @@ which is not configured under [mcp.linear]
 
 An agent step is the most expensive thing in the pipeline: **one inference per round**, plus its tool calls. A `max_iterations: 8` agent can cost 8 inferences where an ordinary step costs zero. Reach for `map` with a per-item inference before reaching for an agent — see [iteration](/plans/iteration).
 
+Rounds are not the whole bill. Two multipliers are easy to miss:
+
+- **Each round re-sends the conversation so far.** Input tokens grow with the
+  square of the round count, not linearly, so a long agent's cost is dominated
+  by its input. [Prompt caching](/models/models-and-providers#prompt-caching)
+  is on by default and takes most of that back — round *N* reads everything
+  through round *N−1* at ~0.1× — but only while the prefix stays byte-stable.
+- **Schema repair is uncapped.** Output that misses `output_schema` gets a
+  `repair`-role fix-up that does *not* consume a round, so a `max_iterations: 8`
+  agent can make up to 16 calls. Repairs are attributed to the agent's step, so
+  the reported figure is the real one.
+- **Inside a `map`, multiply by the item count.** Six items at
+  `max_iterations: 18` is up to 108 rounds.
+
+Don't estimate any of this — measure it. Every run reports per-step tokens and
+cost:
+
+```bash
+graph plan run my_plan --json | jq '.usage.by_step[0]'
+```
+
+The agent step will usually be first, since `by_step` sorts most expensive
+first. See [what a run spent](/reference/scripting-contract#what-a-run-spent).
+
 ## Inside control-step bodies
 
 `agent` is a legal body step for [`decide`](/plans/branching), [`map`, and `reduce`](/plans/iteration), and the body scope reaches its prompt:

@@ -109,6 +109,8 @@ fn render_message(message: &ChatMessage) -> String {
         ChatMessage::Assistant {
             content,
             tool_calls,
+            // Opaque provider reasoning — never rendered to a human.
+            thinking: _,
         } => {
             let mut out = String::new();
             for call in tool_calls {

@@ -104,7 +104,7 @@ The CLI signals with [exit codes](/reference/scripting-contract#exit-codes). Tho
 
 | Situation | CLI | Over MCP |
 |---|---|---|
-| Plan ran | exit `0` | result: `{answer, output, plan, steps_executed, exit}` |
+| Plan ran | exit `0` | result: `{answer, output, plan, steps_executed, exit, usage}` |
 | Plan needs inputs | exit `3` | `isError`, body carries `inputSchema` and `problems` — retry with the argument |
 | [Exit gate](/plans/exit-gates) asserted | exit `4` | `isError`, body carries the gate's `message` and `step` |
 | Edit refused | exit `1` | `isError`, body carries `problemsIntroduced` |
@@ -122,10 +122,18 @@ Pass a `progressToken` with a `plan_*` call and the server reports each step as 
 
 ```
 notifications/progress  { progressToken: "…", progress: 1, message: "E1 builtin__git_log" }
-notifications/progress  { progressToken: "…", progress: 2, message: "synthesizing the answer" }
+notifications/progress  { progressToken: "…", progress: 2, message: "E1 — 1 call(s), 12k in / 300 out so far" }
+notifications/progress  { progressToken: "…", progress: 3, message: "synthesizing the answer" }
+notifications/progress  { progressToken: "…", progress: 4, message: "4 calls · 88k in / 2k out · $0.31" }
 ```
 
-Cancelling a call stops the run **between** tool calls, not in the middle of one: a plan halfway through creating an issue finishes that call and stops before the next. The result comes back flagged, carrying how many steps had run.
+Spend is reported as it accrues, one cumulative line per model call, then a
+final total. The complete report also rides the result body (see
+[what a run spent](/reference/scripting-contract#what-a-run-spent)); the
+notifications are what let a client see a long run getting expensive *before*
+it finishes.
+
+Cancelling a call stops the run **between** tool calls, not in the middle of one: a plan halfway through creating an issue finishes that call and stops before the next. The result comes back flagged, carrying how many steps had run — and what it spent before stopping.
 
 ## Questions back to the client
 

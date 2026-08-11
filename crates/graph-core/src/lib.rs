@@ -11,6 +11,7 @@ pub mod store;
 pub mod template;
 pub mod toolbox;
 pub mod tools;
+pub mod usage;
 pub mod user_tools;
 #[cfg(test)]
 mod user_tools_tests;
@@ -20,3 +21,4 @@ pub use store::{Store, StoreError, ThreadMeta, ToolShape};
 pub use tools::{
     CompositeRegistry, ExcludingRegistry, ToolDef, ToolError, ToolOutcome, ToolRegistry,
 };
+pub use usage::{compact_tokens, CallSite, ModelUsage, StepUsage, UsageLedger, UsageReport};

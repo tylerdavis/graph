@@ -129,6 +129,35 @@ packs = []              # bundled tool packs to enable, e.g. ["github", "slack"]
 
 `packs` enables the opt-in [built-in tool packs](/tools/builtins) — tool definitions that ship inside the binary, served under the `builtin__` namespace. The `llm` and `data` packs are always on; `packs` adds the rest (`github`, `slack`).
 
+## `[pricing]` — per-model token prices
+
+What each model costs, in **USD per million tokens**, keyed by the model id
+exactly as written in `[models]` — that string is what goes on the wire.
+
+```toml
+[pricing."claude-sonnet-5"]
+input = 3.00
+output = 15.00
+# cache_write = 3.75   # optional; defaults to input × 1.25
+# cache_read = 0.30    # optional; defaults to input × 0.10
+
+[pricing."claude-haiku-4-5"]
+input = 1.00
+output = 5.00
+```
+
+The section is optional and has **no built-in defaults**. Without it a run
+still reports its token counts; it just omits `cost_usd` rather than guessing
+a rate. That is deliberate — published prices change, and a stale table that
+quietly reports the wrong dollar figure is worse than reporting none. Price
+only the models you care about: an unpriced model contributes tokens to the
+report and nothing to the cost.
+
+`cache_write` and `cache_read` default to the standard 1.25× and 0.10×
+multipliers on `input`. Set them when a provider prices caching differently.
+
+Where the numbers surface: [what a run spent](/reference/scripting-contract#what-a-run-spent).
+
 ## `[storage]`
 
 ```toml

@@ -1,12 +1,25 @@
 //! Progress events emitted by the agent loop. Sinks render them for a TTY,
 //! as JSONL, or (later) into a TUI.
 
+use crate::usage::UsageReport;
+use graph_llm::types::Usage;
 use serde_json::Value;
 use std::time::Duration;
 
 pub trait EventSink: Send + Sync {
     /// A fragment of assistant text as it streams.
     fn text_delta(&self, _text: &str) {}
+    /// One model call finished, with what it cost. `site` is the step path
+    /// in bus syntax (plan-qualified when nested) or a role name for calls
+    /// that belong to no step — the same grouping key `by_step` uses.
+    ///
+    /// Emitted once per *billable* call, which is not the same as once per
+    /// step: an agent step emits one per round plus one per schema repair,
+    /// and a failed-over call reports the model that actually answered.
+    fn llm_call(&self, _site: &str, _model: &str, _usage: &Usage, _elapsed: Duration) {}
+    /// The run's totals, once, after the last step. Carries the same report
+    /// `plan run --json` embeds.
+    fn usage_summary(&self, _report: &UsageReport) {}
     /// A tool invocation is starting.
     fn tool_started(&self, _name: &str, _args: &Value) {}
     /// A tool invocation finished.
