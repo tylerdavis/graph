@@ -3409,6 +3409,157 @@ async fn agent_calls_a_tool_then_returns_structured_output() {
 /// failure burns a round — which is what an agent that always exhausts its
 /// budget looks like from the outside.
 #[tokio::test]
+async fn the_final_round_withdraws_tools_and_forces_the_schema() {
+    let registry = search_registry(json!({"values": []}));
+    // Budget of 2: round 1 calls a tool, round 2 is the forced answer round.
+    let (pipeline, provider) = pipeline(
+        vec![
+            tool_use("c1", "t__search", json!({"query": "x"})),
+            text(r#"{"found": 0}"#),
+        ],
+        registry,
+        1,
+    );
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({
+            "prompt": "look",
+            "outputSchema": OUT_SCHEMA(),
+            "tools": ["t__*"],
+            "maxIterations": 2
+        })
+    )]))
+    .unwrap();
+
+    pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        !requests[0].tools.is_empty(),
+        "ordinary rounds keep their tools"
+    );
+    assert!(requests[0].response_schema.is_none());
+
+    // The answer round: no tools to reach for, and the provider is told to
+    // force the shape rather than hope for it.
+    assert!(
+        requests[1].tools.is_empty(),
+        "the final round must withdraw tools — a forced schema makes them \
+         unreachable anyway"
+    );
+    let forced = requests[1]
+        .response_schema
+        .as_ref()
+        .expect("final round forces the output schema");
+    assert_eq!(forced.schema, OUT_SCHEMA());
+    // And the model is told, not just silently constrained.
+    assert!(requests[1].messages.iter().any(|m| matches!(
+        m, graph_llm::types::ChatMessage::User { content } if content.contains("final turn")
+    )));
+
+    // The budget is never named in the system prompt: a number reads as an
+    // allowance to spend, and competes with what the plan's own prompt says
+    // about how much ground to cover. The final-turn notice is the backstop.
+    assert!(
+        !requests[0].system.contains("2 round") && !requests[0].system.contains("budget"),
+        "the system prompt must not state a round budget:\n{}",
+        requests[0].system
+    );
+}
+
+#[tokio::test]
+async fn a_forced_final_answer_comes_back_final_and_usable() {
+    // What the provider returns when the schema is forced: the object arrives
+    // in `structured`, already validated, with no text to parse.
+    let registry = search_registry(json!({"values": []}));
+    let forced = ChatResponse {
+        content: None,
+        tool_calls: vec![],
+        thinking: vec![],
+        structured: Some(json!({"found": 7})),
+        stop_reason: StopReason::EndTurn,
+        usage: Usage::default(),
+    };
+    let (pipeline, _) = pipeline(
+        vec![tool_use("c1", "t__search", json!({"query": "x"})), forced],
+        registry,
+        1,
+    );
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({
+            "prompt": "look",
+            "outputSchema": OUT_SCHEMA(),
+            "tools": ["t__*"],
+            "maxIterations": 2
+        })
+    )]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let result = &outcome.state.results["E0"];
+    // Previously this shape — budget spent, tools still wanted — returned
+    // final:false with an empty object, and every downstream step that
+    // touched `output` failed as a bad path.
+    assert_eq!(result["final"], json!(true));
+    assert_eq!(result["output"], json!({"found": 7}));
+    assert_eq!(result["iterations"], json!(2));
+}
+
+#[tokio::test]
+async fn the_agent_shows_the_model_its_output_schema() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = pipeline(vec![text(r#"{"grobnicate": 1}"#)], registry, 1);
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({
+            "prompt": "do the thing",
+            // A property name that appears nowhere else, so finding it in the
+            // request can only mean the schema was sent.
+            "outputSchema": {
+                "type": "object",
+                "required": ["grobnicate"],
+                "properties": {"grobnicate": {"type": "integer"}}
+            }
+        })
+    )]))
+    .unwrap();
+
+    let _ = pipeline.run_explicit("q", plan, Finish::Silent, None).await;
+
+    let requests = provider.requests.lock().unwrap();
+    let first = requests.first().expect("the agent made a call");
+    let sent_as_text = first.system.contains("grobnicate")
+        || first.messages.iter().any(|m| {
+            matches!(m, graph_llm::types::ChatMessage::User { content }
+                     if content.contains("grobnicate"))
+        });
+    let sent_natively = first
+        .response_schema
+        .as_ref()
+        .is_some_and(|s| s.schema.to_string().contains("grobnicate"));
+
+    assert!(
+        sent_as_text || sent_natively,
+        "the agent never showed the model its output schema — it was asked to \
+         match a shape it cannot see.\n  system: {}\n  response_schema: {:?}",
+        first.system,
+        first.response_schema.as_ref().map(|s| &s.schema),
+    );
+}
+
+#[tokio::test]
 async fn usage_is_attributed_to_the_step_that_spent_it() {
     let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
     let (pipeline, _) = pipeline(

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
-use graph_llm::types::{ChatMessage, ChatRequest, StopReason, ToolCall, ToolSpec};
+use graph_llm::types::{ChatMessage, ChatRequest, ResponseSchema, StopReason, ToolCall, ToolSpec};
 use graph_llm::ModelRouter;
 
 /// Reserved step tool name.
@@ -68,19 +68,55 @@ pub struct ToolCallEntry {
     pub round: u32,
 }
 
-/// Built-in system prompt that enforces structured output.
+/// Everything the agent needs to know about *how it is being run*.
+///
+/// This is the whole point of the `agent` step being turn-key: a plan author
+/// writes a task prompt and nothing else, and the harness tells the model
+/// about its budget, when to stop, and how to be efficient. Guidance that
+/// would otherwise have to be repeated in every plan belongs here.
+///
+/// Kept byte-identical across the rounds of a run — the step's schema and
+/// budget are appended, and both are fixed for the life of the loop — so the
+/// whole thing sits inside the cached prefix. Per-round state must never go
+/// in here; it goes at the end of the message list instead.
 const BUILTIN_SYSTEM_PROMPT: &str =
-    "You are an AI agent operating inside a plan pipeline. Your job is to \
-     complete the task described in the prompt by calling tools and reasoning \
-     over their results.\n\n\
-     CRITICAL: Your final response MUST be valid JSON conforming to the \
-     output schema provided. After using tools to gather information, produce \
-     your answer as a single JSON object matching the schema exactly. Do not \
-     include any text outside the JSON object. Do not include markdown code \
-     fences.\n\n\
-     If you cannot complete the task after the available tool calls, produce \
-     a best-effort result that still conforms to the output schema (use empty \
-     arrays, null values, etc.).";
+    "You are an agent operating inside a plan pipeline. Accomplish the task in \
+     the prompt by calling tools and reasoning over their results, then return \
+     a single JSON object matching the output schema below.\n\n\
+     # Accomplishing the task\n\n\
+     The prompt defines the task and what a complete answer to it looks like. \
+     Work toward that directly, in as few turns as you can: each turn re-sends \
+     the whole conversation, so the shortest route to a complete answer is \
+     also the cheapest one. Work that does not advance the task is waste.\n\n\
+     If the task cannot be accomplished, or there is genuinely nothing to \
+     report, say so through the schema — an empty array is a real answer. \
+     Never invent results to fill a shape.\n\n\
+     # Working efficiently\n\n\
+     Issue independent tool calls together in a single turn rather than one \
+     per turn; they run in parallel. Do not re-read something you have already \
+     read, and do not re-derive a conclusion you already reached — your \
+     earlier reasoning is preserved and still applies.\n\n\
+     # Your answer\n\n\
+     Your final response must be the JSON object alone: no prose around it, \
+     no markdown code fences.";
+
+/// Heading the step's `output_schema` is rendered under in the system prompt.
+const SCHEMA_HEADING: &str = "\n\n# Output schema\n\nYour final answer must be \
+                              a JSON object matching this schema:\n\n";
+
+/// Appended as a user turn on the final round.
+///
+/// The agent is deliberately never told its round budget up front. Naming a
+/// number invites a model to treat it as an allowance to spend rather than a
+/// ceiling to stay under, and it competes with whatever the plan's own prompt
+/// says about how much ground to cover. "Accomplish the task efficiently" is
+/// the whole instruction; this notice is the backstop, and it arrives at the
+/// one moment the constraint is real.
+const FINAL_ROUND_NOTICE: &str =
+    "This is your final turn. Tools are no longer available. Answer now with \
+     what you already have, as a JSON object matching the output schema. \
+     Partial findings are expected and useful — report them rather than \
+     nothing.";
 
 /// The agent step as described to the planner.
 pub fn agent_tool_def() -> crate::tools::ToolDef {
@@ -372,10 +408,24 @@ impl Pipeline {
             Err(e) => Err(AgentFail::Failed(e.to_string())),
         };
         let prompt = render(&spec.prompt)?;
-        let system = match &spec.system_prompt {
-            Some(extra) => format!("{BUILTIN_SYSTEM_PROMPT}\n\n{}", render(extra)?),
-            None => BUILTIN_SYSTEM_PROMPT.to_string(),
-        };
+        // The schema goes in the prompt, not the request's `response_schema`.
+        // Providers implement that natively by forcing a synthetic structured
+        // tool (`tool_choice: {type: "tool"}`), which would make the agent's
+        // real tools unreachable — so a tool-calling loop has to show the
+        // model the shape as text instead. Without it the model is guessing
+        // field names against a schema it cannot see, and each wrong guess
+        // fails validation and consumes a round; an agent that always
+        // exhausts its budget is what that looks like from outside.
+        //
+        // Stable for the life of the loop, and ahead of the conversation, so
+        // it sits inside the cached prefix and costs ~nothing after round 1.
+        let schema_text = serde_json::to_string_pretty(&spec.output_schema)
+            .unwrap_or_else(|_| spec.output_schema.to_string());
+        let mut system = format!("{BUILTIN_SYSTEM_PROMPT}{SCHEMA_HEADING}{schema_text}");
+        if let Some(extra) = &spec.system_prompt {
+            system.push_str("\n\n");
+            system.push_str(&render(extra)?);
+        }
 
         // Validation rejects an empty `tools` list, but a plan can reach
         // the executor unvalidated (a gate-injected draft, a direct API
@@ -427,11 +477,10 @@ impl Pipeline {
 
         loop {
             if round >= max_iterations {
-                // Budget spent without a conforming answer: report what
-                // happened rather than inventing a result. `output` is `{}`
-                // here and deliberately NOT schema-conforming — `final:
-                // false` is the signal, and downstream steps that reach
-                // into `output` fail as a bad path. Documented as such.
+                // Unreachable in practice: the final round below withdraws
+                // tools and forces an answer, so the loop returns from there.
+                // Kept as a backstop for a final round that produced neither
+                // structured output nor text.
                 return Ok(AgentRun {
                     result: envelope(json!({}), max_iterations, &tools_called, false),
                     tool_calls: tools_called.len(),
@@ -444,11 +493,33 @@ impl Pipeline {
                 self.events.iteration(round);
             }
 
+            // The last round is the answer round. Withdrawing the tools and
+            // setting `response_schema` makes the provider *force* a
+            // conforming object (Anthropic does it with a synthetic tool and
+            // `tool_choice`), so a budget that runs out yields a partial
+            // answer instead of the empty result it used to. That forcing is
+            // also why tools cannot stay on: a forced tool_choice would make
+            // them unreachable anyway.
+            let final_round = round == max_iterations;
+            if final_round {
+                messages.push(ChatMessage::User {
+                    content: FINAL_ROUND_NOTICE.to_string(),
+                });
+            }
+
             let request = ChatRequest {
                 model: model_name.to_string(),
                 system: system.clone(),
                 messages: messages.clone(),
-                tools: tool_specs.clone(),
+                tools: if final_round {
+                    Vec::new()
+                } else {
+                    tool_specs.clone()
+                },
+                response_schema: final_round.then(|| ResponseSchema {
+                    name: "agent_output".to_string(),
+                    schema: output_schema.clone(),
+                }),
                 ..Default::default()
             };
 
@@ -468,6 +539,16 @@ impl Pipeline {
                 // reasoning across rounds instead of re-deriving it.
                 thinking: response.thinking.clone(),
             });
+
+            // The forced final round answers through `structured`, not text.
+            // It is already schema-validated by the provider, so there is
+            // nothing to parse and no repair pass to pay for.
+            if let Some(output) = response.structured {
+                return Ok(AgentRun {
+                    result: envelope(output, round, &tools_called, true),
+                    tool_calls: tools_called.len(),
+                });
+            }
 
             if response.tool_calls.is_empty() {
                 let text = response.content.unwrap_or_default();
