@@ -18,14 +18,14 @@ command: bash
 args:
   - "-ceu"
   - |
-    base=$1 head=$2 paths=$3 exclude=$4 max=$5
+    base=$1 head=$2 paths=$3 exclude=$4 max=$5 ctx=$6
     if [ -n "$head" ]; then range="$base...$head"; else range=$(git merge-base "$base" HEAD); fi
     spec=()
     for p in $paths; do spec+=("$p"); done
     for e in $exclude; do spec+=(":(exclude)$e"); done
     tmp=$(mktemp)
     trap 'rm -f "$tmp"' EXIT
-    git diff "$range" -- "${spec[@]}" > "$tmp"
+    git diff -U"$ctx" "$range" -- "${spec[@]}" > "$tmp"
     total=$(wc -c < "$tmp" | tr -d ' ')
     head -c "$max" "$tmp"
     if [ "$total" -gt "$max" ]; then
@@ -37,6 +37,7 @@ args:
   - "{{input.paths}}"
   - "{{input.exclude}}"
   - "{{input.max_bytes}}"
+  - "{{input.context}}"
 output: text
 timeout_secs: 30
 read_only: true
@@ -52,3 +53,10 @@ input_schema:
     paths:     { type: string, description: Space-separated pathspecs; "." for everything }
     exclude:   { type: string, description: Space-separated paths to exclude; "" for none }
     max_bytes: { type: integer, description: Truncate the diff to this many bytes (a marker line flags truncation) }
+    context:
+      type: integer
+      default: 3
+      description: >
+        Lines of context around each hunk (git diff -U). The default of 3 is
+        git's own. A large value is how a reviewer sees surrounding code
+        without being handed whole files.

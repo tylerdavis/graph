@@ -1,6 +1,6 @@
 identifier: graph_review_core
 name: graph_review_core
-description: Reviews a change set of the graph-cli repository against its own invariants (plan-pipeline error policy, control-step semantics, template dialect, async/storage safety, plan composition, docs-parity) as a principal engineer. Purely local — only git, no GitHub access or network side effects. With `head` set it reviews the committed range base...head; with `head` empty (the default) it reviews the working tree — staged and unstaged changes against the merge-base of `base` and HEAD (new files must be at least `git add -N`'d to be visible). Runs eight passes (stated intent vs diff, pipeline/control-step invariants, template & shape engine correctness, Rust/async/storage footguns, plan-composition & model-routing correctness, test coverage, repo conventions, CLI-facing surface & copy) grounded in the diff, full file contents, and per-group repository scouts. Accepts previously known findings as a suppression list so only genuinely new findings are returned. Returns structured JSON (overall framing, eight pass statuses ordered by severity, new findings). The review engine behind graph_review_9000; also runnable directly for a pre-push local review. On an empty diff it exits success with the same contract nested under the exit's output.
+description: Reviews a change set of the graph-cli repository against its own invariants (plan-pipeline error policy, control-step semantics, template dialect, async/storage safety, plan composition, docs-parity) as a principal engineer. Purely local — only git, no GitHub access or network side effects. With `head` set it reviews the committed range base...head; with `head` empty (the default) it reviews the working tree — staged and unstaged changes against the merge-base of `base` and HEAD (new files must be at least `git add -N`'d to be visible). Runs eight passes (stated intent vs diff, pipeline/control-step invariants, template & shape engine correctness, Rust/async/storage footguns, plan-composition & model-routing correctness, test coverage, repo conventions, CLI-facing surface & copy) grounded in a wide-context diff (25 lines around every hunk) and per-group repository scouts. Accepts previously known findings as a suppression list so only genuinely new findings are returned. Returns structured JSON (overall framing, eight pass statuses ordered by severity, new findings). The review engine behind graph_review_9000; also runnable directly for a pre-push local review. On an empty diff it exits success with the same contract nested under the exit's output.
 input_schema:
   type: object
   required:
@@ -37,11 +37,12 @@ steps:
   tool_name: user__repo_diff
   input:
     base: '{{input.base}}'
+    context: 25
     exclude: Cargo.lock CHANGELOG.md
     head: '{{input.head}}'
-    max_bytes: 300000
+    max_bytes: 900000
     paths: .
-  reasoning: Fetch the unified diff (excluding the lockfile and generated changelog) to ground the review. Needed before checking emptiness and before the LLM review pass.
+  reasoning: Fetch the unified diff with 25 lines of context around every hunk (excluding the lockfile and generated changelog) to ground the review. The wide context replaces fetching whole changed files — it shows the reviewer the code surrounding each hunk, which is what it actually reasons over, without paying for the untouched remainder of every file — on a large change set the full contents ran ~5.7x the diff itself and dominated the reviewer's bill. Needed before checking emptiness and before the LLM review pass.
 - id: E3
   tool_name: exit
   input:
@@ -63,30 +64,6 @@ steps:
       op: empty
       value: '{{E2.text}}'
   reasoning: Nothing to review on an empty diff. The exit's output carries the plan's normal contract with empty values (plus reviewed/reason discriminators) so callers that do hit this path still get parseable fields — note a fired exit nests this map under `output` in the caller's step result, so callers should pre-gate emptiness (as graph_review_9000 does) or branch on `exited`.
-- id: E3b
-  tool_name: filter
-  input:
-    over: '{{E1.changes}}'
-    where:
-      op: ne
-      to: deleted
-      value: '{{item.status}}'
-  reasoning: Keep only changed files that still exist in the reviewed state — a deleted file has no contents there, and mapping repo_file over it fails the plan (issue #94). Deletions stay visible to the reviewer via the E1.changes overview; this step only decides what gets fetched.
-# In E4/E4g below (and the scout prompt's HEAD REF), ref: '{{input.head}}'
-# leans on the user__repo_* tools' contract that an empty ref means the
-# working tree — keep that contract if either side changes independently.
-- id: E4
-  tool_name: map
-  input:
-    concurrency: 8
-    do:
-      input:
-        max_bytes: 60000
-        path: '{{item.path}}'
-        ref: '{{input.head}}'
-      tool_name: user__repo_file
-    over: '{{E3b.items}}'
-  reasoning: Fetch the full content of every still-present changed file — at the head ref, or from the working tree when head is empty — in parallel, so the reviewer LLM can see surrounding code rather than just diff hunks. Results are index-aligned with E3b.items by construction. The 60KB budget exists so this repo's own plan YAMLs (the largest reviewed files) arrive whole — a truncated file forfeits absence claims about it under the finding bar, and live calibration showed a 30KB cap cutting exactly the output map a finding then mis-asserted was missing.
 - id: E4e
   tool_name: builtin__infer
   input:
@@ -170,7 +147,7 @@ steps:
       tool_name: agent
       input:
         prompt: |-
-          You are the context scout for ONE functional group of a change set under review in graph-cli (a Rust cargo workspace). The review sees the change's diff and the full contents of changed files — but nothing else in the repository. Your job, for THIS GROUP ONLY: find the callers, implementations, trait impls, tests, and config/doc references that the group's changes TOUCH BUT DO NOT SHOW, so the reviewer can judge blast radius without guessing.
+          You are the context scout for ONE functional group of a change set under review in graph-cli (a Rust cargo workspace). The review sees the change's diff with 25 lines of context around each hunk — but NOT the rest of the changed files, and nothing else in the repository. Your job, for THIS GROUP ONLY: find the callers, implementations, trait impls, tests, and config/doc references that the group's changes TOUCH BUT DO NOT SHOW, so the reviewer can judge blast radius without guessing.
 
           GROUP: {{item.name}}
           FOCUS: {{item.focus}}
@@ -186,7 +163,7 @@ steps:
           - use user__repo_file (ref = head ref) to read just enough surrounding code to say WHY a site matters to this review — including the group's own changed files if you need to see what actually changed
           - prefer breadth over depth: the reviewer needs to know a caller exists and what it assumes, not its whole body
 
-          Report only sites OUTSIDE the changed files listed above (the reviewer already has their full contents). Skip pure renames. If nothing outside references this group's symbols, return an empty entries array — never invent relevance. If this group's changes turn out to be prose, prompt text, documentation, or configuration with no code symbols other code could reference, return an empty entries array IMMEDIATELY — searching the repository for fragments of English is never useful. Echo the group name exactly as given.
+          Report sites anywhere in the repository, INCLUDING elsewhere in this group's own changed files — the reviewer sees only hunks plus 25 lines of context, so a caller further down a changed file is invisible to it and worth reporting. Skip pure renames. If nothing outside references this group's symbols, return an empty entries array — never invent relevance. If this group's changes turn out to be prose, prompt text, documentation, or configuration with no code symbols other code could reference, return an empty entries array IMMEDIATELY — searching the repository for fragments of English is never useful. Echo the group name exactly as given.
 
           REPO ORIENTATION (the repository's CLAUDE.md at the reviewed state — its own map of crates, invariants, and conventions; use it to aim searches at the right crates and to recognize when a site you find depends on a documented invariant, which is exactly what the `why` field should say):
           {{E4g.text}}
@@ -259,21 +236,10 @@ steps:
       {{#E1.changes}}- {{path}} — {{status}} (+{{additions}}/-{{deletions}})
       {{/E1.changes}}
 
-      FILES WITH CONTENTS ({{E3b.count}} — the FILE CHANGES minus deleted files, which have no contents in the reviewed state; numbered to match FULL FILE CONTENTS below):
-      {{#E3b.items}}{{@index}}. {{path}}
-      {{/E3b.items}}
-
-      DIFF (may be excerpted/truncated; excludes Cargo.lock, CHANGELOG.md):
+      DIFF with 25 lines of context around every hunk (may be excerpted/truncated; excludes Cargo.lock, CHANGELOG.md). This is ALL you have of the changed files — anything outside these context windows is not shown to you, so treat an absence claim about a changed file as unverifiable unless a dossier covers it:
       {{E2.text}}
 
-      FULL FILE CONTENTS in the reviewed state, in the same order as the FILES WITH CONTENTS list above (for context beyond diff hunks; some may be truncated by byte budget):
-      {{#E4.results}}
-      ===== file #{{@index}} (see FILES WITH CONTENTS above for its path) =====
-      {{text}}
-
-      {{/E4.results}}
-
-      REPO CONTEXT DOSSIERS — the diff was clustered into functional groups, and a scout agent searched the repository at the reviewed state for each scoutworthy group's call sites, implementations, and tests OUTSIDE the changed files. One dossier per scouted group (an empty entries list means nothing outside the diff references that group's symbols; a group whose scout ran out of budget is absent):
+      REPO CONTEXT DOSSIERS — the diff was clustered into functional groups, and a scout agent searched the repository at the reviewed state for each scoutworthy group's call sites, implementations, and tests — including elsewhere in the changed files, which you see only as hunks plus context. One dossier per scouted group (an empty entries list means nothing outside the diff references that group's symbols; a group whose scout ran out of budget is absent):
       {{#E4e2.dropped}}(group "{{name}}" was deliberately not scouted: its changes are prose/docs/config with no code symbols other code could reference)
       {{/E4e2.dropped}}
       {{#E4f.results}}{{#final}}{{#output}}
@@ -283,7 +249,7 @@ steps:
       {{/entries}}coverage: {{notes}}
       {{/output}}{{/final}}{{/E4f.results}}
 
-      Use the dossiers as evidence, especially in passes 2, 4, and 6: a changed contract whose caller in a dossier still assumes the old behavior is a finding; a blast-radius claim you cannot verify from the diff, the file contents, or the dossiers stays 'unverified' rather than asserted.
+      Use the dossiers as evidence, especially in passes 2, 4, and 6: a changed contract whose caller in a dossier still assumes the old behavior is a finding; a blast-radius claim you cannot verify from the diff or the dossiers stays 'unverified' rather than asserted.
 
       There is no external issue tracker integration in this plan — ground scope/intent judgments in the stated title and description only, never fabricate a ticket or requirement that isn't stated there.
 
@@ -540,7 +506,7 @@ steps:
       - has_na_or_pass
       - findings
       type: object
-  reasoning: Single structured LLM review pass grounded in the change's metadata, full changed-file list, diff, and full file contents. Produces the change-level framing, eight severity-ordered pass summaries aligned to graph-cli's own invariants (pipeline error policy, control-step semantics, template/shape engine, Rust/async/storage/MCP footguns, plan composition/model routing, tests, docs-parity, CLI surface/copy), and a flat findings array returned to the caller (graph_review_9000 posts them as inline comments; a local run prints them as JSON). No external ticket tracker.
+  reasoning: Single structured LLM review pass grounded in the change's metadata, full changed-file list, and a diff carrying 25 lines of context around every hunk. Whole changed files are deliberately NOT fetched — on a large change set they ran ~5.7x the diff and dominated the cost, while the code the reviewer actually reasons over is the neighbourhood of each hunk. What lies outside those windows is the scouts' job, which is why their remit covers the changed files too. Produces the change-level framing, eight severity-ordered pass summaries aligned to graph-cli's own invariants (pipeline error policy, control-step semantics, template/shape engine, Rust/async/storage/MCP footguns, plan composition/model routing, tests, docs-parity, CLI surface/copy), and a flat findings array returned to the caller (graph_review_9000 posts them as inline comments; a local run prints them as JSON). No external ticket tracker.
 - id: E5b
   tool_name: filter
   input:
