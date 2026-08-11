@@ -21,6 +21,19 @@ repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
 # verify against current published rates before trusting the figure.
 # cache_write/cache_read are omitted deliberately; the 1.25x / 0.10x defaults
 # are the standard multipliers.
+# The two jobs this repo's review plan splits inference into. Named rather
+# than borrowed from a role, so a plan step says what it is asking for and
+# the model behind it can change without touching the plan.
+[models.named.scout]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+description = "Repository context scout: many parallel grep/read rounds over a whole repo, gathering call sites and tests. High volume, shallow judgment."
+
+[models.named.reviewer]
+provider = "anthropic"
+model = "claude-sonnet-5"
+description = "Change reviewer: one deep pass over a diff and full file contents, holding the repo's invariants. Low volume, high judgment."
+
 [pricing."claude-sonnet-5"]
 input = 3.00
 output = 15.00

@@ -195,6 +195,7 @@ steps:
         tools:
         - user__repo_grep
         - user__repo_file
+        model: scout
         max_iterations: 18
         output_schema:
           type: object
@@ -373,6 +374,7 @@ steps:
       Every finding must also carry `verified_defect`: true ONLY when the finding asserts a defect that this change introduces or worsens, verified against the evidence, that you assert WITHOUT hedges or concessions. Pre-existing accepted limitations, correct-but-undocumented behavior, observations you had to soften, and comment-only suggestions are all `verified_defect: false`. Set it honestly — a downstream filter step discards every `false` finding mechanically, so a finding you cannot mark true is already not going to post; put its substance in the pass summary instead and save yourself the writing.
 
       Produce structured output with: overall_alert_type, overall_framing, passes (exactly 8, ordered by severity as described), has_blockers, blockers_count, has_unverified, unverified_count, has_na_or_pass, and a flat findings array where each entry has: invariant, file, line, severity, severity_label, alert_type, label, is_blocker, blocker_ordinal, verified_defect, finding, explanation, fix_markdown, fix_short, and agent_prompt as described above. Compute the counts and pass statuses over the findings that remain after removing `verified_defect: false` entries — they must describe what will actually post.
+    model: reviewer
     output_schema:
       properties:
         blockers_count:
