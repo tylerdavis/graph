@@ -56,7 +56,7 @@ CI (`.github/workflows/ci.yaml`) runs lint + tests on ubuntu-24.04 and macos-15 
 
 ## Conventions
 
-- Conventional commits (`feat:`/`fix:`/`docs:`/`chore:`/`ci:`) — the changelog is generated from them; subjects describe the user-visible effect. See RELEASING.md.
+- Conventional commits (`feat:`/`fix:`/`docs:`/`chore:`/`ci:`) — the changelog is generated from them; subjects describe the user-visible effect. Enforced by `scripts/check-commit-subject.sh` via the `.githooks/commit-msg` hook (`mise run hooks`, once per clone) and the `commit-lint` workflow (PR title + every commit); the repo is squash-merge-only so the linted PR title is the subject that lands. See RELEASING.md.
 - Behavioral tests colocated per crate; mock LLM providers via `ModelRouter::with_providers`; scripted-response mocks for pipeline/agent tests.
 - Every feature lands with tests and a lint-clean tree, then gets **live verification**: the MCP reference server (`npx @modelcontextprotocol/server-everything`) for tool mechanics, the user's real Linear workspace for plan behavior. Use the scratch pattern — a temp dir with `.graph/config.toml` overriding `data_dir` (and `GRAPH_STORAGE=memory`) — to keep the user's real state out of test runs.
 - Linux behavior is reproducible locally in a container (`podman run --rm -v $PWD:/repo:ro rust:1.94-trixie …`).

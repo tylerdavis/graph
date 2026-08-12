@@ -48,6 +48,33 @@ release notes.
 ## Commit convention
 
 Conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `ci:`, `refactor:`,
-`test:`) — the changelog is generated from them, so the subject line should
-describe the user-visible effect. `test:`/`chore:`/`ci:` commits are excluded
-from the changelog.
+`test:`, plus `perf:`, `style:`, `build:`, `revert:`) — the changelog is
+generated from them, so the subject line should describe the user-visible
+effect. `test:`/`chore:`/`ci:`/`style:` commits are excluded from the
+changelog.
+
+The convention is enforced, not just documented, because git-cliff reports
+every non-conforming subject as a parse error and the count only ever grows:
+
+- **`scripts/check-commit-subject.sh`** is the single validator. The
+  commit-msg hook, CI, and anyone running it by hand all call it.
+- **`mise run hooks`** points `core.hooksPath` at `.githooks/`, so the
+  `commit-msg` hook rejects a bad subject before the commit exists — for every
+  author in the clone, human or agent, and across every worktree (git keeps
+  `core.hooksPath` in the shared config). Run it once per clone.
+  `git commit --no-verify` bypasses it; CI does not.
+- **`.github/workflows/commit-lint.yaml`** checks the PR title and every
+  non-merge commit in the PR. It has no `paths-ignore`: a docs-only PR still
+  lands commits on `main`.
+- **The repo allows squash merges only**, with the squash subject taken from
+  the PR title. Merge-button merge commits (`Merge pull request #N from …`)
+  were the single largest source of parse errors — 30 of 41 — and squash-only
+  means they cannot be created. It also makes the linted PR title the exact
+  subject that reaches `main`.
+
+Two classes of commit reach `main` without an author here: merge commits and
+the Mintlify app's `Updated mintlify pages` write-backs. `cliff.toml`'s
+`commit_preprocessors` rewrite those into conventional form so the existing
+skip parsers drop them silently, instead of counting them as parse errors.
+With that in place `git-cliff` runs warning-free, so any future warning is a
+real, actionable one.
