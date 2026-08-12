@@ -2,7 +2,7 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
-## v0.11.1 — 2026-08-12
+## v0.12.0 — 2026-08-12
 
 
 ### Added

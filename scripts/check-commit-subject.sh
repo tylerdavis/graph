@@ -42,7 +42,7 @@ parse error. Write the subject as the user-visible effect of the change, e.g.
 
     feat(workbench): show each step's output contract in the detail pane
     fix: explain missing env vars at first use instead of dying silently
-    chore(release): v0.11.1
+    chore(release): v0.12.0
 
 See RELEASING.md > "Commit convention".
 EOF
