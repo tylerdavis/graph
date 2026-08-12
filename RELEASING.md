@@ -51,3 +51,16 @@ Conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `ci:`, `refactor:`,
 `test:`) — the changelog is generated from them, so the subject line should
 describe the user-visible effect. `test:`/`chore:`/`ci:` commits are excluded
 from the changelog.
+
+The changelog's audience is graph's users, not graph's developers. Work on
+this repo's own dogfooding — the review plans under `.graph/`, the drift
+gate, the CI workflows, the release plans — ships to nobody, so it is typed
+`ci:` and stays out of the release notes. Ask before typing a commit: would
+someone who installs this version get this change? If not, it is `ci:`.
+
+`cliff.toml` has two backstops, and neither replaces getting the type right.
+`exclude_paths` drops a commit only when *every* file it touches is excluded,
+and the docs-parity invariant makes plan edits touch
+`docs/cookbook/ci-checks.mdx` as well. The skip list above the group parsers
+is a fixed set of historical corrections for commits that predate this rule —
+don't extend it.

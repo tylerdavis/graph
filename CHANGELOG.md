@@ -7,17 +7,8 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 
 ### Added
 
-- scout blast radius with an agent step before the review
-- raise the context scout's round budget to 60
-- group changes and scout each group in parallel
-- dispatch scouts only at scoutworthy groups, cap rounds at 18
-- orient the scouts with CLAUDE.md at head
 - show each step's output contract in the workbench detail pane
 - token usage and cost tracking, prompt caching, and a turn-key agent step (#115)
-
-### Changed
-
-- split graph_review_9000 into a local review core and a GitHub wrapper (#109)
 
 ### Documentation
 
@@ -26,8 +17,6 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 
 ### Fixed
 
-- settle review threads on reverted PRs and mid-PR fixes
-- hold review findings to a verification bar
 - explain missing env vars at first use instead of dying silently
 
 ## v0.11.0 — 2026-08-04
@@ -36,7 +25,6 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 ### Added
 
 - add gh_pr_review_threads and gh_pr_thread_sync to the github pack
-- track graph_review_9000 findings as living review threads
 
 ### Documentation
 
@@ -53,7 +41,6 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 ### Fixed
 
 - release script keeps the docs release_version in step
-- keep literal template syntax out of the changelog_entry instruction
 
 ## v0.10.0 — 2026-08-04
 
@@ -129,7 +116,6 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 - show never-run steps as skipped after a fired exit gate
 - add fallbacks field to the shots harness ModelChoice
 - close the agent step's validation, path, and boundary gaps
-- enable the slack pack in the repo-carried config
 - carry exit codes back to main instead of exiting in place
 - keep plan list and validate off stdout
 - stop re-rendering caller-supplied reshape shapes
@@ -235,10 +221,6 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 ### Documentation
 
 - rewrite README, add MIT license (#12)
-
-### Fixed
-
-- create releases atomically — assets can't be added after publish (#13)
 
 ## v0.4.0 — 2026-07-10
 

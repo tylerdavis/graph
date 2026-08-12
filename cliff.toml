@@ -26,6 +26,23 @@ trim = true
 conventional_commits = true
 filter_unconventional = true
 commit_parsers = [
+  # Historical corrections. These commits changed only this repo's own review
+  # plans, but predate the audience rule and were typed feat:/fix:/refactor:,
+  # so they headlined v0.11.0 and v0.12.0 as if they shipped. CHANGELOG.md is
+  # regenerated in full at every release, so a hand-edit of those sections
+  # would be undone by the next `git-cliff --tag` — the correction has to live
+  # here to stick. exclude_paths below doesn't reach them: each also touches
+  # docs/cookbook/ci-checks.mdx (the docs-parity invariant) or CLAUDE.md.
+  # DO NOT EXTEND THIS LIST — type internal work `ci:` instead (see CLAUDE.md).
+  { message = "^feat: scout blast radius with an agent step", skip = true },
+  { message = "^feat: raise the context scout's round budget", skip = true },
+  { message = "^feat: group changes and scout each group", skip = true },
+  { message = "^feat: dispatch scouts only at scoutworthy groups", skip = true },
+  { message = "^feat: orient the scouts with CLAUDE.md at head", skip = true },
+  { message = "^fix: settle review threads on reverted PRs", skip = true },
+  { message = "^refactor: split graph_review_9000 into a local review core", skip = true },
+  { message = "^feat: track graph_review_9000 findings as living review threads", skip = true },
+
   { message = "^feat", group = "Added" },
   { message = "^fix", group = "Fixed" },
   { message = "^perf", group = "Performance" },
@@ -35,5 +52,13 @@ commit_parsers = [
   { message = "^chore\\(release\\)", skip = true },
   { message = "^chore|^ci|^style", skip = true },
 ]
+# Backstop for the audience rule: the changelog is for graph's users, and
+# `.graph/`/`.github/` hold this repo's own dogfooding plans and workflows,
+# which ship to nobody. A commit is dropped only when EVERY file it touches
+# is excluded, so mixed commits still land — which is why the primary
+# defense is typing internal-only work `ci:` (see CLAUDE.md). The
+# docs-parity invariant makes those plan changes touch
+# docs/cookbook/ci-checks.mdx too, so this alone cannot catch them.
+exclude_paths = [".graph/**", ".github/**"]
 tag_pattern = "v[0-9].*"
 sort_commits = "oldest"
