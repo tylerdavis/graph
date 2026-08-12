@@ -20,6 +20,29 @@ snippets are never published as standalone pages), so each piece of
 prose exists in exactly one file. It then commits as
 `chore(release): vX.Y.Z`, tags `vX.Y.Z`, and pushes.
 
+### What is the source of truth
+
+**The tag is.** Which commits are in a release, its date, their subjects
+and grouping — all of that lives in git and is derived on demand through
+`git-cliff`. Nothing about it is stored a second time.
+
+The one thing git cannot supply is the prose: the inferred, then curated,
+summary and migration prompt. That is the only content this repo stores
+for a release, in `docs/snippets/changelog/<version>/`.
+
+So there is one set of facts and three renderings of it:
+
+| Rendering | Built from | Regenerated |
+|---|---|---|
+| `CHANGELOG.md` | tags, via git-cliff | in full, every release |
+| `docs/changelog.mdx` | tags × the prose snippets | in full, every release |
+| GitHub release notes | PR titles, via `--generate-notes` | per release |
+
+`CHANGELOG.md` is an **output**, never an input — no plan reads it. It
+used to be scraped for the inference evidence, which coupled the docs
+build to its heading format; `release_subjects` now reads the tag
+directly instead.
+
 **Review `docs/snippets/changelog/<version>/` before pushing onward**:
 the summary and the migration verdict are inferred and meant to be
 curated. Edit the snippet files freely — they are never regenerated —
@@ -53,6 +76,12 @@ generated from them, so the subject line should describe the user-visible
 effect. `test:`/`chore:`/`ci:`/`style:` commits are excluded from the
 changelog.
 
+The changelog's audience is graph's users, not graph's developers. Work on
+this repo's own dogfooding — the review plans under `.graph/`, the drift
+gate, the CI workflows, the release plans — ships to nobody, so it is typed
+`ci:` and stays out of the release notes. Ask before typing a commit: would
+someone who installs this version get this change? If not, it is `ci:`.
+
 The convention is enforced, not just documented, because git-cliff reports
 every non-conforming subject as a parse error and the count only ever grows:
 
@@ -78,3 +107,27 @@ the Mintlify app's `Updated mintlify pages` write-backs. `cliff.toml`'s
 skip parsers drop them silently, instead of counting them as parse errors.
 With that in place `git-cliff` runs warning-free, so any future warning is a
 real, actionable one.
+
+`cliff.toml` has two backstops, and neither replaces getting the type right.
+`exclude_paths` drops a commit only when *every* file it touches is excluded,
+and the docs-parity invariant makes plan edits touch
+`docs/cookbook/ci-checks.mdx` as well. The skip list above the group parsers
+is a fixed set of historical corrections for commits that predate this rule —
+don't extend it.
+
+## Corrections are retroactive, by design
+
+Because every rendering derives from the tags, a `cliff.toml` change rewrites
+the published history of *every* release, not just the next one. That is what
+you want when the config was wrong — the fix reaches the releases that were
+already wrong — but it has two edges worth knowing:
+
+- **Hand edits to `CHANGELOG.md` do not survive.** It is rewritten in full at
+  every release. A correction to a released section has to go in `cliff.toml`;
+  that is why the historical skip list exists.
+- **Read the whole diff after any `cliff.toml` change.** Diff `CHANGELOG.md`
+  and `docs/changelog.mdx` and check what moved in the *older* sections, not
+  just the new one.
+
+To correct the prose of a past release, edit its snippet and re-run
+`compose_changelog` — snippets are never regenerated, so that sticks.

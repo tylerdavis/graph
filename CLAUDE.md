@@ -4,7 +4,7 @@ A Rust CLI agent with a plan-based execution engine. Cargo workspace, six crates
 
 **Positioning: plans first.** The plan pipeline is the core product. "The workbench" means the plan workbench TUI (`graph wb plan`) — the review/debug surface for plans; the agent loop (`ask`/`chat`) is the conversational layer for probing tools, prototyping, and exercising plans. Frame features and docs accordingly, and keep that vocabulary: never call `ask`/`chat` "the workbench".
 
-**The documentation under `docs/` is the canonical reference** for behavior, file formats, and CLI surface — read it before changing the corresponding code, and update it in the same PR as any behavior change. Start with `docs/getting-started/concepts.mdx` and `docs/architecture/execution-model.mdx`. Published via Mintlify from this repo (`docs.json` is the nav manifest; monorepo contentDirectory `docs/`; builds only trigger when `docs/` changes; the site is private).
+**The documentation under `docs/` is the canonical reference** for behavior, file formats, and CLI surface — read it before changing the corresponding code, and update it in the same PR as any behavior change. Start with `docs/getting-started/concepts.mdx` and `docs/architecture/execution-model.mdx`. Published via Mintlify from this repo (`docs.json` is the nav manifest; monorepo contentDirectory `docs/`; builds only trigger when `docs/` changes). The site is public — it is the documentation for a public, open-source library, so treat every page as user-facing.
 
 ## Build & test
 
@@ -57,6 +57,7 @@ CI (`.github/workflows/ci.yaml`) runs lint + tests on ubuntu-24.04 and macos-15 
 ## Conventions
 
 - Conventional commits (`feat:`/`fix:`/`docs:`/`chore:`/`ci:`) — the changelog is generated from them; subjects describe the user-visible effect. Enforced by `scripts/check-commit-subject.sh` via the `.githooks/commit-msg` hook (`mise run hooks`, once per clone) and the `commit-lint` workflow (PR title + every commit); the repo is squash-merge-only so the linted PR title is the subject that lands. See RELEASING.md.
+- **The changelog's audience is graph's users, not graph's developers.** Changes to this repo's own dogfooding under `.graph/` and `.github/` (the review plans, the drift gate, the CI workflows) ship to nobody, so they are typed `ci:` — never `feat:`/`fix:`/`refactor:` — which `cliff.toml` skips. `exclude_paths` there is only a backstop: it drops a commit only when *every* file is excluded, and the docs-parity invariant makes plan edits touch `docs/cookbook/ci-checks.mdx` as well. A commit that changes both a crate and `.graph/` is a real release note — type it for the crate change and say so in the subject.
 - Behavioral tests colocated per crate; mock LLM providers via `ModelRouter::with_providers`; scripted-response mocks for pipeline/agent tests.
 - Every feature lands with tests and a lint-clean tree, then gets **live verification**: the MCP reference server (`npx @modelcontextprotocol/server-everything`) for tool mechanics, the user's real Linear workspace for plan behavior. Use the scratch pattern — a temp dir with `.graph/config.toml` overriding `data_dir` (and `GRAPH_STORAGE=memory`) — to keep the user's real state out of test runs.
 - Linux behavior is reproducible locally in a container (`podman run --rm -v $PWD:/repo:ro rust:1.94-trixie …`).

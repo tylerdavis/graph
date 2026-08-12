@@ -1,11 +1,11 @@
-#### Scout your blast radius before review
-Plans can now run a context-scouting agent step ahead of review, with related changes grouped and scouted in parallel so you see the full impact of a change set. Scouts are dispatched only where they add value, with round budgets tuned (up to 60 for the context scout, capped at 18 overall) and oriented using `CLAUDE.md` at head for better context.
+#### Know what a run costs
+Every run now reports the calls and tokens it spent, and the dollar cost too once you configure `[pricing]` — with no pricing table, you get token counts and no invented figures. The numbers reach you at the seams you already read: `--json` envelopes, an MCP body field, a line on stderr under a TTY, and two JSONL events.
+
+#### Agent steps that answer even when the budget runs out
+An agent step is now shown its `output_schema` up front and spends its final round producing a conforming result, so exhausting `max_iterations` degrades to a partial answer instead of an empty one. Prompt caching is on by default rather than opt-in per call site.
 
 #### See what each step promises
-The plan workbench's detail pane now shows each step's output contract, so you can check what a step is expected to produce without leaving the TUI.
+The plan workbench's detail pane shows each step's output contract, so you can check what a step is expected to produce without leaving the TUI.
 
-#### Track what your agent steps cost
-A new turn-key agent step brings built-in token usage and cost tracking with prompt caching, making it easier to monitor spend across runs.
-
-#### Clearer errors and steadier reviews
-Missing environment variables are now explained at first use instead of causing a silent failure, review threads settle correctly on reverted or mid-PR-fixed pull requests, and review findings are now held to a stricter verification bar before being reported.
+#### A missing key says so at first use
+A missing environment variable is now explained when something first needs it, instead of failing silently and leaving you to guess which credential was absent.
