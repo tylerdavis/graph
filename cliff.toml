@@ -25,6 +25,18 @@ trim = true
 [git]
 conventional_commits = true
 filter_unconventional = true
+# Two classes of commit land on main without being authored by anyone here:
+# merge commits, and the Mintlify app's write-back commits. They carry no
+# changelog content, but under filter_unconventional they surfaced as
+# "N commit(s) were skipped due to parse error(s)" — a warning that grew with
+# every merge-button PR and drowned out genuinely malformed subjects.
+# Preprocessors run before conventional parsing, so rewriting them into
+# conventional form lets the existing skip parsers drop them silently. Anything
+# else unconventional still warns, which is the point.
+commit_preprocessors = [
+  { pattern = "^Merge (pull request|branch|branches|remote-tracking branch|main|origin)\\b.*", replace = "chore(merge): ignored" },
+  { pattern = "^Updated mintlify pages.*", replace = "chore(mintlify): ignored" },
+]
 commit_parsers = [
   # Historical corrections. These commits changed only this repo's own review
   # plans, but predate the audience rule and were typed feat:/fix:/refactor:,

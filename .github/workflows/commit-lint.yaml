@@ -1,0 +1,42 @@
+name: Commit lint
+
+# The changelog is generated from commit subjects by git-cliff (cliff.toml), so
+# a non-conventional subject is either dropped or counted as a parse error. The
+# commit-msg hook catches these locally; this is the gate that cannot be
+# bypassed with --no-verify.
+#
+# No paths filter on purpose: a docs-only PR still lands commits on main.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  subjects:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The PR title becomes the squash commit's subject, so it is the one that
+      # actually reaches main.
+      - name: Check the PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: ./scripts/check-commit-subject.sh "$PR_TITLE"
+
+      - name: Check every commit subject in the PR
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          failed=0
+          while IFS= read -r subject; do
+            [ -n "$subject" ] || continue
+            ./scripts/check-commit-subject.sh "$subject" || failed=1
+          done < <(git log --no-merges --format=%s "$BASE..$HEAD")
+          exit "$failed"
