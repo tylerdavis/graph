@@ -1,0 +1,14 @@
+#### Deeper, faster context scouting
+Before review, an agent step now surveys the blast radius of a change, and related changes are grouped so scouts can investigate each group in parallel rather than one at a time. Scouts are dispatched only where they're likely to matter, their round budgets have been tuned (up to 60 for the context scout, capped at 18 overall for group scouts), and they now orient themselves using `CLAUDE.md` at head for more relevant findings.
+
+#### See what each step promises
+The plan workbench TUI now shows each step's output contract directly in the detail pane, making it easier to check what a step is expected to produce without leaving the workbench.
+
+#### Track agent spend
+A new turn-key agent step tracks token usage and cost, with prompt caching support, so you can monitor and control the cost of agent-driven plans.
+
+#### Clearer errors, steadier reviews
+Missing environment variables are now explained at first use instead of causing a silent failure later, and review logic more reliably settles threads on reverted or mid-PR-fixed pull requests while holding findings to a stricter verification bar before they're surfaced.
+
+#### Review core reorganized
+The `graph_review_9000` tool has been split into a local review core with a separate GitHub wrapper, which changes how the review tool is packaged internally but not how you invoke it.
