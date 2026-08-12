@@ -561,7 +561,7 @@ impl Pipeline {
         self.events
             .step_started(&self.call_stack, &path_text, FILTER_TOOL, &raw);
         let started = std::time::Instant::now();
-        let eval = self.run_filter_scoped(raw_input, scope).await;
+        let eval = self.run_filter_scoped(path, raw_input, scope).await;
         match &eval {
             Ok(result) => self.events.step_finished(
                 &self.call_stack,
@@ -605,7 +605,11 @@ impl Pipeline {
             .step_started(&self.call_stack, &path_text, EXIT_TOOL, rendered);
         self.events.tool_started(EXIT_TOOL, rendered);
         let started = std::time::Instant::now();
-        let eval = super::exit::evaluate(&path_text, rendered, &self.router).await;
+        let eval = crate::usage::CallSite::role("judge")
+            .at(&path_text)
+            .in_plans(&self.call_stack)
+            .scope(super::exit::evaluate(&path_text, rendered, &self.router))
+            .await;
         match &eval {
             Ok(super::exit::ExitEval::Passed(value)) => {
                 self.events

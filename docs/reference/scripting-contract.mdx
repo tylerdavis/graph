@@ -177,6 +177,50 @@ Schemas are deliberately not included — a few hundred tools would bury the nam
 
 For anything scheduled or scripted, prefer `plan run` — determinism and cost move together. The per-construct breakdown (gates, map bodies) is in [Execution model](/architecture/execution-model#cost-table).
 
+These are call counts, which is the part you can reason about before running
+anything. What a run *actually* spent is reported — see below.
+
+## What a run spent
+
+Every run reports its tokens, and its cost when [`[pricing]`](/reference/configuration#pricing--per-model-token-prices)
+is configured. `plan run` prints a one-line summary to stderr and carries the
+full report in `--json`:
+
+```json
+"usage": {
+  "calls": 47,
+  "input_tokens": 402118,
+  "output_tokens": 38402,
+  "cache_creation_input_tokens": 61044,
+  "cache_read_input_tokens": 1480048,
+  "cost_usd": 2.41,
+  "by_step": [
+    {"path": "E4f/do.1/agent", "calls": 19, "input_tokens": 41220, "cost_usd": 0.42},
+    {"path": "E5", "calls": 1, "input_tokens": 88110, "cost_usd": 0.31}
+  ],
+  "by_model": [
+    {"provider": "anthropic", "model": "claude-sonnet-5", "calls": 41, "cost_usd": 2.36}
+  ]
+}
+```
+
+- The three input figures are **disjoint** — a prompt's real size is
+  `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`.
+  `input_tokens` alone is what was billed at the full rate.
+- `by_step` is sorted most expensive first, and covers nested plans too: a
+  plan called as `plan__*` reports its steps under `<plan>/<step>`, and its
+  spend rolls into the caller's total.
+- `cost_usd` is **absent**, at every level, when no price is configured for
+  the model — never estimated. Token counts always appear.
+- An `agent` step's rounds *and* its schema-repair calls both land on that
+  step, so the number next to it is the whole cost of that step.
+- The report also appears on a **failed** run's stderr summary: a run that
+  died at the last step still spent everything before it.
+
+`ask --json` reports the same object under `usage`. Because it comes from the
+same ledger, it includes tokens spent inside any `plan__*` tool the turn
+called — which the agent's own accounting cannot see.
+
 ## Event feed: `GRAPH_EVENTS=jsonl`
 
 With `GRAPH_EVENTS=jsonl`, stderr switches from human progress to one JSON object per line — the machine-parseable run feed. Answer text still streams to stdout. Events:
@@ -192,8 +236,26 @@ With `GRAPH_EVENTS=jsonl`, stderr switches from human progress to one JSON objec
 | `draft_outline` | `items` | drafting produced its outline |
 | `draft_step_started` | `index`, `summary` | drafting begins a step |
 | `draft_step_finished` | `index`, `step`, `problems`, `attempt` | that step was accepted (or retried) |
+| `llm_call` | `site`, `model`, `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `ms` | any model call completes |
+| `usage_summary` | `usage` (the `plan run --json` report) | the run ends, after the last step |
 
 Token-level solver deltas are deliberately not emitted.
+
+`llm_call` fires once per *billable* call, which is not once per step: an
+`agent` step emits one per round plus one per schema repair, and a call that
+failed over reports the model that actually answered. `site` is the step path
+in bus syntax (plan-qualified when nested, e.g. `graph_review_core/E4f/do.2/agent`),
+or a role name — `solver`, `planner` — for calls belonging to no step. It is
+the same key `usage.by_step` groups on.
+
+Piping this feed is how you keep usage history: graph stores none itself.
+
+```bash
+GRAPH_EVENTS=jsonl graph plan run my_plan 2>events.jsonl
+jq -s 'map(select(.event == "llm_call")) | group_by(.site)
+       | map({site: .[0].site, calls: length,
+              input: (map(.input_tokens) | add)})' events.jsonl
+```
 
 ## Environment variables
 

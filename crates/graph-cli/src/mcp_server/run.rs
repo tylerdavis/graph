@@ -221,10 +221,13 @@ pub async fn run_plan(
     // Never a terminal sink: anything written to stdout would corrupt the
     // protocol. `events` either forwards MCP progress notifications or
     // discards.
+    // Stream spend as it accrues: the final figure rides the result body,
+    // but a client watching a long run has no other way to see it building.
+    runtime.usage.attach_events(events.clone());
     let pipeline = runtime
         .pipeline_with(
             &store,
-            events,
+            events.clone(),
             crate::runtime::PipelineHooks { gate, interlocutor },
         )
         .await?;
@@ -235,6 +238,13 @@ pub async fn run_plan(
         .await;
     runtime.shutdown().await;
 
+    // Drained before the branches below: a cancelled or failed run has still
+    // spent the tokens, and that is exactly when the number is worth having.
+    let usage = runtime.usage.take();
+    if !usage.is_empty() {
+        events.usage_summary(&usage);
+    }
+
     // A cancelled run is not a failure to report as one: the client asked
     // for it and has already stopped listening for the result.
     let outcome = match result {
@@ -243,6 +253,7 @@ pub async fn run_plan(
                 "error": format!("plan '{identifier}' was cancelled"),
                 "plan": identifier,
                 "steps_executed": state.steps_executed(),
+                "usage": (!usage.is_empty()).then_some(&usage),
             })));
         }
         other => other?,
@@ -253,6 +264,7 @@ pub async fn run_plan(
         "plan": doc.identifier,
         "steps_executed": outcome.state.steps_executed(),
         "exit": outcome.exit,
+        "usage": (!usage.is_empty()).then_some(&usage),
     });
     let asserted = matches!(&outcome.exit, Some(exit) if exit.status == ExitStatus::Error);
     Ok(if asserted {

@@ -48,6 +48,7 @@ pub use state::{BusEntry, BusKind, RunState};
 use crate::store::{Store, ToolShape};
 use crate::template::{render_input, render_str, RenderError, Roots};
 use crate::tools::{ToolOutcome, ToolRegistry};
+use crate::usage::CallSite;
 use crate::EventSink;
 use futures::StreamExt;
 use graph_config::Role;
@@ -92,6 +93,18 @@ pub struct Pipeline {
     pub user_context: String,
     pub current_date: String,
     pub max_attempts: u32,
+    /// Where this run's model calls are tallied. Shared with the
+    /// [`ModelRouter`] as its `UsageMeter`, and — because [`Pipeline::nested`]
+    /// clones — with every plan this one calls, so a composed plan's spend
+    /// rolls up into its caller for free.
+    ///
+    /// Deliberately **not** drained by the pipeline, and so deliberately not
+    /// a field on [`PipelineOutcome`]: `call_plan` runs a nested plan through
+    /// the same `run_explicit` entry point against this same ledger, so a
+    /// drain in there would hand the inner plan its caller's tally and leave
+    /// the caller reporting only what happened afterwards. The owner of the
+    /// top-level run calls [`UsageLedger::take`] once, when it is over.
+    pub usage: Arc<crate::usage::UsageLedger>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -686,16 +699,16 @@ impl Pipeline {
             .planner_system(&existing_plan, &state.next_step_id(), last_error.as_deref())
             .await;
 
-        let output: PlannerOutput = self
-            .router
-            .get_structured(
+        let output: PlannerOutput = CallSite::role("planner")
+            .in_plans(&self.call_stack)
+            .scope(self.router.get_structured(
                 Role::Planner,
                 system,
                 vec![ChatMessage::User {
                     content: state.query.clone(),
                 }],
                 "plan",
-            )
+            ))
             .await?;
 
         // Merge: executed steps are immutable and keep their run order;
@@ -825,7 +838,11 @@ impl Pipeline {
                     .step_started(&self.call_stack, &step.id, EXIT_TOOL, &rendered);
                 self.events.tool_started(EXIT_TOOL, &rendered);
                 let started = std::time::Instant::now();
-                let eval = exit::evaluate(&step.id, &rendered, &self.router).await;
+                let eval = CallSite::role("judge")
+                    .at(&step.id)
+                    .in_plans(&self.call_stack)
+                    .scope(exit::evaluate(&step.id, &rendered, &self.router))
+                    .await;
                 match eval {
                     Ok(exit::ExitEval::Passed(result)) => {
                         self.events
@@ -975,8 +992,20 @@ impl Pipeline {
                 is_error: call.is_error,
             }
         } else {
-            self.registry
-                .invoke(tool_name, rendered)
+            // Prompt tools (`builtin__infer`, user tools with a `prompt`)
+            // make model calls from inside the registry, where there is no
+            // step context. Scoping the dispatch is what attributes them —
+            // and it covers every prompt tool at every depth at once, rather
+            // than one edit per tool implementation. Tools that never call a
+            // model just carry an unused scope.
+            //
+            // The `plan__`/`plan_and_execute` branches above are deliberately
+            // left unscoped: a nested plan sets its own scopes at its own
+            // inference sites, which is what keeps its steps distinct.
+            CallSite::role(tool_name)
+                .at(&path_text)
+                .in_plans(&self.call_stack)
+                .scope(self.registry.invoke(tool_name, rendered))
                 .await
                 .unwrap_or_else(|e| ToolOutcome {
                     result: json!({"error": e.to_string()}),
@@ -1103,25 +1132,36 @@ impl Pipeline {
         );
 
         self.events.synthesizing();
-        let mut stream = self
-            .router
-            .chat_stream(
-                Role::Solver,
-                ChatRequest {
-                    system,
-                    messages: vec![ChatMessage::User { content: message }],
-                    ..Default::default()
-                },
-            )
+        // The scope covers draining the stream, not just opening it: usage
+        // rides the terminal event, so a scope that ended at `chat_stream`
+        // would meter the tokens with no idea who spent them.
+        let response = CallSite::role("solver")
+            .in_plans(&self.call_stack)
+            .scope(async {
+                let mut stream = self
+                    .router
+                    .chat_stream(
+                        Role::Solver,
+                        ChatRequest {
+                            system,
+                            messages: vec![ChatMessage::User { content: message }],
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+                let mut response = None;
+                while let Some(event) = stream.next().await {
+                    match event.map_err(PipelineError::Llm)? {
+                        graph_llm::types::StreamEvent::TextDelta(text) => {
+                            self.events.solver_delta(&text)
+                        }
+                        graph_llm::types::StreamEvent::ToolCallStarted { .. } => {}
+                        graph_llm::types::StreamEvent::Completed(r) => response = Some(r),
+                    }
+                }
+                Ok::<_, PipelineError>(response)
+            })
             .await?;
-        let mut response = None;
-        while let Some(event) = stream.next().await {
-            match event.map_err(PipelineError::Llm)? {
-                graph_llm::types::StreamEvent::TextDelta(text) => self.events.solver_delta(&text),
-                graph_llm::types::StreamEvent::ToolCallStarted { .. } => {}
-                graph_llm::types::StreamEvent::Completed(r) => response = Some(r),
-            }
-        }
         let response = response.ok_or_else(|| {
             PipelineError::Llm(graph_llm::LlmError::Parse(
                 "solver stream ended without completing".into(),
@@ -1154,16 +1194,16 @@ impl Pipeline {
             errors.join("\n")
         );
         self.events.synthesizing();
-        let response = self
-            .router
-            .chat(
+        let response = CallSite::role("solver")
+            .in_plans(&self.call_stack)
+            .scope(self.router.chat(
                 Role::Solver,
                 ChatRequest {
                     system: prompts::ERROR_SUMMARY_PROMPT.to_string(),
                     messages: vec![ChatMessage::User { content: message }],
                     ..Default::default()
                 },
-            )
+            ))
             .await?;
         Ok(PipelineOutcome {
             answer: response.content.unwrap_or_default(),

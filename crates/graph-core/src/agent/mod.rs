@@ -89,13 +89,19 @@ impl Agent {
                 self.events.iteration(iteration);
             }
             iteration += 1;
-            let response = self.stream_once(messages, &tools).await?;
-            usage.input_tokens += response.usage.input_tokens;
-            usage.output_tokens += response.usage.output_tokens;
+            // `stream_once` opens *and* drains the stream, so one scope over
+            // the call covers the terminal event that carries the counts.
+            let response = crate::usage::CallSite::role("chat")
+                .scope(self.stream_once(messages, &tools))
+                .await?;
+            usage.add(&response.usage);
 
             messages.push(ChatMessage::Assistant {
                 content: response.content.clone(),
                 tool_calls: response.tool_calls.clone(),
+                // Carried forward so the model keeps its own reasoning
+                // across rounds instead of re-deriving it each time.
+                thinking: response.thinking.clone(),
             });
 
             if response.tool_calls.is_empty() {
@@ -308,11 +314,13 @@ mod tests {
         ChatResponse {
             content: Some(text.to_string()),
             tool_calls: vec![],
+            thinking: Vec::new(),
             structured: None,
             stop_reason: StopReason::EndTurn,
             usage: Usage {
                 input_tokens: 10,
                 output_tokens: 5,
+                ..Default::default()
             },
         }
     }
@@ -320,6 +328,7 @@ mod tests {
     fn tool_response(calls: Vec<(&str, Value)>) -> ChatResponse {
         ChatResponse {
             content: None,
+            thinking: Vec::new(),
             tool_calls: calls
                 .into_iter()
                 .enumerate()
@@ -334,6 +343,7 @@ mod tests {
             usage: Usage {
                 input_tokens: 10,
                 output_tokens: 5,
+                ..Default::default()
             },
         }
     }
@@ -358,11 +368,13 @@ mod tests {
         let empty = ChatResponse {
             content: None,
             tool_calls: vec![],
+            thinking: Vec::new(),
             structured: None,
             stop_reason: StopReason::MaxTokens,
             usage: Usage {
                 input_tokens: 10,
                 output_tokens: 8192,
+                ..Default::default()
             },
         };
         let (subject, _registry) = agent(vec![empty], false);

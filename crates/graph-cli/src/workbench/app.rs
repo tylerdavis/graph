@@ -252,6 +252,8 @@ pub enum Msg {
         attempt: u32,
     },
     Synthesizing,
+    /// End-of-run token/cost summary, already formatted.
+    RunUsage(String),
     StepStarted {
         path: String,
         tool: String,
@@ -359,6 +361,7 @@ impl Msg {
                 serde_json::json!({ "step": step, "problems": problems })
             ),
             Msg::Synthesizing => "synthesizing…".to_string(),
+            Msg::RunUsage(summary) => format!("usage: {summary}"),
             Msg::StepStarted { path, tool, .. } => format!("step started: {path} {tool}"),
             Msg::StepFinished {
                 path,
@@ -557,6 +560,10 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
                 format!("step invalid (attempt {attempt}/{MAX_STEP_ATTEMPTS}) — retrying")
             };
             app.ws.draft_step_finished(index, step, &problems, attempt);
+            Vec::new()
+        }
+        Msg::RunUsage(summary) => {
+            app.ws.run_log_info(&summary);
             Vec::new()
         }
         Msg::Synthesizing => {
@@ -2363,5 +2370,22 @@ steps:
         app.mode = Mode::Editing(Box::new(EditorState::confirm_quit("test")));
         update(&mut app, click(50, 15));
         assert_eq!(app.focus, Focus::Chat, "mouse ignored while editing");
+    }
+
+    /// The last link in the chain the unit tests above cover piecewise:
+    /// effects drains the ledger, ChannelSink turns it into `Msg::RunUsage`,
+    /// and the reducer has to put it somewhere a human reads.
+    #[test]
+    fn a_run_usage_message_lands_in_the_run_log() {
+        let mut app = App::new(None);
+        update(
+            &mut app,
+            Msg::RunUsage("6 calls · 8k in / 248 out · $0.01".into()),
+        );
+        let logged = app.ws.run_log.iter().any(|line| {
+            matches!(line, crate::workbench::plan_ws::RunLine::Info(text)
+                     if text == "6 calls · 8k in / 248 out · $0.01")
+        });
+        assert!(logged, "usage never reached the run log");
     }
 }

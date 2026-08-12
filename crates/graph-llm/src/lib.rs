@@ -3,6 +3,7 @@
 
 mod error;
 mod failover;
+mod metering;
 mod provider;
 pub mod providers;
 mod retry;
@@ -11,5 +12,6 @@ mod structured;
 pub mod types;
 
 pub use error::LlmError;
+pub use metering::{LlmCall, MeteredProvider, UsageMeter};
 pub use provider::ChatProvider;
 pub use roles::ModelRouter;

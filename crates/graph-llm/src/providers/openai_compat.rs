@@ -201,8 +201,7 @@ impl StreamAssembler {
             Err(e) => return vec![Err(LlmError::Parse(format!("bad SSE payload: {e}")))],
         };
         if let Some(usage) = parsed.get("usage").filter(|u| !u.is_null()) {
-            self.usage.input_tokens = usage["prompt_tokens"].as_u64().unwrap_or(0);
-            self.usage.output_tokens = usage["completion_tokens"].as_u64().unwrap_or(0);
+            self.usage = parse_usage(usage);
         }
         let Some(choice) = parsed["choices"].get(0) else {
             return vec![];
@@ -264,6 +263,7 @@ impl StreamAssembler {
             None
         };
         Ok(StreamEvent::Completed(ChatResponse {
+            thinking: Vec::new(),
             content: (!text.is_empty() && structured.is_none()).then_some(text),
             tool_calls,
             structured,
@@ -286,6 +286,9 @@ fn to_openai_messages(messages: &[ChatMessage]) -> Vec<Value> {
             ChatMessage::Assistant {
                 content,
                 tool_calls,
+                // No reasoning-block concept on this wire format; graph
+                // never populates it for these providers.
+                thinking: _,
             } => {
                 let mut msg = Map::new();
                 msg.insert("role".into(), json!("assistant"));
@@ -357,6 +360,7 @@ fn parse_response(value: &Value, wants_structured: bool) -> Result<ChatResponse,
     };
 
     Ok(ChatResponse {
+        thinking: Vec::new(),
         content: (!text.is_empty() && structured.is_none()).then_some(text),
         tool_calls,
         structured,
@@ -366,11 +370,30 @@ fn parse_response(value: &Value, wants_structured: bool) -> Result<ChatResponse,
             Some("stop") => StopReason::EndTurn,
             _ => StopReason::Other,
         },
-        usage: Usage {
-            input_tokens: value["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
-            output_tokens: value["usage"]["completion_tokens"].as_u64().unwrap_or(0),
-        },
+        usage: parse_usage(&value["usage"]),
     })
+}
+
+/// Reads an OpenAI-shaped `usage` object.
+///
+/// Two shape differences from Anthropic worth spelling out. `prompt_tokens` is
+/// the *whole* input including anything served from cache, so the cached
+/// subset is subtracted back out to keep [`Usage::input_tokens`] meaning
+/// "billed at full rate" on every provider. And there is no cache-write
+/// figure because caching here is automatic and server-side — nothing is
+/// billed at a write premium, so `cache_creation_input_tokens` stays zero.
+fn parse_usage(usage: &Value) -> Usage {
+    let prompt = usage["prompt_tokens"].as_u64().unwrap_or(0);
+    let cached = usage["prompt_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .unwrap_or(0)
+        .min(prompt);
+    Usage {
+        input_tokens: prompt - cached,
+        output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0),
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: cached,
+    }
 }
 
 /// Parse model text as JSON, tolerating markdown code fences that weaker
@@ -450,5 +473,43 @@ mod tests {
         let parsed = parse_response(&value, false).unwrap();
         assert_eq!(parsed.tool_calls[0].arguments, json!({"id": 4}));
         assert_eq!(parsed.usage.input_tokens, 7);
+    }
+
+    #[test]
+    fn cached_tokens_are_split_out_of_prompt_tokens() {
+        // `prompt_tokens` is the whole input here, unlike Anthropic's
+        // disjoint figures — the cached subset has to come back out so
+        // `input_tokens` means the same thing on both providers.
+        let value = json!({
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 10_000,
+                "completion_tokens": 50,
+                "prompt_tokens_details": {"cached_tokens": 8_000},
+            }
+        });
+        let usage = parse_response(&value, false).unwrap().usage;
+        assert_eq!(usage.input_tokens, 2_000);
+        assert_eq!(usage.cache_read_input_tokens, 8_000);
+        // Automatic server-side caching bills no write premium.
+        assert_eq!(usage.cache_creation_input_tokens, 0);
+        assert_eq!(usage.total_input_tokens(), 10_000);
+    }
+
+    #[test]
+    fn cached_tokens_never_underflow_prompt_tokens() {
+        // Defensive: a provider reporting a larger cached count than prompt
+        // total must not wrap `input_tokens` around u64.
+        let value = json!({
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 900},
+            }
+        });
+        let usage = parse_response(&value, false).unwrap().usage;
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.cache_read_input_tokens, 100);
     }
 }

@@ -221,6 +221,46 @@ mod tests {
     }
 
     #[test]
+    fn pricing_parses_and_defaults_the_cache_rates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "config.toml",
+            r#"
+[pricing."claude-sonnet-5"]
+input = 3.0
+output = 15.0
+
+[pricing."claude-haiku-4-5"]
+input = 1.0
+output = 5.0
+cache_write = 9.99
+cache_read = 0.01
+"#,
+        );
+        let pricing = load_from(&[path]).unwrap().config.pricing;
+
+        // Unset cache rates derive from `input`, so the common case is two
+        // lines of config rather than four.
+        let sonnet = &pricing["claude-sonnet-5"];
+        assert_eq!(sonnet.cache_write_rate(), 3.75);
+        assert_eq!(sonnet.cache_read_rate(), 0.30);
+
+        // An explicit rate wins over the derived one — providers price cache
+        // differently and the defaults must not be load-bearing.
+        let haiku = &pricing["claude-haiku-4-5"];
+        assert_eq!(haiku.cache_write_rate(), 9.99);
+        assert_eq!(haiku.cache_read_rate(), 0.01);
+    }
+
+    #[test]
+    fn pricing_is_absent_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), "config.toml", "[settings]\n");
+        assert!(load_from(&[path]).unwrap().config.pricing.is_empty());
+    }
+
+    #[test]
     fn named_models_parse_resolve_and_reject_role_shadowing() {
         let dir = tempfile::tempdir().unwrap();
         let path = write(

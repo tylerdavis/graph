@@ -12,6 +12,7 @@
 //! known.
 
 use super::condition::{evaluate_gate, Condition};
+use super::gate::StepPath;
 use super::iterate::{template_roots, type_name};
 use super::state::BusKind;
 use super::{ExecutionEnd, Pipeline, RunState, Step};
@@ -189,7 +190,10 @@ impl Pipeline {
         step: &Step,
         state: &mut RunState,
     ) -> Result<Value, ExecutionEnd> {
-        match self.run_filter_scoped(&step.input, &state.results).await {
+        match self
+            .run_filter_scoped(&StepPath::top(&step.id), &step.input, &state.results)
+            .await
+        {
             Ok(result) => {
                 let kept = result.get("count").and_then(Value::as_u64).unwrap_or(0);
                 let dropped = result
@@ -221,6 +225,7 @@ impl Pipeline {
     /// shadowing an enclosing body's.
     pub(super) async fn run_filter_scoped(
         &self,
+        path: &StepPath,
         raw_input: &Map<String, Value>,
         scope: &Map<String, Value>,
     ) -> Result<Value, FilterFail> {
@@ -293,7 +298,7 @@ impl Pipeline {
                         layered.insert("item".to_string(), item.clone());
                         layered.insert("index".to_string(), json!(index));
                         let verdict = self
-                            .item_verdict(where_ref, infer_ref, model_ref, &layered, index)
+                            .item_verdict(path, where_ref, infer_ref, model_ref, &layered, index)
                             .await;
                         if verdict.is_err() {
                             halted_ref.store(true, Ordering::Relaxed);
@@ -343,6 +348,7 @@ impl Pipeline {
     /// evaluate it — locally for `where`, via the judge for `infer`.
     async fn item_verdict(
         &self,
+        path: &StepPath,
         where_: &Option<Value>,
         infer: &Option<String>,
         model: Option<&str>,
@@ -368,7 +374,13 @@ impl Pipeline {
                     e @ RenderError::EmptyData { .. } => FilterFail::Empty(e),
                     e => FilterFail::Failed(format!("`infer` item {index}: {e}")),
                 })?;
-                let (verdict, _reason) = evaluate_gate(None, Some(&rendered), model, &self.router)
+                // Per item, and `concurrency` runs several at once — this is
+                // the other place attribution has to ride the future rather
+                // than any shared cursor.
+                let (verdict, _reason) = crate::usage::CallSite::role("judge")
+                    .at(path.to_string())
+                    .in_plans(&self.call_stack)
+                    .scope(evaluate_gate(None, Some(&rendered), model, &self.router))
                     .await
                     .map_err(|e| FilterFail::Failed(format!("item {index}: {e}")))?;
                 Ok(verdict)

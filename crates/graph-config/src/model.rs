@@ -30,6 +30,47 @@ pub struct Config {
     pub prompts: PromptConfig,
     #[serde(default)]
     pub workbench: WorkbenchConfig,
+    /// Per-model token prices, e.g. `[pricing."claude-sonnet-5"]`. Keyed by
+    /// the model id as written in `[models]` — that is what goes on the wire.
+    /// Absent prices mean usage is reported in tokens with no dollar figure.
+    #[serde(default)]
+    pub pricing: BTreeMap<String, ModelPrice>,
+}
+
+/// What one model costs, in USD per million tokens.
+///
+/// Deliberately not shipped with built-in defaults: published prices change,
+/// and a stale table that quietly reports the wrong dollar figure is worse
+/// than reporting none. An unpriced model still reports its token counts.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelPrice {
+    /// Uncached input tokens.
+    pub input: f64,
+    pub output: f64,
+    /// Tokens written to the prompt cache. Defaults to `input` x 1.25, the
+    /// standard premium for a 5-minute TTL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write: Option<f64>,
+    /// Tokens served from the prompt cache. Defaults to `input` x 0.10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<f64>,
+}
+
+impl ModelPrice {
+    /// Cache-write rate, falling back to the standard 1.25x premium.
+    pub fn cache_write_rate(&self) -> f64 {
+        self.cache_write.unwrap_or(self.input * 1.25)
+    }
+
+    /// Cache-read rate, falling back to the standard 0.1x rate.
+    ///
+    /// Divides rather than multiplying by 0.1: `3.0 * 0.1` lands a rounding
+    /// step away from `0.3`, and a rate that prints as `0.30000000000000004`
+    /// invites doubt about the whole cost figure.
+    pub fn cache_read_rate(&self) -> f64 {
+        self.cache_read.unwrap_or(self.input / 10.0)
+    }
 }
 
 /// System-prompt overrides. Each field replaces the built-in text

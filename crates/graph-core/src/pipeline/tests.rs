@@ -40,6 +40,7 @@ fn structured(value: Value) -> ChatResponse {
     ChatResponse {
         content: None,
         tool_calls: vec![],
+        thinking: Vec::new(),
         structured: Some(value),
         stop_reason: StopReason::EndTurn,
         usage: Usage::default(),
@@ -50,6 +51,7 @@ fn text(answer: &str) -> ChatResponse {
     ChatResponse {
         content: Some(answer.to_string()),
         tool_calls: vec![],
+        thinking: Vec::new(),
         structured: None,
         stop_reason: StopReason::EndTurn,
         usage: Usage::default(),
@@ -140,7 +142,12 @@ fn pipeline_with_named(
         named,
         ..Default::default()
     };
-    let router = Arc::new(graph_llm::ModelRouter::with_providers(providers, roles));
+    // The ledger is both the router's meter and the pipeline's tally, exactly
+    // as `Runtime` wires it, so tests exercise the real attribution path.
+    let usage = Arc::new(crate::usage::UsageLedger::unpriced());
+    let router = Arc::new(
+        graph_llm::ModelRouter::with_providers(providers, roles).with_meter(usage.clone()),
+    );
     (
         Pipeline {
             router,
@@ -155,6 +162,7 @@ fn pipeline_with_named(
             user_context: "test user".into(),
             current_date: "2026-07-09".into(),
             max_attempts,
+            usage,
         },
         provider,
     )
@@ -3332,6 +3340,7 @@ fn step_draft_schema_makes_step_nullable() {
 
 fn tool_use(id: &str, name: &str, args: Value) -> ChatResponse {
     ChatResponse {
+        thinking: Vec::new(),
         content: None,
         tool_calls: vec![graph_llm::types::ToolCall {
             id: id.to_string(),
@@ -3391,6 +3400,264 @@ async fn agent_calls_a_tool_then_returns_structured_output() {
 
     // The tool really ran, through the registry.
     assert_eq!(registry.invocations.lock().unwrap()[0].0, "t__search");
+}
+
+/// The agent is told "conform to the output schema provided" — so the schema
+/// has to actually be provided. It can reach the model two ways: natively via
+/// `response_schema`, or as text the model can read. If neither happens the
+/// model is guessing field names, every guess fails validation, and each
+/// failure burns a round — which is what an agent that always exhausts its
+/// budget looks like from the outside.
+#[tokio::test]
+async fn the_final_round_withdraws_tools_and_forces_the_schema() {
+    let registry = search_registry(json!({"values": []}));
+    // Budget of 2: round 1 calls a tool, round 2 is the forced answer round.
+    let (pipeline, provider) = pipeline(
+        vec![
+            tool_use("c1", "t__search", json!({"query": "x"})),
+            text(r#"{"found": 0}"#),
+        ],
+        registry,
+        1,
+    );
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({
+            "prompt": "look",
+            "outputSchema": OUT_SCHEMA(),
+            "tools": ["t__*"],
+            "maxIterations": 2
+        })
+    )]))
+    .unwrap();
+
+    pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        !requests[0].tools.is_empty(),
+        "ordinary rounds keep their tools"
+    );
+    assert!(requests[0].response_schema.is_none());
+
+    // The answer round: no tools to reach for, and the provider is told to
+    // force the shape rather than hope for it.
+    assert!(
+        requests[1].tools.is_empty(),
+        "the final round must withdraw tools — a forced schema makes them \
+         unreachable anyway"
+    );
+    let forced = requests[1]
+        .response_schema
+        .as_ref()
+        .expect("final round forces the output schema");
+    assert_eq!(forced.schema, OUT_SCHEMA());
+    // And the model is told, not just silently constrained.
+    assert!(requests[1].messages.iter().any(|m| matches!(
+        m, graph_llm::types::ChatMessage::User { content } if content.contains("final turn")
+    )));
+
+    // The budget is never named in the system prompt: a number reads as an
+    // allowance to spend, and competes with what the plan's own prompt says
+    // about how much ground to cover. The final-turn notice is the backstop.
+    assert!(
+        !requests[0].system.contains("2 round") && !requests[0].system.contains("budget"),
+        "the system prompt must not state a round budget:\n{}",
+        requests[0].system
+    );
+}
+
+#[tokio::test]
+async fn a_forced_final_answer_comes_back_final_and_usable() {
+    // What the provider returns when the schema is forced: the object arrives
+    // in `structured`, already validated, with no text to parse.
+    let registry = search_registry(json!({"values": []}));
+    let forced = ChatResponse {
+        content: None,
+        tool_calls: vec![],
+        thinking: vec![],
+        structured: Some(json!({"found": 7})),
+        stop_reason: StopReason::EndTurn,
+        usage: Usage::default(),
+    };
+    let (pipeline, _) = pipeline(
+        vec![tool_use("c1", "t__search", json!({"query": "x"})), forced],
+        registry,
+        1,
+    );
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({
+            "prompt": "look",
+            "outputSchema": OUT_SCHEMA(),
+            "tools": ["t__*"],
+            "maxIterations": 2
+        })
+    )]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let result = &outcome.state.results["E0"];
+    // Previously this shape — budget spent, tools still wanted — returned
+    // final:false with an empty object, and every downstream step that
+    // touched `output` failed as a bad path.
+    assert_eq!(result["final"], json!(true));
+    assert_eq!(result["output"], json!({"found": 7}));
+    assert_eq!(result["iterations"], json!(2));
+}
+
+#[tokio::test]
+async fn the_agent_shows_the_model_its_output_schema() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = pipeline(vec![text(r#"{"grobnicate": 1}"#)], registry, 1);
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({
+            "prompt": "do the thing",
+            // A property name that appears nowhere else, so finding it in the
+            // request can only mean the schema was sent.
+            "outputSchema": {
+                "type": "object",
+                "required": ["grobnicate"],
+                "properties": {"grobnicate": {"type": "integer"}}
+            }
+        })
+    )]))
+    .unwrap();
+
+    let _ = pipeline.run_explicit("q", plan, Finish::Silent, None).await;
+
+    let requests = provider.requests.lock().unwrap();
+    let first = requests.first().expect("the agent made a call");
+    let sent_as_text = first.system.contains("grobnicate")
+        || first.messages.iter().any(|m| {
+            matches!(m, graph_llm::types::ChatMessage::User { content }
+                     if content.contains("grobnicate"))
+        });
+    let sent_natively = first
+        .response_schema
+        .as_ref()
+        .is_some_and(|s| s.schema.to_string().contains("grobnicate"));
+
+    assert!(
+        sent_as_text || sent_natively,
+        "the agent never showed the model its output schema — it was asked to \
+         match a shape it cannot see.\n  system: {}\n  response_schema: {:?}",
+        first.system,
+        first.response_schema.as_ref().map(|s| &s.schema),
+    );
+}
+
+#[tokio::test]
+async fn usage_is_attributed_to_the_step_that_spent_it() {
+    let registry = search_registry(json!({"values": [{"id": "team-1"}]}));
+    let (pipeline, _) = pipeline(
+        vec![
+            // Two agent rounds…
+            tool_use("c1", "t__search", json!({"query": "x"})),
+            text(r#"{"found": 1}"#),
+            // …then the solver.
+            text("the answer"),
+        ],
+        registry,
+        1,
+    );
+
+    let plan: Plan = serde_json::from_value(json!([agent_step(
+        "E0",
+        json!({
+            "prompt": "find things",
+            "outputSchema": OUT_SCHEMA(),
+            "tools": ["t__*"]
+        })
+    )]))
+    .unwrap();
+
+    pipeline
+        .run_explicit("q", plan, Finish::Solve(SolverData::default()), None)
+        .await
+        .unwrap();
+
+    let report = pipeline.usage.take();
+    assert_eq!(report.calls, 3, "two agent rounds plus the solver");
+
+    let by_step: std::collections::HashMap<&str, usize> = report
+        .by_step
+        .iter()
+        .map(|s| (s.path.as_str(), s.calls))
+        .collect();
+    // The agent's rounds land on its step id, not in an unattributed bucket —
+    // this is what makes "the scouts cost most of the run" a readable fact
+    // rather than an inference.
+    assert_eq!(by_step.get("E0"), Some(&2));
+    assert_eq!(by_step.get("solver"), Some(&1));
+    assert!(
+        !by_step.contains_key("unknown"),
+        "every pipeline inference site should be scoped: {by_step:?}"
+    );
+}
+
+#[tokio::test]
+async fn nested_plan_usage_rolls_up_into_its_caller() {
+    // `graph_review_9000` calls `plan__graph_review_core`; the caller has to
+    // see the callee's spend or the composed plan reports almost nothing.
+    let registry = search_registry(json!({"values": []}));
+    let inner = plan_doc_yaml(
+        r#"
+identifier: inner
+name: Inner
+description: an agent step in a callee plan
+steps:
+  - id: E0
+    tool_name: agent
+    input:
+      prompt: inner work
+      output_schema:
+        type: object
+        required: [found]
+        properties:
+          found: { type: integer }
+    reasoning: the callee's own spend
+output:
+  found: '{{E0.output.found}}'
+"#,
+    );
+    let (mut pipeline, _) = pipeline(
+        vec![text(r#"{"found": 2}"#), text(r#"{"found": 3}"#)],
+        registry,
+        1,
+    );
+    pipeline.plans = Arc::new(vec![inner]);
+
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "plan__inner", "input": {}},
+        agent_step("E1", json!({"prompt": "outer", "outputSchema": OUT_SCHEMA()})),
+    ]))
+    .unwrap();
+
+    pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let report = pipeline.usage.take();
+    assert_eq!(report.calls, 2, "the inner plan's call is not lost");
+    let paths: Vec<&str> = report.by_step.iter().map(|s| s.path.as_str()).collect();
+    // Qualified by the plan it ran in, so the inner E0 stays distinct from
+    // the outer plan's own steps.
+    assert!(paths.contains(&"inner/E0"), "got {paths:?}");
+    assert!(paths.contains(&"E1"), "got {paths:?}");
 }
 
 #[tokio::test]

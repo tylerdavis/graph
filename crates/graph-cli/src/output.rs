@@ -212,7 +212,40 @@ impl EventSink for JsonlSink {
     fn synthesizing(&self) {
         self.emit(serde_json::json!({"event": "synthesizing"}));
     }
+
+    fn llm_call(
+        &self,
+        site: &str,
+        model: &str,
+        usage: &graph_llm::types::Usage,
+        elapsed: Duration,
+    ) {
+        self.emit(serde_json::json!({
+            "event": "llm_call",
+            "site": site,
+            "model": model,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+            "cache_read_input_tokens": usage.cache_read_input_tokens,
+            "ms": elapsed.as_millis() as u64,
+        }));
+    }
+
+    fn usage_summary(&self, report: &graph_core::usage::UsageReport) {
+        self.emit(serde_json::json!({"event": "usage_summary", "usage": report}));
+    }
     // solver_delta intentionally not emitted: token-level noise.
+}
+
+/// True when stderr is the machine-parseable event feed.
+///
+/// Anything that would `eprintln!` prose for a human has to check this
+/// first: under `GRAPH_EVENTS=jsonl` stderr is one JSON object per line, and
+/// a single bare line breaks every consumer parsing it line by line. The
+/// equivalent information belongs in an event instead.
+pub fn jsonl_events() -> bool {
+    std::env::var("GRAPH_EVENTS").as_deref() == Ok("jsonl")
 }
 
 /// The standard sink choice: JSONL when `GRAPH_EVENTS=jsonl`, else the TTY
@@ -220,7 +253,7 @@ impl EventSink for JsonlSink {
 /// annotations — see [`gha_annotations`]). `solver_stdout` only applies to
 /// the TTY sink (plan run).
 pub fn make_sink(quiet_text: bool, solver_stdout: bool) -> std::sync::Arc<dyn EventSink> {
-    if std::env::var("GRAPH_EVENTS").as_deref() == Ok("jsonl") {
+    if jsonl_events() {
         std::sync::Arc::new(JsonlSink::new(quiet_text))
     } else if solver_stdout {
         std::sync::Arc::new(TtySink::for_plan_run())

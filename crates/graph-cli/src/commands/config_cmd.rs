@@ -34,6 +34,20 @@ default = { provider = "anthropic", model = "claude-sonnet-5" }
 # planner = { provider = "anthropic", model = "claude-fable-5", temperature = 0.0 }
 # solver  = { provider = "anthropic", model = "claude-haiku-4-5", temperature = 0.4 }
 
+# Token prices, in USD per million tokens, keyed by model id. Without them a
+# run still reports its token counts — it just omits the dollar figure rather
+# than guessing one. Published prices change: check them before relying on
+# the number, and keep these entries current.
+# [pricing."claude-sonnet-5"]
+# input = 3.00
+# output = 15.00
+# cache_write = 3.75   # optional; defaults to input x 1.25
+# cache_read = 0.30    # optional; defaults to input x 0.10
+
+# [pricing."claude-haiku-4-5"]
+# input = 1.00
+# output = 5.00
+
 # [mcp.github]
 # command = "docker"
 # args = ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"]

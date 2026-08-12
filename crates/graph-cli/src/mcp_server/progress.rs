@@ -15,12 +15,15 @@
 //! left unset and `progress` simply counts events — that is exactly the
 //! "indeterminate but alive" case the field is specified for.
 
-use graph_core::EventSink;
+use graph_core::usage::UsageReport;
+use graph_core::{compact_tokens, EventSink};
+use graph_llm::types::Usage;
 use rmcp::model::{ProgressNotificationParam, ProgressToken};
 use rmcp::service::Peer;
 use rmcp::RoleServer;
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
@@ -74,6 +77,13 @@ pub fn sink_for(context: &rmcp::service::RequestContext<RoleServer>) -> Progress
 pub struct ProgressSink {
     tx: UnboundedSender<String>,
     counter: AtomicU64,
+    /// Running token totals, reported as the run proceeds.
+    ///
+    /// The final figure also reaches the caller on `plan_run`'s result body,
+    /// so what this adds is the *mid-run* answer to "how much is this costing
+    /// me" — which a client watching a twenty-minute review has no other way
+    /// to get.
+    spend: Mutex<(u64, Usage)>,
 }
 
 impl ProgressSink {
@@ -105,6 +115,7 @@ impl ProgressSink {
             Self {
                 tx,
                 counter: AtomicU64::new(0),
+                spend: Mutex::new((0, Usage::default())),
             },
             forwarder,
         ))
@@ -155,6 +166,28 @@ impl EventSink for ProgressSink {
         // likely to trip a client timeout with nothing else on the wire.
         self.emit("synthesizing the answer".into());
     }
+
+    fn llm_call(&self, site: &str, _model: &str, usage: &Usage, _elapsed: Duration) {
+        // Cumulative rather than per-call deltas: a client that samples the
+        // notification stream still sees the current total, and one line per
+        // inference sits at the same granularity as the step events already
+        // on the wire.
+        let (calls, total) = {
+            let mut spend = self.spend.lock().unwrap();
+            spend.0 += 1;
+            spend.1.add(usage);
+            (spend.0, spend.1)
+        };
+        self.emit(format!(
+            "{site} — {calls} call(s), {} in / {} out so far",
+            compact_tokens(total.total_input_tokens()),
+            compact_tokens(total.output_tokens),
+        ));
+    }
+
+    fn usage_summary(&self, report: &UsageReport) {
+        self.emit(report.summary());
+    }
     // text_delta / solver_delta are deliberately not forwarded: token-level
     // noise would be one notification per token.
 }
@@ -199,6 +232,64 @@ impl graph_core::pipeline::ExecutionGate for CancelGate {
 mod tests {
     use super::*;
     use graph_core::pipeline::{ExecutionGate, GateDecision};
+
+    /// A sink wired to a plain channel — `new` needs a live MCP peer, which a
+    /// unit test has no business standing up.
+    fn sink() -> (ProgressSink, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let (tx, rx) = unbounded_channel();
+        (
+            ProgressSink {
+                tx,
+                counter: AtomicU64::new(0),
+                spend: Mutex::new((0, Usage::default())),
+            },
+            rx,
+        )
+    }
+
+    fn tokens(input: u64, output: u64) -> Usage {
+        Usage {
+            input_tokens: input,
+            output_tokens: output,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn spend_notifications_accumulate_across_calls() {
+        let (sink, mut rx) = sink();
+
+        sink.llm_call("E0", "m", &tokens(1_000, 100), Duration::from_millis(1));
+        sink.llm_call("E1", "m", &tokens(2_000, 200), Duration::from_millis(1));
+
+        let first = rx.try_recv().unwrap();
+        let second = rx.try_recv().unwrap();
+        assert!(
+            first.starts_with("E0 — 1 call(s), 1k in / 100 out"),
+            "{first}"
+        );
+        // Cumulative, not per-call: a client that sampled only this one line
+        // still learns the run's total so far.
+        assert!(
+            second.starts_with("E1 — 2 call(s), 3k in / 300 out"),
+            "{second}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_run_total_is_notified_at_the_end() {
+        let (sink, mut rx) = sink();
+        let report = graph_core::usage::UsageReport {
+            calls: 3,
+            total: tokens(5_000, 400),
+            cost_usd: Some(1.5),
+            ..Default::default()
+        };
+
+        sink.usage_summary(&report);
+
+        assert_eq!(rx.try_recv().unwrap(), "3 calls · 5k in / 400 out · $1.50");
+    }
 
     #[tokio::test]
     async fn the_gate_aborts_once_the_client_cancels() {

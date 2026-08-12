@@ -129,6 +129,16 @@ impl EventSink for ChannelSink {
         }
     }
 
+    /// Both kinds report it: a chat turn spends tokens too, and the workbench
+    /// is where plans are iterated on, so what a draft costs to run is part of
+    /// the feedback loop.
+    ///
+    /// Only the end-of-run total — one line per inference would bury the run
+    /// log on a multi-round agent step, and the log is read by a human.
+    fn usage_summary(&self, report: &graph_core::usage::UsageReport) {
+        self.send(Msg::RunUsage(report.summary()));
+    }
+
     fn solver_delta(&self, text: &str) {
         if matches!(self.kind, SinkKind::PlanRun) {
             self.send(Msg::SolverDelta(text.to_string()));
@@ -164,6 +174,41 @@ impl EventSink for ChannelSink {
                 is_error,
                 in_plan,
             });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use graph_llm::types::Usage;
+
+    fn report() -> graph_core::usage::UsageReport {
+        graph_core::usage::UsageReport {
+            calls: 2,
+            total: Usage {
+                input_tokens: 4_000,
+                output_tokens: 250,
+                ..Default::default()
+            },
+            cost_usd: Some(0.42),
+            ..Default::default()
+        }
+    }
+
+    /// Both kinds report usage: a chat turn spends tokens as surely as a plan
+    /// run, and the workbench is where a draft's cost gets discovered.
+    #[test]
+    fn both_sink_kinds_report_the_run_total() {
+        for make in [ChannelSink::plan_run, ChannelSink::agent] {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            make(tx).usage_summary(&report());
+            match rx.try_recv().expect("a usage message") {
+                Msg::RunUsage(summary) => {
+                    assert_eq!(summary, "2 calls · 4k in / 250 out · $0.42")
+                }
+                _ => panic!("expected Msg::RunUsage"),
+            }
         }
     }
 }

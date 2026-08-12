@@ -54,6 +54,10 @@ The solver's report streams dim to stderr as progress; the agent's answer is the
 | `ask` → plan tool | 3 |
 | `ask` → `plan_and_execute` | 4 + 1 per replan |
 
+Call counts are what you can reason about up front. For what a run actually
+spent — tokens and dollars, broken down by step and by model — see
+[what a run spent](/reference/scripting-contract#what-a-run-spent).
+
 ## Model roles
 
 Every inference site resolves through `[models]` role assignment (`chat`, `planner`, `solver`, `repair`, `judge` — falling back to `default`), so cost tuning is pure config: strong model where judgment lives, fast model where volume lives. [Named models](/models/models-and-providers#named-models) extend the fixed roles with user-defined entries selectable at the point of use — per-step model routing without touching the role assignments. Structured outputs (planner, prompt tools) get one automatic `repair`-role fix-up attempt before erroring into the replan loop. The full map of roles, providers, and failover is [Models & providers](/models/models-and-providers).

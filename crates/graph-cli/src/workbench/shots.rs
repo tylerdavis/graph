@@ -182,11 +182,13 @@ impl ScriptedChat {
                 LlmScript::Text { text } => ChatResponse {
                     content: Some(text),
                     tool_calls: Vec::new(),
+                    thinking: Vec::new(),
                     structured: None,
                     stop_reason: StopReason::EndTurn,
                     usage: Usage::default(),
                 },
                 LlmScript::Call { call, input, text } => ChatResponse {
+                    thinking: Vec::new(),
                     content: text,
                     tool_calls: vec![ToolCall {
                         id: format!("shot-{i}"),
@@ -200,6 +202,7 @@ impl ScriptedChat {
                 LlmScript::Structured { structured } => ChatResponse {
                     content: None,
                     tool_calls: Vec::new(),
+                    thinking: Vec::new(),
                     structured: Some(structured),
                     stop_reason: StopReason::EndTurn,
                     usage: Usage::default(),
@@ -382,6 +385,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         // Fixed: the pipeline date must not vary between regenerations.
         current_date: "2026-07-19".to_string(),
         max_attempts: 2,
+        usage: std::sync::Arc::new(graph_core::usage::UsageLedger::unpriced()),
     });
 
     let debug = Arc::new(DebugControls::default());

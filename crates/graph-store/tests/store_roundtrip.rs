@@ -24,6 +24,7 @@ async fn thread_lifecycle_and_message_roundtrip() {
                 content: "list my PRs".into(),
             },
             ChatMessage::Assistant {
+                thinking: Vec::new(),
                 content: None,
                 tool_calls: vec![ToolCall {
                     id: "c1".into(),
@@ -37,6 +38,7 @@ async fn thread_lifecycle_and_message_roundtrip() {
                 is_error: false,
             },
             ChatMessage::Assistant {
+                thinking: Vec::new(),
                 content: Some("You have 1 PR.".into()),
                 tool_calls: vec![],
             },

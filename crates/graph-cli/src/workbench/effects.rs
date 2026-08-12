@@ -103,6 +103,13 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                         history.truncate(pre_len);
                     }
                 }
+                // Per turn, matching `graph chat`. The ledger is shared with
+                // the pipeline, so a turn that called a plan tool reports that
+                // plan's spend too.
+                let usage = ctx.pipeline.usage.take();
+                if !usage.is_empty() {
+                    let _ = ctx.tx.send(Msg::RunUsage(usage.summary()));
+                }
                 tracing::debug!(
                     target: "workbench",
                     "agent turn took {:.1}s ({} messages in history)",
@@ -153,6 +160,13 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                     "run took {:.1}s",
                     run_started.elapsed().as_secs_f64()
                 );
+                // Before the finished message, so the run log reads
+                // step → usage → verdict. Drained even on a failed run: the
+                // tokens were still spent.
+                let usage = pipeline.usage.take();
+                if !usage.is_empty() {
+                    let _ = ctx.tx.send(Msg::RunUsage(usage.summary()));
+                }
                 let msg = super::runner::report(result).finished_msg();
                 let _ = ctx.tx.send(msg);
             });

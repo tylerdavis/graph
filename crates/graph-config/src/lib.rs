@@ -11,7 +11,7 @@ pub use load::{
 };
 pub use model::{
     describe_missing_env, Config, FallbackChoice, McpServerConfig, MissingEnv, ModelChoice,
-    ModelRoles, PlanPaths, PromptConfig, ProviderConfig, ProviderKind, Role, Settings,
+    ModelPrice, ModelRoles, PlanPaths, PromptConfig, ProviderConfig, ProviderKind, Role, Settings,
     StorageBackend, StorageConfig, ToolOverride, ToolPaths, UserConfig, WorkbenchConfig,
     RESERVED_MODEL_NAMES,
 };

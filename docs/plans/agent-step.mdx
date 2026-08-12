@@ -46,6 +46,13 @@ steps:
 | `model` | no | Model role or [named model](/reference/configuration). Default: the `chat` role. |
 | `system_prompt` | no | Extra guidance appended to the built-in system prompt. Renders against the scope, like `prompt`. |
 
+Write `prompt` as a plain task description — what to do and what a complete
+answer looks like. The built-in system prompt handles *how it is being run*:
+the `output_schema` it must match, that it should accomplish the task in as few
+turns as it can, and that independent tool calls belong in one turn. Repeating
+any of that in `prompt` is redundant; if an agent is misbehaving in a way that
+would apply to every agent, that belongs in the harness, not in your plan.
+
 A round is **one model call**, including the one that produces the final answer — so `max_iterations: 1` can answer from the prompt alone but can never call a tool *and* answer. A malformed answer (schema miss, or no text and no tool call) also costs a round; retries and provider failover do not.
 
 Field names are snake_case, like every other part of a [plan file](/reference/plan-schema). The camelCase spellings (`outputSchema`, `maxIterations`, `systemPrompt`) still load, but any authoring command that rewrites the file normalizes them.
@@ -67,7 +74,36 @@ The whole input is checked at **load time**, wherever the step appears — top l
 
 Later steps reference `{{E1.output.blocked}}` — `output` is the schema-conforming payload; the rest is provenance.
 
-`final` is `false` when the iteration budget ran out before the agent produced conforming output. In that case `output` is `{}` and **does not** conform to `output_schema` — the guarantee is "conforming output, or `final: false`", never a fabricated result. A later step reaching into `output` then fails as a bad path, so **check it**, or gate on it:
+## The last round is the answer round
+
+An agent's final round is handled differently: its tools are **withdrawn**, the
+provider is told to force `output_schema`, and the agent is told plainly that
+this is its last turn and it should answer with what it has.
+
+That makes running out of budget degrade instead of collapse. The agent
+returns `final: true` carrying whatever it managed to establish, rather than
+throwing the work away — a partial dossier is worth something; an empty object
+is worth nothing. It also means the forced round never needs a schema-repair
+pass, because the provider guarantees the shape.
+
+So `final: false` is now rare: it means the final round produced neither
+structured output nor usable text. Keep checking it — the guarantee is still
+"conforming output, or `final: false`", never a fabricated result — but expect
+a real answer from a budget that runs out.
+
+One consequence worth planning around: the agent cannot call a tool on its
+last round, so a budget of *N* buys *N−1* rounds of tool use.
+`max_iterations: 1` answers from the prompt alone, as documented above.
+
+The agent is **not** told how many rounds it has. It is told to accomplish the
+task in as few turns as it can, and the forced final round is the backstop.
+Naming a number invites a model to treat it as an allowance to spend, and it
+competes with whatever your own `prompt` says about how much ground to cover.
+
+`final` is `false` when even the forced final round produced nothing usable. In
+that case `output` is `{}` and **does not** conform to `output_schema`. A later
+step reaching into `output` then fails as a bad path, so **check it**, or gate
+on it:
 
 ```yaml
   - id: E2
@@ -97,6 +133,34 @@ which is not configured under [mcp.linear]
 
 An agent step is the most expensive thing in the pipeline: **one inference per round**, plus its tool calls. A `max_iterations: 8` agent can cost 8 inferences where an ordinary step costs zero. Reach for `map` with a per-item inference before reaching for an agent — see [iteration](/plans/iteration).
 
+Rounds are not the whole bill. Two multipliers are easy to miss:
+
+- **Each round re-sends the conversation so far.** Input tokens grow with the
+  square of the round count, not linearly, so a long agent's cost is dominated
+  by its input. [Prompt caching](/models/models-and-providers#prompt-caching)
+  is on by default and takes most of that back — round *N* reads everything
+  through round *N−1* at ~0.1× — but only while the prefix stays byte-stable.
+- **Schema repair is uncapped.** Output that misses `output_schema` gets a
+  `repair`-role fix-up that does *not* consume a round, so a `max_iterations: 8`
+  agent can make up to 16 calls. Repairs are attributed to the agent's step, so
+  the reported figure is the real one.
+- **Inside a `map`, multiply by the item count.** Six items at
+  `max_iterations: 18` is up to 108 rounds.
+
+`max_iterations` is a ceiling the agent never sees, not a target it aims at —
+set it to what the task could plausibly need in the worst case, not to what you
+expect it to use. A well-scoped task finishes well inside it.
+
+Don't estimate any of this — measure it. Every run reports per-step tokens and
+cost:
+
+```bash
+graph plan run my_plan --json | jq '.usage.by_step[0]'
+```
+
+The agent step will usually be first, since `by_step` sorts most expensive
+first. See [what a run spent](/reference/scripting-contract#what-a-run-spent).
+
 ## Inside control-step bodies
 
 `agent` is a legal body step for [`decide`](/plans/branching), [`map`, and `reduce`](/plans/iteration), and the body scope reaches its prompt:
@@ -125,6 +189,7 @@ The other control steps (`exit`, `decide`, `map`, `reduce`) still cannot nest in
 ## Errors
 
 - **Tool failures return into the loop** as error results, so the agent can explain or route around them. They do not fail the step.
+- **Reasoning carries across rounds.** The model's own thinking blocks are preserved and replayed, so it builds on what it worked out rather than re-deriving it each round.
 - **Output that doesn't match `output_schema`** gets one `repair`-role fix-up pass; if that fails, the error goes back to the agent and consumes a round.
 - **Transient LLM errors** retry with backoff and never consume a round.
 - **A gate abort** during an inner tool call is a hard stop, exactly as elsewhere — see [errors and replanning](/plans/errors-and-replanning).

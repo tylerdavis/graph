@@ -114,6 +114,7 @@ mod tests {
             Ok(ChatResponse {
                 content: Some("solved".into()),
                 tool_calls: vec![],
+                thinking: Vec::new(),
                 structured: None,
                 stop_reason: StopReason::EndTurn,
                 usage: Usage::default(),
@@ -190,6 +191,7 @@ mod tests {
             user_context: String::new(),
             current_date: "2026-07-09".into(),
             max_attempts: 2,
+            usage: std::sync::Arc::new(crate::usage::UsageLedger::unpriced()),
         });
         (AgentToolbox::new(base.clone(), pipeline, vec![doc]), base)
     }

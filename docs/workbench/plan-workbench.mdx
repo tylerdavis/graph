@@ -97,6 +97,12 @@ Every run mode is available from the keyboard or by asking the agent (`run_plan`
 
 Plans with a required `input_schema` open a prefilled JSON editor before the run starts, and while anything executes the status bar shows a live indicator with the in-flight call and elapsed time — inference steps don't look like dead air. When a run ends on a fired [exit gate](/plans/exit-gates), the steps and finish it pre-empted show `⊘` skipped — never a completed `✓` for a solver that didn't run.
 
+Each run closes with what it spent — calls, tokens, and cost when
+[`[pricing]`](/reference/configuration#pricing--per-model-token-prices) is
+configured — in the run log, just above the outcome line. Chat turns report
+theirs the same way, so the cost of iterating on a draft is visible where the
+iterating happens rather than only after the fact.
+
 <Frame caption="The run tab after a solver plan completes: the step transcript, the streamed answer, and the outcome line.">
   <img src="/images/workbench/run-tab.svg" alt="The run tab after a solver plan completes: the step transcript, the streamed answer, and the outcome line." />
 </Frame>
