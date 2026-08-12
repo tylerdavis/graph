@@ -36,6 +36,19 @@ if git rev-parse "v$new" >/dev/null 2>&1; then
   echo "tag v$new already exists" >&2; exit 1
 fi
 
+# A release needs at least one changelog-worthy commit. git-cliff emits no
+# section at all for a tag whose commits are every one ci:/chore:/test:, and
+# the release would then strand halfway — version bumped, CHANGELOG.md
+# rewritten, then changelog_entry failing with no release to describe and a
+# dirty tree to clean up by hand. Checked here, before anything is mutated.
+worthy=$(git-cliff --tag "v$new" --unreleased --context 2>/dev/null \
+  | jq '[.[] | .commits[]? | select(.group != null)] | length')
+[ "$worthy" -gt 0 ] || {
+  echo "nothing to release: no changelog-worthy commits since the last tag" >&2
+  echo "(everything since is ci:/chore:/test:, which the changelog skips)" >&2
+  exit 1
+}
+
 echo "releasing v$new (was $current)"
 
 if [ "$level" != "current" ]; then
@@ -76,8 +89,12 @@ fi
 # files before pushing; they are curated by hand from then on — and
 # compose_changelog rebuilds docs/changelog.mdx, which IMPORTS the
 # snippets rather than embedding them, so each piece of prose exists in
-# exactly one file and the page can never drift from CHANGELOG.md or
-# the tags.
+# exactly one file.
+#
+# Both plans read the tags through git-cliff, never this CHANGELOG.md.
+# The regeneration above and the docs build below are two renderings of
+# one set of facts, not a pipeline — so the order here is convenience,
+# not a dependency.
 GRAPH_STORAGE=memory graph plan run changelog_entry --input version="v$new"
 GRAPH_STORAGE=memory graph plan run compose_changelog --input tag="v$new"
 

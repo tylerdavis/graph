@@ -1,13 +1,13 @@
 identifier: changelog_entry
 name: changelog_entry
-description: Generates one release's docs-changelog front matter — a user-facing summary plus, only when consumers must act, a self-contained migration prompt — and persists it as changelog.d/<version>/. Idempotent by design; an existing snippet directory means the entry was generated (and possibly hand-curated), so the plan exits without touching it. Run by scripts/release.sh at release time, after CHANGELOG.md is regenerated.
+description: Generates one release's docs-changelog front matter — a user-facing summary plus, only when consumers must act, a self-contained migration prompt — and persists it as docs/snippets/changelog/<version>/. The prose is the only part of a release that is stored; everything mechanical is derived from the tag on demand. Idempotent by design; an existing snippet directory means the entry was generated (and possibly hand-curated), so the plan exits without touching it. Run by scripts/release.sh at release time.
 input_schema:
   type: object
   required: [version]
   properties:
     version:
       type: string
-      description: Release tag, e.g. v0.10.0 — must have a section in CHANGELOG.md
+      description: Release tag, e.g. v0.10.0 — must be known to git-cliff, i.e. tagged or about to be cut
 steps:
   - id: E0
     tool_name: user__snippet_status
@@ -28,10 +28,10 @@ steps:
         regenerated: false
     reasoning: The never-regenerate guard. Curated snippets are the source of truth; exiting success (not error) keeps release automation flowing.
   - id: E2
-    tool_name: user__changelog_section
+    tool_name: user__release_subjects
     input:
       version: '{{input.version}}'
-    reasoning: The release's grouped commit subjects from the freshly regenerated CHANGELOG.md — the evidence the inference works from.
+    reasoning: The release's grouped commit subjects, read from the tag via git-cliff's structured context — the evidence the inference works from. Deliberately not scraped out of CHANGELOG.md; that file is one rendering of these same facts, not their source.
   - id: E3
     tool_name: builtin__infer
     input:
