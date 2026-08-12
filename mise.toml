@@ -34,6 +34,10 @@ run = [
 description = "Format the workspace"
 run = "cargo fmt --all"
 
+[tasks.hooks]
+description = "Install the repo's git hooks (commit subject linting)"
+run = "git config core.hooksPath .githooks"
+
 [tasks.run]
 description = "Run the graph binary (pass args after --)"
 run = "cargo run -p graph-cli --"
