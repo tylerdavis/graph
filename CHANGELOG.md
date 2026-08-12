@@ -2,6 +2,34 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
+## v0.12.0 — 2026-08-12
+
+
+### Added
+
+- scout blast radius with an agent step before the review
+- raise the context scout's round budget to 60
+- group changes and scout each group in parallel
+- dispatch scouts only at scoutworthy groups, cap rounds at 18
+- orient the scouts with CLAUDE.md at head
+- show each step's output contract in the workbench detail pane
+- token usage and cost tracking, prompt caching, and a turn-key agent step (#115)
+
+### Changed
+
+- split graph_review_9000 into a local review core and a GitHub wrapper (#109)
+
+### Documentation
+
+- restore themed prose in the v0.11.0 changelog summary
+- add use-graph, the general entry-point skill (#107)
+
+### Fixed
+
+- settle review threads on reverted PRs and mid-PR fixes
+- hold review findings to a verification bar
+- explain missing env vars at first use instead of dying silently
+
 ## v0.11.0 — 2026-08-04
 
 

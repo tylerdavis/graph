@@ -1,0 +1,11 @@
+#### Scout your blast radius before review
+Plans can now run a context-scouting agent step ahead of review, with related changes grouped and scouted in parallel so you see the full impact of a change set. Scouts are dispatched only where they add value, with round budgets tuned (up to 60 for the context scout, capped at 18 overall) and oriented using `CLAUDE.md` at head for better context.
+
+#### See what each step promises
+The plan workbench's detail pane now shows each step's output contract, so you can check what a step is expected to produce without leaving the TUI.
+
+#### Track what your agent steps cost
+A new turn-key agent step brings built-in token usage and cost tracking with prompt caching, making it easier to monitor spend across runs.
+
+#### Clearer errors and steadier reviews
+Missing environment variables are now explained at first use instead of causing a silent failure, review threads settle correctly on reverted or mid-PR-fixed pull requests, and review findings are now held to a stricter verification bar before being reported.

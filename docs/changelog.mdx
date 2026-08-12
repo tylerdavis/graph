@@ -4,6 +4,7 @@ icon: "clock-rotate-left"
 rss: true
 ---
 
+import SummaryV0_12_0 from '/snippets/changelog/v0.12.0/summary.mdx';
 import SummaryV0_11_0 from '/snippets/changelog/v0.11.0/summary.mdx';
 import SummaryV0_10_0 from '/snippets/changelog/v0.10.0/summary.mdx';
 import MigrationV0_10_0 from '/snippets/changelog/v0.10.0/migration.mdx';
@@ -18,6 +19,36 @@ import SummaryV0_4_0 from '/snippets/changelog/v0.4.0/summary.mdx';
 import SummaryV0_3_0 from '/snippets/changelog/v0.3.0/summary.mdx';
 import SummaryV0_2_0 from '/snippets/changelog/v0.2.0/summary.mdx';
 import SummaryV0_1_0 from '/snippets/changelog/v0.1.0/summary.mdx';
+
+<Update label="v0.12.0" description="August 12, 2026">
+<SummaryV0_12_0 />
+
+### Added
+
+- scout blast radius with an agent step before the review
+- raise the context scout's round budget to 60
+- group changes and scout each group in parallel
+- dispatch scouts only at scoutworthy groups, cap rounds at 18
+- orient the scouts with CLAUDE.md at head
+- show each step's output contract in the workbench detail pane
+- token usage and cost tracking, prompt caching, and a turn-key agent step (#115)
+
+### Changed
+
+- split graph_review_9000 into a local review core and a GitHub wrapper (#109)
+
+### Documentation
+
+- restore themed prose in the v0.11.0 changelog summary
+- add use-graph, the general entry-point skill (#107)
+
+### Fixed
+
+- settle review threads on reverted PRs and mid-PR fixes
+- hold review findings to a verification bar
+- explain missing env vars at first use instead of dying silently
+
+</Update>
 
 <Update label="v0.11.0" description="August 4, 2026">
 <SummaryV0_11_0 />
