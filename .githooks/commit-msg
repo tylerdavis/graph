@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Reject non-conventional commit subjects before they exist.
+#
+# Enabled by `git config core.hooksPath .githooks` (mise run hooks). Because it
+# is a git hook it applies to every author in this clone — human, agent, or
+# script — which is the point: the changelog's parse-error count only ever grew
+# from commits nobody deliberately wrote.
+#
+# Escape hatch: `git commit --no-verify` (CI still checks).
+set -euo pipefail
+
+msg_file=$1
+repo_root=$(git rev-parse --show-toplevel)
+
+# First non-comment, non-blank line is the subject.
+subject=$(grep -v '^#' "$msg_file" | sed '/^[[:space:]]*$/d' | head -1 || true)
+
+# An empty message aborts the commit anyway; let git say so.
+[[ -n $subject ]] || exit 0
+
+exec "$repo_root/scripts/check-commit-subject.sh" "$subject"
