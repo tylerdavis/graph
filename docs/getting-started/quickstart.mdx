@@ -10,7 +10,7 @@ import BinaryDownloads from "/shared/binary_downloads.mdx";
   <Tab title="Automated">
     ## Automated setup
 
-    Grab a binary, scaffold a project, and hand the setup to your coding agent. A [skill](#let-your-agent-finish-the-setup) walks the agent through wiring a provider, adding tools, and drafting a first plan against your own data — then you review it in the [workbench](/workbench/plan-workbench) and run it. Prefer to do it by hand? The [manual path](#manual-setup) is right below.
+    Grab a binary, scaffold a project, and hand the setup to your coding agent. A [skill](#let-your-agent-finish-the-setup) walks the agent through wiring a provider, adding tools, and drafting a first plan against your own data — then you review it in the [workbench](/building/workbench) and run it. Prefer to do it by hand?
 
     <Steps>
       <Step title="Install graph">
@@ -141,7 +141,15 @@ import BinaryDownloads from "/shared/binary_downloads.mdx";
 
 ## What's next
 
-- [Core concepts](/getting-started/concepts) — plans, the tool catalog, the shape cache, and what a run costs.
-- [Author your first plan](/plans/authoring) — freeze a workflow into a repeatable file.
-- [Add your own tools](/tools/user-defined) — wrap a CLI, a query, or an inline LLM prompt.
-- [Wire it into CI](/cookbook/ci-checks) — exit codes, JSON output, ephemeral storage.
+<Columns cols={2}>
+  <Column>
+    <Card title="Core concepts" icon="sparkles" href="getting-started/concepts">
+      learn about the graph primitives
+    </Card>
+  </Column>
+  <Column>
+    <Card title="Add your MCP tools" icon="sparkles" href="tools/mcp-servers">
+      Integrate with everything via MCP
+    </Card>
+  </Column>
+</Columns>
