@@ -9,86 +9,104 @@
   },
   "favicon": "/favicon.svg",
   "navigation": {
-    "groups": [
+    "pages": [
+      "introduction",
+      "getting-started/quickstart",
       {
         "group": "Getting Started",
+        "icon": "person-ski-jumping",
+        "expanded": true,
         "pages": [
-          "getting-started/introduction",
           "getting-started/installation",
-          "getting-started/quickstart",
           "getting-started/concepts"
         ]
       },
       {
-        "group": "Plans",
+        "group": "Building plans",
+        "icon": "wrench",
         "pages": [
-          "plans/overview",
-          "plans/authoring",
-          "plans/inputs",
-          "plans/template-language",
-          "plans/finish-modes",
-          "plans/exit-gates",
-          "plans/branching",
-          "plans/selection",
-          "plans/iteration",
-          "plans/agent-step",
-          "plans/ask-step",
-          "plans/the-planner",
-          "plans/errors-and-replanning"
+          "building/workbench",
+          "building/mcp-server"
         ]
       },
       {
-        "group": "Workbench",
-        "pages": ["workbench/plan-workbench"]
-      },
-      {
-        "group": "Tools",
+        "group": "Executing plans",
+        "icon": "running",
         "pages": [
-          "tools/overview",
-          "tools/mcp-servers",
-          "tools/mcp-server",
-          "tools/user-defined",
-          "tools/builtins",
-          "tools/shape-cache"
-        ]
-      },
-      {
-        "group": "Models",
-        "pages": ["models/models-and-providers"]
-      },
-      {
-        "group": "Chat & ask",
-        "pages": [
-          "using/chat-and-ask",
-          "using/threads",
-          "using/tool-selection"
-        ]
-      },
-      {
-        "group": "Cookbook",
-        "pages": [
-          "cookbook/ci-checks",
-          "cookbook/bot-identity",
-          "cookbook/reporting",
-          "cookbook/automation"
+          "reference/cli",
+          "cookbook/ci-checks"
         ]
       },
       {
         "group": "Reference",
+        "icon": "book",
         "pages": [
-          "reference/cli",
-          "reference/configuration",
-          "reference/plan-schema",
-          "reference/scripting-contract"
+          "models/models-and-providers",
+          {
+            "group": "Tools",
+            "icon": "toolbox",
+            "pages": [
+              "tools/overview",
+              "tools/mcp-servers",
+              "tools/user-defined",
+              {
+                "group": "Standard library",
+                "icon": "books",
+                "pages": [
+                  "reference/tools/stdlib/about",
+                  "untitled-page",
+                  "untitled-page-2",
+                  "untitled-page-3",
+                  "untitled-page-4"
+                ]
+              },
+              "tools/shape-cache"
+            ]
+          },
+          {
+            "group": "Plans",
+            "icon": "list-radio",
+            "pages": [
+              "plans/overview",
+              "plans/inputs",
+              "plans/template-language",
+              "plans/finish-modes",
+              "plans/exit-gates",
+              "plans/branching",
+              "plans/selection",
+              "plans/iteration",
+              "plans/agent-step",
+              "plans/ask-step",
+              "reference/plan-schema"
+            ]
+          },
+          "reference/configuration"
         ]
       },
+      "changelog",
       {
-        "group": "Architecture",
-        "pages": ["architecture/execution-model", "architecture/storage"]
-      },
-      {
-        "group": "Changelog",
-        "pages": ["changelog"]
+        "group": "Hidden",
+        "hidden": true,
+        "pages": [
+          "plans/the-planner",
+          "plans/errors-and-replanning",
+          "plans/authoring",
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/execution-model",
+              "architecture/storage"
+            ]
+          },
+          {
+            "group": "Cookbook",
+            "pages": [
+              "cookbook/bot-identity",
+              "cookbook/reporting",
+              "cookbook/automation"
+            ]
+          }
+        ]
       }
     ]
   },

@@ -6,9 +6,9 @@ icon: "plug"
 
 graph consumes any [Model Context Protocol](https://modelcontextprotocol.io) server. Each `[mcp.<name>]` entry in config becomes a set of `<name>__*` tools.
 
-<Note>
-This page is graph as an MCP **client**. For the other direction — serving your plans to another agent — see [graph as an MCP server](/tools/mcp-server).
-</Note>
+<Tip>
+  This page describes graph as an MCP **client**. For the other direction - serving your plans to another agent - see [graph as an MCP server](/tools/mcp-server).
+</Tip>
 
 ## Transports
 
@@ -32,7 +32,7 @@ headers = { Authorization = "Bearer ${LINEAR_API_KEY}" }
 `command` and `url` are mutually exclusive; `${VAR}` in `env`/`headers` values resolves from your environment at load time. If a variable is unset, the server refuses to connect — naming the variable — rather than starting with an empty secret; the rest of the config (and every other server) keeps working.
 
 <Note>
-Auth is static headers/env — servers requiring an interactive OAuth flow aren't supported directly. Many hosted servers (Linear included) accept API keys as bearer tokens.
+  Auth is static headers/env — servers requiring an interactive OAuth flow aren't supported directly. Many hosted servers (Linear included) accept API keys as bearer tokens.
 </Note>
 
 ## Lifecycle
@@ -45,11 +45,9 @@ graph mcp test linear       # connect + count tools + how many declare output sc
 graph mcp tools [linear]    # tool listing grouped by server — names + descriptions
 ```
 
-The tool listing prints one section per server — a header with the tool
-count, then each tool's name (with a `[read-only]` marker when the server
-annotates it) over its one-line description:
+The tool listing prints one section per server — a header with the tool count, then each tool's name (with a `[read-only]` marker when the server annotates it) over its one-line description:
 
-```
+```text
 linear — 57 tools
   get_issue [read-only]
   Retrieve detailed information about an issue by ID, including attachments and git branch name
@@ -58,8 +56,7 @@ linear — 57 tools
   ...
 ```
 
-`graph tools list` renders the full catalog in the same format, one section
-per source.
+`graph tools list` renders the full catalog in the same format, one section per source.
 
 ## Filtering and overrides
 

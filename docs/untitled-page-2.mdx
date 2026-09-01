@@ -1,0 +1,28 @@
+---
+title: "Data"
+icon: "uncharted"
+---
+
+### `builtin__reshape`
+
+Build a value in a target JSON shape — the `reshape`[ tool kind](/tools/user-defined#reshape--project-data-into-a-new-shape) exposed as one callable tool, so a plan can remap keys without authoring a tool YAML or shelling out to `jq`. Pure: no process, no LLM, no side effects. Read-only.
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `shape` | object | required — the output shape; keys are literal, each leaf string is a template over the step's data |
+
+The `shape` is a JSON object whose keys are literal and whose leaf strings are [templates](/plans/template-language) over the surrounding step's data — an earlier result as `{{Ex.field}}`, the current `map` element as `{{item}}`, a plan input as `{{input.x}}` — exactly like any other step input. The pipeline renders it once (like a `map`'s `over`), so the result is that shape with every template resolved, with the same [typed splice](/plans/template-language#typed-splice): a leaf that is _exactly one tag_ keeps the source value's type (numbers stay numbers, arrays stay arrays); mixed text like `"PR #{{item.number}}"` renders to a string.
+
+```yaml
+- id: E2
+  tool_name: builtin__reshape
+  input:
+    shape:
+      base_sha: "{{E1.baseRefOid}}"   # rename a key from an earlier result
+      pr: "{{E1.number}}"             # keep the number type
+      title: "PR #{{E1.number}}"      # interpolate a string
+```
+
+It **only moves data** — rename, pick, nest, flatten, interpolate. It is logic-less by construction (the [template dialect](/plans/template-language) has no computation), so it can't derive values (sums, casing, conditionals); wrap those in a `user__` `exec`[ tool](/tools/user-defined). A shape referencing a field the data lacks fails the step's input render, like any other bad path in a step input.
+
+Because that single render is the pipeline's, the tool itself never re-renders the shape: whatever the templates resolved to is returned **verbatim**, so values that happen to contain `{{ … }}` — an LLM quoting a Helm chart, a GitHub Actions expression, a mustache partial — pass through untouched instead of being parsed as graph templates. The flip side is that `builtin__reshape` is a plan-step tool: called directly by an `agent` step or from `ask`/`chat`, where inputs are model-authored and not plan-rendered, it returns the shape it was given.

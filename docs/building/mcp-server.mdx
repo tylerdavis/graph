@@ -1,16 +1,16 @@
 ---
-title: "graph as an MCP server"
+title: "MCP Server"
 description: "Serving your plans and the plan authoring commands to another agent"
 icon: "share-nodes"
 ---
 
-graph is an MCP *client* — that's [MCP servers](/tools/mcp-servers). This page is the other direction: `graph mcp serve` exposes **your plans** to somebody else's agent, over stdio.
+graph is an MCP _client_ — that's [MCP servers](/tools/mcp-servers). This page is the other direction: `graph mcp serve` exposes **your plans** to somebody else's agent, over stdio.
 
 ```bash
 graph mcp serve --dir /path/to/project
 ```
 
-The point is not to give an agent another shell. It is that a plan is a *reviewed, validated, versioned* pipeline of tool calls — and an agent calling `plan_sprint_report` gets that whole apparatus behind one tool call, instead of improvising the same sequence differently every time.
+The point is not to give an agent another shell. It is that a plan is a _reviewed, validated, versioned_ pipeline of tool calls — and an agent calling `plan_sprint_report` gets that whole apparatus behind one tool call, instead of improvising the same sequence differently every time.
 
 ## Configuring a client
 
@@ -26,17 +26,17 @@ The point is not to give an agent another shell. It is that a plan is a *reviewe
 ```
 
 <Warning>
-**Pass `--dir`, or you get only your global setup.** Without it the server loads `~/.config/graph/` alone: your global plans are served, but no project's are.
+  **Pass `--dir`, or you get only your global setup.** Without it the server loads `~/.config/graph/` alone: your global plans are served, but no project's are.
 
-This is deliberate, not a limitation. An MCP client chooses the working directory the server starts in — you did not. A `.graph/` found there can declare `[mcp.*]` servers graph spawns as child processes, and `.graph/tools/*.yaml` tools that shell out. Adopting that silently, because a client happened to start in a checked-out repo, would run code you never asked for. So the project layer is opt-in.
+  This is deliberate, not a limitation. An MCP client chooses the working directory the server starts in — you did not. A `.graph/` found there can declare `[mcp.*]` servers graph spawns as child processes, and `.graph/tools/*.yaml` tools that shell out. Adopting that silently, because a client happened to start in a checked-out repo, would run code you never asked for. So the project layer is opt-in.
 
-Use `--dir .` when you are launching by hand and mean the current directory.
+  Use `--dir .` when you are launching by hand and mean the current directory.
 </Warning>
 
 ## What is loaded, and when
 
 | Layer | Without `--dir` | With `--dir <path>` |
-|---|---|---|
+| --- | --- | --- |
 | `~/.config/graph/config.toml` | loaded | loaded |
 | `~/.config/graph/plans`, `…/tools` | loaded | loaded |
 | `<path>/.graph/config.toml` | **ignored** | loaded |
@@ -47,19 +47,19 @@ The global layer is anchored to your home directory, so it does not depend on wh
 **Writes follow the same rule.** The authoring tools (`graph_plan_new`, `graph_plan_draft`, `graph_plan_set`, `graph_plan_step_*`) write into the first configured plans directory of whichever layer set is active: `~/.config/graph/plans` without `--dir`, and the project's `./.graph/plans` with it. A client's working directory is never a destination, and no authoring tool takes a path argument — where a plan is written is the user's decision, expressed with `--dir`, not the calling agent's.
 
 <Note>
-`[plans].paths` *replaces* the default list rather than adding to it. A project config that pins `paths = ["./.graph/plans"]` drops `~/.config/graph/plans`, and those global plans stop being served.
+  `[plans].paths` _replaces_ the default list rather than adding to it. A project config that pins `paths = ["./.graph/plans"]` drops `~/.config/graph/plans`, and those global plans stop being served.
 </Note>
 
 If the server ends up with no plans at all, it says so — on stderr, and in the MCP `instructions` the calling model reads, along with the `--dir` fix.
 
 ## When the config is broken
 
-A server that dies before the MCP handshake is the worst failure mode this surface has: the client reports "connection failed", stderr goes to client logs no model reads, and the agent gets nothing to act on. So `graph mcp serve` never exits over a bad config — it serves anyway and puts the *why* where the agent will see it:
+A server that dies before the MCP handshake is the worst failure mode this surface has: the client reports "connection failed", stderr goes to client logs no model reads, and the agent gets nothing to act on. So `graph mcp serve` never exits over a bad config — it serves anyway and puts the _why_ where the agent will see it:
 
 - **A missing provider key** (`api_key = "${ANTHROPIC_API_KEY}"` with the variable unset) doesn't degrade the server at all. Config loading defers the error to the entry that owns it: authoring tools, `graph_plan_list`, and plans that run [without inference](/plans/finish-modes) all work, and the calls that do need a model (`graph_plan_draft`, solver-mode plans) fail naming the variable and the config path that wants it.
 - **A config that cannot load** (parse error, missing variable outside `[providers.*]`/`[mcp.*]`) still gets a running server: the load error is appended to the MCP `instructions` at initialize, and every tool call returns it. The config is re-read per request, so fixing the file or the environment heals the server in place — no restart.
 
-The environment that matters is the one the MCP *client* launches the server with — a key exported in your shell profile is not necessarily set there. Most clients accept an `env` block next to `command`/`args` in the server entry.
+The environment that matters is the one the MCP _client_ launches the server with — a key exported in your shell profile is not necessarily set there. Most clients accept an `env` block next to `command`/`args` in the server entry.
 
 ## What gets served
 
@@ -69,7 +69,7 @@ Two populations, deliberately named apart.
 
 Every plan in the catalog becomes `plan_<identifier>`, carrying that plan's own `input_schema` as the tool's schema, and its `description` plus `exemplars` as the routing signal. The calling agent gets exactly the argument contract graph enforces internally — not a generic "run a plan" tool taking a free-form blob.
 
-```
+```text
 plan_sprint_report   { team: string, since?: string }
 plan_urgent_issues   { }
 ```
@@ -90,7 +90,7 @@ The `graph_` prefix is what keeps a plan named `tools_list` from colliding with 
 
 The tool list is read fresh on every `tools/list`, and a successful edit sends `notifications/tools/list_changed`. So an agent can build a capability and then use it, without a restart:
 
-```
+```text
 graph_plan_new       identifier: commit_digest
 graph_plan_step_add  E1, builtin__git_log, {…}
 graph_plan_set       input_schema, {…}
@@ -103,14 +103,14 @@ plan_commit_digest   { base: "v1.0", head: "HEAD" }   ← now callable
 The CLI signals with [exit codes](/reference/scripting-contract#exit-codes). Those have nowhere to go over MCP, so the distinctions they carry survive as data instead.
 
 | Situation | CLI | Over MCP |
-|---|---|---|
+| --- | --- | --- |
 | Plan ran | exit `0` | result: `{answer, output, plan, steps_executed, exit, usage}` |
 | Plan needs inputs | exit `3` | `isError`, body carries `inputSchema` and `problems` — retry with the argument |
 | [Exit gate](/plans/exit-gates) asserted | exit `4` | `isError`, body carries the gate's `message` and `step` |
 | Edit refused | exit `1` | `isError`, body carries `problemsIntroduced` |
 | Unknown tool, bad argument type | exit `1` | a JSON-RPC error — this one is the caller's mistake, not a result |
 
-The distinction in that last row is the important one. A refused edit *is* an answer: the problem list is what the agent needs to fix its next attempt, and flattening it into an error string would leave the model parsing prose to recover it. A misspelled tool name is not an answer at all.
+The distinction in that last row is the important one. A refused edit _is_ an answer: the problem list is what the agent needs to fix its next attempt, and flattening it into an error string would leave the model parsing prose to recover it. A misspelled tool name is not an answer at all.
 
 ## Cost and latency
 
@@ -120,26 +120,22 @@ The distinction in that last row is the important one. A refused edit *is* an an
 
 Pass a `progressToken` with a `plan_*` call and the server reports each step as it runs — the same information `plan run` prints to a terminal, including the plan call stack when plans compose. Without a token the run is silent, because MCP only permits notifying against a token the client issued.
 
-```
+```text
 notifications/progress  { progressToken: "…", progress: 1, message: "E1 builtin__git_log" }
 notifications/progress  { progressToken: "…", progress: 2, message: "E1 — 1 call(s), 12k in / 300 out so far" }
 notifications/progress  { progressToken: "…", progress: 3, message: "synthesizing the answer" }
 notifications/progress  { progressToken: "…", progress: 4, message: "4 calls · 88k in / 2k out · $0.31" }
 ```
 
-Spend is reported as it accrues, one cumulative line per model call, then a
-final total. The complete report also rides the result body (see
-[what a run spent](/reference/scripting-contract#what-a-run-spent)); the
-notifications are what let a client see a long run getting expensive *before*
-it finishes.
+Spend is reported as it accrues, one cumulative line per model call, then a final total. The complete report also rides the result body (see [what a run spent](/reference/scripting-contract#what-a-run-spent)); the notifications are what let a client see a long run getting expensive _before_ it finishes.
 
 Cancelling a call stops the run **between** tool calls, not in the middle of one: a plan halfway through creating an issue finishes that call and stops before the next. The result comes back flagged, carrying how many steps had run — and what it spent before stopping.
 
 ## Questions back to the client
 
-A plan can contain an [`ask` step](/plans/ask-step) — a value only a person can supply. Over MCP that becomes an `elicitation/create` request sent back to *your* client from inside the `tools/call` that is running the plan:
+A plan can contain an [`ask` step](/plans/ask-step) — a value only a person can supply. Over MCP that becomes an `elicitation/create` request sent back to _your_ client from inside the `tools/call` that is running the plan:
 
-```
+```text
 -> tools/call            { name: "plan_release_check", arguments: { fallback: "beta" } }
 <- elicitation/create    { message: "Which channel should this release go to?", requestedSchema: {…} }
 -> (client shows a form, user answers)

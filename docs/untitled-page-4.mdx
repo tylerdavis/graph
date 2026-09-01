@@ -1,0 +1,32 @@
+---
+title: "Slack"
+icon: "slack-hash"
+---
+
+<Note>
+  The `slack` pack expects `curl` and `jq`, with `SLACK_BOT_TOKEN`
+</Note>
+
+Setup, once per workspace: create a Slack app, give it the `chat:write` bot scope, install it to the workspace, invite it to each channel you post to (`/invite @your-app`), and export its bot token (`xoxb-…`) as `SLACK_BOT_TOKEN`. The pack reads the token from the environment.
+
+The button below opens Slack's app-creation flow with that configuration already filled in — pick a workspace, review, and click _Create_, then **Install to Workspace** and copy the bot token from **OAuth & Permissions**.
+
+<Card title="Create the Graph CI Slack app" icon="slack" href="https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Graph%20CI%22%7D%2C%22features%22%3A%7B%22bot_user%22%3A%7B%22display_name%22%3A%22Graph%20CI%22%2C%22always_online%22%3Afalse%7D%7D%2C%22oauth_config%22%3A%7B%22scopes%22%3A%7B%22bot%22%3A%5B%22chat%3Awrite%22%5D%7D%2C%22pkce_enabled%22%3Afalse%7D%2C%22settings%22%3A%7B%22interactivity%22%3A%7B%22is_enabled%22%3Atrue%7D%2C%22org_deploy_enabled%22%3Afalse%2C%22socket_mode_enabled%22%3Atrue%2C%22token_rotation_enabled%22%3Afalse%2C%22is_mcp_enabled%22%3Afalse%7D%7D">
+  Pre-filled from `app-manifest.json`, the manifest this pack is built against. Paste that file into **From a manifest** by hand if you'd rather not follow a link.
+</Card>
+
+### `builtin__slack_post_message`
+
+Post a message to a channel (`chat.postMessage`). Pass `thread_ts` to post as a reply inside an existing thread instead of a new message: the `ts` this tool returns is exactly what a later call passes back, so a plan can post a summary and thread the details under it. **Side-effecting** (`read_only: false`).
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `channel` | string | required — channel ID (`C…`, from the channel's _Copy link_) or `#channel-name` for a public channel the bot has joined. IDs are the reliable form; names depend on lookup |
+| `text` | string | required — message body in Slack [mrkdwn](https://api.slack.com/reference/surfaces/formatting) (`*bold*`, `_italic_`, ``code``, `<https://url\|label>`), **not** GitHub markdown |
+| `thread_ts` | string | optional — parent message `ts` to reply under; default `""` (a new top-level message) |
+
+| Output | Type |  |
+| :-- | :-- | :-- |
+| `channel` | string | resolved channel ID — pass it back with `ts` to reply in-thread |
+| `ts` | string | message timestamp; the `thread_ts` for replies to this message |
+| `permalink` | string \| null | link to the message; `null` when the permalink lookup didn't answer |

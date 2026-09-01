@@ -1,6 +1,5 @@
 ---
 title: "Plan inputs"
-description: "Schemas, JSON documents, and layered overrides"
 icon: "keyboard"
 ---
 
@@ -42,14 +41,14 @@ graph plan run report @base.json --input window="-P7D"
 The layering (document first, `--input` overrides on top) is the CI pattern: a checked-in fixture plus per-run overrides.
 
 <Note>
-Stdin is read only on an explicit `-`. Auto-detection is a hang risk in automation (a job whose stdin never closes would block forever), so it costs one character instead.
+  Stdin is read only on an explicit `-`. Auto-detection is a hang risk in automation (a job whose stdin never closes would block forever), so it costs one character instead.
 </Note>
 
 ## When inputs are missing
 
 **`plan run`**: exit code `3`, with the problems and the input schema printed to stderr — a calling script knows exactly what to send:
 
-```
+```text
 plan 'project_status' needs inputs:
   - "project" is a required property
 input schema:

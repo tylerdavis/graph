@@ -3,138 +3,136 @@ title: "Quickstart"
 description: "Install, scaffold a project, run your first plan"
 icon: "rocket"
 ---
+
 import BinaryDownloads from "/shared/binary_downloads.mdx";
 
-## The fastest path
+<Tabs>
+  <Tab title="Automated">
+    ## Automated setup
 
-Grab a binary, scaffold a project, and hand the setup to your coding agent. A [skill](#let-your-agent-finish-the-setup) walks the agent through wiring a provider, adding tools, and drafting a first plan against your own data — then you review it in the [workbench](/workbench/plan-workbench) and run it. Prefer to do it by hand? The [manual path](#manual-setup) is right below.
+    Grab a binary, scaffold a project, and hand the setup to your coding agent. A [skill](#let-your-agent-finish-the-setup) walks the agent through wiring a provider, adding tools, and drafting a first plan against your own data — then you review it in the [workbench](/workbench/plan-workbench) and run it. Prefer to do it by hand? The [manual path](#manual-setup) is right below.
 
-<Steps>
-  <Step title="Install graph">
-    Grab the latest release binary — macOS (arm64) or Linux (x86_64). Each release publishes version-pinned tarballs with SHA-256 checksums:
+    <Steps>
+      <Step title="Install graph">
+        Grab the latest release binary — macOS (arm64) or Linux (x86_64). Each release publishes version-pinned tarballs with SHA-256 checksums:
 
-    <BinaryDownloads />
-  </Step>
+        <BinaryDownloads />
+      </Step>
+      <Step title="Scaffold a project">
+        From your project directory:
 
-  <Step title="Scaffold a project">
-    From your project directory:
+        ```bash
+        graph config init
+        ```
 
-    ```bash
-    graph config init
-    ```
+        This writes a commented starter to `./.graph/config.toml`. That directory is where a project's config, plans, and tools live — checked into the repo, reviewed like any other code.
+      </Step>
+      <Step title="Let your agent finish the setup">
+        Install the setup skill, then ask your coding agent to run it:
 
-    This writes a commented starter to `./.graph/config.toml`. That directory is where a project's config, plans, and tools live — checked into the repo, reviewed like any other code.
-  </Step>
+        ```bash
+        npx skills add tylerdavis/graph
+        ```
 
-  <Step title="Let your agent finish the setup">
-    Install the setup skill, then ask your coding agent to run it:
+        This installs `/graph-project-setup` for Claude Code, Cursor, Codex, and most other agents. Point your agent at it — "set up graph in this project" — and it asks a few questions, then picks a provider and models, finds and connects the MCP servers or tools you want, scaffolds a first plan against your real data, and runs it end to end. It reads the live docs and example plans as it goes, so the result matches the current release.
 
-    ```bash
-    npx skills add tylerdavis/graph
-    ```
+        <Tip>
+          The same `npx skills add` command installs two more: `/graph-plan-authoring`, which teaches the agent to build and repair plans with the [authoring commands](/plans/authoring#authoring-from-the-command-line), and `/graph-github-actions-setup`, which scaffolds a merge gate or PR reviewer as a plan — see [CI checks](/cookbook/ci-checks) for the worked example.
+        </Tip>
+      </Step>
+      <Step title="Open it in the workbench">
+        Before you commit the plan, open it in the [workbench](/workbench/plan-workbench) — a dual-pane TUI for reviewing, tweaking, and test-running plans:
 
-    This installs [`/graph-project-setup`](https://github.com/tylerdavis/graph/blob/main/skills/graph-project-setup/SKILL.md) for Claude Code, Cursor, Codex, and most other agents. Point your agent at it — "set up graph in this project" — and it asks a few questions, then picks a provider and models, finds and connects the MCP servers or tools you want, scaffolds a first plan against your real data, and runs it end to end. It reads the live docs and example plans as it goes, so the result matches the current release.
+        ```bash
+        graph workbench plan project_status   # alias: graph wb plan
+        ```
 
-    <Tip>
-    The same `npx skills add` command installs two more: [`/graph-plan-authoring`](https://github.com/tylerdavis/graph/blob/main/skills/graph-plan-authoring/SKILL.md), which teaches the agent to build and repair plans with the [authoring commands](/plans/authoring#authoring-from-the-command-line), and [`/graph-github-actions-setup`](https://github.com/tylerdavis/graph/blob/main/skills/graph-github-actions-setup/SKILL.md), which scaffolds a merge gate or PR reviewer as a plan — see [CI checks](/cookbook/ci-checks) for the worked example.
-    </Tip>
-  </Step>
+        The plan renders as a flowchart on the right, an agent sits on the left. Read each step, `v` to validate, `r` to run it, or `g` to step through with a debugger that pauses on every tool call and shows the exact input and result. Ask the agent to change a step in plain English — "add a step that filters to open issues" — and watch the draft update and re-validate. `Ctrl+S` writes it back to `./.graph/plans/`.
 
-  <Step title="Open it in the workbench">
-    Before you commit the plan, open it in the [workbench](/workbench/plan-workbench) — a dual-pane TUI for reviewing, tweaking, and test-running plans:
+        <Frame caption="A loaded plan in the workbench: chat agent left, step tree and detail right.">
+          ![A loaded plan in the workbench: chat agent left, step tree and detail right.](/images/workbench/workbench-overview.svg)
+        </Frame>
+      </Step>
+      <Step title="Run your first plan">
+        Once it's right, run it headless — the same steps in the same order every time, for 0–1 LLM calls no matter how many steps it has:
 
-    ```bash
-    graph workbench plan project_status   # alias: graph wb plan
-    ```
+        ```bash
+        graph plan list
+        graph plan run project_status '{"project":"New Relic"}'
+        ```
 
-    The plan renders as a flowchart on the right, an agent sits on the left. Read each step, `v` to validate, `r` to run it, or `g` to step through with a debugger that pauses on every tool call and shows the exact input and result. Ask the agent to change a step in plain English — "add a step that filters to open issues" — and watch the draft update and re-validate. `Ctrl+S` writes it back to `./.graph/plans/`.
+        The deliverable goes to stdout; tool activity streams dimmed to stderr. This is the form you schedule on cron or wire into CI.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Manual">
+    ## Manual setup
 
-    <Frame caption="A loaded plan in the workbench: chat agent left, step tree and detail right.">
-      <img src="/images/workbench/workbench-overview.svg" alt="A loaded plan in the workbench: chat agent left, step tree and detail right." />
-    </Frame>
-  </Step>
+    Not using an agent? The whole path is a few commands.
 
-  <Step title="Run your first plan">
-    Once it's right, run it headless — the same steps in the same order every time, for 0–1 LLM calls no matter how many steps it has:
+    <Steps>
+      <Step title="Write a minimal config">
+        A working config is a provider, a default model, and whatever tools your plan needs. Here it's one MCP server:
 
-    ```bash
-    graph plan list
-    graph plan run project_status '{"project":"New Relic"}'
-    ```
+        ```toml
+        [providers.anthropic]
+        type = "anthropic"
+        api_key = "${ANTHROPIC_API_KEY}"   # read from your environment at load time
+        
+        [models]
+        default = { provider = "anthropic", model = "claude-sonnet-5" }
+        
+        [mcp.linear]
+        url = "https://mcp.linear.app/mcp"
+        headers = { Authorization = "Bearer ${LINEAR_API_KEY}" }
+        ```
 
-    The deliverable goes to stdout; tool activity streams dimmed to stderr. This is the form you schedule on cron or wire into CI.
-  </Step>
-</Steps>
+        <Tip>
+          `${VAR}` references fail loudly when the variable is unset — misconfigured secrets never silently send empty strings. For provider and MCP entries the failure comes at first use rather than at load, naming the variable, so the rest of graph keeps working without the secret.
+        </Tip>
+      </Step>
+      <Step title="Check your tools are live">
+        ```bash
+        graph mcp test linear
+        # ok: 'linear' initialized in 1.7s — 57 tools (0 declare output schemas)
+        
+        graph tools list
+        ```
+      </Step>
+      <Step title="Probe the tools you'll build on">
+        Before writing a step, see each tool's input schema and _actual_ output shape:
 
-## Manual setup
+        ```bash
+        graph tools show linear__list_issues
+        graph tools test linear__list_issues '{"priority":1,"limit":5}'
+        ```
 
-Not using an agent? The whole path is a few commands.
+        Every probe also teaches graph what the tool returns (the [shape cache](/tools/shape-cache)), so the references you write next are grounded in real output — and the workbench's drafting agent gets smarter too.
+      </Step>
+      <Step title="Build the plan in the workbench">
+        Open a blank draft and describe the goal — the agent drafts the plan into the side pane, where you inspect, validate, and test-run it:
 
-<Steps>
-  <Step title="Write a minimal config">
-    A working config is a provider, a default model, and whatever tools your plan needs. Here it's one MCP server:
+        ```bash
+        graph workbench plan     # alias: graph wb plan
+        ```
 
-    ```toml
-    [providers.anthropic]
-    type = "anthropic"
-    api_key = "${ANTHROPIC_API_KEY}"   # read from your environment at load time
+        Prefer to write the YAML yourself? [Authoring plans](/plans/authoring) builds one from scratch. Either way, `Ctrl+S` (or a save in the workbench) writes it to `./.graph/plans/`.
+      </Step>
+      <Step title="Run it headless">
+        ```bash
+        graph plan run project_status '{"project":"New Relic"}'
+        ```
 
-    [models]
-    default = { provider = "anthropic", model = "claude-sonnet-5" }
-
-    [mcp.linear]
-    url = "https://mcp.linear.app/mcp"
-    headers = { Authorization = "Bearer ${LINEAR_API_KEY}" }
-    ```
-
-    <Tip>
-    `${VAR}` references fail loudly when the variable is unset — misconfigured secrets never silently send empty strings. For provider and MCP entries the failure comes at first use rather than at load, naming the variable, so the rest of graph keeps working without the secret.
-    </Tip>
-  </Step>
-
-  <Step title="Check your tools are live">
-    ```bash
-    graph mcp test linear
-    # ok: 'linear' initialized in 1.7s — 57 tools (0 declare output schemas)
-
-    graph tools list
-    ```
-  </Step>
-
-  <Step title="Probe the tools you'll build on">
-    Before writing a step, see each tool's input schema and *actual* output shape:
-
-    ```bash
-    graph tools show linear__list_issues
-    graph tools test linear__list_issues '{"priority":1,"limit":5}'
-    ```
-
-    Every probe also teaches graph what the tool returns (the [shape cache](/tools/shape-cache)), so the references you write next are grounded in real output — and the workbench's drafting agent gets smarter too.
-  </Step>
-
-  <Step title="Build the plan in the workbench">
-    Open a blank draft and describe the goal — the agent drafts the plan into the side pane, where you inspect, validate, and test-run it:
-
-    ```bash
-    graph workbench plan     # alias: graph wb plan
-    ```
-
-    Prefer to write the YAML yourself? [Authoring plans](/plans/authoring) builds one from scratch. Either way, `Ctrl+S` (or a save in the workbench) writes it to `./.graph/plans/`.
-  </Step>
-
-  <Step title="Run it headless">
-    ```bash
-    graph plan run project_status '{"project":"New Relic"}'
-    ```
-
-    Same contract as the fast path: the deliverable on stdout, progress on stderr, and a file you can commit, schedule, and wire into CI.
-  </Step>
-</Steps>
+        Same contract as the fast path: the deliverable on stdout, progress on stderr, and a file you can commit, schedule, and wire into CI.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
 
 ## Where things live
 
 | Path | What |
-|---|---|
+| --- | --- |
 | `./.graph/config.toml` | project config, deep-merged over global |
 | `~/.config/graph/config.toml` | optional global config (providers, models, MCP servers) |
 | `./.graph/plans/` | your [plan documents](/plans/authoring) (`~/.config/graph/plans/` for global ones) |

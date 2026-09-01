@@ -22,9 +22,9 @@ steps:
 
 `{{E0.teams.0.name}}` is the [template language](/plans/template-language) — typed dataflow between steps, zero inference. Inference appears only where the plan puts it: a [prompt tool](/tools/user-defined) step for a sub-task, and the [finish](/plans/finish-modes) — a solver report, structured JSON, or nothing.
 
-Control flow lives in seven executor-intercepted steps: an [`exit` gate](/plans/exit-gates) ends the plan early with a success or error state, a [`decide` step](/plans/branching) forks into one of two branches on the same gates — both gated logically (`when` on exit, `if` on decide) or by a cheap model judgment (`infer`) — a [`filter` step](/plans/selection) partitions a list with that same gate evaluated per item (spelled `where`), and [`map`/`reduce` steps](/plans/iteration) run a body once per item of a list, collecting the results or folding them into one value. Two more reach outside the plan for what it cannot compute: an [`agent` step](/plans/agent-step) runs a bounded tool-calling loop when *which* tool to call next depends on an earlier result, and an [`ask` step](/plans/ask-step) puts a question to the person running the plan — declaring, in the plan, what to do when there is no person.
+Control flow lives in seven executor-intercepted steps: an [`exit` gate](/plans/exit-gates) ends the plan early with a success or error state, a [`decide` step](/plans/branching) forks into one of two branches on the same gates — both gated logically (`when` on exit, `if` on decide) or by a cheap model judgment (`infer`) — a [`filter` step](/plans/selection) partitions a list with that same gate evaluated per item (spelled `where`), and [`map`/`reduce` steps](/plans/iteration) run a body once per item of a list, collecting the results or folding them into one value. Two more reach outside the plan for what it cannot compute: an [`agent` step](/plans/agent-step) runs a bounded tool-calling loop when _which_ tool to call next depends on an earlier result, and an [`ask` step](/plans/ask-step) puts a question to the person running the plan — declaring, in the plan, what to do when there is no person.
 
-Plans run three ways: directly (`graph plan run`), as a tool anything else can invoke, or authored *by* [the LLM planner](/plans/the-planner) inside `plan_and_execute`.
+Plans run three ways: directly (`graph plan run`), as a tool anything else can invoke, or authored _by_ [the LLM planner](/plans/the-planner) inside `plan_and_execute`.
 
 The key behavioral difference: **human-authored plans never replan**. If a step fails, you get a structured error — the plan you wrote is the plan that runs. `plan_and_execute` plans are LLM-authored, so defects there trigger a replan with the error fed back. Details in [Errors & replanning](/plans/errors-and-replanning).
 
@@ -33,14 +33,14 @@ The key behavioral difference: **human-authored plans never replan**. If a step 
 Everything a plan step or the agent can do is a **tool**, and every tool lives in one namespaced catalog:
 
 | Prefix | Source | Example |
-|---|---|---|
+| --- | --- | --- |
 | `<server>__` | [MCP servers](/tools/mcp-servers) from `[mcp.*]` config | `linear__list_issues` |
 | `user__` | [User-defined tools](/tools/user-defined) (exec / prompt / reshape YAML) | `user__git_log` |
 | `builtin__` | [Bundled tool packs](/tools/builtins) compiled into the binary | `builtin__infer` |
 | `plan__` | One per [plan document](/plans/overview) | `plan__project_status` |
-| — | [`plan_and_execute`](/plans/the-planner): on-the-fly planning for novel multi-step tasks | |
+| — | [`plan_and_execute`](/plans/the-planner): on-the-fly planning for novel multi-step tasks |  |
 
-This is what makes plans composable: authoring a plan *adds a tool to the catalog*, and a plan's steps draw from that same catalog — including other plans. The [composition rules](/tools/overview#composition-rules) and the commands for inspecting and invoking the catalog live in [The tool catalog](/tools/overview).
+This is what makes plans composable: authoring a plan _adds a tool to the catalog_, and a plan's steps draw from that same catalog — including other plans. The [composition rules](/tools/overview#composition-rules) and the commands for inspecting and invoking the catalog live in [The tool catalog](/tools/overview).
 
 ## 3. The shape cache
 
@@ -73,5 +73,3 @@ Running a plan directly (`graph plan run`) is **one** LLM call (the solver) or *
 1. **Agent** — reads your message, decides to call `plan__project_status`
 2. **Solver** — inside the plan, synthesizes the report from the collected step results (streams dimmed to stderr as progress)
 3. **Agent** — reads the report and writes the final answer (stdout)
-
-The plan's steps themselves are pure tool calls — no LLM. The full anatomy, including model roles per call, is in [Execution model](/architecture/execution-model).

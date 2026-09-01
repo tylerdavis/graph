@@ -1,5 +1,5 @@
 ---
-title: "CLI reference"
+title: "CLI"
 description: "Every command and flag"
 icon: "square-terminal"
 ---
@@ -10,12 +10,12 @@ Global: `-v/-vv/-vvv` raises log verbosity (stderr); `GRAPH_LOG` accepts a traci
 
 One agent turn.
 
-```
+```text
 graph ask "<message>" [--thread [<id>]] [--json] [--no-stream]
 ```
 
 | Flag | Effect |
-|---|---|
+| --- | --- |
 | `--thread` (bare) | continue the most recent thread |
 | `--thread <id>` | continue a specific thread |
 | `--json` | emit `{content, tool_calls_made, usage, thread_id}` instead of streaming |
@@ -30,7 +30,7 @@ Interactive REPL. `--thread [<id>]` as above. Slash commands: `/thread`, `/state
 
 ## `graph workbench`
 
-```
+```text
 graph workbench plan [<name>|<path>]     # alias: graph wb plan
 ```
 
@@ -38,7 +38,7 @@ Full-screen TUI for drafting, inspecting, and test-running plans — see [Plan w
 
 ## `graph plan`
 
-```
+```text
 graph plan list [--json]
 graph plan show <name|path> [--json]
 graph plan validate <name|path> [--json]
@@ -51,13 +51,13 @@ graph plan run <name> [<json>|@file|-] [--input k=v]... [--json]
 
 Per the [streams contract](/reference/scripting-contract#streams), stdout carries only deliverables — `list`'s rows, `show`'s YAML, and `--json` envelopes. Verdicts and hints go to stderr, so `plan validate` prints nothing to stdout on success and its exit code is the answer; `plan list` on an empty catalog leaves stdout empty rather than emitting a hint into it.
 
-`show` and `validate` are deliberately lenient about *which* plans they will open: a plan that is invalid, or hidden by unconfigured `requires_servers`, is exactly the plan you need to inspect, so both resolve it from disk rather than requiring it to be in the runnable catalog. `list` only shows the runnable catalog; `list --json` also reports what was `skipped` (failed to load, with the reason) and `hidden` (with the missing servers).
+`show` and `validate` are deliberately lenient about _which_ plans they will open: a plan that is invalid, or hidden by unconfigured `requires_servers`, is exactly the plan you need to inspect, so both resolve it from disk rather than requiring it to be in the runnable catalog. `list` only shows the runnable catalog; `list --json` also reports what was `skipped` (failed to load, with the reason) and `hidden` (with the missing servers).
 
 ## Authoring plans
 
 The commands below create and edit plan files. They are stateless — each one resolves a plan, applies a single edit, and writes the YAML back — so there is no draft session and no undo (use version control). Only `draft` costs inference; everything else works with no provider credentials and no network.
 
-```
+```text
 graph plan new <identifier> [--name <n>] [--description <d>] [--output <path>] [--json]
 graph plan draft <goal> [--from <name|path>] [--output <path>] [--stdout] [--json]
 graph plan set <name|path> <attribute> <value>... [--json]
@@ -69,11 +69,11 @@ graph plan step unset <name|path> <id> <attribute> [--json]
 graph plan step rm <name|path> <id> [--json]
 ```
 
-`new` scaffolds a plan with no steps. It is intentionally invalid on creation (`plan has no steps`) — an edit is only refused if it makes things *worse*, so a scaffold stays editable and a plan can be built up step by step without ever invoking the planner.
+`new` scaffolds a plan with no steps. It is intentionally invalid on creation (`plan has no steps`) — an edit is only refused if it makes things _worse_, so a scaffold stays editable and a plan can be built up step by step without ever invoking the planner.
 
 `draft` runs the planner over your tool catalog, one validated step at a time; if drafting exhausts its retries on a step, the valid prefix is saved and reported under `salvaged` so you can finish it with `step add` instead of redrafting. `--stdout` prints the YAML and writes nothing.
 
-**Drafting happens once, at the start.** It replaces every step, so it is not a way to correct a plan — redrafting to fix one thing discards everything that was already right. `--from` exists to draft into a plan's *identity* (its identifier, name, description, and input schema), which is how you get a well-named plan without renaming afterwards:
+**Drafting happens once, at the start.** It replaces every step, so it is not a way to correct a plan — redrafting to fix one thing discards everything that was already right. `--from` exists to draft into a plan's _identity_ (its identifier, name, description, and input schema), which is how you get a well-named plan without renaming afterwards:
 
 ```bash
 graph plan new commit_digest --description "Summarize commits between two refs"
@@ -87,7 +87,7 @@ Once a draft has steps worth keeping, every correction goes through `set`, `step
 One attribute per call, named exactly as it appears in the plan file. See [Plan schema](/reference/plan-schema) for what each one means.
 
 | `plan set <attribute>` | Value |
-|---|---|
+| --- | --- |
 | `name`, `description`, `identifier` | One string |
 | `exemplars`, `requires_servers` | One or more strings |
 | `input_schema` | A JSON Schema object: inline JSON, `@file`, or `-` |
@@ -95,7 +95,7 @@ One attribute per call, named exactly as it appears in the plan file. See [Plan 
 | `output` | A template map: inline JSON, `@file`, or `-` |
 
 | `plan step update <attribute>` | Value |
-|---|---|
+| --- | --- |
 | `tool` | A tool name, or a control step (`exit`, `agent`, `decide`, `map`, `reduce`) |
 | `input` | The step's whole input object: inline JSON, `@file`, or `-` |
 | `reasoning` | One string |
@@ -110,15 +110,15 @@ Every edit runs through the same guard the [plan workbench](/workbench/plan-work
 
 So `graph plan step rm demo E1` fails when a later step still references `{{E1.…}}`, naming the template that would dangle, while `graph plan set demo description '…'` succeeds on a plan that is invalid for unrelated reasons.
 
-Exit codes: `0` applied, `1` rejected. With `--json` the envelope is printed to stdout *before* the non-zero exit, so a caller always gets the structured problem list. Without it, a one-line result goes to stderr and stdout stays empty — see the [scripting contract](/reference/scripting-contract).
+Exit codes: `0` applied, `1` rejected. With `--json` the envelope is printed to stdout _before_ the non-zero exit, so a caller always gets the structured problem list. Without it, a one-line result goes to stderr and stdout stays empty — see the [scripting contract](/reference/scripting-contract).
 
-Changing `identifier` writes a *new* file (`<plans dir>/<new>.yaml`) and leaves the original in place, reporting `renamedFrom`; removing the old file is left to you, so a rename can never silently destroy a plan.
+Changing `identifier` writes a _new_ file (`<plans dir>/<new>.yaml`) and leaves the original in place, reporting `renamedFrom`; removing the old file is left to you, so a rename can never silently destroy a plan.
 
 An edit reserializes the whole file, so cosmetic YAML is normalized: flow mappings (`input: { a: b }`) become block mappings, folded scalars (`>`) become literal ones (`|`), and comments are dropped. The plan itself is unchanged — commentary belongs in `description` and each step's `reasoning`, which are real fields the agent also reads.
 
 ## `graph tools`
 
-```
+```text
 graph tools list [--json]
 graph tools show <name> [--json]
 graph tools test <name> [<json>|@file|-] [--input k=v]...
@@ -130,11 +130,11 @@ Operates on the full catalog: MCP (`server__`), user (`user__`), bundled packs (
 
 `show --json` emits one tool's whole definition — `inputSchema` included, which is what you need to write a step's input object — with every key always present, `null` when absent. Unknown tool names stay ordinary errors (stderr, exit `1`); there is no envelope for them. See the [scripting contract](/reference/scripting-contract#the-tool-catalog).
 
-`test --json` wraps the call: `{tool, isError, result}`. A tool that *reports* an error still exits `0` — the call completed and its payload is the result worth reading, so `isError` carries the distinction the exit code does not. Without `--json` the tool's own result is the deliverable, unwrapped.
+`test --json` wraps the call: `{tool, isError, result}`. A tool that _reports_ an error still exits `0` — the call completed and its payload is the result worth reading, so `isError` carries the distinction the exit code does not. Without `--json` the tool's own result is the deliverable, unwrapped.
 
 ## `graph threads`
 
-```
+```text
 graph threads list [--json]
 graph threads show <id> [--state] [--json]
 graph threads rm <id> [--json]
@@ -142,18 +142,18 @@ graph threads rm <id> [--json]
 
 ## `graph mcp`
 
-```
+```text
 graph mcp list [--json]              # configured servers
 graph mcp tools [server] [--json]    # discovered tools
 graph mcp test <server> [--json]     # connect, count tools and declared output schemas
 graph mcp serve --dir <path>         # serve graph's plans to an agent over MCP (stdio)
 ```
 
-graph is an MCP *client*: each `[mcp.<name>]` entry becomes a set of `<name>__*` tools — see [MCP servers](/tools/mcp-servers). It is also an MCP *server*: `graph mcp serve` exposes every plan in the catalog as a callable tool, plus the plan authoring commands, so another agent can build and run graph plans. See [graph as an MCP server](/tools/mcp-server).
+graph is an MCP _client_: each `[mcp.<name>]` entry becomes a set of `<name>__*` tools — see [MCP servers](/tools/mcp-servers). It is also an MCP _server_: `graph mcp serve` exposes every plan in the catalog as a callable tool, plus the plan authoring commands, so another agent can build and run graph plans. See [graph as an MCP server](/tools/mcp-server).
 
 ## `graph shapes`
 
-```
+```text
 graph shapes list [--json]
 graph shapes show <tool> [--json]
 ```
@@ -162,7 +162,7 @@ Inspect the [shape cache](/tools/shape-cache): `list` prints tool names and seen
 
 ## `graph config`
 
-```
+```text
 graph config show    # merged effective config
 graph config init    # write a commented starter (./.graph/; --global for ~/.config/graph/)
 graph config path    # config file locations and which exist

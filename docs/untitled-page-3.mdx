@@ -1,0 +1,239 @@
+---
+title: "Github"
+icon: "github"
+---
+
+<Note>
+  The `github` pack expects `git`, `jq`, and `gh` on PATH, with `GH_TOKEN` (or `gh auth`) for the `gh_*` tools
+</Note>
+
+Building blocks for PR — and release-shaped plans — see the [CI checks cookbook](/cookbook/ci-checks) for them in use.
+
+### `builtin__gh_pr_meta`
+
+Metadata for a pull request — the starting point for anything that diffs or reviews a PR. Read-only.
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `pr` | integer | required — pull request number |
+
+| Output | Type |  |
+| :-- | :-- | :-- |
+| `title` | string | PR title |
+| `body` | string | PR description (`""` when empty) |
+| `base_sha` | string | tip of the base branch |
+| `head_sha` | string | tip of the PR branch |
+| `state` | string | `OPEN`, `MERGED`, … |
+| `author` | string | login |
+
+### `builtin__gh_pr_comment`
+
+Post or update a comment on the PR conversation. With a `marker`, the body carries it as a hidden HTML tag (`{/*  marker  */}`) and repeated runs find and edit _that_ comment — so several plans can each maintain their own comment on one PR. Without one, updates the token identity's most recent comment (`--edit-last --create-if-none`), so repeated runs keep a single comment instead of stacking. **Side-effecting** (`read_only: false`).
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `pr` | integer | required |
+| `body` | string | required — markdown comment body (render it with [template sections](/plans/template-language#sections)) |
+| `marker` | string | optional — stable identifier for find-and-edit; use one per plan (e.g. `"graph:pr_review:summary"`). Omit to edit the identity's most recent comment |
+
+Output: `{ "text": "<comment URL>" }`.
+
+<Warning>
+  When two plans post summary comments to the same PR under one token, the markerless `--edit-last` upsert makes the later run overwrite the earlier plan's comment. Give each plan its own `marker` to keep the comments separate.
+</Warning>
+
+### `builtin__gh_pr_ticket`
+
+Ticket identifier (e.g. `LN-1234`) from a PR's metadata — deterministic regex extraction, zero LLM calls, so plans don't burn an inference on what a pattern match can do. Scans the head branch name, then the title, then the body; first match wins and is normalized to uppercase-with-dash form (`LN 1234`, `ln-1234` → `LN-1234`). Read-only.
+
+The default pattern **requires a separator** (dash or space) between the letters and digits, so glued technical words like `arm64`, `utf8`, and `sha256` don't false-match as tickets. If your tracker uses a glued form (`ln1234`), override `pattern` accordingly.
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `pr` | integer | required |
+| `pattern` | string | optional — POSIX extended regex the ID must match; default `\b[A-Za-z]{2,6}[- ][0-9]+\b` covers common tracker forms like `LN-1234` and `LN 1234` |
+
+| Output | Type |  |
+| :-- | :-- | :-- |
+| `found` | boolean | ready for `exit`/`decide` gates |
+| `ticket` | string \| null | normalized ID; `null` when not found |
+| `source` | string \| null | `branch`, `title`, or `body`; `null` when not found |
+
+Every field is always present, so template references like `{{Ex.ticket}}` never dangle; a PR without a ticket is `{found: false}`, not an error.
+
+### `builtin__gh_release`
+
+Metadata for a release — tag, title, notes body, url, publication date — plus `previous_tag`, the tag of the release published _before_ it. That last field is what makes this the entry point for release-shaped plans: it is the `base` ref for a `git_log` or `git_diff` over the range that shipped. Omit `tag` for the latest release. Read-only.
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `tag` | string | optional — release tag (e.g. `"v1.4.0"`); default `""` for the latest release |
+| `include_prereleases` | boolean | optional — whether prereleases count when resolving `previous_tag`; default `false`. Never affects which release `tag` resolves to |
+
+| Output | Type |  |
+| :-- | :-- | :-- |
+| `tag` | string | the release's tag |
+| `name` | string | release title (`""` when untitled) |
+| `body` | string | release notes markdown — GitHub's generated notes when that is how the release was made (`""` when empty) |
+| `url` | string | release page |
+| `published_at` | string \| null | ISO 8601; `null` for a draft |
+| `author` | string \| null | login |
+| `is_prerelease` | boolean |  |
+| `is_draft` | boolean |  |
+| `target` | string \| null | target commitish the tag was cut from |
+| `previous_tag` | string \| null | tag of the release before this one; `null` on the first release |
+
+`previous_tag` is resolved by publication date rather than list position, so a prerelease target still finds the last stable release before it. With the default `include_prereleases: false`, a stable release's `previous_tag` is the last _stable_ release — so a summary built on it covers everything since users last saw a release, not just since the last release candidate.
+
+The first release in a repository has no predecessor: `previous_tag` is `null`, not an error. Gate on it before diffing —
+
+```yaml
+- id: E1
+  tool_name: exit
+  input:
+    when: { value: "{{E0.previous_tag}}", op: empty }
+    status: success
+    message: first release — nothing to compare against
+```
+
+### `builtin__gh_pr_inline_comments`
+
+Post inline review comments anchored to lines of the PR diff. Each entry posts as its own API call, so one bad anchor can't sink the rest; entries without a `line`, or whose anchor the API rejects (the line must be part of the diff), pass through unposted. Every comment embeds the `marker` as a hidden HTML tag, and comments from earlier runs carrying the same marker are deleted before posting — repeated runs refresh in place instead of stacking. **Side-effecting** (`read_only: false`).
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `pr` | integer | required |
+| `head_sha` | string | required — commit the comments anchor to (the PR head) |
+| `marker` | string | required — stable identifier for refresh-in-place; use one per plan (e.g. `"graph:pr_review"`) |
+| `comments` | array | required — entries of `{path, line?, side?, body}`; extra keys pass through |
+
+| Entry key | Type |  |
+| :-- | :-- | :-- |
+| `path` | string | required — file path within the diff |
+| `line` | integer | line in the new file; must be part of the diff — omit when unknown |
+| `side` | string | `LEFT` or `RIGHT` (default `RIGHT`) |
+| `body` | string | required — markdown comment body |
+
+Output: `{ "comments": [...] }` — the input entries in order, each with `url` added when its comment posted. Extra entry keys survive the round trip, so a downstream template can render a summary (with links) from this tool's output alone.
+
+Inline comments never block a merge by themselves: they post as plain review comments (not a `REQUEST_CHANGES` review), so they only gate merging on repos with _Require conversation resolution before merging_ enabled.
+
+Delete-and-repost is stateless by design — nothing survives between runs, including human replies on the comments. When findings should live across runs as conversations (stay open, get replied to, resolve when fixed), use the thread-lifecycle pair below instead: `gh_pr_thread_sync` to post and transition, `gh_pr_review_threads` to read back.
+
+### `builtin__gh_pr_review_threads`
+
+The read half of the thread-lifecycle pair: list the review threads a plan previously posted on a PR, as structured findings. A thread is recognized by the hidden `{/*  <marker> {json}  */}` payload tag `gh_pr_thread_sync` embeds in its first comment; everything else on the PR is ignored. The embedded payload merges with thread metadata into one flat object per finding, so downstream templates reference `{{label}}`, `{{severity}}`, etc. directly. Read-only.
+
+Each finding's `state` is a heuristic from GitHub's resolution data: an unresolved thread is `open`; a thread resolved by the same login that posted it is `resolved` (our own automation closed it); a thread resolved by anyone else is `declined` (a human closed it). Replies after the first comment come along verbatim (`replies: [{author, body}]`) so an inference step can read a "wontfix" for what it is.
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `pr` | integer | required |
+| `marker` | string | required — the payload tag prefix the findings were posted with |
+
+Output: `{ "findings": [...], "count", "open_count", "skipped", "has_findings" }` — each finding is the payload's keys plus `thread_id`, `state`, `path`, `line`, `is_outdated`, `url`, `replies`, and `reply_count`. Tagged threads whose payload is missing or lacks the keys `label`, `severity`, `invariant`, `file`, `line`, `finding` are skipped (counted in `skipped`, never fatal) — they can't round-trip.
+
+### `builtin__gh_pr_thread_sync`
+
+The write half of the thread-lifecycle pair: post new findings as inline comments and apply per-thread transitions to existing ones — in one call, without ever deleting an open thread or a human reply. New comments embed the `marker`'s hidden JSON payload so `gh_pr_review_threads` can read them back on the next run. Each create and each transition is its own API call, so one failure can't sink the rest: a failed transition comes back `applied: false` and the thread simply stays open. **Side-effecting** (`read_only: false`).
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `pr` | integer | required |
+| `head_sha` | string | required — commit new comments anchor to (the PR head) |
+| `marker` | string | required — payload tag prefix; use one per plan (e.g. `"graph:pr_review:finding"`) |
+| `creates` | array | required — new findings: `{path, line?, side?, body, payload}`; extra keys pass through |
+| `threads` | array | required — existing findings: `{thread_id, transition, note?}`; extra keys pass through |
+| `sweep_marker` | string | optional — a legacy delete-and-repost marker whose comments are deleted first; a one-time migration aid, omit in the steady state |
+
+A create's `payload` is the structured finding embedded as the hidden tag — keep it small and flat, and make sure it carries the keys `gh_pr_review_threads` requires. Entries without a `line`, or whose anchor the API rejects, pass through unposted, exactly like `gh_pr_inline_comments`. A thread's `transition` is `none` (leave untouched), `resolve`, or `decline` — both of the latter reply with `note` (a sensible default when empty) and resolve the thread via GraphQL, so the distinction is the message, not the mechanics.
+
+Output: `{ "creates": [...], "threads": [...], "created_count", "resolved_now_count", "declined_now_count", "still_open_count", "transitions_count", "has_creates", "has_transitions" }` — the input entries in order (`creates` gain `url` when posted; `threads` gain `applied` and `transitioned`), plus the lifecycle counts, so a summary comment renders from this tool's output alone.
+
+### `builtin__git_diff`
+
+Unified diff between two refs (merge-base three-dot diff), path-scoped, truncated to a byte budget — sized for LLM consumption. A diff over budget ends with a `[diff truncated: showing X of Y bytes]` marker line, so a consumer can tell a complete diff from a cut one; an unresolvable ref fails the call instead of returning an empty diff. Read-only. Needs a checkout with enough history to resolve both refs (`fetch-depth: 0` in CI).
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `base` | string | required — ref or sha |
+| `head` | string | required — ref or sha |
+| `paths` | string | required — space-separated pathspecs; `"."` for everything |
+| `exclude` | string | required — space-separated excluded paths; `""` for none |
+| `max_bytes` | integer | required — truncation budget |
+
+Output: `{ "text": "<diff>" }` — empty string when nothing changed, which pairs with an `empty` [exit gate](/plans/exit-gates).
+
+### `builtin__git_log`
+
+Commits between two refs, newest first, with the PR number parsed out of each subject. The high-signal, low-cost input for changelog and release-summary steps: commit subjects carry the _intent_ that a diff makes an LLM infer, at a fraction of the tokens. Read-only. Needs enough history to resolve both refs (`fetch-depth: 0` in CI).
+
+The range is **two-dot** (`base..head`) — "commits that landed since `base`" — not the three-dot merge-base form `git_diff` takes. Pair it with `gh_release`'s `previous_tag` as `base` and the release tag as `head`.
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `base` | string | required — ref the range starts _after_ (exclusive) |
+| `head` | string | optional — ref the range ends at (inclusive); default `HEAD` |
+| `paths` | string | optional — space-separated pathspecs; default `""` (everything) |
+| `max_commits` | integer | optional — cap on returned commits; default 200 |
+| `include_merges` | boolean | optional — keep merge commits; default `false` |
+
+| Output | Type |  |
+| :-- | :-- | :-- |
+| `commits` | array | `{sha, short_sha, author, date, subject, pr}` objects, newest first |
+| `count` | integer | commits returned, ready for `eq`/`gt` gates |
+| `total` | integer | commits in the whole range, before `max_commits` |
+| `truncated` | boolean | `true` when `max_commits` cut the list |
+
+`pr` is the pull request number from a trailing `(#123)` in the subject (the form GitHub's squash merge writes), or `null` — so a summary can link each change without a second API call. `count` counts what came back; `total` counts the range, so `truncated` is exact rather than inferred.
+
+Merges are excluded by default: on a squash-merge history they add nothing, and on a merge-commit history the merge subject just restates the branch it brought in. An empty range is `{count: 0}`, not an error — gate on it before spending an inference. An unresolvable ref fails the call loudly rather than returning an empty list a gate would read as "nothing shipped".
+
+### `builtin__git_changed_files`
+
+Files changed between two refs (merge-base diff), filtered to a path prefix — the cheap input for gating before any LLM call, and the grounding for review plans that read files at the head. Read-only. Fails loudly on bad refs rather than returning an empty list a gate would misread; no changes is `{files: [], count: 0, changes: []}`, not an error.
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `base` | string | required |
+| `head` | string | required |
+| `prefix` | string | required — path prefix filter; `""` matches every file |
+
+| Output | Type |  |
+| :-- | :-- | :-- |
+| `files` | array of string | matching paths |
+| `count` | integer | `files.length`, ready for `eq`/`gt` gates |
+| `changes` | array of object | one `{path, status, old_path, additions, deletions, binary}` per file |
+
+`status` is `added`, `modified`, `deleted`, `renamed`, `copied`, or `type_changed`; `old_path` is the previous path for renamed/copied entries and `null` otherwise. Rename detection is pinned on (`-M`) so a rename is always one `renamed` entry, never a delete+add pair that varies with the machine's `diff.renames` config. `additions`/`deletions` are line counts (`0` with `binary: true` for binary files).
+
+A **deleted** file's path appears in `files` and `changes` — it changed — but does not exist at `head`, so `git_file` at the head sha fails on it by design. Select before you read: `filter` the `changes` to `status ne deleted` and map `git_file` over `{{Ex.items}}` reading `{{item.path}}`. The same applies to a `renamed` entry's `old_path`.
+
+### `builtin__git_file`
+
+Contents of a file at a ref (`git show <ref>:<path>`), truncated to a byte budget — so a review plan can read a file as it exists at the PR head instead of whatever is checked out. Over-budget content ends with a `[file truncated: showing X of Y bytes]` marker line, same convention as `git_diff`; an unresolvable ref or missing path fails the call instead of returning empty content. Read-only.
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `ref` | string | required — ref or sha (e.g. the PR `head_sha`) |
+| `path` | string | required — file path within the repository |
+| `max_bytes` | integer | optional — truncation budget; default 200000 |
+
+Output: `{ "text": "<content>" }`.
+
+### `builtin__git_grep`
+
+Search tracked file contents at a ref (`git grep -n`, POSIX extended regex), optionally scoped to pathspecs — check code at the PR head without an LLM call or a checkout switch. No match at all is `{matches: [], count: 0}`, not an error; a bad ref fails loudly instead of reading as "nothing found". Read-only. Git only — no `rg` required.
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `pattern` | string | required — POSIX extended regex |
+| `ref` | string | optional — ref or sha to search at; default `HEAD` |
+| `paths` | string | optional — space-separated pathspecs; default `""` (everything) |
+| `max_matches` | integer | optional — cap on returned matches; default 200 |
+
+| Output | Type |  |
+| :-- | :-- | :-- |
+| `matches` | array | `{path, line, text}` objects, in git's path order |
+| `count` | integer | `matches.length`, ready for `eq`/`gt` gates |
+| `truncated` | boolean | `true` when `max_matches` cut the list |
