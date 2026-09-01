@@ -63,8 +63,6 @@ The environment that matters is the one the MCP _client_ launches the server wit
 
 ## What gets served
 
-Two populations, deliberately named apart.
-
 ### Your plans, as tools
 
 Every plan in the catalog becomes `plan_<identifier>`, carrying that plan's own `input_schema` as the tool's schema, and its `description` plus `exemplars` as the routing signal. The calling agent gets exactly the argument contract graph enforces internally — not a generic "run a plan" tool taking a free-form blob.
@@ -76,15 +74,11 @@ plan_urgent_issues   { }
 
 A plan hidden by [`requires_servers`](/plans/overview) on this machine is not served, for the same reason it is not offered to graph's own agent: it cannot run here.
 
-### The authoring commands
+### The authoring tools
 
 `graph_plan_list`, `graph_plan_show`, `graph_plan_validate`, `graph_plan_new`, `graph_plan_draft`, `graph_plan_set`, `graph_plan_unset`, `graph_plan_step_add`, `graph_plan_step_update`, `graph_plan_step_rename`, `graph_plan_step_rm`, `graph_tools_list`, `graph_tools_show`, `graph_tools_test`.
 
-`graph_tools_list` and `graph_tools_show` return the complete vocabulary a step's `tool` field may name: the namespaced tools **and** the seven control steps under the `(control)` source. That matters more over MCP than on a terminal — the server does not serve graph's documentation, so an agent that cannot get `exit`'s or `ask`'s schema from `graph_tools_show` has nowhere to look but graph's source.
-
-These are the [plan authoring](/plans/authoring) CLI, one tool per verb, so an agent can build and check a plan without a shell. Every edit goes through the same validation guard as the command line: an edit that would break the plan is refused, with the problems it would have introduced.
-
-The `graph_` prefix is what keeps a plan named `tools_list` from colliding with the verb of the same name.
+These give your agent everything it needs to build and check a plan without a shell. Every edit goes through the same validation guard as the command line: an edit that would break the plan is refused, with the problems it would have introduced.
 
 ## Authoring and calling in one session
 
@@ -97,20 +91,6 @@ graph_plan_set       input_schema, {…}
 graph_plan_validate  → { ok: true }
 plan_commit_digest   { base: "v1.0", head: "HEAD" }   ← now callable
 ```
-
-## How outcomes come back
-
-The CLI signals with [exit codes](/reference/scripting-contract#exit-codes). Those have nowhere to go over MCP, so the distinctions they carry survive as data instead.
-
-| Situation | CLI | Over MCP |
-| --- | --- | --- |
-| Plan ran | exit `0` | result: `{answer, output, plan, steps_executed, exit, usage}` |
-| Plan needs inputs | exit `3` | `isError`, body carries `inputSchema` and `problems` — retry with the argument |
-| [Exit gate](/plans/exit-gates) asserted | exit `4` | `isError`, body carries the gate's `message` and `step` |
-| Edit refused | exit `1` | `isError`, body carries `problemsIntroduced` |
-| Unknown tool, bad argument type | exit `1` | a JSON-RPC error — this one is the caller's mistake, not a result |
-
-The distinction in that last row is the important one. A refused edit _is_ an answer: the problem list is what the agent needs to fix its next attempt, and flattening it into an error string would leave the model parsing prose to recover it. A misspelled tool name is not an answer at all.
 
 ## Cost and latency
 
@@ -145,10 +125,3 @@ A plan can contain an [`ask` step](/plans/ask-step) — a value only a person ca
 It is capability-gated. A client that did not advertise `elicitation` at initialize time is never sent a request — the ask resolves as unavailable immediately and the plan runs its declared `when_unanswered` path, which is why a plan written for a terminal still works here. A client that advertises support and then errors or times out is treated the same way; an unanswerable question is a plan-declared condition, not a server failure. `decline` and `cancel` both come back to the plan as `"declined"`.
 
 The answer schema is a flat object of primitive fields, which is the protocol's constraint — graph enforces it when the plan is validated, so it fails as a review comment rather than at runtime on one host.
-
-## Notes and limits
-
-- **Tool activity also goes to stderr**, where MCP clients conventionally collect server logs.
-- **`ask` and `chat` are not served.** They are graph's conversational layer; an agent calling graph does not need another agent, it needs the plans.
-- **Do not point graph's own `[mcp]` config at `graph mcp serve`.** The pipeline's cycle detection and depth cap work within a process; they do not cross a process boundary.
-- Plan writes are serialized, so concurrent authoring calls cannot silently lose an edit.
