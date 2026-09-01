@@ -22,7 +22,7 @@
         ]
       },
       {
-        "group": "Building plans",
+        "group": "Authoring plans",
         "icon": "wrench",
         "pages": [
           "building/workbench",
@@ -30,7 +30,7 @@
         ]
       },
       {
-        "group": "Executing plans",
+        "group": "Running plans",
         "icon": "running",
         "pages": [
           "reference/cli",
@@ -80,6 +80,7 @@
               "reference/plan-schema"
             ]
           },
+          "architecture/storage",
           "reference/configuration"
         ]
       },
@@ -94,8 +95,7 @@
           {
             "group": "Architecture",
             "pages": [
-              "architecture/execution-model",
-              "architecture/storage"
+              "architecture/execution-model"
             ]
           },
           {

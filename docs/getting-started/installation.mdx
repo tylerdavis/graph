@@ -6,7 +6,7 @@ icon: "download"
 
 import BinaryDownloads from "/shared/binary_downloads.mdx";
 
-graph ships as a single binary and a container image — grab whichever fits. Current release: **{{release_version}}**.
+graph ships as a single binary and a container image — grab whichever fits. Current release: {{release_version}}.
 
 ## Release binaries
 
@@ -34,7 +34,7 @@ Or from the command line:
 </Tabs>
 
 <Info>
-On macOS, the first run of a freshly downloaded binary pauses ~1s while Gatekeeper scans it. Every run after that is instant.
+  On macOS, the first run of a freshly downloaded binary pauses ~1s while Gatekeeper scans it. Every run after that is instant.
 </Info>
 
 ## Container image
@@ -51,11 +51,11 @@ While the repository is private the image is too — `docker login ghcr.io` with
 ## Requirements
 
 | Requirement | Notes |
-|---|---|
+| --- | --- |
 | macOS (arm64) or Linux (x86_64) | the platforms release binaries are published for |
 | An LLM provider key | e.g. `ANTHROPIC_API_KEY` — see [Quickstart](/getting-started/quickstart) |
 
 ## First-run notes
 
 - graph creates its data directory at `~/.local/share/graph/` on first use (configurable via `[settings] data_dir`).
-- State is plain files under the data directory, safe under concurrent runs. Use `GRAPH_STORAGE=memory` for ephemeral runs that should leave nothing behind — see [Storage](/architecture/storage).
+- State is plain files under the data directory, safe under concurrent runs. Use `GRAPH_STORAGE=memory` for ephemeral runs that should leave nothing behind.
