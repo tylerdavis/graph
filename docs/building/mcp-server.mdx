@@ -4,13 +4,13 @@ description: "Serving your plans and the plan authoring commands to another agen
 icon: "share-nodes"
 ---
 
-graph is an MCP _client_ — that's [MCP servers](/tools/mcp-servers). This page is the other direction: `graph mcp serve` exposes **your plans** to somebody else's agent, over stdio.
-
 ```bash
 graph mcp serve --dir /path/to/project
 ```
 
-The point is not to give an agent another shell. It is that a plan is a _reviewed, validated, versioned_ pipeline of tool calls — and an agent calling `plan_sprint_report` gets that whole apparatus behind one tool call, instead of improvising the same sequence differently every time.
+The point is not to give an agent another set of skills. It is that a plan is a _reviewed, validated, versioned_ pipeline of tool calls — and an agent calling `plan_sprint_report` gets that whole apparatus behind one tool call, instead of improvising the same sequence differently every time.
+
+For your agent, graph brings deterministic_-ish_ skills.
 
 ## Configuring a client
 
