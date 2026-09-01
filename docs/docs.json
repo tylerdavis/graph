@@ -11,7 +11,7 @@
   "navigation": {
     "pages": [
       "introduction",
-      "getting-started/quickstart",
+      "quickstart",
       {
         "group": "Getting Started",
         "icon": "person-ski-jumping",
