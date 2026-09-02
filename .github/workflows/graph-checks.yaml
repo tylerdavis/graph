@@ -4,7 +4,7 @@
 # and tools (./.graph/) and the bundled github tool pack. GRAPH_EVENTS=github
 # turns failing gates into run annotations. docs-drift fails the check
 # (exit 4) on undocumented behavior changes; format-drift fails it on a
-# non-additive file-format change without a format bump; graph-review-9000 composes
+# file-format schema change without a format bump; graph-review-9000 composes
 # plan__graph_review_core (the locally runnable review engine) with
 # plan__graph_review_thread_audit (thread lifecycle, decide-gated to runs
 # with prior findings), maintaining its eight-pass findings as living
@@ -56,7 +56,7 @@ jobs:
       - name: Docs drift gate
         run: graph plan run docs_drift --input base="$BASE" --input head="$HEAD"
 
-  # Sibling gate: a non-additive change to a versioned file format (config,
+  # Sibling gate: any schema change to a versioned file format (config,
   # plan/tool documents, the store layout) must raise the matching *_FORMAT
   # constant and document the migration — see docs/reference/formats.mdx.
   # Zero LLM calls unless a model file changed.

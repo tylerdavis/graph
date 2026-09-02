@@ -1,6 +1,6 @@
 # Format-drift gate: fails (exit-gate error → process exit 4) when a PR
-# changes a file-format model (config, plan/tool documents, the store
-# layout) in a non-additive way without bumping the matching *_FORMAT
+# changes a file-format schema (config, plan/tool documents, the store
+# layout) — additively or not — without bumping the matching *_FORMAT
 # constant and documenting the step on docs/reference/formats.mdx — the
 # CLAUDE.md rule, enforced. Sibling of docs_drift: zero LLM calls unless
 # one of the model files changed, then one judge call over the model diff,
@@ -8,11 +8,11 @@
 identifier: format_drift
 name: Format drift gate
 description: >
-  Checks whether a PR changes a file-format model without a format bump.
+  Checks whether a PR changes a file-format schema without a format bump.
   Exits successfully (zero LLM calls) when none of the model files changed;
   otherwise an inferred exit gate reads the model diff alongside the
-  format-constant diff and asserts an error when a non-additive change
-  shipped without raising the constant and updating the formats page.
+  format-constant diff and asserts an error when a schema change of any
+  kind shipped without raising the constant and updating the formats page.
   Process exit code 4 on assertion.
 input_schema:
   type: object
@@ -55,17 +55,18 @@ steps:
     tool_name: exit
     input:
       infer: |
-        Decide whether this PR breaks a versioned file format without
-        accounting for it. Answer yes ONLY if BOTH hold:
+        Decide whether this PR changes a versioned file format's schema
+        without accounting for it. Answer yes ONLY if BOTH hold:
 
-        1. The MODEL DIFF removes a field, renames a field or an enum value,
-           changes a field's type or shape, changes what values a field
-           accepts or what an existing value means, or adds a field that
-           existing files must now supply. Purely additive changes — a new
-           optional field with a default, a new enum variant, a new struct
-           or function, doc comments, tests — do NOT count, and neither do
-           changes to code that is not part of a file's schema (validation
-           messages, loaders, helper functions).
+        1. The MODEL DIFF changes the schema of a file graph reads: it adds
+           a field (optional or required), removes a field, renames a field
+           or an enum value, adds or removes an enum variant, changes a
+           field's type or shape, or changes what values a field accepts or
+           what an existing value means. Every schema change counts,
+           additive ones included — the format version is the schema's
+           generation number. What does NOT count: changes to code that is
+           not part of a file's schema (validation messages, loaders,
+           helper functions), doc comments, and tests.
 
         2. The change is not accounted for: no `CONFIG_FORMAT`,
            `PLAN_FORMAT`, `TOOL_FORMAT`, or `STORE_FORMAT` constant is
@@ -84,9 +85,10 @@ steps:
         {{E0.text}}
       status: error
       message: >-
-        non-additive change to a versioned file format without a format
-        bump — raise the matching *_FORMAT constant, append a migration and
-        a fixture pair, and document the step on docs/reference/formats.mdx
+        schema change to a versioned file format without a format bump —
+        raise the matching *_FORMAT constant, append a migration (a no-op
+        for additive changes) and a fixture pair, and document the step on
+        docs/reference/formats.mdx
     reasoning: One judge call decides; error exit fails the CI check.
 output:
   format_bump_required: false

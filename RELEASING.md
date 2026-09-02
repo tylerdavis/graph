@@ -79,17 +79,19 @@ skip parser from ever hiding one.
 
 `config.toml`, plan documents, tool documents, and the data directory each
 carry an integer format version, independent of the binary version
-(`docs/reference/formats.mdx` is the user-facing contract). A non-additive
-change to one of those formats — a removed or renamed key, a changed shape
-or meaning, a newly required key — is a **format bump**, and it ships as one
-PR containing all of:
+(`docs/reference/formats.mdx` is the user-facing contract). **Every** schema
+change to one of those formats — a new optional key just as much as a
+removed or renamed one, a changed shape or meaning, a newly required key —
+is a **format bump**: the number is the schema's generation, and a binary
+reads a window of generations (`*_FORMAT_OLDEST..=*_FORMAT`) that narrows
+only at a major release. A bump ships as one PR containing all of:
 
 1. The constant raised: `CONFIG_FORMAT` (`crates/graph-config/src/format.rs`),
    `PLAN_FORMAT` / `TOOL_FORMAT` (`crates/graph-core/src/format.rs`), or
    `STORE_FORMAT` (`crates/graph-store/src/file.rs`).
 2. A migration appended to that format's chain — a forward-only function
    from format N to N+1 over the raw document, returning notes for anything
-   it could not carry over.
+   it could not carry over. An additive change appends a no-op step.
 3. A frozen fixture pair: the format N file stays under
    `tests/fixtures/v<N>/`, its format N+1 twin lands under `v<N+1>/` with the
    same file name, and the golden-pair test proves they load identically.
@@ -101,8 +103,8 @@ PR containing all of:
    format: `BREAKING CHANGE: config format 2 (graph config migrate)`.
 
 The `format_drift` check (`.graph/plans/format_drift.yaml`, run by
-`graph-checks.yaml`) fails a PR that changes a model file non-additively
-without steps 1 and 4; the fixture tests catch a removed or renamed key
+`graph-checks.yaml`) fails a PR that changes a model file's schema without
+steps 1 and 4; the fixture tests catch a removed or renamed key
 mechanically. At release time the script diffs the four constants between
 the last tag and `HEAD` and passes the delta to `changelog_entry` as its
 `formats` input, which forces `migration_needed` and builds the migration
