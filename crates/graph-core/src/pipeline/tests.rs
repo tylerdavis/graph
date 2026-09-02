@@ -3015,12 +3015,13 @@ async fn draft_generates_outline_then_steps() {
 
     let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["E0", "E1"]);
-    assert_eq!(
-        output.solver_data.query_to_answer,
-        "how is the sprint going"
-    );
+    let solver_data = output
+        .solver_data
+        .as_ref()
+        .expect("a question-answering draft finishes with a solver");
+    assert_eq!(solver_data.query_to_answer, "how is the sprint going");
     assert!(
-        !output.solver_data.data.is_empty(),
+        !solver_data.data.is_empty(),
         "default solver data filled from the plan"
     );
     assert!(
@@ -3126,7 +3127,11 @@ async fn draft_exhausted_retries_returns_valid_partial() {
     let ids: Vec<&str> = partial.plan.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["E0"], "the valid prefix is carried out");
     assert_eq!(
-        partial.solver_data.query_to_answer,
+        partial
+            .solver_data
+            .as_ref()
+            .expect("the valid prefix keeps its solver brief")
+            .query_to_answer,
         "how is the sprint going"
     );
 }
@@ -3273,7 +3278,12 @@ async fn draft_force_completes_when_outline_is_covered_and_planner_never_signals
         "all four scripted steps are accepted before force-close"
     );
     assert!(
-        !output.solver_data.data.is_empty(),
+        !output
+            .solver_data
+            .as_ref()
+            .expect("the draft finishes with a solver")
+            .data
+            .is_empty(),
         "solver data is assembled from the drafted plan"
     );
     assert!(

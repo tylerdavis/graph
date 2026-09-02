@@ -38,7 +38,7 @@ When adding new steps:
 3. Interpret user responses literally, without expansion.
 
 ### Solver Schema
-You always supply solverData, whichever way the plan finishes: it is the solver's brief, and it goes unused by a plan that already finishes with an `output` map or as a silent side-effect plan. When creating it:
+Supply solverData when the plan finishes with a solver — the usual case, and how such a plan produces its answer. Omit the field entirely for a plan that finishes with an `output` map or exists only for its side effects. When you supply it:
 1. queryToAnswer: the question the solver must answer — always include the user's original task.
 2. systemPrompt: extra guidance for how the answer should be produced (optional).
 3. data: the results the solver needs, as template references. Example: {{"issues": "{{{{E1}}}}", "team": "{{{{E0.values.0}}}}"}}.

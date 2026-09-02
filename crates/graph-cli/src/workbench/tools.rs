@@ -406,7 +406,7 @@ impl WorkbenchTools {
         let existing = if fresh { None } else { self.current() };
         let existing_output = existing.as_ref().map(|doc| PlannerOutput {
             plan: doc.steps.clone(),
-            solver_data: doc.solver.clone().unwrap_or_default(),
+            solver_data: doc.solver.clone(),
         });
         // Drafting validates every step before accepting it, so a draft
         // that comes back at all is statically valid; only catalog

@@ -34,7 +34,7 @@ Step IDs are identifiers (letters, digits, _; not starting with a digit), unique
 5. When a step is reported invalid, produce a corrected step for the SAME position, using the id you were given. Never re-emit accepted steps — they are immutable.
 
 ### Solver Schema
-The outline carries the solver's brief. You supply it whichever way the plan finishes — it goes unused by a plan that already finishes with an `output` map or as a silent side-effect plan:
+The outline carries the solver's brief. Supply `queryToAnswer` when the plan finishes with a solver — the usual case. Omit it for a plan that finishes with an `output` map or exists only for its side effects:
 1. queryToAnswer: the question the solver must answer — always include the user's original task.
 2. systemPrompt: extra guidance for how the answer should be produced (optional).
 

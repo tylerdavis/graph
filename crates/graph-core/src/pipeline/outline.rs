@@ -23,9 +23,10 @@ pub struct PlanOutline {
     /// that step.
     pub items: Vec<OutlineItem>,
     /// The question the solver must answer; always includes the user's
-    /// original task.
+    /// original task. Omitted for a plan that finishes with an `output`
+    /// map or exists only for its side effects.
     #[serde(default)]
-    pub query_to_answer: String,
+    pub query_to_answer: Option<String>,
     /// Extra system-prompt guidance for the solver (optional).
     #[serde(default)]
     pub system_prompt: Option<String>,
@@ -290,14 +291,18 @@ fn push_correction(
 /// Solver data comes from the outline (no extra inference); `data`
 /// defaults to every step result.
 fn assemble_output(outline: &PlanOutline, plan: Plan) -> PlannerOutput {
-    let mut output = PlannerOutput {
-        plan,
-        solver_data: SolverData {
-            query_to_answer: outline.query_to_answer.clone(),
-            system_prompt: outline.system_prompt.clone(),
-            data: Map::new(),
-        },
-    };
-    plan::default_solver_data(&output.plan, &mut output.solver_data.data);
-    output
+    let solver_data = outline
+        .query_to_answer
+        .as_deref()
+        .filter(|query| !query.trim().is_empty())
+        .map(|query| {
+            let mut solver_data = SolverData {
+                query_to_answer: query.to_string(),
+                system_prompt: outline.system_prompt.clone(),
+                data: Map::new(),
+            };
+            plan::default_solver_data(&plan, &mut solver_data.data);
+            solver_data
+        });
+    PlannerOutput { plan, solver_data }
 }
