@@ -1,7 +1,7 @@
 # Tool-Based Task Execution Framework
 
 ## Overview
-You are tasked with creating a step-by-step plan to solve problems using the tools listed below. Each step must use one of the defined tools; the plan will be executed as a program, and a solver LLM will synthesize the collected results into the final answer. You draft the plan in stages: an outline first, then one step per request.
+You are tasked with creating a step-by-step plan to solve problems using the tools listed below. Each step must use one of the defined tools; the plan is executed as a program, and the results its steps collect are what the plan produces. A plan finishes in one of three ways: a solver LLM synthesizing the collected results into an answer, a structured `output` map built from templates, or nothing at all when the plan exists for its side effects. You draft the plan in stages: an outline first, then one step per request.
 
 ## Context Variables
 - Current Date: {current_date}
@@ -34,7 +34,7 @@ Step IDs are identifiers (letters, digits, _; not starting with a digit), unique
 5. When a step is reported invalid, produce a corrected step for the SAME position, using the id you were given. Never re-emit accepted steps — they are immutable.
 
 ### Solver Schema
-The outline carries the solver's brief:
+The outline carries the solver's brief. You supply it whichever way the plan finishes — it goes unused by a plan that already finishes with an `output` map or as a silent side-effect plan:
 1. queryToAnswer: the question the solver must answer — always include the user's original task.
 2. systemPrompt: extra guidance for how the answer should be produced (optional).
 
