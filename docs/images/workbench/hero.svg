@@ -80,18 +80,17 @@
 <text x="513.6" y="157.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">j/k</text>
 <text x="547.2" y="157.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">select</text>
 <text x="606.0" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
-<text x="622.8" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">b</text>
-<text x="639.6" y="157.5" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">breakpoint</text>
-<text x="732.0" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
-<text x="748.8" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">v</text>
-<text x="765.6" y="157.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">validate</text>
+<text x="622.8" y="157.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">Enter</text>
+<text x="673.2" y="157.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">edit</text>
+<text x="715.2" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
+<text x="732.0" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">b</text>
+<text x="748.8" y="157.5" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">breakpoint</text>
 <text x="841.2" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
-<text x="858.0" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">r</text>
-<text x="874.8" y="157.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">run</text>
-<text x="908.4" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
-<text x="925.2" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">g</text>
-<text x="942.0" y="157.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">debug</text>
-<text x="992.4" y="157.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">──┐</text>
+<text x="858.0" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">v</text>
+<text x="874.8" y="157.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">validate</text>
+<text x="950.4" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
+<text x="967.2" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">r</text>
+<text x="984.0" y="157.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">run┐</text>
 <text x="1017.6" y="157.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="18.0" y="175.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="34.8" y="175.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">The</text>
@@ -342,9 +341,9 @@
 <text x="51.6" y="607.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">Enter</text>
 <text x="102.0" y="607.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">send</text>
 <text x="144.0" y="607.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
-<text x="160.8" y="607.5" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">Alt+Enter</text>
-<text x="244.8" y="607.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">newline</text>
-<text x="312.0" y="607.5" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">──────────┐</text>
+<text x="160.8" y="607.5" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">Shift+Enter</text>
+<text x="261.6" y="607.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">newline</text>
+<text x="328.8" y="607.5" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">────────┐</text>
 <text x="412.8" y="607.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="421.2" y="607.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="429.6" y="607.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>

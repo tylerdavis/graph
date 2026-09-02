@@ -2,8 +2,10 @@
 //! [`Msg`] and returns [`Effect`]s for the executor to spawn — no I/O here,
 //! so the whole interaction model is testable headless.
 
+use super::edit::{EditTarget, PendingEdit, StepTarget};
 use super::editor::{EditorContext, EditorState};
-use super::plan_ws::{OutlineRow, PlanWorkspace, WsTab};
+use super::form::{Form, FormAction, Verdict};
+use super::plan_ws::{OutlineRow, PlanWorkspace, RowKey, WsTab};
 use super::runner::UiDecision;
 use super::ui::Regions;
 use crossterm::event::{
@@ -83,7 +85,16 @@ pub enum Mode {
     Paused(GatePrompt),
     /// A modal editor (inject result, run input) or confirm dialog is open.
     Editing(Box<EditorState>),
+    Form(Box<FormState>),
 }
+
+pub struct FormState {
+    pub form: Form,
+    pub target: EditTarget,
+    pub label: String,
+}
+
+const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
 
 impl Mode {
     /// Short name for the debug log's mode-transition lines.
@@ -95,6 +106,7 @@ impl Mode {
             Mode::Running { gated: true } => "debug-running",
             Mode::Paused(_) => "paused",
             Mode::Editing(_) => "editing",
+            Mode::Form(_) => "form",
         }
     }
 }
@@ -158,6 +170,7 @@ pub struct App {
     /// hit-testing. Written by `draw` (which holds `&App`), read by the
     /// reducer. Empty until the first frame — clicks then safely no-op.
     pub regions: RefCell<Regions>,
+    pub last_click: Option<(usize, std::time::Instant)>,
 }
 
 impl App {
@@ -182,6 +195,7 @@ impl App {
             log_path: None,
             should_quit: false,
             regions: RefCell::new(Regions::default()),
+            last_click: None,
         }
     }
 
@@ -295,6 +309,11 @@ pub enum Msg {
     Saved(Result<String, String>),
     /// A one-line status from the effect executor (e.g. an undo miss).
     Status(String),
+    EditOutcome {
+        committed: bool,
+        introduced: Vec<String>,
+        pre_existing: Vec<String>,
+    },
 }
 
 impl Msg {
@@ -402,6 +421,15 @@ impl Msg {
                 Err(error) => format!("save failed: {error}"),
             },
             Msg::Status(text) => format!("status: {text}"),
+            Msg::EditOutcome {
+                committed,
+                introduced,
+                pre_existing,
+            } => format!(
+                "edit outcome: committed={committed}, {} introduced, {} pre-existing",
+                introduced.len(),
+                pre_existing.len()
+            ),
         };
         Some((Level::DEBUG, line))
     }
@@ -427,6 +455,10 @@ pub enum Effect {
     SyncDebug {
         breakpoints: HashSet<String>,
     },
+    ApplyEdit {
+        edit: PendingEdit,
+        commit: bool,
+    },
 }
 
 impl Effect {
@@ -441,6 +473,8 @@ impl Effect {
             Effect::SavePlan => "save-plan",
             Effect::RestoreDraft => "restore-draft",
             Effect::SyncDebug { .. } => "sync-debug",
+            Effect::ApplyEdit { commit: true, .. } => "apply-edit",
+            Effect::ApplyEdit { commit: false, .. } => "check-edit",
         }
     }
 }
@@ -713,7 +747,51 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             app.status = text;
             Vec::new()
         }
+        Msg::EditOutcome {
+            committed,
+            introduced,
+            pre_existing,
+        } => on_edit_outcome(app, committed, introduced, pre_existing),
     }
+}
+
+fn on_edit_outcome(
+    app: &mut App,
+    committed: bool,
+    introduced: Vec<String>,
+    pre_existing: Vec<String>,
+) -> Vec<Effect> {
+    let Mode::Form(state) = &mut app.mode else {
+        return Vec::new();
+    };
+    if committed {
+        app.status = format!("✓ {} saved", state.label);
+        app.mode = Mode::Idle;
+        return Vec::new();
+    }
+    if introduced.is_empty() {
+        app.status = if pre_existing.is_empty() {
+            format!("✓ {} is valid", state.label)
+        } else {
+            format!(
+                "✓ {} is valid — {} pre-existing problem(s) remain",
+                state.label,
+                pre_existing.len()
+            )
+        };
+        state.form.verdict = Some(Verdict::Valid { pre_existing });
+    } else {
+        app.status = format!(
+            "✗ {} would introduce {} problem(s)",
+            state.label,
+            introduced.len()
+        );
+        state.form.verdict = Some(Verdict::Invalid {
+            problems: introduced,
+            pre_existing,
+        });
+    }
+    Vec::new()
 }
 
 /// Reconcile the chat pane with the turn's final assistant text. Normally
@@ -763,6 +841,7 @@ fn on_terminal_event(app: &mut App, event: Event) -> Vec<Effect> {
         // Paused is non-modal: debug keys first, navigation falls through.
         Mode::Paused(_) => return on_paused_key(app, key),
         Mode::Editing(_) => return on_editor_key(app, key),
+        Mode::Form(_) => return on_form_key(app, key),
         _ => {}
     }
 
@@ -795,6 +874,7 @@ fn on_paste(app: &mut App, text: String) -> Vec<Effect> {
                 editor.textarea.insert_str(text);
             }
         }
+        Mode::Form(state) => state.form.paste(&text),
         // The chat input is inert while paused (single-letter debug keys
         // own the keyboard), so a paste has nowhere to land.
         Mode::Paused(_) => {}
@@ -820,6 +900,26 @@ fn on_mouse(app: &mut App, mouse: MouseEvent) -> Vec<Effect> {
     // The editor is a true modal drawn over the recorded panes — swallow
     // mouse so a click can't reach a pane behind it.
     if matches!(app.mode, Mode::Editing(_)) {
+        return Vec::new();
+    }
+    if let Mode::Form(state) = &mut app.mode {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let hit_field = state
+                    .form
+                    .visible_fields
+                    .borrow()
+                    .iter()
+                    .find(|(_, rect)| hit(*rect, mouse.column, mouse.row))
+                    .map(|(index, _)| *index);
+                if let Some(index) = hit_field {
+                    state.form.set_focus(index);
+                }
+            }
+            MouseEventKind::ScrollUp => state.form.scroll_by(true, 3),
+            MouseEventKind::ScrollDown => state.form.scroll_by(false, 3),
+            _ => {}
+        }
         return Vec::new();
     }
     // Regions is Copy: take a snapshot and drop the borrow before mutating.
@@ -849,6 +949,15 @@ fn on_mouse(app: &mut App, mouse: MouseEvent) -> Vec<Effect> {
                 if row >= inner_top {
                     let clicked = regions.ws_list_offset as usize + (row - inner_top) as usize;
                     app.ws.select_to(clicked); // guards past the list end
+                    let now = std::time::Instant::now();
+                    let again = app
+                        .last_click
+                        .is_some_and(|(index, at)| index == clicked && now - at < DOUBLE_CLICK);
+                    app.last_click = Some((clicked, now));
+                    if again && app.ws.selected == clicked {
+                        app.last_click = None;
+                        return open_form(app);
+                    }
                 }
                 return Vec::new();
             }
@@ -1009,7 +1118,11 @@ fn save(app: &mut App) -> Vec<Effect> {
 
 fn on_chat_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
     match key.code {
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+        KeyCode::Enter
+            if key
+                .modifiers
+                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+        {
             app.chat.input.insert_newline();
             Vec::new()
         }
@@ -1058,6 +1171,7 @@ fn on_workspace_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
         }
         KeyCode::Char('r') => start_run(app, false),
         KeyCode::Char('g') => start_run(app, true),
+        KeyCode::Enter | KeyCode::Char('e') => open_form(app),
         KeyCode::Char('u') => {
             if matches!(app.mode, Mode::Idle) {
                 vec![Effect::RestoreDraft]
@@ -1223,6 +1337,122 @@ fn open_inject_editor(app: &mut App) -> Vec<Effect> {
         prompt, prefill, provenance, references,
     )));
     Vec::new()
+}
+
+fn open_form(app: &mut App) -> Vec<Effect> {
+    if !matches!(app.mode, Mode::Idle) {
+        app.status = "busy — wait for the current task to finish".to_string();
+        return Vec::new();
+    }
+    if app.ws.tab != WsTab::Plan || app.ws.drafting.is_some() {
+        return Vec::new();
+    }
+    let Some(doc) = &app.ws.doc else {
+        app.status = "no plan to edit — draft one in chat first".to_string();
+        return Vec::new();
+    };
+    let Some(row) = app.ws.steps.get(app.ws.selected) else {
+        return Vec::new();
+    };
+    let (target, label) = match &row.key {
+        RowKey::Root => (EditTarget::Metadata, "plan metadata".to_string()),
+        RowKey::Step(id) => (
+            EditTarget::Step(StepTarget::Top { id: id.clone() }),
+            format!("step {id}"),
+        ),
+        RowKey::Body {
+            step,
+            body,
+            body_step,
+        } => {
+            let position = body_step.as_ref().and_then(|sub| {
+                app.ws
+                    .steps
+                    .iter()
+                    .filter(|r| {
+                        matches!(&r.key, RowKey::Body { step: s, body: b, body_step: Some(_) } if s == step && b == body)
+                    })
+                    .position(|r| r.key == row.key)
+                    .map(|p| (sub, p))
+            });
+            let label = match &position {
+                Some((sub, _)) => format!("step {sub}"),
+                None => format!("{body} branch of {step}"),
+            };
+            (
+                EditTarget::Step(StepTarget::Body {
+                    step: step.clone(),
+                    body: body.clone(),
+                    position: position.map(|(_, p)| p),
+                }),
+                label,
+            )
+        }
+        RowKey::BranchHead { .. } | RowKey::Finish => {
+            app.status = "select a step to edit it, or the plan row for its metadata".to_string();
+            return Vec::new();
+        }
+    };
+    let form = match &target {
+        EditTarget::Metadata => super::edit::metadata_form(doc),
+        EditTarget::Step(step_target) => {
+            let Some((step, has_id)) = super::edit::step_at(doc, step_target) else {
+                app.status = "this row no longer matches the draft — reopen the plan".to_string();
+                return Vec::new();
+            };
+            let def = app.ws.tools.iter().find(|t| t.name == step.tool_name);
+            super::edit::step_form(&label, &step, has_id, def)
+        }
+    };
+    app.status = format!(
+        "editing {label} — Tab/Enter next field · Shift+Enter newline · Ctrl+T validate · Ctrl+S save · Esc cancel"
+    );
+    app.mode = Mode::Form(Box::new(FormState {
+        form,
+        target,
+        label,
+    }));
+    Vec::new()
+}
+
+fn on_form_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
+    let Mode::Form(state) = &mut app.mode else {
+        return Vec::new();
+    };
+    match state.form.handle_key(key) {
+        FormAction::None => Vec::new(),
+        FormAction::Cancel => {
+            app.status = format!("discarded changes to {}", state.label);
+            app.mode = Mode::Idle;
+            Vec::new()
+        }
+        FormAction::Save => submit_form(app, true),
+        FormAction::Validate => submit_form(app, false),
+    }
+}
+
+fn submit_form(app: &mut App, commit: bool) -> Vec<Effect> {
+    let Mode::Form(state) = &mut app.mode else {
+        return Vec::new();
+    };
+    match state.form.read() {
+        Ok(values) => vec![Effect::ApplyEdit {
+            edit: PendingEdit {
+                target: state.target.clone(),
+                values,
+            },
+            commit,
+        }],
+        Err(problems) => {
+            app.status = format!("✗ {} problem(s) in the form", problems.len());
+            state.form.verdict = Some(Verdict::Invalid {
+                problems,
+                pre_existing: Vec::new(),
+            });
+            state.form.focus_first_error();
+            Vec::new()
+        }
+    }
 }
 
 fn on_editor_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
@@ -2387,5 +2617,258 @@ steps:
                      if text == "6 calls · 8k in / 248 out · $0.01")
         });
         assert!(logged, "usage never reached the run log");
+    }
+
+    fn body_doc() -> PlanDoc {
+        doc(r#"
+identifier: demo
+name: Demo
+description: demo plan
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: x }
+  - id: E1
+    tool_name: map
+    input:
+      over: "{{E0.items}}"
+      do:
+        - id: E2
+          tool_name: t__fetch
+          input: { url: "{{item.url}}" }
+  - id: E3
+    tool_name: decide
+    input:
+      if: { value: "{{E0.count}}", op: gt, to: 0 }
+      then: { tool_name: t__notify, input: { message: hit } }
+      else: { tool_name: t__log, input: { message: miss } }
+solver:
+  queryToAnswer: what happened?
+"#)
+    }
+
+    fn form_state(app: &App) -> &FormState {
+        match &app.mode {
+            Mode::Form(state) => state,
+            _ => panic!("expected the form to be open"),
+        }
+    }
+
+    #[test]
+    fn enter_opens_the_step_form_and_esc_discards() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.focus = Focus::Workspace;
+        update(&mut app, key(KeyCode::Char('j')));
+        assert!(update(&mut app, key(KeyCode::Enter)).is_empty());
+        let state = form_state(&app);
+        assert_eq!(state.label, "step E0");
+        assert_eq!(
+            state.target,
+            EditTarget::Step(StepTarget::Top { id: "E0".into() })
+        );
+        assert_eq!(state.form.fields[0].text(), "E0");
+        assert!(app.status.contains("editing step E0"));
+
+        update(&mut app, key(KeyCode::Char('x')));
+        assert_eq!(form_state(&app).form.fields[0].text(), "E0x");
+        assert_eq!(
+            app.chat.input.lines(),
+            [""],
+            "typing never reaches the chat"
+        );
+
+        update(&mut app, key(KeyCode::Esc));
+        assert!(matches!(app.mode, Mode::Idle));
+        assert!(app.status.contains("discarded"));
+        assert_eq!(app.ws.doc.as_ref().unwrap().steps[0].id, "E0");
+    }
+
+    #[test]
+    fn form_submission_emits_an_edit_and_outcomes_settle_it() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.focus = Focus::Workspace;
+        update(&mut app, key(KeyCode::Char('e')));
+        assert_eq!(form_state(&app).target, EditTarget::Metadata);
+        assert_eq!(form_state(&app).label, "plan metadata");
+
+        let effects = update(&mut app, ctrl('s'));
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::ApplyEdit { commit: true, edit }]
+                    if edit.target == EditTarget::Metadata
+                        && edit.values["identifier"] == json!("demo")
+                        && edit.values["name"] == json!("Demo")
+            ),
+            "{effects:?}"
+        );
+
+        update(
+            &mut app,
+            Msg::EditOutcome {
+                committed: false,
+                introduced: vec!["dup".to_string()],
+                pre_existing: Vec::new(),
+            },
+        );
+        assert!(matches!(
+            &form_state(&app).form.verdict,
+            Some(Verdict::Invalid { problems, .. }) if problems == &["dup".to_string()]
+        ));
+        assert!(app.status.contains("would introduce 1 problem"));
+
+        let effects = update(&mut app, ctrl('t'));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::ApplyEdit { commit: false, .. }]
+        ));
+        update(
+            &mut app,
+            Msg::EditOutcome {
+                committed: false,
+                introduced: Vec::new(),
+                pre_existing: vec!["old".to_string()],
+            },
+        );
+        assert!(matches!(
+            &form_state(&app).form.verdict,
+            Some(Verdict::Valid { pre_existing }) if pre_existing == &["old".to_string()]
+        ));
+        assert!(app.status.contains("valid"));
+
+        update(
+            &mut app,
+            Msg::EditOutcome {
+                committed: true,
+                introduced: Vec::new(),
+                pre_existing: Vec::new(),
+            },
+        );
+        assert!(matches!(app.mode, Mode::Idle));
+        assert!(app.status.contains("plan metadata saved"));
+    }
+
+    #[test]
+    fn unreadable_forms_never_submit() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.focus = Focus::Workspace;
+        update(&mut app, key(KeyCode::Char('j')));
+        update(&mut app, key(KeyCode::Enter));
+        if let Mode::Form(state) = &mut app.mode {
+            state.form.set_focus(2);
+            state.form.fields[0].textarea = TextArea::default();
+        }
+        assert!(update(&mut app, ctrl('s')).is_empty());
+        let state = form_state(&app);
+        assert!(matches!(
+            &state.form.verdict,
+            Some(Verdict::Invalid { problems, .. }) if problems == &["id is required".to_string()]
+        ));
+        assert_eq!(state.form.focused, 0, "focus jumps to the offending field");
+        assert!(app.status.contains("1 problem(s) in the form"));
+    }
+
+    #[test]
+    fn body_rows_open_on_their_owner_and_structural_rows_refuse() {
+        let mut app = App::new(Some(body_doc()));
+        app.focus = Focus::Workspace;
+        for _ in 0..3 {
+            update(&mut app, key(KeyCode::Char('j')));
+        }
+        update(&mut app, key(KeyCode::Enter));
+        let state = form_state(&app);
+        assert_eq!(state.label, "step E2");
+        assert_eq!(
+            state.target,
+            EditTarget::Step(StepTarget::Body {
+                step: "E1".into(),
+                body: "do".into(),
+                position: Some(0),
+            })
+        );
+        assert_eq!(state.form.fields[1].text(), "t__fetch");
+        update(&mut app, key(KeyCode::Esc));
+
+        for _ in 0..2 {
+            update(&mut app, key(KeyCode::Char('j')));
+        }
+        update(&mut app, key(KeyCode::Enter));
+        let state = form_state(&app);
+        assert_eq!(state.label, "then branch of E3");
+        assert_eq!(
+            state.target,
+            EditTarget::Step(StepTarget::Body {
+                step: "E3".into(),
+                body: "then".into(),
+                position: None,
+            })
+        );
+        assert_eq!(
+            state.form.fields[0].key, "tool",
+            "single-call bodies have no id"
+        );
+        update(&mut app, key(KeyCode::Esc));
+
+        for _ in 0..2 {
+            update(&mut app, key(KeyCode::Char('j')));
+        }
+        assert_eq!(app.ws.steps[app.ws.selected].key, RowKey::Finish);
+        update(&mut app, key(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::Idle));
+        assert!(app.status.contains("select a step"));
+    }
+
+    #[test]
+    fn the_form_waits_for_idle_and_the_plan_tab() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.focus = Focus::Workspace;
+        app.mode = Mode::Chatting;
+        update(&mut app, key(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::Chatting));
+        assert!(app.status.contains("busy"));
+
+        app.mode = Mode::Idle;
+        app.ws.tab = WsTab::Context;
+        update(&mut app, key(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::Idle));
+
+        let mut app = App::new(None);
+        app.focus = Focus::Workspace;
+        update(&mut app, key(KeyCode::Char('e')));
+        assert!(matches!(app.mode, Mode::Idle));
+        assert!(app.status.contains("no plan to edit"));
+    }
+
+    #[test]
+    fn double_click_opens_the_form_which_then_owns_the_mouse() {
+        let mut app = App::new(Some(two_step_doc()));
+        seed_regions(&app, demo_regions());
+        update(&mut app, click(45, 4));
+        assert_eq!(app.ws.selected, 1);
+        assert!(
+            matches!(app.mode, Mode::Idle),
+            "a single click only selects"
+        );
+        update(&mut app, click(45, 4));
+        assert_eq!(form_state(&app).label, "step E0");
+
+        update(&mut app, click(5, 5));
+        assert!(
+            matches!(app.mode, Mode::Form(_)),
+            "clicks stay inside the modal"
+        );
+        assert_eq!(app.focus, Focus::Workspace);
+        update(&mut app, mouse(MouseEventKind::ScrollDown, 45, 10));
+        assert_eq!(form_state(&app).form.scroll.get(), 3);
+
+        if let Mode::Form(state) = &mut app.mode {
+            *state.form.visible_fields.borrow_mut() =
+                vec![(0, rect(10, 3, 60, 3)), (2, rect(10, 6, 60, 4))];
+        }
+        update(&mut app, click(20, 7));
+        assert_eq!(form_state(&app).form.focused, 2);
+
+        update(&mut app, Msg::Term(Event::Paste("pasted".to_string())));
+        assert_eq!(form_state(&app).form.fields[2].text(), "pasted");
     }
 }

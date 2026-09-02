@@ -197,6 +197,34 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
             ctx.debug.set_breakpoints(breakpoints);
         }
 
+        Effect::ApplyEdit { edit, commit } => {
+            let current = { ctx.draft.lock().unwrap().doc.clone() };
+            let msg = match current {
+                None => Msg::EditOutcome {
+                    committed: false,
+                    introduced: vec!["no draft to edit".to_string()],
+                    pre_existing: Vec::new(),
+                },
+                Some(doc) if commit => match authoring::apply_edit(&doc, |d| edit.apply(d)) {
+                    Ok(accepted) => {
+                        super::tools::publish_draft(&ctx.draft, &ctx.tx, accepted.doc, true);
+                        Msg::EditOutcome {
+                            committed: true,
+                            introduced: Vec::new(),
+                            pre_existing: accepted.pre_existing,
+                        }
+                    }
+                    Err(rejected) => Msg::EditOutcome {
+                        committed: false,
+                        introduced: rejection_problems(&rejected),
+                        pre_existing: rejected.pre_existing,
+                    },
+                },
+                Some(doc) => check_edit(&ctx, &doc, &edit),
+            };
+            let _ = ctx.tx.send(msg);
+        }
+
         Effect::SavePlan => {
             let result = save_draft(&ctx.draft, ctx.plans_dir.as_deref());
             let _ = ctx.tx.send(Msg::Saved(result));
@@ -218,6 +246,43 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                 }
             }
         }
+    }
+}
+
+fn rejection_problems(rejected: &authoring::EditRejected) -> Vec<String> {
+    if !rejected.introduced.is_empty() {
+        return rejected.introduced.clone();
+    }
+    rejected
+        .body
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .map(|error| vec![error.to_string()])
+        .unwrap_or_default()
+}
+
+fn check_edit(ctx: &WorkbenchContext, doc: &PlanDoc, edit: &super::edit::PendingEdit) -> Msg {
+    let before = super::tools::plan_problems(&ctx.pipeline, doc);
+    let mut edited = doc.clone();
+    if let Err(body) = edit.apply(&mut edited) {
+        return Msg::EditOutcome {
+            committed: false,
+            introduced: body
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .map(|error| vec![error.to_string()])
+                .unwrap_or_default(),
+            pre_existing: before,
+        };
+    }
+    let after = super::tools::plan_problems(&ctx.pipeline, &edited);
+    let (pre_existing, introduced): (Vec<String>, Vec<String>) = after
+        .into_iter()
+        .partition(|problem| before.contains(problem));
+    Msg::EditOutcome {
+        committed: false,
+        introduced,
+        pre_existing,
     }
 }
 

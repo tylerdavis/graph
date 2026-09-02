@@ -1,0 +1,11 @@
+# The step edit form opened on pr_review's exit gate (E2X): schema-driven
+# fields for a control step, with the form scrolled because it is taller
+# than the window. Used in building/workbench.mdx.
+name: step-form
+title: graph workbench — editing a step
+plan: docs/shots/plans/pr_review.yaml
+grid: { cols: 120, rows: 36 }
+
+capture:
+  at: loaded
+  keys: [tab, j, j, j, j, enter]

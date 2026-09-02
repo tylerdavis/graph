@@ -87,6 +87,20 @@ All `workbench__` tools are agent-side only — they are not runtime tools, and 
 
 A single agent turn is bounded by [`max_agent_iterations`](/reference/configuration), but in the workbench that budget counts **consecutive iterations with no successful edit** rather than the whole turn: each landed edit resets the counter. A long fix-forward loop — draft, validate, run, read the failure, patch, re-run — keeps its budget as long as it's making real changes; a turn that spins without editing anything still stops, keeping the partial work. Send **continue** to resume it.
 
+## Editing steps and metadata
+
+Select a row in the plan tab and press `Enter` (or `e`, or double-click it) to open it in a form. A step's form has one field per thing the step carries: `id`, `tool`, `reasoning`, then one field per key of the tool's input schema — pre-filled from the draft, required keys first, the schema's description as the hint — plus any input keys the schema doesn't list, and an `additional input` object for keys you want to add. Control steps get their own vocabulary the same way: an `exit` opens with `status`, `when`, `infer`, `message`, and `model`. Steps inside `decide`/`map`/`reduce` bodies open too and write back into the owning step. The plan row at the top opens the metadata form: identifier, name, description, exemplars, required servers, input schema, and the finish — a solver query, system prompt, and data map, or an output template map; leave both empty for a silent plan.
+
+<Frame caption="The step form for pr_review's exit gate: schema-driven fields with their hints, the required status first, the when condition as JSON, and a scrollbar because the form is taller than the window.">
+  <img src="/images/workbench/step-form.svg" alt="The step form for pr_review's exit gate: schema-driven fields with their hints, the required status first, the when condition as JSON, and a scrollbar because the form is taller than the window." />
+</Frame>
+
+Each field's title says how its text is read: `text` is taken verbatim; `json` is parsed, and a parse error pins to the field; `json or text` tries JSON first and falls back to the literal, so a template like `{{E0.items}}` and a number like `0` both land as intended; `one per line` builds a list. Empty fields are omitted from the step; a required one blocks saving.
+
+Inside a form, `Tab` or `Enter` moves to the next field and `Shift+Tab` to the previous one; `Up`/`Down` cross a field boundary at its first or last line; `Shift+Enter` (or `Alt+Enter`, which works in every terminal — the workbench turns on the keyboard-enhancement protocol where the terminal supports it so `Shift+Enter` is distinguishable from `Enter`) inserts a newline in a multi-line field, which scrolls to keep the cursor visible; `PgUp`/`PgDn` or the wheel scroll the whole form when it is taller than the window, and a click focuses a field. `Ctrl+T` validates the edit without saving, `Ctrl+S` saves, `Esc` discards the changes.
+
+Validation and saving follow the same rule as the chat editing tools: the edit is accepted only when it introduces no **new** static problems (a duplicate id, a forward reference…); problems the plan already had are shown dimmed and never block. `Ctrl+T` also reports catalog problems, such as a tool name that doesn't resolve. A saved edit replaces the draft — marked unsaved, undoable with `u` — and re-validates it; renaming a top-level step id rewrites the downstream `{{id.*}}` references (a body step renamed while something still reads it is rejected). The input fields follow the tool's schema as of the moment the form opened, so after changing a step's tool, save and reopen the step to get the new tool's fields.
+
 ## Running plans
 
 Every run mode is available from the keyboard or by asking the agent (`run_plan`):
@@ -152,8 +166,11 @@ Logging is always on, with the default filter (`warn,workbench=debug`) recording
 | --- | --- | --- |
 | `Tab` | anywhere | toggle focus chat ↔ workspace |
 | `1` / `2` / `3` | workspace | switch tab (`Alt+1/2/3` from anywhere, even mid-typing) |
-| `Enter` | chat | send (`Alt+Enter` inserts a newline; pasted newlines never submit) |
+| `Enter` | chat | send (`Shift+Enter` or `Alt+Enter` inserts a newline; pasted newlines never submit) |
 | `j` / `k` | workspace | select a step or tool |
+| `Enter` / `e` | plan tab | edit the selected step in a form (the plan row: its metadata) |
+| `Tab` / `Shift+Tab` | form | next / previous field (`Up`/`Down` at a field's edge do the same) |
+| `Ctrl+T` | form | validate the edit without saving |
 | `PgUp` / `PgDn` | — | scroll the focused pane — chat, detail, debug, or run (a scrollbar appears when content overflows) |
 | `v` / `r` / `g` | workspace | validate / run / debug run |
 | `b` | plan tab | toggle breakpoint on the selected step |
@@ -162,8 +179,8 @@ Logging is always on, with the default filter (`warn,workbench=debug`) recording
 | `c` | paused | continue to the next breakpoint or failing call |
 | `s` | paused | skip / inject (on error: replace the failed result; on a question: submit the answer) |
 | `a` | paused | abort the run |
-| `Ctrl+S` | anywhere | save the draft (in an editor: submit) |
-| `Esc` | editor | cancel (returns to the pause when injecting) |
+| `Ctrl+S` | anywhere | save the draft (in an editor: submit; in a form: save the edit) |
+| `Esc` | editor / form | cancel (returns to the pause when injecting; discards the form's changes) |
 | `?` | workspace | help overlay (works while paused too; any key closes it) |
 | `q`, `Ctrl+C` | — | quit (confirms when running or unsaved; while paused: abort the run) |
 
@@ -176,6 +193,7 @@ The workbench also takes the mouse — the reflex actions, mapped to the same st
 | click a pane | focus it (chat or workspace) |
 | click a workspace tab | switch to it (`1 plan` / `2 context` / `3 run`) |
 | click a step or tool row | select it (and focus the workspace) |
+| double-click a step row | open it in the edit form |
 | scroll wheel | scroll the pane under the cursor — chat scrollback, the steps/tool list view, or the workspace body (the list scrolls the view, leaving the selection put — its highlight disappears while scrolled out of view and returns when `j`/`k` bring it back) |
 
-A left click anywhere closes the help overlay, and the mouse is inert while an editor modal is open (the keyboard owns it). Capturing the mouse means the terminal's own click-drag text selection is suspended — hold **Shift** (or **Option** on macOS) to select and copy text as usual.
+A left click anywhere closes the help overlay. While an editor modal is open the mouse is inert (the keyboard owns it); inside a form, a click focuses the field under the cursor and the wheel scrolls the form. Capturing the mouse means the terminal's own click-drag text selection is suspended — hold **Shift** (or **Option** on macOS) to select and copy text as usual.
