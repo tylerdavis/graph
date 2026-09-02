@@ -1,0 +1,7 @@
+#### File formats are now versioned independently
+
+Config, plan, tool, and store documents each carry their own format version (starting at v1), separate from the `graph` binary version. This lets file formats evolve on their own schedule going forward.
+
+#### Safer workbench prompt overrides
+
+Tool rules are no longer placed inside `[prompts].workbench`, so a custom override of that setting can no longer accidentally strip the rules the agent depends on.

@@ -2,11 +2,31 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
-## Unreleased
+## Graph v0.13.0 — 2026-09-02
+
+### Added
+
+- version the config, plan, tool, and store file formats independently of the binary (#121)
 
 ### Fixed
 
 - keep the tool rules out of `[prompts].workbench` so an override can't break the agent (#120)
+
+## Config v1 — 2026-09-02
+
+- Introduced with graph v0.13.0.
+
+## Plan v1 — 2026-09-02
+
+- Introduced with graph v0.13.0.
+
+## Tool v1 — 2026-09-02
+
+- Introduced with graph v0.13.0.
+
+## Store v1 — 2026-09-02
+
+- Introduced with graph v0.13.0.
 
 ## Graph v0.12.0 — 2026-08-12
 
