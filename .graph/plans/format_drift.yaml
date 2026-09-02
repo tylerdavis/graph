@@ -1,14 +1,14 @@
 # Format-drift gate: fails (exit-gate error → process exit 4) when a PR
-# changes a file-format schema (config, plan/tool documents, the store
+# changes a file-version schema (config, plan/tool documents, the store
 # layout) — additively or not — without bumping the matching *_FORMAT
-# constant and documenting the step on docs/reference/formats.mdx — the
+# constant and documenting the step on docs/reference/file-versions.mdx — the
 # CLAUDE.md rule, enforced. Sibling of docs_drift: zero LLM calls unless
 # one of the model files changed, then one judge call over the model diff,
 # the format-constant diff, and whether the formats page moved.
 identifier: format_drift
 name: Format drift gate
 description: >
-  Checks whether a PR changes a file-format schema without a format bump.
+  Checks whether a PR changes a file-version schema without a version bump.
   Exits successfully (zero LLM calls) when none of the model files changed;
   otherwise an inferred exit gate reads the model diff alongside the
   format-constant diff and asserts an error when a schema change of any
@@ -46,16 +46,16 @@ steps:
       paths: "crates/graph-config/src/format.rs crates/graph-core/src/format.rs crates/graph-store/src/file.rs"
       exclude: ""
       max_bytes: 40000
-    reasoning: Where the format constants and migration chains live; a raised `*_FORMAT` constant shows here as a changed line.
+    reasoning: Where the version constants and migration chains live; a raised `*_FORMAT` constant shows here as a changed line.
   - id: E3
     tool_name: builtin__git_changed_files
-    input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "docs/reference/formats.mdx" }
+    input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "docs/reference/file-versions.mdx" }
     reasoning: A bump must document its migration on the formats page.
   - id: E4
     tool_name: exit
     input:
       infer: |
-        Decide whether this PR changes a versioned file format's schema
+        Decide whether this PR changes a versioned file's schema
         without accounting for it. Answer yes ONLY if BOTH hold:
 
         1. The MODEL DIFF changes the schema of a file graph reads: it adds
@@ -63,7 +63,7 @@ steps:
            or an enum value, adds or removes an enum variant, changes a
            field's type or shape, or changes what values a field accepts or
            what an existing value means. Every schema change counts,
-           additive ones included — the format version is the schema's
+           additive ones included — the file version is the schema's
            generation number. What does NOT count: changes to code that is
            not part of a file's schema (validation messages, loaders,
            helper functions), doc comments, and tests.
@@ -85,10 +85,10 @@ steps:
         {{E0.text}}
       status: error
       message: >-
-        schema change to a versioned file format without a format bump —
+        schema change to a versioned file without a version bump —
         raise the matching *_FORMAT constant, append a migration (a no-op
         for additive changes) and a fixture pair, and document the step on
-        docs/reference/formats.mdx
+        docs/reference/file-versions.mdx
     reasoning: One judge call decides; error exit fails the CI check.
 output:
   format_bump_required: false

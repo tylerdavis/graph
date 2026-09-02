@@ -70,37 +70,37 @@ release notes.
 
 The script enforces the floor: if any commit since the last tag is breaking
 (a `!` subject or a `BREAKING CHANGE:` footer, as git-cliff reports it) or
-any file-format constant moved, `patch` is refused; from 1.0 on, `minor` is
+any file-version constant moved, `patch` is refused; from 1.0 on, `minor` is
 refused too. Breaking commits render under their own **Breaking** heading in
 the changelog, ahead of every group, and `protect_breaking_commits` keeps a
 skip parser from ever hiding one.
 
-## Format bumps
+## Version bumps
 
 `config.toml`, plan documents, tool documents, and the data directory each
-carry an integer format version, independent of the binary version
-(`docs/reference/formats.mdx` is the user-facing contract). **Every** schema
-change to one of those formats — a new optional key just as much as a
+carry an integer file version, independent of the binary version
+(`docs/reference/file-versions.mdx` is the user-facing contract). **Every** schema
+change to one of those files — a new optional key just as much as a
 removed or renamed one, a changed shape or meaning, a newly required key —
-is a **format bump**: the number is the schema's generation, and a binary
+is a **version bump**: the number is the schema's generation, and a binary
 reads a window of generations (`*_FORMAT_OLDEST..=*_FORMAT`) that narrows
 only at a major release. A bump ships as one PR containing all of:
 
 1. The constant raised: `CONFIG_FORMAT` (`crates/graph-config/src/format.rs`),
    `PLAN_FORMAT` / `TOOL_FORMAT` (`crates/graph-core/src/format.rs`), or
    `STORE_FORMAT` (`crates/graph-store/src/file.rs`).
-2. A migration appended to that format's chain — a forward-only function
-   from format N to N+1 over the raw document, returning notes for anything
+2. A migration appended to that file kind's chain — a forward-only function
+   from version N to N+1 over the raw document, returning notes for anything
    it could not carry over. An additive change appends a no-op step.
-3. A frozen fixture pair: the format N file stays under
-   `tests/fixtures/v<N>/`, its format N+1 twin lands under `v<N+1>/` with the
+3. A frozen fixture pair: the version N file stays under
+   `tests/fixtures/v<N>/`, its version N+1 twin lands under `v<N+1>/` with the
    same file name, and the golden-pair test proves they load identically.
-   Fixtures for every past format must keep loading, forever.
-4. A row in the **Version history** table on `docs/reference/formats.mdx`
+   Fixtures for every version in the window must keep loading.
+4. A row in the **Version history** table on `docs/reference/file-versions.mdx`
    and a section describing the migration — that page is the URL every
-   "too new" error prints.
+   version-mismatch error prints.
 5. A breaking commit subject (`feat(config)!: …`) whose footer names the
-   format: `BREAKING CHANGE: config format 2 (graph config migrate)`.
+   file version: `BREAKING CHANGE: config version 2 (graph config migrate)`.
 
 The `format_drift` check (`.graph/plans/format_drift.yaml`, run by
 `graph-checks.yaml`) fails a PR that changes a model file's schema without
@@ -111,7 +111,7 @@ the last tag and `HEAD` and passes the delta to `changelog_entry` as its
 prompt around `graph config check` and the `migrate` commands rather than
 inferring from commit subjects. Move any `ghcr.io/tylerdavis/graph:vX.Y.Z`
 pin in `.github/workflows/` in the same PR that stamps this repo's own
-`.graph/` files — an older image refuses a newer format by name.
+`.graph/` files — an older image refuses a newer file version by name.
 
 ## Commit convention
 

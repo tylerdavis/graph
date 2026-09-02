@@ -4,7 +4,7 @@ description: "Adapt and improve your CI pipelines with ease"
 icon: "badge-check"
 ---
 
-This repo dogfoods graph in its own pull-request checks: a **docs-drift gate** (an inferred exit gate as a merge check), a **format-drift gate** (the same shape, guarding the [file formats](/reference/formats)), and a **specialized reviewer** (structured findings posted as PR comments by the plan itself). Every piece ships in this repo — the plans in `./.graph/plans/`, the repo-local tools in `./.graph/tools/`, the workflow in `.github/workflows/graph-checks.yaml` — and every PR against graph runs them.
+This repo dogfoods graph in its own pull-request checks: a **docs-drift gate** (an inferred exit gate as a merge check), a **format-drift gate** (the same shape, guarding the [file versions](/reference/file-versions)), and a **specialized reviewer** (structured findings posted as PR comments by the plan itself). Every piece ships in this repo — the plans in `./.graph/plans/`, the repo-local tools in `./.graph/tools/`, the workflow in `.github/workflows/graph-checks.yaml` — and every PR against graph runs them.
 
 <Tip>
   To replicate this setup in your own repository, hand the work to your coding agent.
@@ -99,12 +99,12 @@ output:
 - **Every exit path emits the same shape.** Both success gates and the fall-through `output` produce `{docs_required, reason}` — callers parse one contract. On a non-fired infer gate, `{{E5.reason}}` carries the judge's reasoning into the output for free (the judge explains _why_ no docs are needed).
 - **Ask the judge a falsifiable question.** The prompt defines what does _not_ count (refactors, test-only changes). The judge role answers "yes only when the data clearly supports it", so the framing sets the false-positive rate. Live calibration: it flagged a commit adding an env var and a JSON field ("observable by users and plan authors"), and passed a dead-code removal with its reasoning in `reason`.
 
-## `format_drift` — the same gate, for the file formats
+## `format_drift` — the same gate, for the file versions
 
-`.graph/plans/format_drift.yaml` guards the rule behind [file formats](/reference/formats): any schema change to a versioned format's model — the config structs, the plan and control-step grammars, tool documents, the store layout — must raise the matching `*_FORMAT` constant and document the migration on the formats page in the same PR. Same shape as `docs_drift`, with the short-circuit and the judge's evidence swapped:
+`.graph/plans/format_drift.yaml` guards the rule behind [file versions](/reference/file-versions): any schema change to a versioned file's model — the config structs, the plan and control-step grammars, tool documents, the store layout — must raise the matching `*_FORMAT` constant and document the migration on the file-versions page in the same PR. Same shape as `docs_drift`, with the short-circuit and the judge's evidence swapped:
 
 - **E0/E1** — `builtin__git_diff` scoped to the model files, and a `when: { op: empty }` exit. A PR that never touches a model file passes with zero LLM calls, which is nearly every PR.
-- **E2/E3** — the diff over the files that hold the format constants, and `git_changed_files` on `docs/reference/formats.mdx` alone, so the judge can see whether the change was accounted for.
+- **E2/E3** — the diff over the files that hold the version constants, and `git_changed_files` on `docs/reference/file-versions.mdx` alone, so the judge can see whether the change was accounted for.
 - **E4** — one `infer` gate asking a two-part question: does the diff change a file's schema at all (a new optional field counts, since every schema change bumps the generation), _and_ is it unaccounted for? A removed or renamed key is caught mechanically by the crate's frozen fixture tests anyway, so the judge earns its keep on the cases fixtures cannot see — an added field, or a field whose meaning or accepted values changed with its shape intact.
 
 Worst case per PR: one extra `judge` call, and only on PRs that touch a model file.

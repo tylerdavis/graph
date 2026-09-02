@@ -35,8 +35,8 @@ conventional_commits = true
 filter_unconventional = true
 # A `!` commit (or a BREAKING CHANGE footer) renders under its own
 # "Breaking" heading ahead of every group, with the footer text when there
-# is one, and no skip parser can hide it — that is what a file-format bump
-# looks like in the release notes (see RELEASING.md, "Format bumps").
+# is one, and no skip parser can hide it — that is what a file-version bump
+# looks like in the release notes (see RELEASING.md, "Version bumps").
 protect_breaking_commits = true
 # Two classes of commit land on main without being authored by anyone here:
 # merge commits, and the Mintlify app's write-back commits. They carry no

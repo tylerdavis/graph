@@ -36,7 +36,7 @@ if git rev-parse "v$new" >/dev/null 2>&1; then
   echo "tag v$new already exists" >&2; exit 1
 fi
 
-# The file-format constants (docs/reference/formats.mdx) at a ref, one
+# The file-version constants (docs/reference/file-versions.mdx) at a ref, one
 # "<name> <version>" per line. A ref that predates a file reads as format 1,
 # which is what an unversioned file means.
 format_table() {
@@ -53,7 +53,7 @@ format_table() {
   done
 }
 
-# A format bump or a breaking commit is a release-level decision, not a
+# A file-version bump or a breaking commit is a release-level decision, not a
 # patch: pre-1.0 it needs at least a minor, from 1.0 on it needs a major.
 # Checked before anything is mutated, alongside the tag check above.
 last_tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
@@ -65,7 +65,7 @@ fi
 breaking=$(git-cliff --tag "v$new" --unreleased --context 2>/dev/null \
   | jq '[.[] | .commits[]? | select(.breaking == true)] | length')
 if [ -n "$format_delta" ] || [ "${breaking:-0}" -gt 0 ]; then
-  echo "release carries breaking changes: ${breaking:-0} breaking commit(s)${format_delta:+, format bump(s): $format_delta}"
+  echo "release carries breaking changes: ${breaking:-0} breaking commit(s)${format_delta:+, file-version bump(s): $format_delta}"
   needed=$([ "$major" -ge 1 ] && echo major || echo minor)
   case "$level:$needed" in
     major:*|minor:minor|current:*) ;;
