@@ -23,7 +23,7 @@ pub struct PlanOutline {
     /// that step.
     pub items: Vec<OutlineItem>,
     /// The question the solver must answer; always includes the user's
-    /// original task. Omitted for a plan that finishes with an `output`
+    /// original task. Omit it for a plan that finishes with an `output`
     /// map or exists only for its side effects.
     #[serde(default)]
     pub query_to_answer: Option<String>,

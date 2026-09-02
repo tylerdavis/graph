@@ -50,9 +50,9 @@ pub struct SolverData {
 #[serde(rename_all = "camelCase")]
 pub struct PlannerOutput {
     pub plan: Plan,
-    /// The solver's brief, when the plan finishes with a solver. `None`
-    /// for a plan that finishes with an `output` map or exists only for
-    /// its side effects.
+    /// The solver's brief. Supply it when the plan finishes with a
+    /// solver; omit it for a plan that finishes with an `output` map or
+    /// exists only for its side effects.
     #[serde(default)]
     pub solver_data: Option<SolverData>,
 }
