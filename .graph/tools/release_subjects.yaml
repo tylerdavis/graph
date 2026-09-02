@@ -13,6 +13,7 @@
 # does not exist yet. It must NOT be passed for an already-tagged one:
 # --tag relabels the UNRELEASED section, which would then shadow the
 # real release.
+version: 1
 name: release_subjects
 description: >
   The commit subjects for one release, from git-cliff's context (the tag,

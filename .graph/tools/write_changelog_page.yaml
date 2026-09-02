@@ -2,6 +2,7 @@
 # destination is fixed here rather than taken as input — this tool can
 # write exactly one file, which is the whole point of wrapping the write
 # in a tool instead of accepting arbitrary paths.
+version: 1
 name: write_changelog_page
 description: >
   Write fully-composed MDX content to docs/changelog.mdx (the only path

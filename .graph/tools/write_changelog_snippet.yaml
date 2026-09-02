@@ -8,6 +8,7 @@
 # fences). The migration conditional lives here rather than in a decide
 # step — it is one branch of a single write, not control flow the plan
 # needs to see.
+version: 1
 name: write_changelog_snippet
 description: >
   Write docs/snippets/changelog/<version>/summary.mdx, plus a

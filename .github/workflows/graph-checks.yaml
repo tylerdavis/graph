@@ -44,7 +44,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/tylerdavis/graph:v0.12.0
+      image: ghcr.io/tylerdavis/graph:v0.13.0
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -66,7 +66,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/tylerdavis/graph:v0.12.0
+      image: ghcr.io/tylerdavis/graph:v0.13.0
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -77,6 +77,27 @@ jobs:
 
       - name: Format drift gate
         run: graph plan run format_drift --input base="$BASE" --input head="$HEAD"
+
+  dogfood-files:
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/tylerdavis/graph:v0.13.0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Config and plans load in the pinned image
+        run: |
+          graph version
+          graph config check
+          for plan in .graph/plans/*.yaml; do
+            graph plan validate "$plan"
+          done
 
   # The reviewer: graph_review_9000 wraps plan__graph_review_core (the
   # engine, also runnable locally over a worktree) and
@@ -95,7 +116,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/tylerdavis/graph:v0.12.0
+      image: ghcr.io/tylerdavis/graph:v0.13.0
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}

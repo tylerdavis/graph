@@ -5,6 +5,7 @@
 # Short-circuits with zero LLM calls when no crate code changed (E1) or docs
 # were updated alongside (E3); only then does the judge see the diff (E5).
 # Every exit path emits the same {docs_required, reason} shape.
+version: 1
 identifier: docs_drift
 name: Docs drift gate
 description: >

@@ -4,6 +4,7 @@
 # non-empty `ref` searches that committed tree. The ltrimstr on the jq side
 # is a no-op for the worktree case (no ref prefix on match lines). Named
 # repo_* to avoid shadowing the pack tool.
+version: 1
 name: repo_grep
 description: >
   Search tracked file contents at a git ref (POSIX extended regex), or the

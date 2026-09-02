@@ -2,6 +2,7 @@
 # gh_pr_inline_comments entries — path from file, body composed from the
 # structured fields. Every finding field passes through, so the summary
 # table renders from the inline tool's (url-enriched) output alone.
+version: 1
 name: findings_to_review_comments
 description: >
   Convert review findings into inline-comment entries for

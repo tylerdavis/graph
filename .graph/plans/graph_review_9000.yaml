@@ -1,3 +1,4 @@
+version: 1
 identifier: graph_review_9000
 name: graph_review_9000
 description: Reviews a GitHub PR against graph-cli's own invariants by composing two plans — plan__graph_review_thread_audit settles the living review threads from earlier runs (fixed in code → resolved with a reply, dismissed by a human reply → declined), called via a decide gate only when prior findings exist, and plan__graph_review_core runs the eight-pass principal-engineer review over base_sha...head_sha with the audited findings as known context so only genuinely new findings come back. This wrapper owns everything GitHub — PR metadata, thread readback, posting new findings as inline review threads, and a marker-keyed summary comment with lifecycle counts that refreshes in place. Open threads and human replies are never deleted. Thread hygiene runs before the empty-diff gate, so a fully reverted PR still settles its threads.

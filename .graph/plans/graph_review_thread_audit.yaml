@@ -1,3 +1,4 @@
+version: 1
 identifier: graph_review_thread_audit
 name: graph_review_thread_audit
 description: Audits graph_review_9000's existing inline review threads on a GitHub PR against the code at the head sha — resolves findings whose fix is verified in the file contents (or all open findings when the diff is empty, i.e. the PR was reverted), declines findings a human reply dismissed, keeps the rest open — and applies the transitions (reply + resolve) via gh_pr_thread_sync. Conservative by instruction — insufficient evidence keeps a finding open, and terminal states are echoed untouched. Returns the audited findings plus lifecycle counts. GitHub-coupled (gh CLI + token); called by graph_review_9000 when prior findings exist. Deliberately has no exit steps, so its result shape is always the output map.

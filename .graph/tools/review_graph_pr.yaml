@@ -1,6 +1,7 @@
 # prompt tool: reviews a PR diff against this repo's invariants (CLAUDE.md).
 # The output_schema forces structured findings; an empty findings array is a
 # valid (and common) result.
+version: 1
 name: review_graph_pr
 description: >
   Reviews a graph-cli pull-request diff against the repo's invariants and

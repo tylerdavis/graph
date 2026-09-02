@@ -4,6 +4,7 @@
 # unstaged; untracked files only after `git add -N`) against the merge-base
 # of `base` and HEAD; a non-empty `head` is the pack's three-dot range diff.
 # Named repo_* to avoid shadowing the pack tool.
+version: 1
 name: repo_diff
 description: >
   Unified diff of a range or of the working tree, optionally scoped to

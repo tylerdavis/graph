@@ -5,6 +5,7 @@
 # of `base` and HEAD; a non-empty `head` is the pack's three-dot range diff.
 # Named repo_* rather than git_* on purpose: a user tool named git_changed_files
 # would shadow the pack tool and break the plans that still use it.
+version: 1
 name: repo_changed_files
 description: >
   Files changed in a range or in the working tree, filtered to a path prefix
