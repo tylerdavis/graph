@@ -4,7 +4,7 @@ description: "Adapt and improve your CI pipelines with ease"
 icon: "badge-check"
 ---
 
-This repo dogfoods graph in its own pull-request checks: a **docs-drift gate** (an inferred exit gate as a merge check) and a **specialized reviewer** (structured findings posted as PR comments by the plan itself). Every piece ships in this repo — the plans in `./.graph/plans/`, the repo-local tools in `./.graph/tools/`, the workflow in `.github/workflows/graph-checks.yaml` — and every PR against graph runs them.
+This repo dogfoods graph in its own pull-request checks: a **docs-drift gate** (an inferred exit gate as a merge check), a **format-drift gate** (the same shape, guarding the [file formats](/reference/formats)), and a **specialized reviewer** (structured findings posted as PR comments by the plan itself). Every piece ships in this repo — the plans in `./.graph/plans/`, the repo-local tools in `./.graph/tools/`, the workflow in `.github/workflows/graph-checks.yaml` — and every PR against graph runs them.
 
 <Tip>
   To replicate this setup in your own repository, hand the work to your coding agent.
@@ -98,6 +98,16 @@ output:
 - **The gate is the CI contract.** `status: error` maps to process exit code 4 — distinct from exit 1 (the plan itself broke). The job needs no branching: exit 4 fails the step, and under `GRAPH_EVENTS=github` graph prints the gate's message as a `::error::` annotation itself.
 - **Every exit path emits the same shape.** Both success gates and the fall-through `output` produce `{docs_required, reason}` — callers parse one contract. On a non-fired infer gate, `{{E5.reason}}` carries the judge's reasoning into the output for free (the judge explains _why_ no docs are needed).
 - **Ask the judge a falsifiable question.** The prompt defines what does _not_ count (refactors, test-only changes). The judge role answers "yes only when the data clearly supports it", so the framing sets the false-positive rate. Live calibration: it flagged a commit adding an env var and a JSON field ("observable by users and plan authors"), and passed a dead-code removal with its reasoning in `reason`.
+
+## `format_drift` — the same gate, for the file formats
+
+`.graph/plans/format_drift.yaml` guards the rule behind [file formats](/reference/formats): a non-additive change to a versioned format's model — the config structs, the plan and control-step grammars, tool documents, the store layout — must raise the matching `*_FORMAT` constant and document the migration on the formats page in the same PR. Same shape as `docs_drift`, with the short-circuit and the judge's evidence swapped:
+
+- **E0/E1** — `builtin__git_diff` scoped to the model files, and a `when: { op: empty }` exit. A PR that never touches a model file passes with zero LLM calls, which is nearly every PR.
+- **E2/E3** — the diff over the files that hold the format constants, and `git_changed_files` on `docs/reference/formats.mdx` alone, so the judge can see whether the change was accounted for.
+- **E4** — one `infer` gate asking a two-part question: is the model change non-additive, _and_ is it unaccounted for? Additive changes (a new optional field with a default, a new enum variant) answer no by construction; a removed or renamed key is caught mechanically by the crate's frozen fixture tests anyway, so the judge's job is the case fixtures cannot see — a field whose meaning or accepted values changed with its shape intact.
+
+Worst case per PR: one extra `judge` call, and only on PRs that touch a model file.
 
 ## `graph_review_9000` — a composed reviewer
 
@@ -239,7 +249,7 @@ The full file is `.github/workflows/graph-checks.yaml`; the notable choices:
 - **The release image is the runtime.** `container: ghcr.io/tylerdavis/graph:vX.Y.Z` carries graph plus `git`, `jq`, and `gh` (pinned from official releases — distro packages lag the JSON fields and flags the pack tools use) and the `safe.directory` git config that Actions' foreign-owned workspace mounts require. The image tag is the version pin; `packages: read` plus `GITHUB_TOKEN` credentials pull it while private.
 - **`GRAPH_EVENTS=github`** makes a failing plan annotate the run itself — the one sanctioned case of graph writing non-deliverable output to stdout, failure-paths only ([details](/reference/scripting-contract#streams)).
 - **Guards are cheap and layered**: drafts skipped, fork PRs skipped (they have no `ANTHROPIC_API_KEY`; if one slipped through, the unset `${VAR}` makes the provider unusable and the first model call fails naming the variable — the backstop), one concurrency group per PR with cancel-in-progress.
-- **Cost per PR**: worst case one `judge`-role call (docs-drift) plus two review-sized calls — the review itself, and the transition audit only when prior findings exist (the audit carries full file contents alongside the diff, since it must judge a fix from the file's current state rather than from a hunk; the review itself uses a wide-context diff instead). A first review pays for the review alone — the `decide` skips the audit outright; drafts pay nothing.
-- **One job per plan, no `needs` between them.** The two jobs are independent and run in parallel; only docs-drift can fail the check (exit 4). The reviewer always exits 0 — its comments are the deliverable, not a gate.
+- **Cost per PR**: worst case two `judge`-role calls (docs-drift, and format-drift only when a model file changed) plus two review-sized calls — the review itself, and the transition audit only when prior findings exist (the audit carries full file contents alongside the diff, since it must judge a fix from the file's current state rather than from a hunk; the review itself uses a wide-context diff instead). A first review pays for the review alone — the `decide` skips the audit outright; drafts pay nothing.
+- **One job per plan, no `needs` between them.** The three jobs are independent and run in parallel; only the two drift gates can fail the check (exit 4). The reviewer always exits 0 — its comments are the deliverable, not a gate.
 
 Want the reviewer to comment under its own name and avatar instead of **github-actions\[bot\]**? That's a token swap — see [A custom bot identity](/cookbook/bot-identity).

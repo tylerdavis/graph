@@ -36,6 +36,43 @@ if git rev-parse "v$new" >/dev/null 2>&1; then
   echo "tag v$new already exists" >&2; exit 1
 fi
 
+# The file-format constants (docs/reference/formats.mdx) at a ref, one
+# "<name> <version>" per line. A ref that predates a file reads as format 1,
+# which is what an unversioned file means.
+format_table() {
+  local ref=$1
+  for spec in \
+    "config crates/graph-config/src/format.rs CONFIG_FORMAT" \
+    "plan crates/graph-core/src/format.rs PLAN_FORMAT" \
+    "tool crates/graph-core/src/format.rs TOOL_FORMAT" \
+    "store crates/graph-store/src/file.rs STORE_FORMAT"; do
+    set -- $spec
+    source=$(git show "$ref:$2" 2>/dev/null || true)
+    version=$(printf '%s\n' "$source" | sed -n "s/^pub const $3: u32 = \([0-9]*\);.*/\1/p" | head -1)
+    echo "$1 ${version:-1}"
+  done
+}
+
+# A format bump or a breaking commit is a release-level decision, not a
+# patch: pre-1.0 it needs at least a minor, from 1.0 on it needs a major.
+# Checked before anything is mutated, alongside the tag check above.
+last_tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+format_delta=""
+if [ -n "$last_tag" ]; then
+  format_delta=$(paste -d' ' <(format_table "$last_tag") <(format_table HEAD) \
+    | awk '$2 != $4 { printf "%s %s→%s\n", $1, $2, $4 }' | paste -sd',' - | sed 's/,/, /g')
+fi
+breaking=$(git-cliff --tag "v$new" --unreleased --context 2>/dev/null \
+  | jq '[.[] | .commits[]? | select(.breaking == true)] | length')
+if [ -n "$format_delta" ] || [ "${breaking:-0}" -gt 0 ]; then
+  echo "release carries breaking changes: ${breaking:-0} breaking commit(s)${format_delta:+, format bump(s): $format_delta}"
+  needed=$([ "$major" -ge 1 ] && echo major || echo minor)
+  case "$level:$needed" in
+    major:*|minor:minor|current:*) ;;
+    *) echo "a breaking release needs at least a $needed bump (got $level)" >&2; exit 1 ;;
+  esac
+fi
+
 # A release needs at least one changelog-worthy commit. git-cliff emits no
 # section at all for a tag whose commits are every one ci:/chore:/test:, and
 # the release would then strand halfway — version bumped, CHANGELOG.md
@@ -95,7 +132,7 @@ fi
 # The regeneration above and the docs build below are two renderings of
 # one set of facts, not a pipeline — so the order here is convenience,
 # not a dependency.
-GRAPH_STORAGE=memory graph plan run changelog_entry --input version="v$new"
+GRAPH_STORAGE=memory graph plan run changelog_entry --input version="v$new" --input formats="$format_delta"
 GRAPH_STORAGE=memory graph plan run compose_changelog --input tag="v$new"
 
 git add Cargo.toml Cargo.lock CHANGELOG.md docs/docs.json docs/changelog.mdx docs/snippets/changelog

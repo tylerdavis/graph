@@ -13,7 +13,15 @@ body = """
 {% else %}
 ## Unreleased
 {% endif %}
-{% for group, commits in commits | group_by(attribute="group") %}
+{%- set breaking = commits | filter(attribute="breaking", value=true) -%}
+{%- if breaking | length > 0 %}
+
+### Breaking
+{% for commit in breaking %}
+- {{ commit.message | split(pat="\n") | first | trim }}{% if commit.breaking_description and commit.breaking_description != commit.message %} — {{ commit.breaking_description | split(pat="\n") | first | trim }}{% endif %}
+{%- endfor %}
+{% endif %}
+{% for group, commits in commits | filter(attribute="breaking", value=false) | group_by(attribute="group") %}
 ### {{ group }}
 {% for commit in commits %}
 - {{ commit.message | split(pat="\n") | first | trim }}
@@ -25,6 +33,11 @@ trim = true
 [git]
 conventional_commits = true
 filter_unconventional = true
+# A `!` commit (or a BREAKING CHANGE footer) renders under its own
+# "Breaking" heading ahead of every group, with the footer text when there
+# is one, and no skip parser can hide it — that is what a file-format bump
+# looks like in the release notes (see RELEASING.md, "Format bumps").
+protect_breaking_commits = true
 # Two classes of commit land on main without being authored by anyone here:
 # merge commits, and the Mintlify app's write-back commits. They carry no
 # changelog content, but under filter_unconventional they surfaced as

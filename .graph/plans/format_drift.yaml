@@ -1,0 +1,93 @@
+# Format-drift gate: fails (exit-gate error → process exit 4) when a PR
+# changes a file-format model (config, plan/tool documents, the store
+# layout) in a non-additive way without bumping the matching *_FORMAT
+# constant and documenting the step on docs/reference/formats.mdx — the
+# CLAUDE.md rule, enforced. Sibling of docs_drift: zero LLM calls unless
+# one of the model files changed, then one judge call over the model diff,
+# the format-constant diff, and whether the formats page moved.
+identifier: format_drift
+name: Format drift gate
+description: >
+  Checks whether a PR changes a file-format model without a format bump.
+  Exits successfully (zero LLM calls) when none of the model files changed;
+  otherwise an inferred exit gate reads the model diff alongside the
+  format-constant diff and asserts an error when a non-additive change
+  shipped without raising the constant and updating the formats page.
+  Process exit code 4 on assertion.
+input_schema:
+  type: object
+  required: [base, head]
+  properties:
+    base: { type: string, description: Base ref or sha of the PR }
+    head: { type: string, description: Head ref or sha of the PR }
+steps:
+  - id: E0
+    tool_name: builtin__git_diff
+    input:
+      base: "{{input.base}}"
+      head: "{{input.head}}"
+      paths: "crates/graph-config/src/model.rs crates/graph-core/src/pipeline/doc.rs crates/graph-core/src/pipeline/plan.rs crates/graph-core/src/pipeline/condition.rs crates/graph-core/src/pipeline/body.rs crates/graph-core/src/pipeline/exit.rs crates/graph-core/src/pipeline/decision.rs crates/graph-core/src/pipeline/filter.rs crates/graph-core/src/pipeline/iterate.rs crates/graph-core/src/pipeline/agent.rs crates/graph-core/src/pipeline/ask.rs crates/graph-core/src/user_tools.rs crates/graph-store/src/file.rs"
+      exclude: ""
+      max_bytes: 150000
+    reasoning: The diff over every file that defines a versioned format's shape — config structs, plan and control-step grammars, tool docs, the store layout.
+  - id: E1
+    tool_name: exit
+    input:
+      when: { value: "{{E0.text}}", op: empty }
+      status: success
+      message: no format model changed — format gate not applicable
+      output: { format_bump_required: false, reason: no_model_changes }
+    reasoning: Most PRs never touch a model file; they pass with no LLM.
+  - id: E2
+    tool_name: builtin__git_diff
+    input:
+      base: "{{input.base}}"
+      head: "{{input.head}}"
+      paths: "crates/graph-config/src/format.rs crates/graph-core/src/format.rs crates/graph-store/src/file.rs"
+      exclude: ""
+      max_bytes: 40000
+    reasoning: Where the format constants and migration chains live; a raised `*_FORMAT` constant shows here as a changed line.
+  - id: E3
+    tool_name: builtin__git_changed_files
+    input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "docs/reference/formats.mdx" }
+    reasoning: A bump must document its migration on the formats page.
+  - id: E4
+    tool_name: exit
+    input:
+      infer: |
+        Decide whether this PR breaks a versioned file format without
+        accounting for it. Answer yes ONLY if BOTH hold:
+
+        1. The MODEL DIFF removes a field, renames a field or an enum value,
+           changes a field's type or shape, changes what values a field
+           accepts or what an existing value means, or adds a field that
+           existing files must now supply. Purely additive changes — a new
+           optional field with a default, a new enum variant, a new struct
+           or function, doc comments, tests — do NOT count, and neither do
+           changes to code that is not part of a file's schema (validation
+           messages, loaders, helper functions).
+
+        2. The change is not accounted for: no `CONFIG_FORMAT`,
+           `PLAN_FORMAT`, `TOOL_FORMAT`, or `STORE_FORMAT` constant is
+           raised in the FORMAT DIFF for the affected format, or the formats
+           page was not updated (FORMATS PAGE CHANGED below is 0).
+
+        Judge only from what you can see; a diff may end with a truncation
+        marker.
+
+        FORMATS PAGE CHANGED (files): {{E3.count}}
+
+        FORMAT DIFF:
+        {{E2.text}}
+
+        MODEL DIFF:
+        {{E0.text}}
+      status: error
+      message: >-
+        non-additive change to a versioned file format without a format
+        bump — raise the matching *_FORMAT constant, append a migration and
+        a fixture pair, and document the step on docs/reference/formats.mdx
+    reasoning: One judge call decides; error exit fails the CI check.
+output:
+  format_bump_required: false
+  reason: "{{E4.reason}}"

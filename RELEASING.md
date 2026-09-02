@@ -68,6 +68,49 @@ origin, tag doesn't already exist.
 Pre-1.0, minor releases may include breaking changes; call them out in the
 release notes.
 
+The script enforces the floor: if any commit since the last tag is breaking
+(a `!` subject or a `BREAKING CHANGE:` footer, as git-cliff reports it) or
+any file-format constant moved, `patch` is refused; from 1.0 on, `minor` is
+refused too. Breaking commits render under their own **Breaking** heading in
+the changelog, ahead of every group, and `protect_breaking_commits` keeps a
+skip parser from ever hiding one.
+
+## Format bumps
+
+`config.toml`, plan documents, tool documents, and the data directory each
+carry an integer format version, independent of the binary version
+(`docs/reference/formats.mdx` is the user-facing contract). A non-additive
+change to one of those formats — a removed or renamed key, a changed shape
+or meaning, a newly required key — is a **format bump**, and it ships as one
+PR containing all of:
+
+1. The constant raised: `CONFIG_FORMAT` (`crates/graph-config/src/format.rs`),
+   `PLAN_FORMAT` / `TOOL_FORMAT` (`crates/graph-core/src/format.rs`), or
+   `STORE_FORMAT` (`crates/graph-store/src/file.rs`).
+2. A migration appended to that format's chain — a forward-only function
+   from format N to N+1 over the raw document, returning notes for anything
+   it could not carry over.
+3. A frozen fixture pair: the format N file stays under
+   `tests/fixtures/v<N>/`, its format N+1 twin lands under `v<N+1>/` with the
+   same file name, and the golden-pair test proves they load identically.
+   Fixtures for every past format must keep loading, forever.
+4. A row in the **Version history** table on `docs/reference/formats.mdx`
+   and a section describing the migration — that page is the URL every
+   "too new" error prints.
+5. A breaking commit subject (`feat(config)!: …`) whose footer names the
+   format: `BREAKING CHANGE: config format 2 (graph config migrate)`.
+
+The `format_drift` check (`.graph/plans/format_drift.yaml`, run by
+`graph-checks.yaml`) fails a PR that changes a model file non-additively
+without steps 1 and 4; the fixture tests catch a removed or renamed key
+mechanically. At release time the script diffs the four constants between
+the last tag and `HEAD` and passes the delta to `changelog_entry` as its
+`formats` input, which forces `migration_needed` and builds the migration
+prompt around `graph config check` and the `migrate` commands rather than
+inferring from commit subjects. Move any `ghcr.io/tylerdavis/graph:vX.Y.Z`
+pin in `.github/workflows/` in the same PR that stamps this repo's own
+`.graph/` files — an older image refuses a newer format by name.
+
 ## Commit convention
 
 Conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `ci:`, `refactor:`,
