@@ -78,10 +78,6 @@ jobs:
       - name: Format drift gate
         run: graph plan run format_drift --input base="$BASE" --input head="$HEAD"
 
-  # The repo's own .graph/ files, read by the pinned image rather than by
-  # the PR's build: a version bump the image cannot read fails here until
-  # the pin moves in the same PR (docs/reference/file-versions.mdx). No
-  # model calls — config check and plan validation are static.
   dogfood-files:
     if: >-
       !github.event.pull_request.draft &&
