@@ -62,16 +62,24 @@ pub fn graph_version() -> &'static str {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormatError {
-    TooNew { kind: Kind, found: u32, max: u32 },
+    Unsupported {
+        kind: Kind,
+        found: u32,
+        oldest: u32,
+        max: u32,
+    },
     Invalid(String),
 }
 
 impl fmt::Display for FormatError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FormatError::TooNew { kind, found, max } => {
-                write!(f, "{}", too_new_message(*kind, *found, *max))
-            }
+            FormatError::Unsupported {
+                kind,
+                found,
+                oldest,
+                max,
+            } => f.write_str(&window_message(*kind, "this file", *found, *oldest, *max)),
             FormatError::Invalid(message) => f.write_str(message),
         }
     }
@@ -79,12 +87,8 @@ impl fmt::Display for FormatError {
 
 impl std::error::Error for FormatError {}
 
-pub fn too_new_message(kind: Kind, found: u32, max: u32) -> String {
-    format!(
-        "{} format {found} is newer than this graph ({}) reads (up to {max}) — upgrade graph, or see {FORMATS_DOC}",
-        kind.label(),
-        graph_version()
-    )
+pub fn window_message(kind: Kind, what: &str, found: u32, oldest: u32, max: u32) -> String {
+    graph_config::window_problem(kind.label(), &what, found, oldest, max).unwrap_or_default()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,12 +138,13 @@ fn describe(value: &Value) -> &'static str {
 
 pub fn upgrade(kind: Kind, value: &mut Value) -> Result<Upgrade, FormatError> {
     let declared = declared_version(value).map_err(FormatError::Invalid)?;
-    let from = declared.unwrap_or(kind.oldest());
+    let from = declared.unwrap_or(1);
     let max = kind.current();
-    if from > max {
-        return Err(FormatError::TooNew {
+    if !(kind.oldest()..=max).contains(&from) {
+        return Err(FormatError::Unsupported {
             kind,
             found: from,
+            oldest: kind.oldest(),
             max,
         });
     }
@@ -221,19 +226,6 @@ fn visit_step(step: &mut Value, visit: &mut dyn FnMut(&mut Value)) {
     }
 }
 
-pub fn requirement_unmet(requirement: &str) -> Result<Option<String>, String> {
-    let req = semver::VersionReq::parse(requirement)
-        .map_err(|e| format!("requires_graph '{requirement}' is not a version requirement: {e}"))?;
-    let version = semver::Version::parse(graph_version())
-        .map_err(|e| format!("graph's own version does not parse: {e}"))?;
-    Ok((!req.matches(&version)).then(|| {
-        format!(
-            "requires graph {requirement}; this is graph {}",
-            graph_version()
-        )
-    }))
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Migrated {
     pub path: PathBuf,
@@ -255,7 +247,15 @@ pub fn migrate_file(
     if !value.is_mapping() {
         return Err(format!("{}: not a YAML mapping", path.display()));
     }
-    let upgrade = upgrade(kind, &mut value).map_err(|e| format!("{}: {e}", path.display()))?;
+    let upgrade = upgrade(kind, &mut value).map_err(|e| match e {
+        FormatError::Unsupported {
+            kind,
+            found,
+            oldest,
+            max,
+        } => window_message(kind, &path.display().to_string(), found, oldest, max),
+        other => format!("{}: {other}", path.display()),
+    })?;
     stamp(kind, &mut value);
     check(&value).map_err(|e| format!("{}: after migration: {e}", path.display()))?;
     let (header, body_lines) = split_header(&raw);
@@ -336,15 +336,19 @@ mod tests {
         let err = upgrade(Kind::Tool, &mut value).unwrap_err();
         assert_eq!(
             err,
-            FormatError::TooNew {
+            FormatError::Unsupported {
                 kind: Kind::Tool,
                 found: TOOL_FORMAT + 1,
+                oldest: TOOL_FORMAT_OLDEST,
                 max: TOOL_FORMAT
             }
         );
         let text = err.to_string();
-        assert!(text.contains("tool format"), "{text}");
-        assert!(text.contains(&format!("up to {TOOL_FORMAT}")), "{text}");
+        assert!(text.contains("is tool format"), "{text}");
+        assert!(
+            text.contains(&format!("reads format {TOOL_FORMAT}")),
+            "{text}"
+        );
         assert!(text.contains(FORMATS_DOC), "{text}");
     }
 
@@ -426,15 +430,6 @@ steps:
                 "user__three"
             ]
         );
-    }
-
-    #[test]
-    fn requirements_compare_against_this_binary() {
-        assert_eq!(requirement_unmet(">=0.1.0").unwrap(), None);
-        let unmet = requirement_unmet(">=999.0.0").unwrap().unwrap();
-        assert!(unmet.contains("requires graph >=999.0.0"), "{unmet}");
-        assert!(unmet.contains(graph_version()), "{unmet}");
-        assert!(requirement_unmet("not a requirement").is_err());
     }
 
     #[test]

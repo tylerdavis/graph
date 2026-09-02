@@ -21,7 +21,7 @@ Config is layered TOML — later wins, tables deep-merge:
 format_version = 1
 ```
 
-The [config format](/reference/formats#config) the file is written in; omitted means `1`. Each layer is migrated to the current format on its own before the two merge, so the global and project files may sit at different formats. `graph config check` reports each file's format, and `graph config migrate` (or `--global`) rewrites a file to the current one with its comments intact. A file newer than the binary is refused by name, with the format it found and the format the binary reads up to.
+The [config format](/reference/formats#config) the file is written in; omitted means `1`. Each layer is migrated to the current format on its own before the two merge, so the global and project files may sit at different formats. `graph config check` reports each file's format, and `graph config migrate` (or `--global`) rewrites a file to the current one with its comments intact. A file outside the binary's support window is refused by name, with the format it found and the formats the binary reads.
 
 ## `[settings]`
 

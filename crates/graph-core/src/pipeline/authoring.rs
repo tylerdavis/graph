@@ -526,7 +526,6 @@ pub fn merge_planner_output(
             description: goal.to_string(),
             exemplars: Vec::new(),
             requires_servers: Vec::new(),
-            requires_graph: None,
             input_schema: None,
             steps: output.plan,
             solver: output.solver_data,

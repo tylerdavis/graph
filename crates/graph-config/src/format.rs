@@ -19,27 +19,57 @@ pub fn migration_count() -> usize {
     MIGRATIONS.len()
 }
 
+pub fn window_problem(
+    kind: &str,
+    what: &dyn fmt::Display,
+    found: u32,
+    oldest: u32,
+    max: u32,
+) -> Option<String> {
+    if (oldest..=max).contains(&found) {
+        return None;
+    }
+    let range = if oldest == max {
+        format!("format {max}")
+    } else {
+        format!("formats {oldest} to {max}")
+    };
+    let version = env!("CARGO_PKG_VERSION");
+    Some(if found > max {
+        format!(
+            "{what} is {kind} format {found}; graph {version} reads {range}. Upgrade graph, or see {FORMATS_DOC}"
+        )
+    } else {
+        format!(
+            "{what} is {kind} format {found}; graph {version} reads {range}. Migrate it with a graph release that still reads format {found}, or see {FORMATS_DOC}"
+        )
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TooNew {
+pub struct Unsupported {
     pub path: PathBuf,
     pub found: u32,
+    pub oldest: u32,
     pub max: u32,
 }
 
-impl fmt::Display for TooNew {
+impl fmt::Display for Unsupported {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} is config format {}; graph {} reads up to {}. Upgrade graph, or see {FORMATS_DOC}",
-            self.path.display(),
-            self.found,
-            env!("CARGO_PKG_VERSION"),
-            self.max
+        f.write_str(
+            &window_problem(
+                "config",
+                &self.path.display(),
+                self.found,
+                self.oldest,
+                self.max,
+            )
+            .unwrap_or_default(),
         )
     }
 }
 
-impl std::error::Error for TooNew {}
+impl std::error::Error for Unsupported {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Upgrade {
@@ -84,17 +114,18 @@ pub fn declared_version(doc: &DocumentMut) -> Result<Option<u32>, String> {
 }
 
 pub fn upgrade(doc: &mut DocumentMut, path: &Path) -> Result<Upgrade, String> {
-    let from = declared_version(doc)?.unwrap_or(CONFIG_FORMAT_OLDEST);
-    if from > CONFIG_FORMAT {
-        return Err(TooNew {
+    let from = declared_version(doc)?.unwrap_or(1);
+    if !(CONFIG_FORMAT_OLDEST..=CONFIG_FORMAT).contains(&from) {
+        return Err(Unsupported {
             path: path.to_path_buf(),
             found: from,
+            oldest: CONFIG_FORMAT_OLDEST,
             max: CONFIG_FORMAT,
         }
         .to_string());
     }
     let mut notes = Vec::new();
-    for migration in &MIGRATIONS[(from - 1) as usize..] {
+    for migration in &MIGRATIONS[(from - CONFIG_FORMAT_OLDEST) as usize..] {
         notes.extend(migration(doc)?);
     }
     Ok(Upgrade {
@@ -180,7 +211,7 @@ pub fn inspect(path: &Path) -> Result<LayerInfo, String> {
     Ok(LayerInfo {
         path: path.to_path_buf(),
         declared,
-        format_version: declared.unwrap_or(CONFIG_FORMAT_OLDEST),
+        format_version: declared.unwrap_or(1),
         notes: Vec::new(),
     })
 }
@@ -243,10 +274,24 @@ mod tests {
         let err = upgrade(&mut doc, Path::new("/x/config.toml")).unwrap_err();
         assert!(err.contains("/x/config.toml is config format"), "{err}");
         assert!(
-            err.contains(&format!("reads up to {CONFIG_FORMAT}")),
+            err.contains(&format!("reads format {CONFIG_FORMAT}")),
             "{err}"
         );
+        assert!(err.contains("Upgrade graph"), "{err}");
         assert!(err.contains(FORMATS_DOC), "{err}");
+    }
+
+    #[test]
+    fn the_window_message_names_both_directions() {
+        assert_eq!(window_problem("plan", &"p.yaml", 3, 2, 4), None);
+        let old = window_problem("plan", &"p.yaml", 1, 2, 4).unwrap();
+        assert!(old.starts_with("p.yaml is plan format 1; graph "), "{old}");
+        assert!(old.contains("reads formats 2 to 4"), "{old}");
+        assert!(old.contains("still reads format 1"), "{old}");
+        let new = window_problem("store", &"/data", 5, 2, 4).unwrap();
+        assert!(new.contains("reads formats 2 to 4. Upgrade graph"), "{new}");
+        let single = window_problem("tool", &"t.yaml", 2, 1, 1).unwrap();
+        assert!(single.contains("reads format 1."), "{single}");
     }
 
     #[test]

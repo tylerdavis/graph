@@ -91,7 +91,7 @@ fn a_newer_format_is_refused_before_the_schema_is_consulted() {
     let err = format!("{:#}", load_from(std::slice::from_ref(&path)).unwrap_err());
     assert!(err.contains("is config format"), "{err}");
     assert!(
-        err.contains(&format!("reads up to {CONFIG_FORMAT}")),
+        err.contains(&format!("reads format {CONFIG_FORMAT}")),
         "{err}"
     );
     assert!(!err.contains("unknown field"), "{err}");

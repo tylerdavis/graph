@@ -39,7 +39,16 @@ pub fn formats() -> [Format; 4] {
 pub fn formats_line() -> String {
     let parts: Vec<String> = formats()
         .iter()
-        .map(|format| format!("{} {}", format.name, format.current))
+        .map(|format| {
+            if format.oldest == format.current {
+                format!("{} {}", format.name, format.current)
+            } else {
+                format!(
+                    "{} {} (reads {}-{})",
+                    format.name, format.current, format.oldest, format.current
+                )
+            }
+        })
         .collect();
     format!("formats: {}", parts.join(", "))
 }

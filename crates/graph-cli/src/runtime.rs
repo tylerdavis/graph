@@ -273,28 +273,17 @@ impl Runtime {
                 tracing::warn!("skipping plan file — {error}");
             }
         }
-        let unmet_graph = |doc: &graph_core::pipeline::doc::PlanDoc| {
-            doc.requires_graph
-                .as_deref()
-                .and_then(|requirement| graph_core::format::requirement_unmet(requirement).ok())
-                .flatten()
-        };
         let (visible, hidden): (Vec<_>, Vec<_>) = loaded.docs.drain(..).partition(|doc| {
             doc.requires_servers
                 .iter()
                 .all(|server| self.config.mcp.contains_key(server))
-                && unmet_graph(doc).is_none()
         });
         loaded.docs = visible;
         for doc in hidden {
-            let unmet = unmet_graph(&doc);
-            match &unmet {
-                Some(unmet) => tracing::info!(plan = doc.identifier, "hidden: {unmet}"),
-                None => tracing::info!(
-                    plan = doc.identifier,
-                    "hidden: required MCP server not configured"
-                ),
-            }
+            tracing::info!(
+                plan = doc.identifier,
+                "hidden: required MCP server not configured"
+            );
             loaded.hidden.push(graph_core::pipeline::doc::HiddenPlan {
                 missing_servers: doc
                     .requires_servers
@@ -302,7 +291,6 @@ impl Runtime {
                     .filter(|server| !self.config.mcp.contains_key(*server))
                     .cloned()
                     .collect(),
-                unmet_graph: unmet,
                 identifier: doc.identifier,
             });
         }

@@ -73,4 +73,3 @@ With an `output_schema`, the result is validated JSON; without one, `{"text": â€
 - Names must match `[a-zA-Z0-9_-]+`; templates referencing anything but `{{input.*}}` are load-time errors.
 - Files are read strictly: a key the tool's `kind` does not accept is a load error naming it (`unknown field(s) \`tmeout_secs\` for a \`exec\` tool`), never ignored.
 - `format_version` names the [tool format](/reference/formats#plans-and-tools) the file is written in; omitted means `1`. `graph tools migrate <path>` brings a file to the current format.
-- `requires_graph` (a semver requirement such as `">=0.13.0"`) declares the graph version the tool needs; a tool this binary does not satisfy is skipped with a warning rather than loaded â€” see [`requires_graph`](/reference/formats#requires_graph).

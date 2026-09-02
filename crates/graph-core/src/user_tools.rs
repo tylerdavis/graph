@@ -37,8 +37,6 @@ pub struct UserToolDoc {
     pub output_schema: Option<Value>,
     #[serde(default)]
     pub read_only: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requires_graph: Option<String>,
     #[serde(flatten)]
     pub kind: ToolKind,
     #[serde(skip)]
@@ -213,18 +211,6 @@ pub fn load_user_tools(dirs: &[PathBuf]) -> Result<Vec<UserToolDoc>, String> {
         entries.sort();
         for path in entries {
             let doc = load_user_tool(&path)?;
-            if let Some(requirement) = &doc.requires_graph {
-                if let Some(unmet) = crate::format::requirement_unmet(requirement)? {
-                    if first_skip(&path) {
-                        tracing::warn!(
-                            tool = doc.name,
-                            path = %path.display(),
-                            "skipping user tool — {unmet}"
-                        );
-                    }
-                    continue;
-                }
-            }
             if docs.iter().any(|d| d.name == doc.name) {
                 return Err(format!("duplicate user tool name '{}'", doc.name));
             }
@@ -232,16 +218,6 @@ pub fn load_user_tools(dirs: &[PathBuf]) -> Result<Vec<UserToolDoc>, String> {
         }
     }
     Ok(docs)
-}
-
-fn first_skip(path: &Path) -> bool {
-    static SKIPPED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
-        std::sync::OnceLock::new();
-    SKIPPED
-        .get_or_init(Default::default)
-        .lock()
-        .map(|mut seen| seen.insert(path.to_path_buf()))
-        .unwrap_or(true)
 }
 
 pub fn load_user_tool(path: &Path) -> Result<UserToolDoc, String> {
@@ -259,7 +235,6 @@ const TOOL_KEYS: &[&str] = &[
     "input_schema",
     "output_schema",
     "read_only",
-    "requires_graph",
     "kind",
 ];
 
@@ -329,9 +304,6 @@ pub fn validate_tool(doc: &UserToolDoc) -> Result<(), String> {
             "tool name '{}' must be non-empty and use only [a-zA-Z0-9_-]",
             doc.name
         ));
-    }
-    if let Some(requirement) = &doc.requires_graph {
-        crate::format::requirement_unmet(requirement)?;
     }
     let check_template = |template: &str, what: &str| -> Result<(), String> {
         let roots =

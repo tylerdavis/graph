@@ -4,7 +4,7 @@ description: "Format versions for config, plans, tools, and the data directory"
 icon: "code-branch"
 ---
 
-graph reads four kinds of file it did not write in the same release: `config.toml`, plan documents, tool documents, and the data directory. Each carries a **format version** — an integer, separate from the binary's version and from each other — that moves only when the format changes in a way an older reader could not accept.
+graph reads four kinds of file it did not write in the same release: `config.toml`, plan documents, tool documents, and the data directory. Each carries a **format version** — an integer, separate from the binary's version and from each other — that moves every time that format's schema changes.
 
 | Artifact | Where the version lives | Missing means |
 | --- | --- | --- |
@@ -21,32 +21,32 @@ graph 0.13.0
 formats: config 1, plan 1, tool 1, store 1
 ```
 
-`graph version --json` adds, per format, the oldest version this binary still reads.
+Each format has a **support window**: the oldest version this binary still reads through the one it writes. The line shows the window whenever it is wider than one version (`config 3 (reads 2-3)`), and `graph version --json` reports `oldest` and `current` per format.
 
 ## The compatibility promise
 
-- **Upgrading graph never requires touching a file first.** A binary reads every format version from the one it writes back to the oldest it lists, migrating older files in memory as they load. The file on disk is not modified until you run a `migrate` command.
-- **A file newer than the binary is refused, by name.** An older graph opening a newer file stops before consulting the schema and says which file, which format it found, which format it reads up to, and where to look — instead of an "unknown field" for a key that is correct.
-- **Additive changes never bump a format.** A new optional key, a new control step, a new bundled tool: files that omit them load unchanged, and a file that uses them on an older binary fails loudly on the unknown key (or, for plans and tools, on a `requires_graph` requirement — below).
-- **Dropping support for an old format happens only at a major release**, announced one minor release ahead. `graph config check` warns about files that would be affected.
+- **Every schema change bumps the format.** A new optional key, a removed key, a rename, a changed shape: all of them. The format version is the schema's generation number, so two binaries that agree on it agree on every key.
+- **A binary reads every format in its window, and nothing outside it.** Older files inside the window are migrated in memory as they load; the file on disk is not modified until you run a `migrate` command. Upgrading graph within a window never requires touching a file first.
+- **A file outside the window fails, by name, before the schema is consulted.** The message says which file, which format it found, which formats this binary reads, and what to do: upgrade graph for a newer file, or migrate an older file with a release that still reads it. Never an "unknown field" for a key that is correct.
+- **The window narrows only at a major release**, announced one minor release ahead. `graph config check` reports files that would fall outside it.
 
 Format 1 is the schema graph has always read; introducing the versions changed nothing for existing files.
 
-## What bumps a format
+## What a bump carries
 
-The question that decides it: *could a file that is valid today become invalid or mean something different?*
+| Change | What the migration does |
+| --- | --- |
+| add an optional key with a default | nothing — a no-op step, so the generation number still moves |
+| remove a key | deletes it; notes a value the new format cannot honor |
+| rename a key or an enum value | moves the value under the new name |
+| change a key's shape (string → table) | rewrites the value into the new shape |
+| change a key's meaning, same shape | rewrites the value so it means what it did |
+| add a required key with a derivable value | derives and writes it |
+| add a required key with no derivable value | fails, naming the key to set |
 
-| Change | Bumps? | What the migration does |
-| --- | --- | --- |
-| add an optional key with a default | no | — |
-| remove a key | yes | deletes it; notes a value the new format cannot honor |
-| rename a key or an enum value | yes | moves the value under the new name |
-| change a key's shape (string → table) | yes | rewrites the value into the new shape |
-| change a key's meaning, same shape | yes | rewrites the value so it means what it did |
-| add a required key with a derivable value | yes | derives and writes it |
-| add a required key with no derivable value | yes | fails, naming the key to set |
+A migration is a forward-only step from format N to N+1. The binary carries the chain for its whole window, so a format 2 file on a format 4 binary runs two steps; each step is verified by a frozen fixture pair in the repository (the format N file and the format N+1 file it must produce), and the fixtures for every format in the window must still load on every release.
 
-A migration is a forward-only step from format N to N+1. The binary carries the whole chain, so a format 1 file on a format 3 binary runs two steps; each step is verified by a frozen fixture pair in the repository (the format N file and the format N+1 file it must produce), and the fixtures for every past format must still load on every release.
+Files graph writes always carry the current format. A plan re-saved from a newer workbench therefore carries the newer number even if it uses nothing new, and an older binary outside that window refuses it — the number is the contract, not the keys the file happens to use.
 
 ## Config
 
@@ -62,7 +62,7 @@ graph config migrate --global   # the same for ~/.config/graph/config.toml
 
 ## Plans and tools
 
-A plan or tool file newer than the binary is **skipped with a diagnostic** and stays out of the catalog, exactly like a file that fails to parse: `plan list --json` reports it under `skipped`, and naming it (`plan run`, `plan show`) reports the format mismatch rather than "no plan named". A tool file newer than the binary fails the tool catalog by name.
+A plan file outside the binary's window is **skipped with a diagnostic** and stays out of the catalog, exactly like a file that fails to parse: `plan list --json` reports it under `skipped`, and naming it (`plan run`, `plan show`) reports the format mismatch rather than "no plan named". A tool file outside the window fails the tool catalog by name.
 
 ```text
 graph plan migrate <name|path>      # rewrite a plan file to the current plan format
@@ -73,19 +73,9 @@ Both rewrite the document through the YAML tree, so field order survives. A **le
 
 Every plan and tool file is read strictly: an unknown key anywhere in a step or a tool document is a load error naming the key, never silently ignored. A misspelled `timeout_secs` used to be dropped on the floor; now the file is skipped and the diagnostic says why.
 
-### `requires_graph`
-
-Format versions cover changes to the grammar. They do not cover a plan that uses a capability added within the same format — a control step, a bundled tool, or an optional key that an older graph does not have. For that a document can declare the graph version it needs:
-
-```yaml
-requires_graph: ">=0.13.0"
-```
-
-The value is a [semver requirement](https://docs.rs/semver/latest/semver/struct.VersionReq.html). A plan whose requirement this binary does not satisfy is **hidden** the way an unconfigured `requires_servers` hides it: it stays out of the catalog, `plan list --json` lists it under `hidden` with `unmetGraph`, and naming it directly says `requires graph >=0.13.0; this is graph 0.12.0`. `plan validate` still validates it, with the requirement as a note — the file is portable, just not runnable here. A tool with an unmet requirement is skipped with a warning.
-
 ## Data directory
 
-`FileStore` writes `<data_dir>/FORMAT` holding the store format on first open and refuses to open a directory whose marker is newer than it reads. That refusal matters more here than anywhere else: thread messages are appended under a lock without re-reading the file, so an older graph must never write into a layout it does not understand. Records inside the directory carry their own `version` field for per-record migration.
+`FileStore` writes `<data_dir>/FORMAT` holding the store format on first open and refuses to open a directory whose marker is outside its window. That refusal matters more here than anywhere else: thread messages are appended under a lock without re-reading the file, so an older graph must never write into a layout it does not understand. Records inside the directory carry their own `version` field for per-record migration.
 
 ## Version history
 

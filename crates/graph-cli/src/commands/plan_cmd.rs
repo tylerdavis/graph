@@ -171,22 +171,13 @@ pub fn validate(name_or_path: &str) -> Result<Outcome> {
             problems.push(problem);
         }
     }
-    let mut notes = check.notes;
-    if let Some(unmet) = doc
-        .requires_graph
-        .as_deref()
-        .and_then(|requirement| graph_core::format::requirement_unmet(requirement).ok())
-        .flatten()
-    {
-        notes.push(format!("plan {unmet}"));
-    }
     let ok = problems.is_empty();
     let body = serde_json::json!({
         "plan": doc.identifier,
         "steps": doc.steps.len(),
         "ok": ok,
         "problems": problems,
-        "notes": notes,
+        "notes": check.notes,
     });
     Ok(if ok {
         Outcome::ok(body)

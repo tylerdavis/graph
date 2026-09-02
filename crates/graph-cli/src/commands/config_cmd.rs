@@ -185,16 +185,19 @@ fn check() -> Outcome {
         }
         match graph_config::inspect(&candidate) {
             Ok(info) => {
-                let verdict = if info.format_version > CONFIG_FORMAT {
-                    problems.push(
-                        graph_config::TooNew {
-                            path: candidate.clone(),
-                            found: info.format_version,
-                            max: CONFIG_FORMAT,
-                        }
-                        .to_string(),
-                    );
-                    "too new"
+                let verdict = if let Some(problem) = graph_config::window_problem(
+                    "config",
+                    &candidate.display(),
+                    info.format_version,
+                    graph_config::CONFIG_FORMAT_OLDEST,
+                    CONFIG_FORMAT,
+                ) {
+                    problems.push(problem);
+                    if info.format_version > CONFIG_FORMAT {
+                        "too new"
+                    } else {
+                        "too old"
+                    }
                 } else if info.format_version < CONFIG_FORMAT {
                     "migrate"
                 } else if info.declared.is_none() {
@@ -212,7 +215,7 @@ fn check() -> Outcome {
                     "exists": true,
                     "formatVersion": info.format_version,
                     "declared": info.declared,
-                    "readable": info.format_version <= CONFIG_FORMAT,
+                    "readable": (graph_config::CONFIG_FORMAT_OLDEST..=CONFIG_FORMAT).contains(&info.format_version),
                     "current": info.format_version == CONFIG_FORMAT,
                 }));
             }

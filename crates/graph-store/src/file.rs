@@ -127,13 +127,16 @@ pub fn marker_format(root: &Path) -> Result<Option<u32>, StoreError> {
 
 fn check_format_marker(root: &Path) -> Result<(), StoreError> {
     match marker_format(root)? {
-        Some(found) if found > STORE_FORMAT => Err(StoreError(format!(
-            "data directory {} is store format {found}; graph {} reads up to {STORE_FORMAT}. Upgrade graph, or see {}",
-            root.display(),
-            env!("CARGO_PKG_VERSION"),
-            graph_config::FORMATS_DOC
-        ))),
-        Some(_) => Ok(()),
+        Some(found) => match graph_config::window_problem(
+            "store",
+            &format_args!("data directory {}", root.display()),
+            found,
+            STORE_FORMAT_OLDEST,
+            STORE_FORMAT,
+        ) {
+            Some(problem) => Err(StoreError(problem)),
+            None => Ok(()),
+        },
         None => match link_new(root, format!("{STORE_FORMAT}\n").as_bytes()) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => check_format_marker(root),
@@ -499,7 +502,7 @@ mod tests {
             "{err}"
         );
         assert!(
-            err.contains(&format!("reads up to {STORE_FORMAT}")),
+            err.contains(&format!("reads format {STORE_FORMAT}")),
             "{err}"
         );
         std::fs::write(dir.path().join(FORMAT_MARKER), "banana\n").unwrap();

@@ -15,7 +15,6 @@ The complete field reference for plan YAML files. Concepts and worked examples l
 | `description` | yes | string | routing signal — what the agent reads when choosing tools |
 | `exemplars` | no | list of string | example user phrasings; folded into the tool description verbatim ([routing](/using/tool-selection)) |
 | `requires_servers` | no | list of string | MCP server dependencies; unconfigured → plan hidden from the catalog, loud error by name ([discovery](/plans/overview#plan-discovery)) |
-| `requires_graph` | no | string | semver requirement on the graph version (`">=0.13.0"`); unmet → plan hidden, loud error by name ([formats](/reference/formats#requires_graph)) |
 | `input_schema` | no | JSON Schema | validates inputs before any step runs; referenced as `{{input.*}}` ([inputs](/plans/inputs)) |
 | `steps` | yes | list of step | run sequentially |
 | `solver` | no | object | LLM-written finish ([finish modes](/plans/finish-modes)) |

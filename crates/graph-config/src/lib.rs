@@ -8,8 +8,8 @@ mod load;
 mod model;
 
 pub use format::{
-    inspect, migrate_file, migration_count, LayerInfo, Migrated, TooNew, Upgrade, CONFIG_FORMAT,
-    CONFIG_FORMAT_OLDEST, FORMATS_DOC, FORMAT_KEY,
+    inspect, migrate_file, migration_count, window_problem, LayerInfo, Migrated, Unsupported,
+    Upgrade, CONFIG_FORMAT, CONFIG_FORMAT_OLDEST, FORMATS_DOC, FORMAT_KEY,
 };
 pub use load::{
     expand_tilde, global_config_path, load, load_from, project_config_path, LoadedConfig,
