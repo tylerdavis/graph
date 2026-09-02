@@ -61,6 +61,7 @@ args:
               ident: (if .version then (.version | ident) else null end),
               date: $date,
               kind: "binary",
+              module: "Graph",
               intro: null,
               groups: ($binary | groups)
             } ]
@@ -72,6 +73,7 @@ args:
                   ident: (($bump.kind + "-v" + $bump.version) | ident),
                   date: $date,
                   kind: $bump.kind,
+                  module: (($bump.kind | .[0:1] | ascii_upcase) + ($bump.kind | .[1:])),
                   intro: (if ($own | length) == 0 then {text: ("Introduced" + (if $release.version then " with graph " + $release.version else "" end) + ".")} else null end),
                   groups: ($own | groups)
                 } ]
@@ -101,6 +103,7 @@ output_schema:
           ident:   { type: ["string", "null"], description: MDX-component-safe version, e.g. V0_10_0 or config_v2 }
           date:    { type: ["string", "null"] }
           kind:    { type: string, enum: [binary, config, plan, tool, store] }
+          module:  { type: string, description: 'The module name as shown to readers — Graph, Config, Plan, Tool, Store' }
           intro:
             type: ["object", "null"]
             description: For a file version that arrived with no commit of its own, a one-line note; null otherwise

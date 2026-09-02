@@ -42,7 +42,7 @@ steps:
                 {{/B0.has_summary}}{{#B0.has_migration}}import Migration{{item.ident}} from '/snippets/changelog/{{item.version}}/migration.mdx';
                 {{/B0.has_migration}}
               block: |-
-                <Update label="{{item.label}}" description="{{item.date}}">
+                <Update label="{{item.label}}" description="{{item.date}}" tags={["{{item.module}}"]}>
                 {{#B0.has_summary}}<Summary{{item.ident}} />
 
                 {{/B0.has_summary}}{{#B0.has_migration}}<Accordion title="Migration required — a prompt for your coding agent" icon="wand-magic-sparkles">

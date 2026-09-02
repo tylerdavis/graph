@@ -79,7 +79,8 @@ The changelog is a flat list of entries, one per **module version**, newest
 first. Cutting a binary release produces a `Graph v0.13.0` entry; a release
 that also bumps a file version produces one more entry per bumped kind —
 `Config v2`, `Plan v2`, `Tool v2`, `Store v2` — each with its own heading and
-the same date. Nothing is nested: a reader looking for what changed in the
+the same date (on the docs page, each `<Update>` card is also tagged with
+its module name, so readers can filter to one). Nothing is nested: a reader looking for what changed in the
 config schema finds a `Config v2` entry, not a subsection of the binary's.
 
 Which commits go where:
