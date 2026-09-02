@@ -76,7 +76,3 @@ Every plan and tool file is read strictly: an unknown key anywhere in a step or 
 ## Data directory
 
 `FileStore` writes `<data_dir>/FORMAT` holding the store version on first open and refuses to open a directory whose marker is outside its window. That refusal matters more here than anywhere else: thread messages are appended under a lock without re-reading the file, so an older graph must never write into a layout it does not understand. Records inside the directory carry their own `version` field for per-record migration.
-
-## Where each version is described
-
-The [changelog](/changelog) has one entry per module version: a `Graph vX.Y.Z` entry for each binary release, and a `Config v2`, `Plan v2`, `Tool v2`, or `Store v2` entry, dated with the release that shipped it, whenever a file version moves. That entry names what changed in the schema and the `migrate` command that applies it. This page states the contract and does not repeat that history.
