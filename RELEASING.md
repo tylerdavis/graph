@@ -133,19 +133,18 @@ only at a major release. A bump ships as one PR containing all of:
    `tests/fixtures/v<N>/`, its version N+1 twin lands under `v<N+1>/` with the
    same file name, and the golden-pair test proves they load identically.
    Fixtures for every version in the window must keep loading.
-4. A row in the **Version history** table on `docs/reference/file-versions.mdx`
-   and a section describing the migration — that page is the URL every
-   version-mismatch error prints.
-5. A breaking commit scoped to the file kind (`feat(config)!: …`) whose
+4. A breaking commit scoped to the file kind (`feat(config)!: …`) whose
    footer names the new version — `BREAKING CHANGE: config version 2 (graph
    config migrate)` — which is what gives it the changelog's own `Config v2`
-   entry. The release script refuses to cut without it.
+   entry. That entry is the record of what changed; the file-versions page
+   states the contract and never lists versions. The release script refuses
+   to cut without the commit.
 
 The `format_drift` check (`.graph/plans/format_drift.yaml`, run by
 `graph-checks.yaml`) fails a PR that changes a model file's schema without
-steps 1 and 4; the fixture tests catch a removed or renamed key
-mechanically. At release time the script diffs the four constants between
-the last tag and `HEAD`, checks step 5 both ways, writes the result into the
+step 1; the fixture tests catch a removed or renamed key mechanically. At
+release time the script diffs the four constants between the last tag and
+`HEAD`, checks step 4 both ways, writes the result into the
 tag message (`file versions: config 2 (from 1), plan 1, tool 1, store 1` —
 the tag is the source of truth, so the changelog reads it from there on
 every regeneration), and passes the delta to `changelog_entry` as its

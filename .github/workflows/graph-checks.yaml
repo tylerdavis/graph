@@ -58,7 +58,7 @@ jobs:
 
   # Sibling gate: any schema change to a versioned file (config,
   # plan/tool documents, the store layout) must raise the matching *_FORMAT
-  # constant and document the migration — see docs/reference/file-versions.mdx.
+  # constant — see RELEASING.md, "Version bumps".
   # Zero LLM calls unless a model file changed.
   format-drift:
     if: >-

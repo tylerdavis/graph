@@ -1,10 +1,9 @@
 # Format-drift gate: fails (exit-gate error → process exit 4) when a PR
 # changes a file-version schema (config, plan/tool documents, the store
 # layout) — additively or not — without bumping the matching *_FORMAT
-# constant and documenting the step on docs/reference/file-versions.mdx — the
-# CLAUDE.md rule, enforced. Sibling of docs_drift: zero LLM calls unless
-# one of the model files changed, then one judge call over the model diff,
-# the format-constant diff, and whether the formats page moved.
+# constant — the CLAUDE.md rule, enforced. Sibling of docs_drift: zero LLM
+# calls unless one of the model files changed, then one judge call over the
+# model diff and the format-constant diff.
 identifier: format_drift
 name: Format drift gate
 description: >
@@ -12,8 +11,8 @@ description: >
   Exits successfully (zero LLM calls) when none of the model files changed;
   otherwise an inferred exit gate reads the model diff alongside the
   format-constant diff and asserts an error when a schema change of any
-  kind shipped without raising the constant and updating the formats page.
-  Process exit code 4 on assertion.
+  kind shipped without raising the constant. Process exit code 4 on
+  assertion.
 input_schema:
   type: object
   required: [base, head]
@@ -48,10 +47,6 @@ steps:
       max_bytes: 40000
     reasoning: Where the version constants and migration chains live; a raised `*_FORMAT` constant shows here as a changed line.
   - id: E3
-    tool_name: builtin__git_changed_files
-    input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "docs/reference/file-versions.mdx" }
-    reasoning: A bump must document its migration on the formats page.
-  - id: E4
     tool_name: exit
     input:
       infer: |
@@ -70,13 +65,10 @@ steps:
 
         2. The change is not accounted for: no `CONFIG_FORMAT`,
            `PLAN_FORMAT`, `TOOL_FORMAT`, or `STORE_FORMAT` constant is
-           raised in the FORMAT DIFF for the affected format, or the formats
-           page was not updated (FORMATS PAGE CHANGED below is 0).
+           raised in the FORMAT DIFF for the affected file kind.
 
         Judge only from what you can see; a diff may end with a truncation
         marker.
-
-        FORMATS PAGE CHANGED (files): {{E3.count}}
 
         FORMAT DIFF:
         {{E2.text}}
@@ -86,10 +78,10 @@ steps:
       status: error
       message: >-
         schema change to a versioned file without a version bump —
-        raise the matching *_FORMAT constant, append a migration (a no-op
-        for additive changes) and a fixture pair, and document the step on
-        docs/reference/file-versions.mdx
+        raise the matching *_FORMAT constant and append a migration (a no-op
+        for additive changes) and a fixture pair; the release's changelog
+        entry documents it
     reasoning: One judge call decides; error exit fails the CI check.
 output:
   format_bump_required: false
-  reason: "{{E4.reason}}"
+  reason: "{{E3.reason}}"
