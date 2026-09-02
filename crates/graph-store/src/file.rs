@@ -134,11 +134,22 @@ fn check_format_marker(root: &Path) -> Result<(), StoreError> {
             graph_config::FORMATS_DOC
         ))),
         Some(_) => Ok(()),
-        None => write_atomic(
-            &root.join(FORMAT_MARKER),
-            format!("{STORE_FORMAT}\n").as_bytes(),
-        ),
+        None => match link_new(root, format!("{STORE_FORMAT}\n").as_bytes()) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => check_format_marker(root),
+            Err(e) => Err(StoreError(format!(
+                "writing {}: {e}",
+                root.join(FORMAT_MARKER).display()
+            ))),
+        },
     }
+}
+
+fn link_new(root: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut tmp = tempfile::NamedTempFile::new_in(root)?;
+    tmp.write_all(bytes)?;
+    tmp.as_file().sync_all()?;
+    std::fs::hard_link(tmp.path(), root.join(FORMAT_MARKER))
 }
 
 fn now_ms() -> i64 {
@@ -446,6 +457,29 @@ mod tests {
         let written = std::fs::read_to_string(&marker).unwrap();
         FileStore::open(dir.path()).unwrap();
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), written);
+    }
+
+    #[test]
+    fn concurrent_first_opens_agree_on_one_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let root = root.clone();
+                std::thread::spawn(move || FileStore::open(&root).map(|_| ()))
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+        assert_eq!(marker_format(&root).unwrap(), Some(STORE_FORMAT));
+        let leftovers: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != FORMAT_MARKER && name != "threads" && name != "shapes")
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]
