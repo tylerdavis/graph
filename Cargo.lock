@@ -819,6 +819,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "toml",
+ "toml_edit",
 ]
 
 [[package]]
@@ -833,6 +834,7 @@ dependencies = [
  "graph-llm",
  "jsonschema",
  "schemars 0.8.22",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",

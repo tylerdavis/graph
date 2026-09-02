@@ -42,8 +42,11 @@ Full-screen TUI for drafting, inspecting, and test-running plans — see [Plan w
 graph plan list [--json]
 graph plan show <name|path> [--json]
 graph plan validate <name|path> [--json]
+graph plan migrate <name|path> [--json]
 graph plan run <name> [<json>|@file|-] [--input k=v]... [--json]
 ```
+
+`migrate` rewrites one plan file to the current [plan format](/reference/formats#plans-and-tools), resolving a path or an identifier the same lenient way `validate` does. A file already at the current format is left untouched.
 
 `validate` checks structure (templates, references, ids) and resolves every step tool against the loadable catalog — packs, user tools, plans (composition followed transitively), and configured MCP servers (server-level; MCP tool names are only verifiable by connecting). Problems exit `1`; a file whose `requires_servers` declares an unconfigured server validates with a note (portable, just not runnable here). `run` performs the same resolution and refuses to start when it fails. Naming a plan hidden by unconfigured `requires_servers` errors with the missing servers.
 
@@ -122,7 +125,10 @@ An edit reserializes the whole file, so cosmetic YAML is normalized: flow mappin
 graph tools list [--json]
 graph tools show <name> [--json]
 graph tools test <name> [<json>|@file|-] [--input k=v]...
+graph tools migrate <path> [--json]
 ```
+
+`migrate` rewrites one user tool file to the current [tool format](/reference/formats#plans-and-tools). It takes a path rather than a catalog name, since a file the catalog refuses is the one most likely to need it, and it never starts the tool catalog (no MCP connections).
 
 Operates on the full catalog: MCP (`server__`), user (`user__`), bundled packs (`builtin__`), plan (`plan__`), and `plan_and_execute`. `list` groups the catalog by source — names and one-line descriptions, `plan_and_execute` under `(core)`.
 
@@ -163,11 +169,24 @@ Inspect the [shape cache](/tools/shape-cache): `list` prints tool names and seen
 ## `graph config`
 
 ```text
-graph config show    # merged effective config
-graph config init    # write a commented starter (./.graph/; --global for ~/.config/graph/)
-graph config path    # config file locations and which exist
+graph config show     # merged effective config
+graph config init     # write a commented starter (./.graph/; --global for ~/.config/graph/)
+graph config path     # config file locations, which exist, and their format
+graph config check    # each file's format and whether the merged config loads
+graph config migrate  # rewrite ./.graph/config.toml to the current format (--global for ~/.config/graph/)
 ```
 
 `init` refuses to overwrite an existing config; `--force` overwrites it.
 
+`check` is the pre-flight for a CI job or a fresh binary: it reports every config file's [format version](/reference/formats#config) — `current`, `migrate`, or `too new` — then loads the merged config and exits `1` with the problems if it does not load. `migrate` preserves comments and layout, writing `format_version` as the first key; a file already at the current format is left untouched.
+
 The starter ends with a [`[prompts]` section](/reference/configuration#prompts) carrying the built-in chat and workbench system prompts, written out verbatim so they can be tuned in place — delete a field to fall back to the shipped default.
+
+## `graph version`
+
+```text
+graph version [--json]
+graph --version
+```
+
+Prints the binary version and the [format version](/reference/formats) each kind of file is written at; `--json` adds the oldest format the binary still reads. `--version` prints the same two lines; `-V` prints the binary version alone.

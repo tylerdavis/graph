@@ -1,0 +1,85 @@
+format_version = 1
+
+[settings]
+data_dir = "~/.local/share/graph"
+max_agent_iterations = 15
+planning_attempts = 2
+history_limit = 20
+
+[storage]
+backend = "file"
+
+[providers.anthropic]
+type = "anthropic"
+api_key = "${GRAPH_FIXTURE_ANTHROPIC_KEY}"
+
+[providers.local]
+type = "openai_compat"
+base_url = "http://localhost:11434/v1"
+
+[providers.bedrock]
+type = "bedrock"
+region = "us-east-1"
+profile = "default"
+
+[models]
+default = { provider = "anthropic", model = "claude-sonnet-5" }
+chat = { provider = "anthropic", model = "claude-sonnet-5" }
+planner = { provider = "anthropic", model = "claude-sonnet-5", temperature = 0.0 }
+solver = { provider = "anthropic", model = "claude-haiku-4-5", temperature = 0.4 }
+repair = { provider = "anthropic", model = "claude-haiku-4-5" }
+judge = { provider = "anthropic", model = "claude-haiku-4-5" }
+embedder = { provider = "local", model = "nomic-embed-text", dimensions = 768 }
+
+[models.named.nano]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+description = "fast and cheap; small self-contained tasks"
+fallbacks = [
+    { provider = "local", model = "llama3", temperature = 0.3 },
+]
+
+[mcp.github]
+command = "docker"
+args = ["run", "-i", "--rm", "ghcr.io/github/github-mcp-server"]
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = "${GRAPH_FIXTURE_GITHUB_TOKEN}" }
+include_tools = ["get_pull_request"]
+
+[mcp.linear]
+url = "https://mcp.linear.app/mcp"
+headers = { Authorization = "Bearer ${GRAPH_FIXTURE_LINEAR_KEY}" }
+exclude_tools = ["delete_issue"]
+
+[mcp.linear.tool_overrides.list_issues]
+description = "Issues matching a filter"
+output_schema = { type = "object" }
+output_example = { issues = [] }
+
+[plans]
+paths = ["./.graph/plans", "~/.config/graph/plans"]
+
+[tools]
+paths = ["./.graph/tools", "~/.config/graph/tools"]
+packs = ["github", "slack"]
+
+[user]
+name = "Fixture User"
+context = "Maintains the fixtures."
+timezone = "America/Denver"
+
+[prompts]
+chat = "You are graph."
+workbench = "You are in the workbench."
+
+[workbench]
+log_path = "~/.local/share/graph/workbench.log"
+
+[pricing."claude-sonnet-5"]
+input = 3.00
+output = 15.00
+cache_write = 3.75
+cache_read = 0.30
+
+[pricing."claude-haiku-4-5"]
+input = 1.00
+output = 5.00

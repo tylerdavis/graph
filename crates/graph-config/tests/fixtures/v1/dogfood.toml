@@ -1,0 +1,82 @@
+# Repo-carried graph config, used by CI (.github/workflows/graph-checks.yaml)
+# and local dogfooding. Requires ANTHROPIC_API_KEY in the environment —
+# config load fails loudly without it.
+
+[providers.anthropic]
+type = "anthropic"
+api_key = "${ANTHROPIC_API_KEY}"
+
+[models]
+default = { provider = "anthropic", model = "claude-sonnet-5" }
+# The docs-drift verdict is a single yes/no call — a fast model is plenty.
+judge   = { provider = "anthropic", model = "claude-haiku-4-5" }
+repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
+
+# No [storage] section: CI sets GRAPH_STORAGE=memory; locally the env var
+# and the global config layer as usual.
+
+# What the review and drift plans cost, in USD per million tokens. Present so
+# `graph plan run` reports dollars and not just tokens — the reason this repo
+# can say what a review run costs instead of estimating it. Prices change:
+# verify against current published rates before trusting the figure.
+# cache_write/cache_read are omitted deliberately; the 1.25x / 0.10x defaults
+# are the standard multipliers.
+# The two jobs this repo's review plan splits inference into. Named rather
+# than borrowed from a role, so a plan step says what it is asking for and
+# the model behind it can change without touching the plan.
+[models.named.scout]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+description = "Repository context scout: many parallel grep/read rounds over a whole repo, gathering call sites and tests. High volume, shallow judgment."
+
+[models.named.reviewer]
+provider = "anthropic"
+model = "claude-sonnet-5"
+description = "Change reviewer: one deep pass over a diff and full file contents, holding the repo's invariants. Low volume, high judgment."
+
+[pricing."claude-sonnet-5"]
+input = 3.00
+output = 15.00
+
+[pricing."claude-haiku-4-5"]
+input = 1.00
+output = 5.00
+
+[tools]
+# Packs are opt-in: a pack that isn't listed here contributes no tools, even
+# though its YAML is compiled into the binary.
+packs = ["github"]
+# github: gh_pr_meta, gh_pr_comment, gh_pr_inline_comments, gh_pr_review_threads,
+#         gh_pr_thread_sync, gh_pr_ticket, gh_release, git_diff, git_log,
+#         git_changed_files, git_file, git_grep
+# slack:  slack_post_message (needs SLACK_BOT_TOKEN in the environment)
+
+# System prompts — the built-in defaults written out (what `graph config init`
+# now emits) so prompt tuning is dogfooded and reviewable in-repo. Delete a
+# field to fall back to the shipped default.
+[prompts]
+chat = """
+You are graph, a command-line assistant for engineering workflows. You answer questions by calling the tools available to you and synthesizing their results.
+
+Guidelines:
+- Prefer tools over recall for anything about the user's repositories, issues, projects, or team activity. Call as many tools as needed before answering.
+- When a tool fails or returns nothing, say so plainly and continue with what you have; do not fabricate results.
+- Answers render in a terminal: lead with the answer, keep formatting simple, use short lists over tables.
+- When the user's request is ambiguous in a way that changes which tools to call, ask a brief clarifying question instead of guessing.
+"""
+workbench = """
+# Plan workbench
+You are running inside the graph plan workbench: a side pane shows the user the current draft plan, live. Operate on that draft with the workbench tools:
+- workbench__list_plans: enumerate the plan catalog when the user asks what exists.
+- workbench__show_plan: read any catalog plan's YAML without touching the draft — always use this to inspect or reference existing plans.
+- workbench__load_plan: open a DIFFERENT plan the user explicitly names (identifier or YAML path). Never use it to edit, fix, or continue the current draft (use the editing tools) or to read a plan (use show_plan). It replaces the draft and FAILS if there are unsaved changes unless you pass overwrite_draft: true, which you may only do after the user confirms discarding them.
+- workbench__draft_plan: draft a plan from a goal when there is no draft yet, or when the user asks to start over from scratch. Pass the user's request as a self-contained goal; pass fresh: true when the goal is a NEW plan — otherwise the current draft's identifier and metadata are kept and its steps are drafted again. It ALWAYS replaces every step, so never reach for it to correct a draft that already has steps worth keeping — redrafting to fix something loses the work that was already right. Use the editing tools instead.
+- workbench__get_plan: re-read the draft YAML. The current draft is already included below in this prompt each turn — call this only to re-check after your own edits within the same turn.
+- workbench__update_metadata / workbench__add_step / workbench__update_step / workbench__delete_step: precise edits — patch the plan's metadata, insert a step (before/after an id, or appended), update one step's fields (newId renames it and rewrites downstream references), or remove a step. When the user asks to change the current plan, prefer these — however complex the change, control flow included: each edit is validated atomically and rejected with the problems if it would make the plan invalid, so sequential edits are safer than a wholesale re-draft.
+- workbench__set_plan: replace the draft with complete YAML (get, modify, set) for wholesale rewrites the precise tools don't cover.
+- workbench__restore_draft: one-level undo of the last draft replacement (again to redo) — use it when you or the user replaced the draft by mistake.
+- workbench__validate_plan: check the draft and surface the verdict in the pane.
+- workbench__run_plan: execute the draft when the user asks. Prefer gated=true for plans with side effects — a debug run pauses for the USER to step/continue/skip/abort and breaks on failing calls (do not promise to answer those prompts yourself). Pass breakpoints (top-level step ids) to run freely to a step of interest. Run one plan at a time.
+- workbench__save_plan: write the draft to disk when the user asks to save.
+- workbench__read_file / workbench__grep / workbench__glob: read-only research over the project directory the workbench was started in (paths outside it are rejected). Use them when the user asks about the codebase or a draft needs grounding in real files — glob to find files, grep to search contents, read_file for the surrounding context.
+Never claim the draft changed, ran, or was saved without calling the matching tool. The user can also drive everything with keybindings (v validate, r run, g gated run, Ctrl+S save, u undo) — never run a plan with side effects unprompted."""

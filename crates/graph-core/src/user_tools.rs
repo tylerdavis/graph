@@ -37,6 +37,8 @@ pub struct UserToolDoc {
     pub output_schema: Option<Value>,
     #[serde(default)]
     pub read_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_graph: Option<String>,
     #[serde(flatten)]
     pub kind: ToolKind,
     #[serde(skip)]
@@ -179,8 +181,7 @@ pub fn load_pack_tools(packs: &[String]) -> Result<Vec<UserToolDoc>, String> {
             ));
         };
         for raw in *sources {
-            let doc: UserToolDoc =
-                serde_yaml::from_str(raw).map_err(|e| format!("pack '{pack}': {e}"))?;
+            let doc = parse_tool_source(raw).map_err(|e| format!("pack '{pack}': {e}"))?;
             validate_tool(&doc).map_err(|e| format!("pack '{pack}': {e}"))?;
             if docs.iter().any(|d| d.name == doc.name) {
                 return Err(format!("pack '{pack}': duplicate tool name '{}'", doc.name));
@@ -212,6 +213,18 @@ pub fn load_user_tools(dirs: &[PathBuf]) -> Result<Vec<UserToolDoc>, String> {
         entries.sort();
         for path in entries {
             let doc = load_user_tool(&path)?;
+            if let Some(requirement) = &doc.requires_graph {
+                if let Some(unmet) = crate::format::requirement_unmet(requirement)? {
+                    if first_skip(&path) {
+                        tracing::warn!(
+                            tool = doc.name,
+                            path = %path.display(),
+                            "skipping user tool — {unmet}"
+                        );
+                    }
+                    continue;
+                }
+            }
             if docs.iter().any(|d| d.name == doc.name) {
                 return Err(format!("duplicate user tool name '{}'", doc.name));
             }
@@ -221,14 +234,88 @@ pub fn load_user_tools(dirs: &[PathBuf]) -> Result<Vec<UserToolDoc>, String> {
     Ok(docs)
 }
 
+fn first_skip(path: &Path) -> bool {
+    static SKIPPED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    SKIPPED
+        .get_or_init(Default::default)
+        .lock()
+        .map(|mut seen| seen.insert(path.to_path_buf()))
+        .unwrap_or(true)
+}
+
 pub fn load_user_tool(path: &Path) -> Result<UserToolDoc, String> {
     let raw =
         std::fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-    let mut doc: UserToolDoc =
-        serde_yaml::from_str(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut doc = parse_tool_source(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
     doc.path = Some(path.to_path_buf());
     validate_tool(&doc).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(doc)
+}
+
+const TOOL_KEYS: &[&str] = &[
+    "name",
+    "description",
+    "input_schema",
+    "output_schema",
+    "read_only",
+    "requires_graph",
+    "kind",
+];
+
+const EXEC_KEYS: &[&str] = &["command", "args", "env", "cwd", "timeout_secs", "output"];
+
+const PROMPT_KEYS: &[&str] = &[
+    "prompt",
+    "system",
+    "model",
+    "caller_output_schema",
+    "caller_model",
+];
+
+const RESHAPE_KEYS: &[&str] = &["shape", "caller_shape"];
+
+pub fn unknown_tool_keys(value: &serde_yaml::Value) -> Vec<String> {
+    let Some(mapping) = value.as_mapping() else {
+        return Vec::new();
+    };
+    let kind_keys: &[&str] = match mapping.get("kind").and_then(serde_yaml::Value::as_str) {
+        Some("exec") => EXEC_KEYS,
+        Some("prompt") => PROMPT_KEYS,
+        Some("reshape") => RESHAPE_KEYS,
+        _ => &[],
+    };
+    mapping
+        .keys()
+        .filter_map(serde_yaml::Value::as_str)
+        .filter(|key| !TOOL_KEYS.contains(key) && !kind_keys.contains(key))
+        .map(str::to_string)
+        .collect()
+}
+
+pub fn parse_tool_source(raw: &str) -> Result<UserToolDoc, String> {
+    let mut value: serde_yaml::Value = serde_yaml::from_str(raw).map_err(|e| e.to_string())?;
+    let upgrade =
+        crate::format::upgrade(crate::format::Kind::Tool, &mut value).map_err(|e| e.to_string())?;
+    let unknown = unknown_tool_keys(&value);
+    if !unknown.is_empty() {
+        let kind = value
+            .get("kind")
+            .and_then(serde_yaml::Value::as_str)
+            .unwrap_or("unknown");
+        return Err(format!(
+            "unknown field(s) {} for a `{kind}` tool",
+            unknown
+                .iter()
+                .map(|key| format!("`{key}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if upgrade.declared.is_none() {
+        return serde_yaml::from_str(raw).map_err(|e| e.to_string());
+    }
+    serde_yaml::from_value(value).map_err(|e| e.to_string())
 }
 
 pub fn validate_tool(doc: &UserToolDoc) -> Result<(), String> {
@@ -242,6 +329,9 @@ pub fn validate_tool(doc: &UserToolDoc) -> Result<(), String> {
             "tool name '{}' must be non-empty and use only [a-zA-Z0-9_-]",
             doc.name
         ));
+    }
+    if let Some(requirement) = &doc.requires_graph {
+        crate::format::requirement_unmet(requirement)?;
     }
     let check_template = |template: &str, what: &str| -> Result<(), String> {
         let roots =

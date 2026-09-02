@@ -111,6 +111,7 @@ pub fn new_plan(
         description: description.unwrap_or_default().to_string(),
         exemplars: Vec::new(),
         requires_servers: Vec::new(),
+        requires_graph: None,
         input_schema: None,
         steps: Vec::new(),
         solver: None,
@@ -492,6 +493,7 @@ pub fn list_as_json(loaded: &graph_core::pipeline::doc::LoadedPlans) -> Value {
         "hidden": loaded.hidden.iter().map(|hidden| json!({
             "identifier": hidden.identifier,
             "missingServers": hidden.missing_servers,
+            "unmetGraph": hidden.unmet_graph,
         })).collect::<Vec<_>>(),
     })
 }
@@ -579,6 +581,7 @@ mod tests {
             hidden: vec![HiddenPlan {
                 identifier: "needs_linear".to_string(),
                 missing_servers: vec!["linear".to_string()],
+                unmet_graph: None,
             }],
         };
         let value = list_as_json(&loaded);

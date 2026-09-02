@@ -9,7 +9,7 @@ use graph_core::ToolShape;
 use serde_json::{json, Value};
 
 pub async fn run(command: ShapesCommand) -> Result<()> {
-    let config = graph_config::load()?.config;
+    let config = crate::runtime::load_config()?.config;
     let store = open_store(&config)?;
     let shapes = store.tool_shapes().await?;
 

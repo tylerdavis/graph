@@ -16,12 +16,15 @@ graph stores its runtime state as plain JSON and JSONL files under the data dire
 ## Layout
 
 ```text
+<data_dir>/FORMAT                        the store format version, written on first open
 <data_dir>/threads/<id>/meta.json        thread metadata (title, timestamps, message count)
 <data_dir>/threads/<id>/messages.jsonl   one message per line, in order
 <data_dir>/shapes/<tool>.json            one cached shape per tool
 ```
 
 Everything is directly inspectable with `cat` and `jq`, and `graph threads` / `graph shapes` render the same data from the CLI. Shape filenames percent-encode characters outside `[A-Za-z0-9_.-]`; the authoritative tool name lives inside the file.
+
+`FORMAT` is the store's [format version](/reference/formats#data-directory). graph writes it the first time it opens a data directory and refuses to open one whose marker is newer than the version it reads — an older binary must never append to a layout it does not understand.
 
 ## Concurrency
 

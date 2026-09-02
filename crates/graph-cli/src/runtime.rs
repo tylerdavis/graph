@@ -36,7 +36,7 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn init() -> Result<Self> {
-        Self::with_config(graph_config::load()?.config)
+        Self::with_config(load_config()?.config)
     }
 
     /// Build a runtime over an already-resolved config.
@@ -47,6 +47,7 @@ impl Runtime {
         let loaded = graph_config::LoadedConfig {
             config,
             sources: Vec::new(),
+            layers: Vec::new(),
         };
         // The meter has to be installed before anything resolves a provider —
         // resolution is when providers get wrapped, so a meter added later
@@ -272,17 +273,28 @@ impl Runtime {
                 tracing::warn!("skipping plan file — {error}");
             }
         }
+        let unmet_graph = |doc: &graph_core::pipeline::doc::PlanDoc| {
+            doc.requires_graph
+                .as_deref()
+                .and_then(|requirement| graph_core::format::requirement_unmet(requirement).ok())
+                .flatten()
+        };
         let (visible, hidden): (Vec<_>, Vec<_>) = loaded.docs.drain(..).partition(|doc| {
             doc.requires_servers
                 .iter()
                 .all(|server| self.config.mcp.contains_key(server))
+                && unmet_graph(doc).is_none()
         });
         loaded.docs = visible;
         for doc in hidden {
-            tracing::info!(
-                plan = doc.identifier,
-                "hidden: required MCP server not configured"
-            );
+            let unmet = unmet_graph(&doc);
+            match &unmet {
+                Some(unmet) => tracing::info!(plan = doc.identifier, "hidden: {unmet}"),
+                None => tracing::info!(
+                    plan = doc.identifier,
+                    "hidden: required MCP server not configured"
+                ),
+            }
             loaded.hidden.push(graph_core::pipeline::doc::HiddenPlan {
                 missing_servers: doc
                     .requires_servers
@@ -290,6 +302,7 @@ impl Runtime {
                     .filter(|server| !self.config.mcp.contains_key(*server))
                     .cloned()
                     .collect(),
+                unmet_graph: unmet,
                 identifier: doc.identifier,
             });
         }
@@ -434,4 +447,30 @@ pub fn title_from(message: &str) -> String {
         title = "untitled".to_string();
     }
     title
+}
+
+pub fn load_config() -> Result<graph_config::LoadedConfig> {
+    let loaded = graph_config::load()?;
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        let global = graph_config::expand_tilde(&graph_config::global_config_path());
+        for layer in &loaded.layers {
+            if layer.format_version < graph_config::CONFIG_FORMAT {
+                let flag = if layer.path == global {
+                    " --global"
+                } else {
+                    ""
+                };
+                eprintln!(
+                    "{} is config format {}; run `graph config migrate{flag}` to bring it to {}",
+                    layer.path.display(),
+                    layer.format_version,
+                    graph_config::CONFIG_FORMAT
+                );
+            }
+            for note in &layer.notes {
+                eprintln!("{}: {note}", layer.path.display());
+            }
+        }
+    }
+    Ok(loaded)
 }

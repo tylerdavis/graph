@@ -526,6 +526,7 @@ pub fn merge_planner_output(
             description: goal.to_string(),
             exemplars: Vec::new(),
             requires_servers: Vec::new(),
+            requires_graph: None,
             input_schema: None,
             steps: output.plan,
             solver: output.solver_data,
@@ -711,6 +712,7 @@ pub fn to_json(doc: &PlanDoc) -> Result<Value, WriteError> {
 /// field order intact.
 fn to_file_shape(doc: &PlanDoc) -> Result<serde_yaml::Value, WriteError> {
     let mut value = serde_yaml::to_value(doc).map_err(|e| WriteError::Serialize(e.to_string()))?;
+    crate::format::stamp(crate::format::Kind::Plan, &mut value);
     if let Some(steps) = value.get_mut("steps").and_then(|s| s.as_sequence_mut()) {
         for step in steps {
             snake_case_step(step);
@@ -1439,9 +1441,10 @@ solver:
     #[test]
     fn a_canonical_file_round_trips_byte_for_byte() {
         // Editing one field must not churn the rest of a hand-authored file.
-        let original = "identifier: demo\nname: Demo\ndescription: demo plan\nsteps:\n\
+        let original =
+            "format_version: 1\nidentifier: demo\nname: Demo\ndescription: demo plan\nsteps:\n\
                         - id: E1\n  tool_name: t__search\n  input:\n    query: x\n";
-        let parsed = doc(original);
+        let parsed = super::super::doc::parse_plan_source(original, "demo.yaml").unwrap();
         assert_eq!(
             to_yaml(&parsed).unwrap(),
             original,

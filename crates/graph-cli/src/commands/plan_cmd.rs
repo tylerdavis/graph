@@ -29,6 +29,7 @@ pub async fn run(command: PlanCommand) -> Result<()> {
             }
             render_validation(&outcome.body)
         }
+        PlanCommand::Migrate { name_or_path, json } => report(migrate(&name_or_path)?, json),
         PlanCommand::Run {
             name,
             input,
@@ -170,19 +171,71 @@ pub fn validate(name_or_path: &str) -> Result<Outcome> {
             problems.push(problem);
         }
     }
+    let mut notes = check.notes;
+    if let Some(unmet) = doc
+        .requires_graph
+        .as_deref()
+        .and_then(|requirement| graph_core::format::requirement_unmet(requirement).ok())
+        .flatten()
+    {
+        notes.push(format!("plan {unmet}"));
+    }
     let ok = problems.is_empty();
     let body = serde_json::json!({
         "plan": doc.identifier,
         "steps": doc.steps.len(),
         "ok": ok,
         "problems": problems,
-        "notes": check.notes,
+        "notes": notes,
     });
     Ok(if ok {
         Outcome::ok(body)
     } else {
         Outcome::rejected(body)
     })
+}
+
+/// `graph plan migrate` — rewrite one plan file to the current plan format.
+///
+/// Resolves like `validate`: a path that exists wins, otherwise the
+/// identifier is looked up on disk (so a plan the catalog rejects can still
+/// be migrated — that is often why it is rejected).
+fn migrate(name_or_path: &str) -> Result<Outcome> {
+    let path = std::path::Path::new(name_or_path);
+    let path = if path.exists() {
+        path.to_path_buf()
+    } else {
+        let runtime = Runtime::init()?;
+        runtime.find_plan_file(name_or_path).ok_or_else(|| {
+            anyhow::anyhow!("no plan file for '{name_or_path}' under [plans].paths")
+        })?
+    };
+    let check = |value: &serde_yaml::Value| -> Result<(), String> {
+        let yaml = serde_yaml::to_string(value).map_err(|e| e.to_string())?;
+        graph_core::pipeline::doc::parse_plan_source(&yaml, name_or_path)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    };
+    let migrated = graph_core::format::migrate_file(graph_core::format::Kind::Plan, &path, &check)
+        .map_err(anyhow::Error::msg)?;
+    Ok(migrated_outcome(migrated))
+}
+
+pub(crate) fn migrated_outcome(migrated: graph_core::format::Migrated) -> Outcome {
+    let mut outcome = Outcome::ok(serde_json::json!({
+        "ok": true,
+        "savedTo": migrated.path.display().to_string(),
+        "from": migrated.from,
+        "to": migrated.to,
+        "changed": migrated.changed,
+        "notes": migrated.notes,
+    }));
+    if !migrated.changed {
+        outcome = outcome.with_note(format!("already at format {}", migrated.to));
+    } else if !migrated.notes.is_empty() {
+        outcome = outcome.with_note(migrated.notes.join("; "));
+    }
+    outcome
 }
 
 /// The human rendering of a validation verdict.

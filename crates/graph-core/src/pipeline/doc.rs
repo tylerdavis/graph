@@ -21,6 +21,8 @@ pub struct PlanDoc {
     /// when any is missing from the config.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires_servers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_graph: Option<String>,
     /// JSON Schema for the plan's inputs (referenced as `{{input.x}}`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
@@ -45,6 +47,8 @@ pub enum DocError {
     Invalid { path: String, message: String },
     #[error("{path}: duplicate plan identifier '{identifier}' — the earlier file wins")]
     Duplicate { path: String, identifier: String },
+    #[error("{path}: {}", crate::format::too_new_message(crate::format::Kind::Plan, *found, *max))]
+    Unsupported { path: String, found: u32, max: u32 },
     #[error("io error reading {path}: {source}")]
     Io {
         path: String,
@@ -58,6 +62,7 @@ impl DocError {
         match self {
             DocError::Invalid { path, .. }
             | DocError::Duplicate { path, .. }
+            | DocError::Unsupported { path, .. }
             | DocError::Io { path, .. } => path,
         }
     }
@@ -69,6 +74,7 @@ impl DocError {
 pub struct HiddenPlan {
     pub identifier: String,
     pub missing_servers: Vec<String>,
+    pub unmet_graph: Option<String>,
 }
 
 /// The plan catalog: every document that loaded, plus one error per file
@@ -88,6 +94,9 @@ impl LoadedPlans {
     /// Why a plan with this identifier is hidden from the catalog, if it is.
     pub fn hidden_reason(&self, identifier: &str) -> Option<String> {
         let hidden = self.hidden.iter().find(|h| h.identifier == identifier)?;
+        if let Some(unmet) = &hidden.unmet_graph {
+            return Some(format!("plan '{identifier}' {unmet}"));
+        }
         Some(format!(
             "plan '{identifier}' requires MCP server(s) {} — configure them \
              under [mcp.<name>] to use it",
@@ -185,12 +194,31 @@ pub fn parse_plan_doc(path: &Path) -> Result<PlanDoc, DocError> {
         path: path.display().to_string(),
         source: e,
     })?;
-    let mut doc: PlanDoc = serde_yaml::from_str(&raw).map_err(|e| DocError::Invalid {
-        path: path.display().to_string(),
-        message: e.to_string(),
-    })?;
+    let mut doc = parse_plan_source(&raw, &path.display().to_string())?;
     doc.path = Some(path.to_path_buf());
     Ok(doc)
+}
+
+pub fn parse_plan_source(raw: &str, path: &str) -> Result<PlanDoc, DocError> {
+    let invalid = |message: String| DocError::Invalid {
+        path: path.to_string(),
+        message,
+    };
+    let mut value: serde_yaml::Value =
+        serde_yaml::from_str(raw).map_err(|e| invalid(e.to_string()))?;
+    let upgrade =
+        crate::format::upgrade(crate::format::Kind::Plan, &mut value).map_err(|e| match e {
+            crate::format::FormatError::TooNew { found, max, .. } => DocError::Unsupported {
+                path: path.to_string(),
+                found,
+                max,
+            },
+            crate::format::FormatError::Invalid(message) => invalid(message),
+        })?;
+    if upgrade.declared.is_none() {
+        return serde_yaml::from_str(raw).map_err(|e| invalid(e.to_string()));
+    }
+    serde_yaml::from_value(value).map_err(|e| invalid(e.to_string()))
 }
 
 /// Structural validation: identifier shape, step ids, template syntax,
@@ -206,6 +234,9 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
             "identifier '{}' must be non-empty and use only [a-zA-Z0-9_-]",
             doc.identifier
         ));
+    }
+    if let Some(requirement) = &doc.requires_graph {
+        crate::format::requirement_unmet(requirement)?;
     }
     if doc.steps.is_empty() {
         return Err("plan has no steps".to_string());

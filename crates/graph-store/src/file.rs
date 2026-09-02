@@ -26,7 +26,13 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const FORMAT_VERSION: u32 = 1;
+pub const STORE_FORMAT: u32 = 1;
+
+pub const STORE_FORMAT_OLDEST: u32 = 1;
+
+const FORMAT_VERSION: u32 = STORE_FORMAT;
+
+const FORMAT_MARKER: &str = "FORMAT";
 
 pub struct FileStore {
     threads_dir: PathBuf,
@@ -74,6 +80,7 @@ impl FileStore {
             std::fs::create_dir_all(dir)
                 .map_err(|e| StoreError(format!("creating {}: {e}", dir.display())))?;
         }
+        check_format_marker(root)?;
         Ok(Self {
             threads_dir,
             shapes_dir,
@@ -94,6 +101,43 @@ impl FileStore {
         tokio::task::spawn_blocking(work)
             .await
             .map_err(|e| StoreError(format!("store task failed: {e}")))?
+    }
+}
+
+pub fn marker_format(root: &Path) -> Result<Option<u32>, StoreError> {
+    let path = root.join(FORMAT_MARKER);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(StoreError(format!("reading {}: {e}", path.display()))),
+    };
+    raw.trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|n| *n >= 1)
+        .map(Some)
+        .ok_or_else(|| {
+            StoreError(format!(
+                "{} does not hold a store format number (got {:?})",
+                path.display(),
+                raw.trim()
+            ))
+        })
+}
+
+fn check_format_marker(root: &Path) -> Result<(), StoreError> {
+    match marker_format(root)? {
+        Some(found) if found > STORE_FORMAT => Err(StoreError(format!(
+            "data directory {} is store format {found}; graph {} reads up to {STORE_FORMAT}. Upgrade graph, or see {}",
+            root.display(),
+            env!("CARGO_PKG_VERSION"),
+            graph_config::FORMATS_DOC
+        ))),
+        Some(_) => Ok(()),
+        None => write_atomic(
+            &root.join(FORMAT_MARKER),
+            format!("{STORE_FORMAT}\n").as_bytes(),
+        ),
     }
 }
 
@@ -391,6 +435,46 @@ impl Store for FileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_writes_the_format_marker_once() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(marker_format(dir.path()).unwrap(), None);
+        FileStore::open(dir.path()).unwrap();
+        assert_eq!(marker_format(dir.path()).unwrap(), Some(STORE_FORMAT));
+        let marker = dir.path().join(FORMAT_MARKER);
+        let written = std::fs::read_to_string(&marker).unwrap();
+        FileStore::open(dir.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), written);
+    }
+
+    #[test]
+    fn open_refuses_a_newer_store_format() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(FORMAT_MARKER),
+            format!("{}\n", STORE_FORMAT + 1),
+        )
+        .unwrap();
+        let err = FileStore::open(dir.path())
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(&format!("is store format {}", STORE_FORMAT + 1)),
+            "{err}"
+        );
+        assert!(
+            err.contains(&format!("reads up to {STORE_FORMAT}")),
+            "{err}"
+        );
+        std::fs::write(dir.path().join(FORMAT_MARKER), "banana\n").unwrap();
+        let err = FileStore::open(dir.path())
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not hold a store format number"), "{err}");
+    }
 
     #[test]
     fn tool_filename_encoding() {

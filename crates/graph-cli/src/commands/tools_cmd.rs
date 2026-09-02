@@ -8,6 +8,9 @@ use graph_core::ToolRegistry;
 use serde_json::json;
 
 pub async fn run(command: ToolsCommand) -> Result<()> {
+    if let ToolsCommand::Migrate { path, json } = command {
+        return report(migrate(&path)?, json);
+    }
     let runtime = Runtime::init()?;
     let store = runtime.store()?;
     let toolbox = runtime
@@ -37,7 +40,24 @@ async fn dispatch(
             test(registry, &name, input.as_deref(), &inputs).await?,
             json,
         )),
+        ToolsCommand::Migrate { .. } => unreachable!("handled before the runtime starts"),
     }
+}
+
+/// `graph tools migrate <path>` — rewrite one tool file to the current tool
+/// format. Takes a path, not a catalog name: a file the catalog refuses is
+/// the one most likely to need it.
+fn migrate(path: &std::path::Path) -> Result<Outcome> {
+    if !path.exists() {
+        bail!("{} does not exist", path.display());
+    }
+    let check = |value: &serde_yaml::Value| -> Result<(), String> {
+        let yaml = serde_yaml::to_string(value).map_err(|e| e.to_string())?;
+        graph_core::user_tools::parse_tool_source(&yaml).map(|_| ())
+    };
+    let migrated = graph_core::format::migrate_file(graph_core::format::Kind::Tool, path, &check)
+        .map_err(anyhow::Error::msg)?;
+    Ok(crate::commands::plan_cmd::migrated_outcome(migrated))
 }
 
 /// The catalog as an authoring caller needs to see it: invokable tools

@@ -10,3 +10,4 @@ pub mod plan_edit;
 pub mod shapes_cmd;
 pub mod threads_cmd;
 pub mod tools_cmd;
+pub mod version_cmd;

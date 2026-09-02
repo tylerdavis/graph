@@ -11,7 +11,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 pub async fn run(command: ThreadsCommand) -> Result<()> {
-    let config = graph_config::load()?.config;
+    let config = crate::runtime::load_config()?.config;
     let store = open_store(&config)?;
 
     match command {

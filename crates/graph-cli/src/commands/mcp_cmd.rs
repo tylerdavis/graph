@@ -9,7 +9,7 @@ use serde_json::json;
 use std::io::IsTerminal;
 
 pub async fn run(command: McpCommand) -> Result<()> {
-    let loaded = graph_config::load()?;
+    let loaded = crate::runtime::load_config()?;
     let manager = McpManager::new(loaded.config.mcp.clone());
 
     let result = match command {

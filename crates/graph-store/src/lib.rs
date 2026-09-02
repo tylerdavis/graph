@@ -6,6 +6,6 @@ mod file;
 mod memory;
 mod recording;
 
-pub use file::FileStore;
+pub use file::{marker_format, FileStore, STORE_FORMAT, STORE_FORMAT_OLDEST};
 pub use memory::MemoryStore;
 pub use recording::RecordingRegistry;
