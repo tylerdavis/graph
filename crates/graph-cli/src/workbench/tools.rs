@@ -606,9 +606,10 @@ impl ToolRegistry for WorkbenchTools {
             },
             ToolDef {
                 name: GET_PLAN.to_string(),
-                description: "Read the current draft plan as YAML. Call this before making \
-                              targeted edits with the step tools (add_step, update_step, \
-                              delete_step)."
+                description: "Re-read the current draft plan as YAML. The workbench \
+                              includes the current draft in the system prompt every \
+                              turn, so call this only to re-check the draft after your \
+                              own edits within the same turn."
                     .to_string(),
                 input_schema: json!({"type": "object", "properties": {}}),
                 output_schema: None,

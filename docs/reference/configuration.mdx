@@ -184,14 +184,15 @@ You are graph, a command-line assistant for release engineering.
 Lead with the answer; keep formatting terminal-friendly.
 """
 
-# Addendum appended to the chat prompt inside `graph workbench`.
+# Framing and policy for the agent inside `graph workbench`. The
+# workbench__* tool rules are appended after it either way.
 workbench = """
 # Plan workbench
-Operate on the draft plan with the workbench__* tools...
+Build the draft plan with the user. Run and save only when asked.
 """
 ```
 
-The `workbench` override is the agent's only description of the `workbench__*` tools — how to draft, edit, validate, run, and save the plan in the side pane. Start from the built-in text (written into the file by `graph config init`) rather than writing from scratch, or the agent will stop using the workbench correctly.
+The `workbench` override covers framing and policy only — how the agent should behave in the workbench, when it may run or save, whether it reads the project. The rules describing what each `workbench__*` tool does to the draft are appended after it and cannot be overridden, so an override can change the agent's manners without breaking its grip on the draft. Every tool also carries its own description, which the override never replaces.
 
 ## `[workbench]`
 

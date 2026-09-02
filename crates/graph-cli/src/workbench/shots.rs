@@ -403,9 +403,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
     ]));
 
     // The real workbench system prompt, minus the config-derived base.
-    let mut system_prompt = super::WORKBENCH_SYSTEM_PROMPT.to_string();
-    system_prompt.push_str(super::CONTROL_STEP_NAMING);
-    system_prompt.push_str(graph_core::pipeline::CONTROL_STEP_RULES);
+    let system_prompt = super::workbench_system_prompt("", None);
     let agent = Agent {
         provider: chat_provider,
         registry: registry.clone(),

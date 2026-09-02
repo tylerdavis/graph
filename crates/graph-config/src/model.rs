@@ -81,9 +81,9 @@ pub struct PromptConfig {
     /// Base system prompt for the chat/ask agent loop. The current
     /// date/time and `[user]` name/context are still appended after it.
     pub chat: Option<String>,
-    /// Workbench addendum appended to the chat prompt inside
-    /// `graph workbench`. It must describe the `workbench__*` tools —
-    /// they are how the agent operates on the draft.
+    /// Workbench framing and policy, appended to the chat prompt inside
+    /// `graph workbench`. The `workbench__*` tool rules are appended
+    /// after it and are not overridable.
     pub workbench: Option<String>,
 }
 

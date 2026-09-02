@@ -41,66 +41,47 @@ use tokio::sync::mpsc;
 /// `[prompts].workbench` in config replaces it. Also written into the
 /// `config init` starter so users tune a copy instead of starting blank.
 pub(crate) const WORKBENCH_SYSTEM_PROMPT: &str = "# Plan workbench\n\
-You are running inside the graph plan workbench: a side pane shows the user \
-the current draft plan, live. Operate on that draft with the workbench \
-tools:\n\
-- workbench__list_plans: enumerate the plan catalog when the user asks \
-what exists.\n\
-- workbench__show_plan: read any catalog plan's YAML without touching \
-the draft — always use this to inspect or reference existing plans.\n\
-- workbench__load_plan: open a DIFFERENT plan the user explicitly names \
-(identifier or YAML path). Never use it to edit, fix, or continue the \
-current draft (use the editing tools) or to read a plan (use \
-show_plan). It replaces the draft and FAILS if there are unsaved \
-changes unless you pass overwrite_draft: true, which you may only do \
-after the user confirms discarding them.\n\
-- workbench__draft_plan: draft a plan from a goal when there is no draft \
-yet, or when the user asks to start over from scratch. Pass the user's \
-request as a self-contained goal; pass fresh: true when the goal is a \
-NEW plan — otherwise the current draft's identifier and metadata are \
-kept and its steps are drafted again. It ALWAYS replaces every step, so \
-never reach for it to correct a draft that already has steps worth \
-keeping — redrafting to fix something loses the work that was already \
-right. Use the editing tools instead.\n\
-- workbench__get_plan: re-read the draft YAML. The current draft is \
-already included below in this prompt each turn — call this only to \
-re-check after your own edits within the same turn.\n\
-- workbench__update_metadata / workbench__add_step / \
-workbench__update_step / workbench__delete_step: precise edits — patch \
-the plan's metadata, insert a step (before/after an id, or appended), \
-update one step's fields (newId renames it and rewrites downstream \
-references), or remove a step. When the user asks to change the current \
-plan, prefer these — however complex the change, control flow included: \
-each edit is validated atomically and rejected only if it would \
-introduce NEW validation problems, so sequential edits are safer than a \
-wholesale re-draft. Pre-existing problems never block an edit — they \
-are reported in the result so you can fix an already-invalid draft \
-step by step. update_metadata also edits the plan's declared inputs \
-(`input_schema`) and required MCP servers (`requires_servers`), and \
-switches the plan's finish type via its `finish` field (solver ⇄ output, \
-or {} / null for a silent side-effect plan); the finish block is NOT a \
-step — never target it with add_step/update_step/delete_step.\n\
-- workbench__restore_draft: one-level undo of the last draft replacement \
-(again to redo) — use it when you or the user replaced the draft by \
-mistake.\n\
-- workbench__validate_plan: check the draft and surface the verdict in \
-the pane.\n\
-- workbench__run_plan: execute the draft when the user asks. Prefer \
-gated=true for plans with side effects — a debug run pauses for the USER \
-to step/continue/skip/abort and breaks on failing calls (do not promise \
-to answer those prompts yourself). Pass breakpoints (top-level step ids) \
-to run freely to a step of interest. Run one plan at a time.\n\
-- workbench__save_plan: write the draft to disk when the user asks to \
-save.\n\
-- workbench__read_file / workbench__grep / workbench__glob: read-only \
-research over the project directory the workbench was started in \
-(paths outside it are rejected). Use them when the user asks about the \
-codebase or a draft needs grounding in real files — glob to find files, \
-grep to search contents, read_file for the surrounding context.\n\
-Never claim the draft changed, ran, or was saved without calling the \
-matching tool. The user can also drive everything with keybindings \
-(v validate, r run, g gated run, Ctrl+S save, u undo) — never run a plan \
-with side effects unprompted.";
+You are running inside the graph plan workbench: a side pane shows the \
+user the current draft plan, live, and their request is almost always \
+about that draft. Build it with them — read before you change, make the \
+smallest change that answers the request, and validate when you are \
+done.\n\
+- Run and save only when the user asks. Prefer a gated run for a plan \
+with side effects: it pauses for the USER to step/continue/skip/abort, \
+so never promise to answer those prompts yourself. Run one plan at a \
+time.\n\
+- Ground a draft in the real project when it needs it — workbench__glob \
+to find files, workbench__grep to search their contents, \
+workbench__read_file for the surrounding context.";
+
+pub(crate) const WORKBENCH_TOOL_RULES: &str = "\n\
+\n\
+# Workbench tools\n\
+The draft's YAML is included at the end of this prompt every turn — \
+never call workbench__get_plan to read it, only to re-check after your \
+own edits within the same turn.\n\
+- Reading a plan is not loading it. workbench__show_plan reads any \
+catalog plan without touching the draft. workbench__load_plan REPLACES \
+the draft and is only for a different plan the user explicitly named; \
+with unsaved changes it fails — ask the user before discarding them, and \
+never pass overwrite_draft on your own judgment.\n\
+- Changing the current draft means editing it: \
+workbench__update_metadata / workbench__add_step / \
+workbench__update_step / workbench__delete_step, however complex the \
+change, control flow included. Each edit is validated on its own and \
+rejected only if it would introduce a NEW validation problem, so a \
+sequence of small edits is safer than one wholesale replacement — and \
+pre-existing problems never block an edit, so you can repair an \
+already-invalid draft step by step.\n\
+- workbench__draft_plan is for starting, not fixing — no draft yet, or \
+the user asks to start over. It replaces every step, so redrafting to \
+correct one thing discards the steps that were already right.\n\
+- workbench__restore_draft undoes the last draft replacement (again to \
+redo).\n\
+- Never claim the draft changed, ran, validated, or was saved without \
+calling the matching tool. The user can drive all of it from the \
+keyboard too (v validate, r run, g gated run, Ctrl+S save, u undo), so \
+the pane can change without you.";
 
 /// Control-step reference for the chat agent: the naming rules, then the
 /// same usage rules the draft_plan planner sees (shared so they can't
@@ -117,6 +98,16 @@ silent side-effect plan), never both solver and output. To change the \
 finish type, call workbench__update_metadata with a `finish` field ({} \
 or null clears both) — do not add or edit a step named solver/output \
 (they are plan fields, not steps).\n\n";
+
+pub(crate) fn workbench_system_prompt(base: &str, override_text: Option<&str>) -> String {
+    let mut prompt = base.to_string();
+    prompt.push_str("\n\n");
+    prompt.push_str(override_text.unwrap_or(WORKBENCH_SYSTEM_PROMPT));
+    prompt.push_str(WORKBENCH_TOOL_RULES);
+    prompt.push_str(CONTROL_STEP_NAMING);
+    prompt.push_str(graph_core::pipeline::CONTROL_STEP_RULES);
+    prompt
+}
 
 pub async fn run(command: WorkbenchCommand, verbosity: u8) -> Result<()> {
     let WorkbenchCommand::Plan { name_or_path } = command;
@@ -243,19 +234,10 @@ async fn run_plan_workbench(
         fs_tools,
     ]));
     let mut agent = runtime.agent(agent_sink, registry)?;
-    agent.system_prompt.push_str("\n\n");
-    agent.system_prompt.push_str(
-        runtime
-            .config
-            .prompts
-            .workbench
-            .as_deref()
-            .unwrap_or(WORKBENCH_SYSTEM_PROMPT),
+    agent.system_prompt = workbench_system_prompt(
+        &agent.system_prompt,
+        runtime.config.prompts.workbench.as_deref(),
     );
-    agent.system_prompt.push_str(CONTROL_STEP_NAMING);
-    agent
-        .system_prompt
-        .push_str(graph_core::pipeline::CONTROL_STEP_RULES);
 
     let context = Arc::new(WorkbenchContext {
         agent,
@@ -432,5 +414,22 @@ mod tests {
         assert_eq!(default_log_filter(1), "info,workbench=debug");
         assert_eq!(default_log_filter(2), "debug,workbench=trace");
         assert_eq!(default_log_filter(9), "trace");
+    }
+
+    #[test]
+    fn tool_rules_and_control_steps_survive_a_prompt_override() {
+        let prompt = workbench_system_prompt("BASE", Some("# House style\nBe terse."));
+        assert!(prompt.starts_with("BASE\n\n# House style"));
+        assert!(!prompt.contains("# Plan workbench"));
+        assert!(prompt.contains(WORKBENCH_TOOL_RULES));
+        assert!(prompt.contains(CONTROL_STEP_NAMING));
+        assert!(prompt.contains(graph_core::pipeline::CONTROL_STEP_RULES));
+    }
+
+    #[test]
+    fn default_prompt_used_when_unset() {
+        let prompt = workbench_system_prompt("BASE", None);
+        assert!(prompt.contains(WORKBENCH_SYSTEM_PROMPT));
+        assert!(prompt.contains(WORKBENCH_TOOL_RULES));
     }
 }
