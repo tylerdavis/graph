@@ -6,10 +6,10 @@ pub const CONFIG_FORMAT: u32 = 1;
 
 pub const CONFIG_FORMAT_OLDEST: u32 = 1;
 
-pub const FORMAT_KEY: &str = "format_version";
+pub const FORMAT_KEY: &str = "version";
 
 pub const FORMATS_DOC: &str =
-    "https://github.com/tylerdavis/graph/blob/main/docs/reference/formats.mdx";
+    "https://github.com/tylerdavis/graph/blob/main/docs/reference/file-versions.mdx";
 
 pub type Migration = fn(&mut DocumentMut) -> Result<Vec<String>, String>;
 
@@ -30,18 +30,18 @@ pub fn window_problem(
         return None;
     }
     let range = if oldest == max {
-        format!("format {max}")
+        format!("{kind} version {max}")
     } else {
-        format!("formats {oldest} to {max}")
+        format!("{kind} versions {oldest} to {max}")
     };
     let version = env!("CARGO_PKG_VERSION");
     Some(if found > max {
         format!(
-            "{what} is {kind} format {found}; graph {version} reads {range}. Upgrade graph, or see {FORMATS_DOC}"
+            "{what} is {kind} version {found}; graph {version} reads {range}. Upgrade graph, or see {FORMATS_DOC}"
         )
     } else {
         format!(
-            "{what} is {kind} format {found}; graph {version} reads {range}. Migrate it with a graph release that still reads format {found}, or see {FORMATS_DOC}"
+            "{what} is {kind} version {found}; graph {version} reads {range}. Migrate it with a graph release that still reads {kind} version {found}, or see {FORMATS_DOC}"
         )
     })
 }
@@ -88,13 +88,13 @@ impl Upgrade {
 pub struct LayerInfo {
     pub path: PathBuf,
     pub declared: Option<u32>,
-    pub format_version: u32,
+    pub version: u32,
     pub notes: Vec<String>,
 }
 
 impl LayerInfo {
     pub fn needs_migration(&self) -> bool {
-        self.format_version < CONFIG_FORMAT || self.declared.is_none()
+        self.version < CONFIG_FORMAT || self.declared.is_none()
     }
 }
 
@@ -211,7 +211,7 @@ pub fn inspect(path: &Path) -> Result<LayerInfo, String> {
     Ok(LayerInfo {
         path: path.to_path_buf(),
         declared,
-        format_version: declared.unwrap_or(1),
+        version: declared.unwrap_or(1),
         notes: Vec::new(),
     })
 }
@@ -259,22 +259,22 @@ mod tests {
 
     #[test]
     fn non_integer_key_is_rejected() {
-        let doc: DocumentMut = "format_version = \"2\"\n".parse().unwrap();
+        let doc: DocumentMut = "version = \"2\"\n".parse().unwrap();
         let err = declared_version(&doc).unwrap_err();
         assert!(err.contains("positive integer"), "{err}");
-        let doc: DocumentMut = "format_version = 0\n".parse().unwrap();
+        let doc: DocumentMut = "version = 0\n".parse().unwrap();
         assert!(declared_version(&doc).is_err());
     }
 
     #[test]
     fn newer_format_is_refused_by_name() {
-        let mut doc: DocumentMut = format!("format_version = {}\n", CONFIG_FORMAT + 1)
+        let mut doc: DocumentMut = format!("version = {}\n", CONFIG_FORMAT + 1)
             .parse()
             .unwrap();
         let err = upgrade(&mut doc, Path::new("/x/config.toml")).unwrap_err();
-        assert!(err.contains("/x/config.toml is config format"), "{err}");
+        assert!(err.contains("/x/config.toml is config version"), "{err}");
         assert!(
-            err.contains(&format!("reads format {CONFIG_FORMAT}")),
+            err.contains(&format!("reads config version {CONFIG_FORMAT}")),
             "{err}"
         );
         assert!(err.contains("Upgrade graph"), "{err}");
@@ -285,18 +285,21 @@ mod tests {
     fn the_window_message_names_both_directions() {
         assert_eq!(window_problem("plan", &"p.yaml", 3, 2, 4), None);
         let old = window_problem("plan", &"p.yaml", 1, 2, 4).unwrap();
-        assert!(old.starts_with("p.yaml is plan format 1; graph "), "{old}");
-        assert!(old.contains("reads formats 2 to 4"), "{old}");
-        assert!(old.contains("still reads format 1"), "{old}");
+        assert!(old.starts_with("p.yaml is plan version 1; graph "), "{old}");
+        assert!(old.contains("reads plan versions 2 to 4"), "{old}");
+        assert!(old.contains("still reads plan version 1"), "{old}");
         let new = window_problem("store", &"/data", 5, 2, 4).unwrap();
-        assert!(new.contains("reads formats 2 to 4. Upgrade graph"), "{new}");
+        assert!(
+            new.contains("reads store versions 2 to 4. Upgrade graph"),
+            "{new}"
+        );
         let single = window_problem("tool", &"t.yaml", 2, 1, 1).unwrap();
-        assert!(single.contains("reads format 1."), "{single}");
+        assert!(single.contains("reads tool version 1."), "{single}");
     }
 
     #[test]
     fn upgrade_reports_the_span() {
-        let mut doc: DocumentMut = "format_version = 1\n[settings]\nhistory_limit = 3\n"
+        let mut doc: DocumentMut = "version = 1\n[settings]\nhistory_limit = 3\n"
             .parse()
             .unwrap();
         let upgrade = upgrade(&mut doc, Path::new("c.toml")).unwrap();
@@ -322,7 +325,7 @@ mod tests {
         let out = doc.to_string();
         assert_eq!(
             out,
-            format!("# my config\n\nformat_version = {CONFIG_FORMAT}\n\n[settings]\n# why\nhistory_limit = 3\n")
+            format!("# my config\n\nversion = {CONFIG_FORMAT}\n\n[settings]\n# why\nhistory_limit = 3\n")
         );
         stamp(&mut doc);
         assert_eq!(doc.to_string(), out);
@@ -330,7 +333,7 @@ mod tests {
         stamp(&mut bare);
         assert_eq!(
             bare.to_string(),
-            format!("format_version = {CONFIG_FORMAT}\n\n[settings]\n")
+            format!("version = {CONFIG_FORMAT}\n\n[settings]\n")
         );
         let mut dotted: DocumentMut =
             "# project\n\n[providers.anthropic]\ntype = \"anthropic\"\n\n[models]\n"
@@ -340,15 +343,12 @@ mod tests {
         assert_eq!(
             dotted.to_string(),
             format!(
-                "# project\n\nformat_version = {CONFIG_FORMAT}\n\n[providers.anthropic]\ntype = \"anthropic\"\n\n[models]\n"
+                "# project\n\nversion = {CONFIG_FORMAT}\n\n[providers.anthropic]\ntype = \"anthropic\"\n\n[models]\n"
             )
         );
         let mut empty: DocumentMut = "".parse().unwrap();
         stamp(&mut empty);
-        assert_eq!(
-            empty.to_string(),
-            format!("format_version = {CONFIG_FORMAT}\n")
-        );
+        assert_eq!(empty.to_string(), format!("version = {CONFIG_FORMAT}\n"));
     }
 
     #[test]
@@ -360,7 +360,7 @@ mod tests {
         assert!(first.changed);
         assert_eq!((first.from, first.to), (1, CONFIG_FORMAT));
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.starts_with("format_version = "), "{text}");
+        assert!(text.starts_with("version = "), "{text}");
         let second = migrate_file(&path).unwrap();
         assert!(!second.changed);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);

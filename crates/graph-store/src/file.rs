@@ -118,7 +118,7 @@ pub fn marker_format(root: &Path) -> Result<Option<u32>, StoreError> {
         .map(Some)
         .ok_or_else(|| {
             StoreError(format!(
-                "{} does not hold a store format number (got {:?})",
+                "{} does not hold a store version number (got {:?})",
                 path.display(),
                 raw.trim()
             ))
@@ -498,11 +498,11 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains(&format!("is store format {}", STORE_FORMAT + 1)),
+            err.contains(&format!("is store version {}", STORE_FORMAT + 1)),
             "{err}"
         );
         assert!(
-            err.contains(&format!("reads format {STORE_FORMAT}")),
+            err.contains(&format!("reads store version {STORE_FORMAT}")),
             "{err}"
         );
         std::fs::write(dir.path().join(FORMAT_MARKER), "banana\n").unwrap();
@@ -510,7 +510,10 @@ mod tests {
             .map(|_| ())
             .unwrap_err()
             .to_string();
-        assert!(err.contains("does not hold a store format number"), "{err}");
+        assert!(
+            err.contains("does not hold a store version number"),
+            "{err}"
+        );
     }
 
     #[test]

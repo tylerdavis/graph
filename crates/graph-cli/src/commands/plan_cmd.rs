@@ -222,7 +222,7 @@ pub(crate) fn migrated_outcome(migrated: graph_core::format::Migrated) -> Outcom
         "notes": migrated.notes,
     }));
     if !migrated.changed {
-        outcome = outcome.with_note(format!("already at format {}", migrated.to));
+        outcome = outcome.with_note(format!("already at version {}", migrated.to));
     } else if !migrated.notes.is_empty() {
         outcome = outcome.with_note(migrated.notes.join("; "));
     }

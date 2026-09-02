@@ -1440,8 +1440,7 @@ solver:
     #[test]
     fn a_canonical_file_round_trips_byte_for_byte() {
         // Editing one field must not churn the rest of a hand-authored file.
-        let original =
-            "format_version: 1\nidentifier: demo\nname: Demo\ndescription: demo plan\nsteps:\n\
+        let original = "version: 1\nidentifier: demo\nname: Demo\ndescription: demo plan\nsteps:\n\
                         - id: E1\n  tool_name: t__search\n  input:\n    query: x\n";
         let parsed = super::super::doc::parse_plan_source(original, "demo.yaml").unwrap();
         assert_eq!(

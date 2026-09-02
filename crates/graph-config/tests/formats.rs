@@ -20,7 +20,7 @@ fn fixtures_in(dir: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn every_format_version_has_a_fixture_directory() {
+fn every_version_has_a_fixture_directory() {
     for version in CONFIG_FORMAT_OLDEST..=CONFIG_FORMAT {
         let dir = fixture_dir(version);
         assert!(
@@ -43,11 +43,11 @@ fn every_fixture_at_every_format_still_loads() {
                 .unwrap_or_else(|e| panic!("{} no longer loads: {e:#}", path.display()));
             let layer = &loaded.layers[0];
             assert_eq!(
-                layer.format_version,
+                layer.version,
                 version,
                 "{} sits in the v{version} directory but declares format {}",
                 path.display(),
-                layer.format_version
+                layer.version
             );
         }
     }
@@ -83,15 +83,15 @@ fn a_newer_format_is_refused_before_the_schema_is_consulted() {
     std::fs::write(
         &path,
         format!(
-            "format_version = {}\n[settings]\nkey_from_the_future = 1\n",
+            "version = {}\n[settings]\nkey_from_the_future = 1\n",
             CONFIG_FORMAT + 1
         ),
     )
     .unwrap();
     let err = format!("{:#}", load_from(std::slice::from_ref(&path)).unwrap_err());
-    assert!(err.contains("is config format"), "{err}");
+    assert!(err.contains("is config version"), "{err}");
     assert!(
-        err.contains(&format!("reads format {CONFIG_FORMAT}")),
+        err.contains(&format!("reads config version {CONFIG_FORMAT}")),
         "{err}"
     );
     assert!(!err.contains("unknown field"), "{err}");
@@ -105,14 +105,14 @@ fn layers_migrate_independently_before_they_merge() {
     std::fs::write(&global, "[settings]\nhistory_limit = 5\n").unwrap();
     std::fs::write(
         &project,
-        format!("format_version = {CONFIG_FORMAT}\n[settings]\nhistory_limit = 9\n"),
+        format!("version = {CONFIG_FORMAT}\n[settings]\nhistory_limit = 9\n"),
     )
     .unwrap();
     let loaded = load_from(&[global, project]).unwrap();
     assert_eq!(loaded.config.settings.history_limit, 9);
     assert_eq!(loaded.layers.len(), 2);
     assert_eq!(loaded.layers[0].declared, None);
-    assert_eq!(loaded.layers[0].format_version, CONFIG_FORMAT_OLDEST);
+    assert_eq!(loaded.layers[0].version, CONFIG_FORMAT_OLDEST);
     assert_eq!(loaded.layers[1].declared, Some(CONFIG_FORMAT));
     assert!(loaded.layers[0].needs_migration());
     assert!(!loaded.layers[1].needs_migration());
@@ -122,7 +122,7 @@ fn layers_migrate_independently_before_they_merge() {
 fn the_version_key_never_reaches_the_typed_config() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    std::fs::write(&path, format!("format_version = {CONFIG_FORMAT}\n")).unwrap();
+    std::fs::write(&path, format!("version = {CONFIG_FORMAT}\n")).unwrap();
     let rendered = toml::to_string(&load_from(&[path]).unwrap().config).unwrap();
-    assert!(!rendered.contains("format_version"), "{rendered}");
+    assert!(!rendered.contains("version"), "{rendered}");
 }

@@ -12,7 +12,7 @@ pub const TOOL_FORMAT: u32 = 1;
 
 pub const TOOL_FORMAT_OLDEST: u32 = 1;
 
-pub const FORMAT_KEY: &str = "format_version";
+pub const FORMAT_KEY: &str = "version";
 
 pub type Migration = fn(&mut Value) -> Result<Vec<String>, String>;
 
@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(first.declared, None);
         assert_eq!(first.from, PLAN_FORMAT_OLDEST);
         assert_eq!(first.to, PLAN_FORMAT);
-        let mut value = yaml(&format!("format_version: {PLAN_FORMAT}\nidentifier: p\n"));
+        let mut value = yaml(&format!("version: {PLAN_FORMAT}\nidentifier: p\n"));
         let second = upgrade(Kind::Plan, &mut value).unwrap();
         assert_eq!(second.declared, Some(PLAN_FORMAT));
         assert!(value.get(FORMAT_KEY).is_none());
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn a_newer_format_is_refused_with_both_numbers() {
-        let mut value = yaml(&format!("format_version: {}\nname: t\n", TOOL_FORMAT + 1));
+        let mut value = yaml(&format!("version: {}\nname: t\n", TOOL_FORMAT + 1));
         let err = upgrade(Kind::Tool, &mut value).unwrap_err();
         assert_eq!(
             err,
@@ -344,9 +344,9 @@ mod tests {
             }
         );
         let text = err.to_string();
-        assert!(text.contains("is tool format"), "{text}");
+        assert!(text.contains("is tool version"), "{text}");
         assert!(
-            text.contains(&format!("reads format {TOOL_FORMAT}")),
+            text.contains(&format!("reads tool version {TOOL_FORMAT}")),
             "{text}"
         );
         assert!(text.contains(FORMATS_DOC), "{text}");
@@ -354,10 +354,10 @@ mod tests {
 
     #[test]
     fn a_malformed_key_is_invalid() {
-        let mut value = yaml("format_version: two\n");
+        let mut value = yaml("version: two\n");
         let err = upgrade(Kind::Plan, &mut value).unwrap_err();
         assert!(matches!(err, FormatError::Invalid(_)), "{err}");
-        let mut value = yaml("format_version: 0\n");
+        let mut value = yaml("version: 0\n");
         assert!(matches!(
             upgrade(Kind::Plan, &mut value),
             Err(FormatError::Invalid(_))
@@ -447,7 +447,7 @@ steps:
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
             text.starts_with(&format!(
-                "# header line\n# second\n\nformat_version: {TOOL_FORMAT}\nname: t\n"
+                "# header line\n# second\n\nversion: {TOOL_FORMAT}\nname: t\n"
             )),
             "{text}"
         );

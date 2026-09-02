@@ -82,7 +82,7 @@
           },
           "architecture/storage",
           "reference/configuration",
-          "reference/formats"
+          "reference/file-versions"
         ]
       },
       "changelog",

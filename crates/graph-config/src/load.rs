@@ -74,7 +74,7 @@ pub fn load_from(paths: &[PathBuf]) -> Result<LoadedConfig> {
         layers.push(LayerInfo {
             path: path.clone(),
             declared,
-            format_version: upgrade.from,
+            version: upgrade.from,
             notes: upgrade.notes,
         });
         sources.push(path);

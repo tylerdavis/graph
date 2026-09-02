@@ -442,16 +442,16 @@ pub fn load_config() -> Result<graph_config::LoadedConfig> {
     if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
         let global = graph_config::expand_tilde(&graph_config::global_config_path());
         for layer in &loaded.layers {
-            if layer.format_version < graph_config::CONFIG_FORMAT {
+            if layer.version < graph_config::CONFIG_FORMAT {
                 let flag = if layer.path == global {
                     " --global"
                 } else {
                     ""
                 };
                 eprintln!(
-                    "{} is config format {}; run `graph config migrate{flag}` to bring it to {}",
+                    "{} is config version {}; run `graph config migrate{flag}` to bring it to {}",
                     layer.path.display(),
-                    layer.format_version,
+                    layer.version,
                     graph_config::CONFIG_FORMAT
                 );
             }

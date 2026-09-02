@@ -115,7 +115,7 @@ fn show() -> Result<Outcome> {
         .map(|source| source.display().to_string())
         .collect();
     let body = json!({
-        "formatVersion": CONFIG_FORMAT,
+        "version": CONFIG_FORMAT,
         "config": serde_json::to_value(&loaded.config)?,
         "sources": sources,
         "layers": loaded.layers.iter().map(layer_json).collect::<Vec<_>>(),
@@ -133,9 +133,9 @@ fn show() -> Result<Outcome> {
 fn layer_json(layer: &graph_config::LayerInfo) -> serde_json::Value {
     json!({
         "path": layer.path.display().to_string(),
-        "formatVersion": layer.format_version,
+        "version": layer.version,
         "declared": layer.declared,
-        "current": layer.format_version == CONFIG_FORMAT,
+        "current": layer.version == CONFIG_FORMAT,
         "notes": layer.notes,
     })
 }
@@ -156,7 +156,7 @@ fn path() -> Outcome {
             .then(|| graph_config::inspect(&candidate).ok())
             .flatten();
         let marker = match (&format, exists) {
-            (Some(info), _) => format!("exists\tformat {}", info.format_version),
+            (Some(info), _) => format!("exists\tversion {}", info.version),
             (None, true) => "exists".to_string(),
             (None, false) => "missing".to_string(),
         };
@@ -164,7 +164,7 @@ fn path() -> Outcome {
         files.push(json!({
             "path": candidate.display().to_string(),
             "exists": exists,
-            "formatVersion": format.as_ref().map(|info| info.format_version),
+            "version": format.as_ref().map(|info| info.version),
         }));
     }
     Outcome::raw(text, json!({"files": files, "count": files.len()}))
@@ -188,17 +188,17 @@ fn check() -> Outcome {
                 let verdict = if let Some(problem) = graph_config::window_problem(
                     "config",
                     &candidate.display(),
-                    info.format_version,
+                    info.version,
                     graph_config::CONFIG_FORMAT_OLDEST,
                     CONFIG_FORMAT,
                 ) {
                     problems.push(problem);
-                    if info.format_version > CONFIG_FORMAT {
+                    if info.version > CONFIG_FORMAT {
                         "too new"
                     } else {
                         "too old"
                     }
-                } else if info.format_version < CONFIG_FORMAT {
+                } else if info.version < CONFIG_FORMAT {
                     "migrate"
                 } else if info.declared.is_none() {
                     "current (unstamped)"
@@ -206,17 +206,17 @@ fn check() -> Outcome {
                     "current"
                 };
                 text.push_str(&format!(
-                    "{}\tformat {}\t{verdict}\n",
+                    "{}\tversion {}\t{verdict}\n",
                     candidate.display(),
-                    info.format_version
+                    info.version
                 ));
                 files.push(json!({
                     "path": candidate.display().to_string(),
                     "exists": true,
-                    "formatVersion": info.format_version,
+                    "version": info.version,
                     "declared": info.declared,
-                    "readable": (graph_config::CONFIG_FORMAT_OLDEST..=CONFIG_FORMAT).contains(&info.format_version),
-                    "current": info.format_version == CONFIG_FORMAT,
+                    "readable": (graph_config::CONFIG_FORMAT_OLDEST..=CONFIG_FORMAT).contains(&info.version),
+                    "current": info.version == CONFIG_FORMAT,
                 }));
             }
             Err(error) => {
@@ -238,7 +238,7 @@ fn check() -> Outcome {
     let ok = problems.is_empty();
     let body = json!({
         "ok": ok,
-        "formatVersion": CONFIG_FORMAT,
+        "version": CONFIG_FORMAT,
         "files": files,
         "problems": problems,
     });
@@ -275,7 +275,7 @@ fn migrate(global: bool) -> Result<Outcome> {
         "notes": migrated.notes,
     }));
     if !migrated.changed {
-        outcome = outcome.with_note(format!("already at config format {}", migrated.to));
+        outcome = outcome.with_note(format!("already at config version {}", migrated.to));
     } else if !migrated.notes.is_empty() {
         outcome = outcome.with_note(migrated.notes.join("; "));
     }

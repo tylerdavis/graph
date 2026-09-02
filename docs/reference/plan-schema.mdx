@@ -9,7 +9,7 @@ The complete field reference for plan YAML files. Concepts and worked examples l
 
 | Field | Required | Type | Notes |
 | --- | --- | --- | --- |
-| `format_version` | no | integer | the [plan format](/reference/formats) the file is written in; omitted means `1`. Files graph writes always carry it |
+| `version` | no | integer | the [file version](/reference/file-versions) the document is written in; omitted means `1`. Files graph writes always carry it |
 | `identifier` | yes | string | tool-name-safe (`[a-zA-Z0-9_-]+`); becomes `plan__<identifier>` in the catalog |
 | `name` | yes | string | display name |
 | `description` | yes | string | routing signal — what the agent reads when choosing tools |

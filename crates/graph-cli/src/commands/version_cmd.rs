@@ -50,7 +50,7 @@ pub fn formats_line() -> String {
             }
         })
         .collect();
-    format!("formats: {}", parts.join(", "))
+    format!("file versions: {}", parts.join(", "))
 }
 
 pub static LONG_VERSION: LazyLock<String> =
@@ -64,7 +64,7 @@ pub fn outcome() -> Outcome {
     let formats = formats();
     let body = json!({
         "version": VERSION,
-        "formats": formats.iter().map(|format| (format.name.to_string(), json!({
+        "fileVersions": formats.iter().map(|format| (format.name.to_string(), json!({
             "current": format.current,
             "oldest": format.oldest,
         }))).collect::<serde_json::Map<String, serde_json::Value>>(),
@@ -81,7 +81,7 @@ mod tests {
         let body = outcome().body;
         assert_eq!(body["version"], json!(VERSION));
         for name in ["config", "plan", "tool", "store"] {
-            let entry = &body["formats"][name];
+            let entry = &body["fileVersions"][name];
             assert!(entry["current"].as_u64().unwrap() >= entry["oldest"].as_u64().unwrap());
             assert!(entry["oldest"].as_u64().unwrap() >= 1);
         }
@@ -91,7 +91,7 @@ mod tests {
     fn the_text_rendering_leads_with_the_binary_version() {
         let text = outcome().raw.unwrap();
         assert!(
-            text.starts_with(&format!("graph {VERSION}\nformats: config ")),
+            text.starts_with(&format!("graph {VERSION}\nfile versions: config ")),
             "{text}"
         );
         assert!(LONG_VERSION.starts_with(VERSION));
