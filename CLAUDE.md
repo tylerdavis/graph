@@ -16,7 +16,7 @@ mise run test           # all workspace tests
 mise run lint           # fmt --check + clippy -D warnings (run before committing)
 mise run run -- <args>  # run the CLI
 mise run install        # release build onto PATH
-mise run release:patch  # cut a release (also :minor / :major) — see RELEASING.md
+mise run release:patch  # prepare a release for review (also :minor / :major); release:publish ships it — see RELEASING.md
 ```
 
 CI (`.github/workflows/ci.yaml`) runs lint + tests on ubuntu-24.04 and macos-15 for every push/PR touching non-docs paths; sccache keeps cache-key rotations from recompiling the world. Tags `v*` trigger `release.yaml`: binaries for macOS arm64 + Linux x86_64 with checksums, plus the `ghcr.io/tylerdavis/graph` container image (graph + git/jq/gh; `workflow_dispatch` with a `tag` input re-mints an image for an existing release).

@@ -52,16 +52,24 @@ run = "cargo install --path crates/graph-cli"
 depends = ["release"]
 
 [tasks."release:patch"]
-description = "Cut a patch release (bump, changelog, tag, push)"
+description = "Prepare a patch release (bump + changelogs, uncommitted) for review; then release:publish"
 run = "scripts/release.sh patch"
 
 [tasks."release:minor"]
-description = "Cut a minor release"
+description = "Prepare a minor release for review; then release:publish"
 run = "scripts/release.sh minor"
 
 [tasks."release:major"]
-description = "Cut a major release"
+description = "Prepare a major release for review; then release:publish"
 run = "scripts/release.sh major"
+
+[tasks."release:publish"]
+description = "Commit, tag, and push the prepared release (recomposes the docs changelog from the reviewed snippets first)"
+run = "scripts/release.sh publish"
+
+[tasks."release:abort"]
+description = "Drop a prepared, unpublished release"
+run = "scripts/release.sh abort"
 
 [tasks.docs]
 description = "Run docs preview"
