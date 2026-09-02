@@ -10,6 +10,7 @@
 # escaping of < and { so a commit subject can never break the docs build.
 # Unreleased commits surface as an entry with version: null — the composing
 # plan's filter step drops them.
+version: 1
 name: cliff_context
 description: >
   Changelog entries from git-cliff as template-ready data: one {version,

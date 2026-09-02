@@ -7,6 +7,7 @@
 # backticks is a JSX parse error that breaks the whole docs build — fail
 # loudly with the file named instead. The migration snippet is exempt:
 # it wraps its own fenced code block.
+version: 1
 name: snippet_status
 description: >
   Whether docs/snippets/changelog/<version>/ holds generated snippets:

@@ -1,3 +1,4 @@
+version: 1
 identifier: changelog_entry
 name: changelog_entry
 description: Generates one release's docs-changelog front matter — a user-facing summary plus, only when consumers must act, a self-contained migration prompt — and persists it as docs/snippets/changelog/<version>/. The prose is the only part of a release that is stored; everything mechanical is derived from the tag on demand. Idempotent by design; an existing snippet directory means the entry was generated (and possibly hand-curated), so the plan exits without touching it. Run by scripts/release.sh at release time.

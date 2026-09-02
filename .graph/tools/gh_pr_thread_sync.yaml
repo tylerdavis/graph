@@ -12,6 +12,7 @@
 #      stderr) to that thread's output entry instead of being discarded,
 #      so the summary/logs show WHY a transition didn't apply.
 # Drop this file once the pack tool carries both fixes in the CI image.
+version: 1
 name: gh_pr_thread_sync
 description: >
   Sync inline review threads on a pull request. Posts each new finding as

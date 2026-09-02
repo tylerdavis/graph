@@ -1,3 +1,4 @@
+version: 1
 identifier: compose_changelog
 name: compose_changelog
 description: Composes docs/changelog.mdx from git-cliff's release context plus the committed docs/snippets/changelog/ snippets — one Mintlify <Update> per release that IMPORTS its inferred summary (and migration prompt, when the release requires action) as Mintlify snippets rather than embedding them, so each piece of prose exists in exactly one file. Deterministic and zero-inference, safe to re-run any time; that is also the curation loop — edit a snippet, re-run this, commit both. Run by scripts/release.sh with tag=v<new> at release time.

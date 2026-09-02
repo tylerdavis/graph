@@ -3,6 +3,7 @@
 # behavior in lockstep). Empty `ref` reads the file from the working tree;
 # a non-empty `ref` is the pack's `git show ref:path`. A missing path fails
 # the step loudly either way. Named repo_* to avoid shadowing the pack tool.
+version: 1
 name: repo_file
 description: >
   Contents of a file at a git ref, or from the working tree when `ref` is

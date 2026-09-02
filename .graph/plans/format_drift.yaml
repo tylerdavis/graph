@@ -4,6 +4,7 @@
 # constant — the CLAUDE.md rule, enforced. Sibling of docs_drift: zero LLM
 # calls unless one of the model files changed, then one judge call over the
 # model diff and the format-constant diff.
+version: 1
 identifier: format_drift
 name: Format drift gate
 description: >
