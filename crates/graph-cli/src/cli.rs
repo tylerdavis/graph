@@ -7,6 +7,7 @@ use std::path::PathBuf;
 #[command(
     name = "graph",
     version,
+    long_version = crate::commands::version_cmd::LONG_VERSION.as_str(),
     about = "A command-line agent with a plan-based execution engine"
 )]
 pub struct Cli {
@@ -78,6 +79,11 @@ pub enum Command {
         #[command(subcommand)]
         command: WorkbenchCommand,
     },
+    /// Print the binary version and the file formats it reads and writes
+    Version {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -106,6 +112,12 @@ pub enum PlanCommand {
     },
     /// Validate a plan document by name or file path
     Validate {
+        name_or_path: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rewrite a plan file to the current plan format
+    Migrate {
         name_or_path: String,
         #[arg(long)]
         json: bool,
@@ -344,6 +356,12 @@ pub enum ToolsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Rewrite a user tool file to the current tool format
+    Migrate {
+        path: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -442,6 +460,19 @@ pub enum ConfigCommand {
     },
     /// Print the config file locations and which exist
     Path {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Report each config file's format and whether the merged config loads
+    Check {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rewrite a config file to the current config format, comments intact
+    Migrate {
+        /// Migrate the global file (~/.config/graph/) instead of the project one (./.graph/)
+        #[arg(long)]
+        global: bool,
         #[arg(long)]
         json: bool,
     },

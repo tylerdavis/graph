@@ -1,5 +1,6 @@
 //! Layered config loading and post-processing.
 
+use crate::format::{self, LayerInfo};
 use crate::model::Config;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -10,6 +11,7 @@ pub struct LoadedConfig {
     pub config: Config,
     /// Files that contributed, in application order (earlier is overridden by later).
     pub sources: Vec<PathBuf>,
+    pub layers: Vec<LayerInfo>,
 }
 
 /// `~/.config/graph/config.toml` on every platform — CLI convention rather
@@ -47,6 +49,7 @@ pub fn load() -> Result<LoadedConfig> {
 pub fn load_from(paths: &[PathBuf]) -> Result<LoadedConfig> {
     let mut merged = toml::Table::new();
     let mut sources = Vec::new();
+    let mut layers = Vec::new();
 
     for path in paths {
         let path = expand_tilde(path);
@@ -55,10 +58,25 @@ pub fn load_from(paths: &[PathBuf]) -> Result<LoadedConfig> {
         }
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("reading config file {}", path.display()))?;
-        let table: toml::Table = raw
+        let mut doc: toml_edit::DocumentMut = raw
             .parse()
             .with_context(|| format!("parsing config file {}", path.display()))?;
+        let declared = format::declared_version(&doc)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("parsing config file {}", path.display()))?;
+        let upgrade = format::upgrade(&mut doc, &path).map_err(anyhow::Error::msg)?;
+        let mut table: toml::Table = doc
+            .to_string()
+            .parse()
+            .with_context(|| format!("parsing config file {}", path.display()))?;
+        table.remove(format::FORMAT_KEY);
         merge_tables(&mut merged, table);
+        layers.push(LayerInfo {
+            path: path.clone(),
+            declared,
+            version: upgrade.from,
+            notes: upgrade.notes,
+        });
         sources.push(path);
     }
 
@@ -84,7 +102,11 @@ pub fn load_from(paths: &[PathBuf]) -> Result<LoadedConfig> {
         }
     }
 
-    Ok(LoadedConfig { config, sources })
+    Ok(LoadedConfig {
+        config,
+        sources,
+        layers,
+    })
 }
 
 /// Deep-merge `overlay` into `base`: tables merge recursively, everything

@@ -81,7 +81,8 @@
             ]
           },
           "architecture/storage",
-          "reference/configuration"
+          "reference/configuration",
+          "reference/file-versions"
         ]
       },
       "changelog",

@@ -9,6 +9,7 @@ The complete field reference for plan YAML files. Concepts and worked examples l
 
 | Field | Required | Type | Notes |
 | --- | --- | --- | --- |
+| `version` | no | integer | the [file version](/reference/file-versions) the document is written in; omitted means `1`. Files graph writes always carry it |
 | `identifier` | yes | string | tool-name-safe (`[a-zA-Z0-9_-]+`); becomes `plan__<identifier>` in the catalog |
 | `name` | yes | string | display name |
 | `description` | yes | string | routing signal — what the agent reads when choosing tools |
@@ -37,6 +38,8 @@ The complete field reference for plan YAML files. Concepts and worked examples l
 | `tool_name` | yes | a catalog tool (`server__*`, `user__*`, `builtin__*`, `plan__*`), `plan_and_execute`, or a control step below |
 | `input` | yes | the tool's arguments; string values are [templates](/plans/template-language) over `input` and earlier step results |
 | `reasoning` | no | free text, shown in traces |
+
+Steps are read strictly: a key other than these four is a load error naming it (the file is skipped from the catalog with that diagnostic), never ignored.
 
 ## Control steps
 

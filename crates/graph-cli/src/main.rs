@@ -70,6 +70,7 @@ async fn dispatch(command: Command, verbose: u8) -> Result<()> {
         Command::Shapes { command } => commands::shapes_cmd::run(command).await,
         Command::Plan { command } => commands::plan_cmd::run(command).await,
         Command::Workbench { command } => workbench::run(command, verbose).await,
+        Command::Version { json } => commands::version_cmd::run(json),
     }
 }
 

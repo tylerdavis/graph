@@ -45,6 +45,13 @@ pub enum DocError {
     Invalid { path: String, message: String },
     #[error("{path}: duplicate plan identifier '{identifier}' — the earlier file wins")]
     Duplicate { path: String, identifier: String },
+    #[error("{}", crate::format::window_message(crate::format::Kind::Plan, path, *found, *oldest, *max))]
+    Unsupported {
+        path: String,
+        found: u32,
+        oldest: u32,
+        max: u32,
+    },
     #[error("io error reading {path}: {source}")]
     Io {
         path: String,
@@ -58,6 +65,7 @@ impl DocError {
         match self {
             DocError::Invalid { path, .. }
             | DocError::Duplicate { path, .. }
+            | DocError::Unsupported { path, .. }
             | DocError::Io { path, .. } => path,
         }
     }
@@ -185,12 +193,91 @@ pub fn parse_plan_doc(path: &Path) -> Result<PlanDoc, DocError> {
         path: path.display().to_string(),
         source: e,
     })?;
-    let mut doc: PlanDoc = serde_yaml::from_str(&raw).map_err(|e| DocError::Invalid {
-        path: path.display().to_string(),
-        message: e.to_string(),
-    })?;
+    let mut doc = parse_plan_source(&raw, &path.display().to_string())?;
     doc.path = Some(path.to_path_buf());
     Ok(doc)
+}
+
+pub fn parse_plan_source(raw: &str, path: &str) -> Result<PlanDoc, DocError> {
+    let invalid = |message: String| DocError::Invalid {
+        path: path.to_string(),
+        message,
+    };
+    let mut value: serde_yaml::Value =
+        serde_yaml::from_str(raw).map_err(|e| invalid(e.to_string()))?;
+    let upgrade =
+        crate::format::upgrade(crate::format::Kind::Plan, &mut value).map_err(|e| match e {
+            crate::format::FormatError::Unsupported {
+                found, oldest, max, ..
+            } => DocError::Unsupported {
+                path: path.to_string(),
+                found,
+                oldest,
+                max,
+            },
+            crate::format::FormatError::Invalid(message) => invalid(message),
+        })?;
+    check_step_keys(&value).map_err(invalid)?;
+    if upgrade.declared.is_none() {
+        return serde_yaml::from_str(raw).map_err(|e| invalid(e.to_string()));
+    }
+    serde_yaml::from_value(value).map_err(|e| invalid(e.to_string()))
+}
+
+const STEP_KEYS: &[&str] = &["id", "tool_name", "toolName", "input", "reasoning"];
+
+/// Reject a key on any step, at any depth, that the step grammar does not
+/// know. Files are read strictly; the planner's structured output is not
+/// (`Step` itself stays lenient), which is why this lives in the file path.
+pub fn check_step_keys(doc: &serde_yaml::Value) -> Result<(), String> {
+    let Some(steps) = doc.get("steps") else {
+        return Ok(());
+    };
+    check_body_keys(steps, "steps")
+}
+
+fn check_body_keys(body: &serde_yaml::Value, at: &str) -> Result<(), String> {
+    match body {
+        serde_yaml::Value::Sequence(steps) => steps
+            .iter()
+            .enumerate()
+            .try_for_each(|(index, step)| check_one_step_keys(step, &format!("{at}[{index}]"))),
+        serde_yaml::Value::Mapping(_) => check_one_step_keys(body, at),
+        _ => Ok(()),
+    }
+}
+
+fn check_one_step_keys(step: &serde_yaml::Value, at: &str) -> Result<(), String> {
+    let Some(mapping) = step.as_mapping() else {
+        return Ok(());
+    };
+    if let Some(unknown) = mapping
+        .keys()
+        .filter_map(serde_yaml::Value::as_str)
+        .find(|key| !STEP_KEYS.contains(key))
+    {
+        return Err(format!(
+            "{at}: unknown field `{unknown}`, expected one of `id`, `tool_name`, `input`, `reasoning`"
+        ));
+    }
+    let tool = step
+        .get("tool_name")
+        .or_else(|| step.get("toolName"))
+        .and_then(serde_yaml::Value::as_str);
+    let Some(input) = step.get("input") else {
+        return Ok(());
+    };
+    match tool {
+        Some(super::DECIDE_TOOL) => ["then", "else"].iter().try_for_each(|side| {
+            input.get(side).map_or(Ok(()), |branch| {
+                check_body_keys(branch, &format!("{at}.input.{side}"))
+            })
+        }),
+        Some(super::MAP_TOOL | super::REDUCE_TOOL) => input.get("do").map_or(Ok(()), |body| {
+            check_body_keys(body, &format!("{at}.input.do"))
+        }),
+        _ => Ok(()),
+    }
 }
 
 /// Structural validation: identifier shape, step ids, template syntax,
@@ -440,6 +527,32 @@ solver:
         assert_eq!(doc.identifier, "sprint_analysis");
         assert_eq!(doc.steps[1].tool_name, "linear__list_issues");
         assert!(doc.tool_description().contains("how is my sprint going"));
+    }
+
+    #[test]
+    fn a_stray_step_key_is_a_load_error_at_any_depth() {
+        let top = "identifier: p\nname: P\ndescription: d\nsteps:\n  - id: E0\n    tool_name: t__x\n    input: {}\n    future_field: 1\n";
+        let err = parse_plan_source(top, "p.yaml").unwrap_err().to_string();
+        assert!(
+            err.contains("steps[0]: unknown field `future_field`"),
+            "{err}"
+        );
+
+        let nested = "identifier: p\nname: P\ndescription: d\nsteps:\n  - id: E0\n    tool_name: decide\n    input:\n      if: { value: x, op: eq, to: x }\n      then:\n        - id: E1\n          tool_name: map\n          input:\n            over: \"{{input.items}}\"\n            do:\n              tool_name: t__y\n              input: {}\n              retries: 3\n";
+        let err = parse_plan_source(nested, "p.yaml").unwrap_err().to_string();
+        assert!(
+            err.contains("steps[0].input.then[0].input.do: unknown field `retries`"),
+            "{err}"
+        );
+
+        let ordinary_tool_input = "identifier: p\nname: P\ndescription: d\nsteps:\n  - id: E0\n    tool_name: t__x\n    input: { do: { then: 1 }, then: 2 }\n";
+        assert!(parse_plan_source(ordinary_tool_input, "p.yaml").is_ok());
+
+        let camel: crate::pipeline::Step = serde_json::from_value(
+            serde_json::json!({"id": "E0", "toolName": "t__x", "input": {}, "extra": true}),
+        )
+        .unwrap();
+        assert_eq!(camel.tool_name, "t__x");
     }
 
     #[test]

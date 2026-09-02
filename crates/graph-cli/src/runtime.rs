@@ -36,7 +36,7 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn init() -> Result<Self> {
-        Self::with_config(graph_config::load()?.config)
+        Self::with_config(load_config()?.config)
     }
 
     /// Build a runtime over an already-resolved config.
@@ -47,6 +47,7 @@ impl Runtime {
         let loaded = graph_config::LoadedConfig {
             config,
             sources: Vec::new(),
+            layers: Vec::new(),
         };
         // The meter has to be installed before anything resolves a provider —
         // resolution is when providers get wrapped, so a meter added later
@@ -434,4 +435,30 @@ pub fn title_from(message: &str) -> String {
         title = "untitled".to_string();
     }
     title
+}
+
+pub fn load_config() -> Result<graph_config::LoadedConfig> {
+    let loaded = graph_config::load()?;
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        let global = graph_config::expand_tilde(&graph_config::global_config_path());
+        for layer in &loaded.layers {
+            if layer.version < graph_config::CONFIG_FORMAT {
+                let flag = if layer.path == global {
+                    " --global"
+                } else {
+                    ""
+                };
+                eprintln!(
+                    "{} is config version {}; run `graph config migrate{flag}` to bring it to {}",
+                    layer.path.display(),
+                    layer.version,
+                    graph_config::CONFIG_FORMAT
+                );
+            }
+            for note in &layer.notes {
+                eprintln!("{}: {note}", layer.path.display());
+            }
+        }
+    }
+    Ok(loaded)
 }

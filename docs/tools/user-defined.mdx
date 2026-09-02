@@ -71,3 +71,5 @@ With an `output_schema`, the result is validated JSON; without one, `{"text": â€
 - `input_schema` validates before dispatch â€” missing fields return actionable errors (in chat, the agent asks and retries).
 - `output_schema`, when declared, feeds the planner's shape knowledge just like an MCP output schema.
 - Names must match `[a-zA-Z0-9_-]+`; templates referencing anything but `{{input.*}}` are load-time errors.
+- Files are read strictly: a key the tool's `kind` does not accept is a load error naming it (`unknown field(s) \`tmeout_secs\` for a \`exec\` tool`), never ignored.
+- `version` is the [file version](/reference/file-versions#plans-and-tools) the document is written in; omitted means `1`. `graph tools migrate <path>` brings a file to the current version.

@@ -4,6 +4,7 @@
 //! and graph-store respectively.
 
 pub mod agent;
+pub mod format;
 pub mod pipeline;
 pub mod prompts;
 pub mod shapes;

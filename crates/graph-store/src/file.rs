@@ -26,7 +26,13 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const FORMAT_VERSION: u32 = 1;
+pub const STORE_FORMAT: u32 = 1;
+
+pub const STORE_FORMAT_OLDEST: u32 = 1;
+
+const FORMAT_VERSION: u32 = STORE_FORMAT;
+
+const FORMAT_MARKER: &str = "FORMAT";
 
 pub struct FileStore {
     threads_dir: PathBuf,
@@ -74,6 +80,7 @@ impl FileStore {
             std::fs::create_dir_all(dir)
                 .map_err(|e| StoreError(format!("creating {}: {e}", dir.display())))?;
         }
+        check_format_marker(root)?;
         Ok(Self {
             threads_dir,
             shapes_dir,
@@ -95,6 +102,57 @@ impl FileStore {
             .await
             .map_err(|e| StoreError(format!("store task failed: {e}")))?
     }
+}
+
+pub fn marker_format(root: &Path) -> Result<Option<u32>, StoreError> {
+    let path = root.join(FORMAT_MARKER);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(StoreError(format!("reading {}: {e}", path.display()))),
+    };
+    raw.trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|n| *n >= 1)
+        .map(Some)
+        .ok_or_else(|| {
+            StoreError(format!(
+                "{} does not hold a store version number (got {:?})",
+                path.display(),
+                raw.trim()
+            ))
+        })
+}
+
+fn check_format_marker(root: &Path) -> Result<(), StoreError> {
+    match marker_format(root)? {
+        Some(found) => match graph_config::window_problem(
+            "store",
+            &format_args!("data directory {}", root.display()),
+            found,
+            STORE_FORMAT_OLDEST,
+            STORE_FORMAT,
+        ) {
+            Some(problem) => Err(StoreError(problem)),
+            None => Ok(()),
+        },
+        None => match link_new(root, format!("{STORE_FORMAT}\n").as_bytes()) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => check_format_marker(root),
+            Err(e) => Err(StoreError(format!(
+                "writing {}: {e}",
+                root.join(FORMAT_MARKER).display()
+            ))),
+        },
+    }
+}
+
+fn link_new(root: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut tmp = tempfile::NamedTempFile::new_in(root)?;
+    tmp.write_all(bytes)?;
+    tmp.as_file().sync_all()?;
+    std::fs::hard_link(tmp.path(), root.join(FORMAT_MARKER))
 }
 
 fn now_ms() -> i64 {
@@ -391,6 +449,72 @@ impl Store for FileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_writes_the_format_marker_once() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(marker_format(dir.path()).unwrap(), None);
+        FileStore::open(dir.path()).unwrap();
+        assert_eq!(marker_format(dir.path()).unwrap(), Some(STORE_FORMAT));
+        let marker = dir.path().join(FORMAT_MARKER);
+        let written = std::fs::read_to_string(&marker).unwrap();
+        FileStore::open(dir.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), written);
+    }
+
+    #[test]
+    fn concurrent_first_opens_agree_on_one_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let root = root.clone();
+                std::thread::spawn(move || FileStore::open(&root).map(|_| ()))
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+        assert_eq!(marker_format(&root).unwrap(), Some(STORE_FORMAT));
+        let leftovers: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != FORMAT_MARKER && name != "threads" && name != "shapes")
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn open_refuses_a_newer_store_format() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(FORMAT_MARKER),
+            format!("{}\n", STORE_FORMAT + 1),
+        )
+        .unwrap();
+        let err = FileStore::open(dir.path())
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(&format!("is store version {}", STORE_FORMAT + 1)),
+            "{err}"
+        );
+        assert!(
+            err.contains(&format!("reads store version {STORE_FORMAT}")),
+            "{err}"
+        );
+        std::fs::write(dir.path().join(FORMAT_MARKER), "banana\n").unwrap();
+        let err = FileStore::open(dir.path())
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("does not hold a store version number"),
+            "{err}"
+        );
+    }
 
     #[test]
     fn tool_filename_encoding() {
