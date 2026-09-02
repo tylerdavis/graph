@@ -37,8 +37,9 @@ if git rev-parse "v$new" >/dev/null 2>&1; then
 fi
 
 # The file-version constants (docs/reference/file-versions.mdx) at a ref, one
-# "<name> <version>" per line. A ref that predates a file reads as format 1,
-# which is what an unversioned file means.
+# "<name> <version>" per line. A ref that predates a kind's constant reads
+# as "-": that kind had no version yet, and its first release announces it
+# as new rather than as a bump.
 format_table() {
   local ref=$1
   for spec in \
@@ -49,7 +50,7 @@ format_table() {
     set -- $spec
     source=$(git show "$ref:$2" 2>/dev/null || true)
     version=$(printf '%s\n' "$source" | sed -n "s/^pub const $3: u32 = \([0-9]*\);.*/\1/p" | head -1)
-    echo "$1 ${version:-1}"
+    echo "$1 ${version:--}"
   done
 }
 
@@ -60,7 +61,7 @@ last_tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
 format_delta=""
 if [ -n "$last_tag" ]; then
   format_delta=$(paste -d' ' <(format_table "$last_tag") <(format_table HEAD) \
-    | awk '$2 != $4 { printf "%s %s→%s\n", $1, $2, $4 }' | paste -sd',' - | sed 's/,/, /g')
+    | awk '$2 != "-" && $2 != $4 { printf "%s %s→%s\n", $1, $2, $4 }' | paste -sd',' - | sed 's/,/, /g')
 fi
 unreleased=$(git-cliff --tag "v$new" --unreleased --context 2>/dev/null)
 breaking=$(jq '[.[] | .commits[]? | select(.breaking == true)] | length' <<<"$unreleased")
@@ -73,18 +74,24 @@ if [ -n "$format_delta" ] || [ "${breaking:-0}" -gt 0 ]; then
   esac
 fi
 
-# The changelog files a breaking commit scoped `config`/`plan`/`tool`/`store`
-# under that file kind's own section, so the scope and the constant must
-# agree both ways: a moved constant needs a commit that documents it, and a
+# A breaking commit scoped `config`/`plan`/`tool`/`store` becomes that file
+# kind's own changelog entry, so the scope and the constant must agree both
+# ways: a moved constant needs a commit that documents it, and a
 # reserved-scope commit needs a moved constant (or it is a misfiled crate
 # change — pick another scope). The footer has to name the new version, since
-# that line is what the changelog prints next to the subject.
+# that line is what the changelog prints next to the subject. A kind that had
+# no constant at the last tag is announced as new instead, with no commit
+# required — its first entry says so.
 file_versions=""
 for spec in $(format_table HEAD | tr ' ' '='); do
   kind=${spec%%=*}; now=${spec#*=}
   was=$(format_table "${last_tag:-HEAD}" | awk -v k="$kind" '$1 == k { print $2 }')
   scoped=$(jq -r --arg k "$kind" '[.[] | .commits[]? | select(.breaking == true and .scope == $k)] | length' <<<"$unreleased")
-  if [ "$now" != "$was" ]; then
+  if [ "$now" = "-" ]; then
+    echo "no $kind version constant at HEAD" >&2; exit 1
+  elif [ "$was" = "-" ]; then
+    file_versions="${file_versions:+$file_versions, }$kind $now (new)"
+  elif [ "$now" != "$was" ]; then
     [ "$scoped" -gt 0 ] || { echo "$kind version moved $was→$now but no breaking commit is scoped ($kind) — the changelog cannot document it" >&2; exit 1; }
     jq -e --arg k "$kind" --arg n "$now" \
       '[.[] | .commits[]? | select(.breaking == true and .scope == $k)] | all(.breaking_description | test("\($k) version \($n)\\b"))' \

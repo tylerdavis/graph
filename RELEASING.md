@@ -73,23 +73,31 @@ The script enforces the floor: if any commit since the last tag is breaking
 any file-version constant moved, `patch` is refused; from 1.0 on, `minor` is
 refused too.
 
-## Changelog sections
+## Changelog entries
 
-Every release renders as one section per thing that can change
-independently — **Binary**, **Config**, **Plan**, **Tool**, **Store** — and
-only the sections with commits appear. Inside a section, **Breaking** comes
-first, then the usual groups (Added, Fixed, …). The file-kind sections carry
-their version in the heading (`### Config — version 2 (from 1)`), read from
-the tag message's `file versions:` line, and the release header repeats the
-whole line (`File versions: config 2 (from 1), plan 1, tool 1, store 1`). Both
-renderings — `CHANGELOG.md` via `cliff.toml`, `docs/changelog.mdx` via the
-`cliff_context` tool — apply the same rule:
+The changelog is a flat list of entries, one per **module version**, newest
+first. Cutting a binary release produces a `Graph v0.13.0` entry; a release
+that also bumps a file version produces one more entry per bumped kind —
+`Config v2`, `Plan v2`, `Tool v2`, `Store v2` — each with its own heading and
+the same date. Nothing is nested: a reader looking for what changed in the
+config schema finds a `Config v2` entry, not a subsection of the binary's.
 
-- a **breaking commit scoped `config`, `plan`, `tool`, or `store`** files under
-  that kind's section;
-- everything else files under **Binary**.
+Which commits go where:
 
-Those four scopes are therefore reserved: they mean "this commit bumps that
+- a **breaking commit scoped `config`, `plan`, `tool`, or `store`** is that
+  kind's entry, when the release bumps that kind;
+- everything else is the `Graph` entry;
+- a kind whose version is new in this release (its first constant) gets an
+  entry that says `Introduced with graph vX.Y.Z` when no commit is scoped to
+  it.
+
+Both renderings — `CHANGELOG.md` via `cliff.toml`, `docs/changelog.mdx` via
+the `cliff_context` tool — read the bumps from the tag message's
+`file versions:` line (`config 2 (from 1), plan 1, tool 1, store 1 (new)`),
+which `release.sh` writes. The tag stays the source of truth: a regeneration
+produces the same entries.
+
+The four scopes are therefore reserved: they mean "this commit bumps that
 file kind's version", nothing else. `check-commit-subject.sh` rejects a
 reserved scope without `!` (an ordinary change to the crate that reads those
 files takes another scope: `graph-config`, `plans`, `tools`, `storage`, or
@@ -129,9 +137,8 @@ only at a major release. A bump ships as one PR containing all of:
    version-mismatch error prints.
 5. A breaking commit scoped to the file kind (`feat(config)!: …`) whose
    footer names the new version — `BREAKING CHANGE: config version 2 (graph
-   config migrate)` — which is what puts it under the changelog's Config
-   section with the version in the heading. The release script refuses to
-   cut without it.
+   config migrate)` — which is what gives it the changelog's own `Config v2`
+   entry. The release script refuses to cut without it.
 
 The `format_drift` check (`.graph/plans/format_drift.yaml`, run by
 `graph-checks.yaml`) fails a PR that changes a model file's schema without

@@ -8,60 +8,75 @@ header = """
 All notable changes to graph. Generated from conventional commits by git-cliff.
 """
 body = """
-{% if version %}
-## {{ version }} — {{ timestamp | date(format="%Y-%m-%d") }}
-{% else %}
-## Unreleased
-{% endif %}
-{%- set kinds = ["binary", "config", "plan", "tool", "store"] -%}
 {%- set file_kinds = ["config", "plan", "tool", "store"] -%}
 {%- set versions = "" -%}
 {%- if message and message is containing("file versions:") -%}
 {%- set versions = message | split(pat="file versions:") | last | split(pat="\n") | first | trim -%}
 {%- endif -%}
-{%- if versions %}
-
-File versions: {{ versions }}.
-{%- endif -%}
-{%- for kind in kinds -%}
-{%- set_global bucket = [] -%}
-{%- for commit in commits -%}
-{%- if commit.breaking and commit.scope and commit.scope in file_kinds -%}
-{%- set section = commit.scope -%}
-{%- else -%}
-{%- set section = "binary" -%}
-{%- endif -%}
-{%- if section == kind -%}
-{%- set_global bucket = bucket | concat(with=commit) -%}
-{%- endif -%}
-{%- endfor -%}
-{%- if bucket | length > 0 -%}
-{%- set_global note = "" -%}
+{%- set_global bumped = [] -%}
+{%- set_global notes = [] -%}
 {%- if versions -%}
 {%- for part in versions | split(pat=",") -%}
 {%- set part = part | trim -%}
-{%- if part is starting_with(kind ~ " ") -%}
-{%- set_global note = part | replace(from=kind ~ " ", to="") -%}
+{%- if part is containing("(from ") or part is containing("(new)") -%}
+{%- set_global bumped = bumped | concat(with=part | split(pat=" ") | first) -%}
+{%- set_global notes = notes | concat(with=part) -%}
 {%- endif -%}
 {%- endfor -%}
-{%- endif %}
-
-### {{ kind | capitalize }}{% if kind != "binary" and note %} — version {{ note }}{% endif %}
+{%- endif -%}
+{%- if version %}
+## Graph {{ version }}{% if timestamp %} — {{ timestamp | date(format="%Y-%m-%d") }}{% endif %}
+{%- else %}
+## Unreleased
+{%- endif -%}
+{%- set_global bucket = [] -%}
+{%- for commit in commits -%}
+{%- if commit.breaking and commit.scope and commit.scope in bumped -%}
+{%- else -%}
+{%- set_global bucket = bucket | concat(with=commit) -%}
+{%- endif -%}
+{%- endfor -%}
 {%- set breaking = bucket | filter(attribute="breaking", value=true) -%}
 {%- if breaking | length > 0 %}
 
-#### Breaking
+### Breaking
 {% for commit in breaking %}
 - {{ commit.message | split(pat="\n") | first | trim }}{% if commit.breaking_description and commit.breaking_description != commit.message %} — {{ commit.breaking_description | split(pat="\n") | first | trim }}{% endif %}
 {%- endfor %}
 {%- endif -%}
 {%- for group, group_commits in bucket | filter(attribute="breaking", value=false) | group_by(attribute="group") %}
 
-#### {{ group }}
+### {{ group }}
 {% for commit in group_commits %}
 - {{ commit.message | split(pat="\n") | first | trim }}
 {%- endfor %}
 {%- endfor %}
+{%- for kind in file_kinds -%}
+{%- if kind in bumped -%}
+{%- set_global note = "" -%}
+{%- for part in notes -%}
+{%- if part is starting_with(kind ~ " ") -%}
+{%- set_global note = part | replace(from=kind ~ " ", to="") | split(pat=" ") | first -%}
+{%- endif -%}
+{%- endfor %}
+
+## {{ kind | capitalize }} v{{ note }}{% if timestamp %} — {{ timestamp | date(format="%Y-%m-%d") }}{% endif %}
+{%- set_global bucket = [] -%}
+{%- for commit in commits -%}
+{%- if commit.breaking and commit.scope and commit.scope == kind -%}
+{%- set_global bucket = bucket | concat(with=commit) -%}
+{%- endif -%}
+{%- endfor -%}
+{%- if bucket | length > 0 %}
+
+### Breaking
+{% for commit in bucket %}
+- {{ commit.message | split(pat="\n") | first | trim }}{% if commit.breaking_description and commit.breaking_description != commit.message %} — {{ commit.breaking_description | split(pat="\n") | first | trim }}{% endif %}
+{%- endfor %}
+{%- else %}
+
+- Introduced{% if version %} with graph {{ version }}{% endif %}.
+{%- endif -%}
 {%- endif -%}
 {%- endfor %}
 

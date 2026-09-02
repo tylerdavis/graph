@@ -14,15 +14,15 @@ steps:
     tool_name: user__cliff_context
     input:
       tag: '{{input.tag}}'
-    reasoning: Every release as template-ready data — version, an MDX-component-safe ident, human date, the tag's file-versions line, and MDX-escaped subjects sectioned by file kind (binary, config, plan, tool, store) then grouped with Breaking first — newest first, plus a version-null entry for unreleased commits.
+    reasoning: Every changelog entry as template-ready data — one per module version (the binary, then each file version the release's tag message records as bumped or new), each with its label, an MDX-component-safe ident, human date, and MDX-escaped subjects grouped with Breaking first — newest first, plus a version-null entry for unreleased commits.
   - id: E1
     tool_name: filter
     input:
-      over: '{{E0.releases}}'
+      over: '{{E0.entries}}'
       where:
         value: '{{item.version}}'
         op: not_empty
-    reasoning: The docs publish released behavior only — drop the version-null unreleased entry.
+    reasoning: The docs publish released versions only — drop the version-null unreleased entry.
   - id: E2
     tool_name: map
     input:
@@ -42,7 +42,7 @@ steps:
                 {{/B0.has_summary}}{{#B0.has_migration}}import Migration{{item.ident}} from '/snippets/changelog/{{item.version}}/migration.mdx';
                 {{/B0.has_migration}}
               block: |-
-                <Update label="{{item.version}}" description="{{item.date}}">
+                <Update label="{{item.label}}" description="{{item.date}}">
                 {{#B0.has_summary}}<Summary{{item.ident}} />
 
                 {{/B0.has_summary}}{{#B0.has_migration}}<Accordion title="Migration required — a prompt for your coding agent" icon="wand-magic-sparkles">
@@ -51,16 +51,14 @@ steps:
                 <Migration{{item.ident}} />
                 </Accordion>
 
-                {{/B0.has_migration}}{{#item.file_versions_note}}File versions: {{text}}.
+                {{/B0.has_migration}}{{#item.intro}}- {{text}}
 
-                {{/item.file_versions_note}}{{#item.sections}}### {{label}}
-
-                {{#groups}}#### {{name}}
+                {{/item.intro}}{{#item.groups}}### {{name}}
 
                 {{#subjects}}- {{subject}}
                 {{/subjects}}
-                {{/groups}}{{/item.sections}}</Update>
-    reasoning: Per release, presence flags from snippet_status (which also enforces MDX safety on the summary, failing loudly with the file named) drive an import line and an <Update> block that references the snippet components — content stays in the snippet files — followed by one h3 per file kind that changed (its label carries the version note) and h4 groups beneath.
+                {{/item.groups}}</Update>
+    reasoning: Per entry, presence flags from snippet_status (which also enforces MDX safety on the summary, failing loudly with the file named; a file-version entry such as config-v2 has no snippet directory and so no imports) drive an import line and an <Update> block that references the snippet components — content stays in the snippet files — followed by the entry's groups.
   - id: E3
     tool_name: user__write_changelog_page
     input:
