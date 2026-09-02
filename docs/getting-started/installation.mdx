@@ -39,14 +39,16 @@ Or from the command line:
 
 ## Container image
 
-Each release also publishes `ghcr.io/tylerdavis/graph` (tags `vX.Y.Z`, `X.Y`, `latest`): the Linux binary plus `git`, `jq`, `gh`, and `curl` — everything the [github and slack tool packs](/tools/builtins) shell out to. It doubles as the runtime for [CI jobs](/cookbook/ci-checks) (no install step) and works standalone:
+Each release also publishes [ghcr.io/tylerdavis/graph](https://github.com/tylerdavis/graph/pkgs/container/graph) ready to use in CI or Lambda:
 
 ```bash
-docker run --rm -e ANTHROPIC_API_KEY -e GRAPH_STORAGE=memory \
-  -v "$PWD:/work" -w /work ghcr.io/tylerdavis/graph:{{release_version}} plan list
+docker run --rm \
+           -e ANTHROPIC_API_KEY \
+           -e GRAPH_STORAGE=memory \
+           -v "$PWD:/work" \
+           -w /work \
+           ghcr.io/tylerdavis/graph:{{release_version}} plan list
 ```
-
-While the repository is private the image is too — `docker login ghcr.io` with a token that has `read:packages` first (CI jobs use the workflow's `GITHUB_TOKEN`).
 
 ## Requirements
 

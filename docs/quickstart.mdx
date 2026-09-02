@@ -1,5 +1,5 @@
 ---
-title: "Quickstart"
+title: "Quick start"
 description: "Install, scaffold a project, run your first plan"
 icon: "rocket"
 ---
@@ -14,7 +14,7 @@ import BinaryDownloads from "/shared/binary_downloads.mdx";
 
     <Steps>
       <Step title="Install graph">
-        Grab the latest release binary — macOS (arm64) or Linux (x86_64). Each release publishes version-pinned tarballs with SHA-256 checksums:
+        Grab the latest release binary — macOS (arm64) or Linux (x86_64). Each release publishes version-pinned tarballs with SHA-256 checksum:
 
         <BinaryDownloads />
       </Step>
@@ -44,7 +44,7 @@ import BinaryDownloads from "/shared/binary_downloads.mdx";
         Before you commit the plan, open it in the [workbench](/workbench/plan-workbench) — a dual-pane TUI for reviewing, tweaking, and test-running plans:
 
         ```bash
-        graph workbench plan project_status   # alias: graph wb plan
+        graph workbench plan project_status
         ```
 
         The plan renders as a flowchart on the right, an agent sits on the left. Read each step, `v` to validate, `r` to run it, or `g` to step through with a debugger that pauses on every tool call and shows the exact input and result. Ask the agent to change a step in plain English — "add a step that filters to open issues" — and watch the draft update and re-validate. `Ctrl+S` writes it back to `./.graph/plans/`.
@@ -54,10 +54,9 @@ import BinaryDownloads from "/shared/binary_downloads.mdx";
         </Frame>
       </Step>
       <Step title="Run your first plan">
-        Once it's right, run it headless — the same steps in the same order every time, for 0–1 LLM calls no matter how many steps it has:
+        Once it's right, run it:
 
         ```bash
-        graph plan list
         graph plan run project_status '{"project":"New Relic"}'
         ```
 

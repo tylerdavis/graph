@@ -8,7 +8,7 @@ Plan steps, solver templates, and user-tool arguments all share one small, stric
 
 ## Variables
 
-```
+```text
 {{E0.values.0.id}}     dotted keys and numeric array indices
 {{input.team}}         plan inputs
 {{E1.issues.length}}   array/string length (final segment only)
@@ -16,7 +16,7 @@ Plan steps, solver templates, and user-tool arguments all share one small, stric
 
 Roots are step ids (`E0`-style or descriptive names like `fetch_project`) and `input`; `item`, `index`, and `accumulator` join them inside [iteration](/plans/iteration) bodies, and `length` is a path operator — step ids may not shadow any of those five. Root-anchored paths are **strict** — a path that doesn't resolve is a typed error, never a silent empty string (see below).
 
-Two scoping rules come from [branching](/plans/branching): a `decide` step's result is referenced through its own id (`{{E1.result.…}}`, `{{E1.branch}}`) — branch-internal step ids are visible only to later steps *inside the same branch* — and the non-taken branch's templates are never rendered at all.
+Two scoping rules come from [branching](/plans/branching): a `decide` step's result is referenced through its own id (`{{E1.result.…}}`, `{{E1.branch}}`) — branch-internal step ids are visible only to later steps _inside the same branch_ — and the non-taken branch's templates are never rendered at all.
 
 ## Typed splice
 
@@ -35,14 +35,14 @@ In mixed text, objects and arrays serialize as JSON.
 
 Sections iterate arrays and gate on truthiness — used mostly in solver templates:
 
-```
+```text
 {{#E1.values}}{{title}} ({{state}}){{^@last}}, {{/@last}}{{/E1.values}}
 ```
 
 - Inside a section, bare keys (`{{title}}`) read from the current item, falling back to enclosing scopes and roots.
 - Loop variables: `{{@index}}` (0-based), `{{@first}}`, `{{@last}}` — booleans usable as sections, e.g. the comma-separation idiom above.
 - **Inverted sections** render when the value is missing, false, or empty:
-  ```
+  ```text
   {{^E1.values}}no results found{{/E1.values}}
   ```
 - A bare key missing on a list item renders empty (items legitimately omit optional fields). A **root-anchored** section path that goes nowhere is falsy rather than an error — sections are conditionals.
@@ -53,7 +53,7 @@ Sections iterate arrays and gate on truthiness — used mostly in solver templat
 Variable resolution failures are typed, because different failures deserve different handling:
 
 | Error | Meaning | Example |
-|---|---|---|
+| --- | --- | --- |
 | `MissingStep` | the referenced step doesn't exist | `{{E7.x}}` with no E7 |
 | `BadPath` | data exists, path walks off it — **the message lists the available keys** | `{{E0.values.0.idd}}` |
 | `EmptyData` | path is plausible, data ran out | `{{E0.values.0.id}}` when `values: []`, index out of range, or walking into `null` |
