@@ -43,8 +43,8 @@ pub struct Verdict {
 /// Evaluate a gate: `(triggered, reason)`, the reason present for inferred
 /// gates. Callers enforce their own arity rules on top — `exit` treats
 /// neither gate as unconditional, `decide` requires exactly one. `model`
-/// overrides the model used for an inferred verdict (a role name, `default`,
-/// or a `[models.named]` entry); `None` uses the `judge` role.
+/// overrides the model role used for an inferred verdict (any configured
+/// `[models.<role>]` or `default`); `None` uses the `judge` role.
 pub async fn evaluate_gate(
     when: Option<&Condition>,
     infer: Option<&str>,

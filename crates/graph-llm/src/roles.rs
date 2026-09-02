@@ -136,8 +136,8 @@ impl ModelRouter {
     pub fn resolve(&self, role: Role) -> Result<(Arc<dyn ChatProvider>, &ModelChoice), LlmError> {
         let choice = self
             .roles
-            .resolve(role)
-            .ok_or_else(|| LlmError::NoModelForRole(format!("{role:?}")))?;
+            .resolve_role(role)
+            .ok_or_else(|| LlmError::NoModelForRole(role.to_string()))?;
         let provider = self.provider(&choice.provider)?;
         Ok((self.with_failover(Arc::clone(provider), choice)?, choice))
     }
@@ -191,32 +191,27 @@ impl ModelRouter {
         }))
     }
 
-    /// Resolve a model *name*: a role name (with its `default` fallback)
-    /// or a `[models.named]` entry.
+    /// Resolve a model role by name: any configured `[models.<role>]`, or a
+    /// standard role falling back to `default`.
     pub fn resolve_named(
         &self,
         name: &str,
     ) -> Result<(Arc<dyn ChatProvider>, &ModelChoice), LlmError> {
         let choice = self
             .roles
-            .resolve_name(name)
+            .resolve(name)
             .ok_or_else(|| LlmError::UnknownModelName {
                 name: name.to_string(),
-                available: {
-                    let mut names: Vec<&str> =
-                        self.roles.named.keys().map(String::as_str).collect();
-                    names.extend_from_slice(graph_config::RESERVED_MODEL_NAMES);
-                    names.join(", ")
-                },
+                available: self.roles.known_names().join(", "),
             })?;
         let provider = self.provider(&choice.provider)?;
         Ok((self.with_failover(Arc::clone(provider), choice)?, choice))
     }
 
-    /// The configured `[models.named]` entries, for catalog surfaces that
+    /// The roles carrying a `description`, for catalog surfaces that
     /// advertise selectable models.
-    pub fn named_models(&self) -> &std::collections::BTreeMap<String, ModelChoice> {
-        &self.roles.named
+    pub fn described_models(&self) -> impl Iterator<Item = (&str, &ModelChoice)> {
+        self.roles.described()
     }
 
     /// Convenience: run a chat for a role with its configured model and
@@ -301,7 +296,6 @@ mod tests {
             provider: provider.into(),
             model: model.into(),
             temperature: None,
-            dimensions: None,
             description: None,
             fallbacks,
         }
@@ -324,8 +318,9 @@ mod tests {
                 healthy: true,
             }),
         );
-        let roles = graph_config::ModelRoles {
-            default: Some(choice(
+        let roles = graph_config::ModelRoles::from([(
+            "default",
+            choice(
                 "down",
                 "primary-model",
                 vec![FallbackChoice {
@@ -333,9 +328,8 @@ mod tests {
                     model: "backup-model".into(),
                     temperature: None,
                 }],
-            )),
-            ..Default::default()
-        };
+            ),
+        )]);
         let router = ModelRouter::with_providers(providers, roles);
 
         let response = router
@@ -370,8 +364,9 @@ mod tests {
                 healthy: true,
             }),
         );
-        let roles = graph_config::ModelRoles {
-            default: Some(choice(
+        let roles = graph_config::ModelRoles::from([(
+            "default",
+            choice(
                 "down",
                 "primary-model",
                 vec![FallbackChoice {
@@ -379,9 +374,8 @@ mod tests {
                     model: "backup-model".into(),
                     temperature: None,
                 }],
-            )),
-            ..Default::default()
-        };
+            ),
+        )]);
         let meter = Arc::new(Recorder::default());
         let router = ModelRouter::with_providers(providers, roles).with_meter(meter.clone());
 
@@ -422,7 +416,8 @@ mod tests {
                 }],
             },
         );
-        config.models.default = Some(choice("anthropic", "m", vec![]));
+        config.models =
+            graph_config::ModelRoles::from([("default", choice("anthropic", "m", vec![]))]);
 
         let router = ModelRouter::from_config(&config).expect("router still builds");
         let error = match router.resolve(Role::Chat) {
@@ -451,15 +446,18 @@ mod tests {
                 missing_env: Vec::new(),
             },
         );
-        config.models.default = Some(choice(
-            "anthropic",
-            "m",
-            vec![FallbackChoice {
-                provider: "typo".into(),
-                model: "m2".into(),
-                temperature: None,
-            }],
-        ));
+        config.models = graph_config::ModelRoles::from([(
+            "default",
+            choice(
+                "anthropic",
+                "m",
+                vec![FallbackChoice {
+                    provider: "typo".into(),
+                    model: "m2".into(),
+                    temperature: None,
+                }],
+            ),
+        )]);
 
         let error = match ModelRouter::from_config(&config) {
             Ok(_) => panic!("expected startup validation to fail"),

@@ -31,10 +31,29 @@ api_key = "${ANTHROPIC_API_KEY}"
 # type = "bedrock"
 # region = "us-east-1"
 
-[models]
-default = { provider = "anthropic", model = "claude-sonnet-5" }
-# planner = { provider = "anthropic", model = "claude-fable-5", temperature = 0.0 }
-# solver  = { provider = "anthropic", model = "claude-haiku-4-5", temperature = 0.4 }
+# Model roles. The standard roles (chat, planner, solver, repair, judge) fall
+# back to `default`; any other name is a custom role, selectable by name from
+# prompt tools, builtin__infer, and infer gates. Same shape for both.
+[models.default]
+provider = "anthropic"
+model = "claude-sonnet-5"
+
+# [models.planner]
+# provider = "anthropic"
+# model = "claude-fable-5"
+# temperature = 0.0
+
+# [models.solver]
+# provider = "anthropic"
+# model = "claude-haiku-4-5"
+# temperature = 0.4
+
+# A custom role with a description is advertised to the planner as a
+# routing choice — write the description for that audience.
+# [models.nano]
+# provider = "anthropic"
+# model = "claude-haiku-4-5"
+# description = "fast and cheap; small self-contained tasks like per-item map bodies"
 
 # Token prices, in USD per million tokens, keyed by model id. Without them a
 # run still reports its token counts — it just omits the dollar figure rather

@@ -2,7 +2,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item, Value};
 
-pub const CONFIG_FORMAT: u32 = 1;
+pub const CONFIG_FORMAT: u32 = 2;
 
 pub const CONFIG_FORMAT_OLDEST: u32 = 1;
 
@@ -13,7 +13,55 @@ pub const FORMATS_DOC: &str =
 
 pub type Migration = fn(&mut DocumentMut) -> Result<Vec<String>, String>;
 
-const MIGRATIONS: &[Migration] = &[];
+const MIGRATIONS: &[Migration] = &[named_models_become_roles];
+
+fn named_models_become_roles(doc: &mut DocumentMut) -> Result<Vec<String>, String> {
+    let mut notes = Vec::new();
+    let Some(models) = doc.get_mut("models").and_then(Item::as_table_like_mut) else {
+        return Ok(notes);
+    };
+    if let Some(named) = models.remove("named") {
+        let entries: Vec<(String, Item)> = match named {
+            Item::Table(table) => table
+                .into_iter()
+                .map(|(name, entry)| (name.to_string(), entry))
+                .collect(),
+            Item::Value(Value::InlineTable(table)) => table
+                .into_iter()
+                .map(|(name, entry)| (name.to_string(), Item::Value(entry)))
+                .collect(),
+            _ => return Err("models.named must be a table of model entries".to_string()),
+        };
+        for (name, entry) in entries {
+            if models.contains_key(&name) {
+                return Err(format!(
+                    "models.named.{name} and models.{name} are both set; config version 2 has one models.{name}, so remove one of them before migrating"
+                ));
+            }
+            models.insert(&name, entry);
+        }
+    }
+    for (name, entry) in models.iter_mut() {
+        let dropped = match entry {
+            Item::Table(table) => table.remove("dimensions").is_some(),
+            Item::Value(Value::InlineTable(table)) => {
+                let dropped = table.remove("dimensions").is_some();
+                if dropped {
+                    table.fmt();
+                }
+                dropped
+            }
+            _ => false,
+        };
+        if dropped {
+            notes.push(format!(
+                "dropped models.{}.dimensions: graph no longer reads it",
+                name.get()
+            ));
+        }
+    }
+    Ok(notes)
+}
 
 pub fn migration_count() -> usize {
     MIGRATIONS.len()
@@ -273,10 +321,12 @@ mod tests {
             .unwrap();
         let err = upgrade(&mut doc, Path::new("/x/config.toml")).unwrap_err();
         assert!(err.contains("/x/config.toml is config version"), "{err}");
-        assert!(
-            err.contains(&format!("reads config version {CONFIG_FORMAT}")),
-            "{err}"
-        );
+        let window = if CONFIG_FORMAT_OLDEST == CONFIG_FORMAT {
+            format!("reads config version {CONFIG_FORMAT}")
+        } else {
+            format!("reads config versions {CONFIG_FORMAT_OLDEST} to {CONFIG_FORMAT}")
+        };
+        assert!(err.contains(&window), "{err}");
         assert!(err.contains("Upgrade graph"), "{err}");
         assert!(err.contains(FORMATS_DOC), "{err}");
     }
@@ -306,6 +356,77 @@ mod tests {
         assert_eq!(upgrade.from, 1);
         assert_eq!(upgrade.to, CONFIG_FORMAT);
         assert_eq!(doc["settings"]["history_limit"].as_integer(), Some(3));
+    }
+
+    #[test]
+    fn version_1_named_models_are_hoisted_with_their_comments() {
+        let mut doc: DocumentMut = r#"[models]
+default = { provider = "p", model = "m" }
+embedder = { provider = "p", model = "e", dimensions = 768 }
+
+# what the scout is for
+[models.named.scout]
+provider = "p"
+model = "s"
+description = "scouting"
+
+[models.named.reviewer]
+provider = "p"
+model = "r"
+
+[pricing."m"]
+input = 1.0
+output = 2.0
+"#
+        .parse()
+        .unwrap();
+        let upgrade = upgrade(&mut doc, Path::new("c.toml")).unwrap();
+        assert_eq!(upgrade.from, 1);
+        assert_eq!(
+            upgrade.notes,
+            vec!["dropped models.embedder.dimensions: graph no longer reads it"]
+        );
+        assert_eq!(
+            doc.to_string(),
+            r#"[models]
+default = { provider = "p", model = "m" }
+embedder = { provider = "p", model = "e" }
+
+# what the scout is for
+[models.scout]
+provider = "p"
+model = "s"
+description = "scouting"
+
+[models.reviewer]
+provider = "p"
+model = "r"
+
+[pricing."m"]
+input = 1.0
+output = 2.0
+"#
+        );
+    }
+
+    #[test]
+    fn version_1_inline_named_models_are_hoisted() {
+        let mut doc: DocumentMut =
+            "[models]\nnamed = { nano = { provider = \"p\", model = \"n\" } }\n"
+                .parse()
+                .unwrap();
+        upgrade(&mut doc, Path::new("c.toml")).unwrap();
+        assert_eq!(doc["models"]["nano"]["model"].as_str(), Some("n"));
+        assert!(doc["models"].get("named").is_none());
+    }
+
+    #[test]
+    fn a_named_model_colliding_with_a_role_refuses_to_migrate() {
+        let mut doc: DocumentMut = "[models]\njudge = { provider = \"p\", model = \"m\" }\n[models.named.judge]\nprovider = \"p\"\nmodel = \"x\"\n"
+            .parse()
+            .unwrap();
+        let err = upgrade(&mut doc, Path::new("c.toml")).unwrap_err();
+        assert!(err.contains("models.named.judge and models.judge"), "{err}");
     }
 
     #[test]

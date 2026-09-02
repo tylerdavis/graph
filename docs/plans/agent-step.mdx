@@ -43,7 +43,7 @@ steps:
 | `output_schema` | yes | JSON Schema for the result. Must be `type: object`. |
 | `tools` | no | Names or wildcard patterns to expose. Omit for the whole catalog; `[]` is a validation error, not "no tools". |
 | `max_iterations` | no | Inference rounds. Default 8. |
-| `model` | no | Model role or [named model](/reference/configuration). Default: the `chat` role. |
+| `model` | no | A configured [model role](/models/models-and-providers#roles), standard or custom. Default: the `chat` role. |
 | `system_prompt` | no | Extra guidance appended to the built-in system prompt. Renders against the scope, like `prompt`. |
 
 Write `prompt` as a plain task description — what to do and what a complete

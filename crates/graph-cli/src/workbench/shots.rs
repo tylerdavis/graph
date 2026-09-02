@@ -318,17 +318,16 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
     let chat_provider = Arc::new(ScriptedChat::new(spec.llm));
     let mut providers: HashMap<String, Arc<dyn ChatProvider>> = HashMap::new();
     providers.insert("scripted".to_string(), chat_provider.clone());
-    let roles = ModelRoles {
-        default: Some(ModelChoice {
+    let roles = ModelRoles::from([(
+        "default",
+        ModelChoice {
             provider: "scripted".to_string(),
             model: "scripted".to_string(),
             temperature: None,
-            dimensions: None,
             description: None,
             fallbacks: Vec::new(),
-        }),
-        ..Default::default()
-    };
+        },
+    )]);
     let router = Arc::new(ModelRouter::with_providers(providers, roles));
 
     // The real catalog: every pack plus the repo's user tools.

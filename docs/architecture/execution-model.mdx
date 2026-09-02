@@ -58,7 +58,7 @@ Call counts are what you can reason about up front. For what a run actually spen
 
 ## Model roles
 
-Every inference site resolves through `[models]` role assignment (`chat`, `planner`, `solver`, `repair`, `judge` — falling back to `default`), so cost tuning is pure config: strong model where judgment lives, fast model where volume lives. [Named models](/models/models-and-providers#named-models) extend the fixed roles with user-defined entries selectable at the point of use — per-step model routing without touching the role assignments. Structured outputs (planner, prompt tools) get one automatic `repair`-role fix-up attempt before erroring into the replan loop. The full map of roles, providers, and failover is [Models & providers](/models/models-and-providers).
+Every inference site resolves through a `[models.<role>]` entry (the standard roles `chat`, `planner`, `solver`, `repair`, `judge` fall back to `default`), so cost tuning is pure config: strong model where judgment lives, fast model where volume lives. [Custom roles](/models/models-and-providers#custom-roles) use the same shape and are selectable at the point of use — per-step model routing without touching the standard assignments. Structured outputs (planner, prompt tools) get one automatic `repair`-role fix-up attempt before erroring into the replan loop. The full map of roles, providers, and failover is [Models & providers](/models/models-and-providers).
 
 ## Learning across turns
 

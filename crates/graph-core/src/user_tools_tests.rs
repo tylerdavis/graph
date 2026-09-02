@@ -42,17 +42,16 @@ fn router() -> Arc<ModelRouter> {
     providers.insert("mock".into(), Arc::new(Canned));
     Arc::new(ModelRouter::with_providers(
         providers,
-        ModelRoles {
-            default: Some(ModelChoice {
+        ModelRoles::from([(
+            "default",
+            ModelChoice {
                 provider: "mock".into(),
                 model: "m".into(),
                 temperature: None,
-                dimensions: None,
                 description: None,
                 fallbacks: Vec::new(),
-            }),
-            ..Default::default()
-        },
+            },
+        )]),
     ))
 }
 
@@ -624,17 +623,16 @@ async fn caller_schema_without_type_gets_object_defaulted() {
     providers.insert("mock".into(), Arc::new(Capture(seen.clone())));
     let router = Arc::new(ModelRouter::with_providers(
         providers,
-        ModelRoles {
-            default: Some(ModelChoice {
+        ModelRoles::from([(
+            "default",
+            ModelChoice {
                 provider: "mock".into(),
                 model: "m".into(),
                 temperature: None,
-                dimensions: None,
                 description: None,
                 fallbacks: Vec::new(),
-            }),
-            ..Default::default()
-        },
+            },
+        )]),
     ));
     let tool = doc(r#"
 name: infer
@@ -852,17 +850,12 @@ fn schema_router(chat_value: Value, repair_value: Value) -> Arc<ModelRouter> {
         provider: provider.into(),
         model: "m".into(),
         temperature: None,
-        dimensions: None,
         description: None,
         fallbacks: Vec::new(),
     };
     Arc::new(ModelRouter::with_providers(
         providers,
-        ModelRoles {
-            default: Some(choice("chat")),
-            repair: Some(choice("fixer")),
-            ..Default::default()
-        },
+        ModelRoles::from([("default", choice("chat")), ("repair", choice("fixer"))]),
     ))
 }
 
@@ -924,10 +917,11 @@ async fn prompt_output_valid_passes_untouched() {
     assert_eq!(outcome.result["severity"], "high");
 }
 
-// ── Named models ─────────────────────────────────────────────────────────
+// ── Custom roles ─────────────────────────────────────────────────────────
 
 /// Router that echoes the resolved model id back in the response text,
-/// with two `[models.named]` entries alongside the default.
+/// with two custom roles alongside the default — one described (and so
+/// advertised), one not.
 fn named_model_router() -> Arc<ModelRouter> {
     struct Echo;
     #[async_trait]
@@ -952,23 +946,16 @@ fn named_model_router() -> Arc<ModelRouter> {
         provider: "mock".into(),
         model: model.into(),
         temperature: None,
-        dimensions: None,
         description: description.map(str::to_string),
         fallbacks: Vec::new(),
     };
-    let mut named = std::collections::BTreeMap::new();
-    named.insert(
-        "nano".to_string(),
-        choice("nano-model", Some("fast and cheap")),
-    );
-    named.insert("deep".to_string(), choice("deep-model", None));
     Arc::new(ModelRouter::with_providers(
         providers,
-        ModelRoles {
-            default: Some(choice("default-model", None)),
-            named,
-            ..Default::default()
-        },
+        ModelRoles::from([
+            ("default", choice("default-model", None)),
+            ("nano", choice("nano-model", Some("fast and cheap"))),
+            ("deep", choice("deep-model", None)),
+        ]),
     ))
 }
 
@@ -1047,20 +1034,21 @@ model: solver
 async fn caller_model_tools_advertise_named_models_in_the_catalog() {
     let docs = load_pack_tools(&["llm".to_string()]).unwrap();
 
-    // Named models configured: the catalog schema advertises them.
+    // Described roles: the catalog schema advertises exactly those. `deep`
+    // has no description, so it stays selectable by name but is not offered.
     let registry = UserToolRegistry::builtins(docs.clone(), named_model_router());
     let defs = registry.tools().await.unwrap();
     let infer = defs.iter().find(|d| d.name == "builtin__infer").unwrap();
     let model = &infer.input_schema["properties"]["model"];
-    assert_eq!(model["enum"], json!(["deep", "nano"]));
+    assert_eq!(model["enum"], json!(["nano"]));
     let description = model["description"].as_str().unwrap();
     assert!(
         description.contains("nano — fast and cheap"),
         "{description}"
     );
-    assert!(description.contains("deep — deep-model"), "{description}");
+    assert!(!description.contains("deep"), "{description}");
 
-    // None configured: no model property — nothing to select.
+    // No described roles: no model property — nothing to select.
     let registry = UserToolRegistry::builtins(docs, router());
     let defs = registry.tools().await.unwrap();
     let infer = defs.iter().find(|d| d.name == "builtin__infer").unwrap();

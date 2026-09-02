@@ -1816,17 +1816,16 @@ steps:
         let mut providers: std::collections::HashMap<String, Arc<dyn graph_llm::ChatProvider>> =
             std::collections::HashMap::new();
         providers.insert("mock".to_string(), provider.clone());
-        let roles = graph_config::ModelRoles {
-            default: Some(graph_config::ModelChoice {
+        let roles = graph_config::ModelRoles::from([(
+            "default",
+            graph_config::ModelChoice {
                 provider: "mock".to_string(),
                 model: "test".to_string(),
                 temperature: None,
-                dimensions: None,
                 description: None,
                 fallbacks: Vec::new(),
-            }),
-            ..Default::default()
-        };
+            },
+        )]);
         let router = Arc::new(graph_llm::ModelRouter::with_providers(providers, roles));
         let pipeline = Arc::new(Pipeline {
             router,
