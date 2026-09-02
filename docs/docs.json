@@ -69,7 +69,7 @@
             "pages": [
               "plans/overview",
               "plans/inputs",
-              "plans/template-language",
+              "reference/plans/template-language",
               "plans/finish-modes",
               "plans/exit-gates",
               "plans/branching",
