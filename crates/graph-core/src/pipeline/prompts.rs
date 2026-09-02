@@ -15,6 +15,10 @@ pub const TEMPLATING_RULES: &str = include_str!("prompts/templating_rules.md").t
 /// cannot drift.
 pub const CONTROL_STEP_RULES: &str = include_str!("prompts/control_step_rules.md").trim_ascii_end();
 
+/// Planning rules shared verbatim by the planner and drafting
+/// prompts, which differ only in how they are called.
+const PLANNING_RULES: &str = include_str!("prompts/planning_rules.md").trim_ascii_end();
+
 pub struct PlannerPromptArgs<'a> {
     pub current_date: &'a str,
     pub last_error: Option<&'a str>,
@@ -37,6 +41,7 @@ pub fn planner_prompt(args: &PlannerPromptArgs) -> String {
         user_context = args.user_context,
         existing_plan = args.existing_plan,
         step_schema = args.step_schema,
+        planning_rules = PLANNING_RULES,
         control_step_rules = CONTROL_STEP_RULES,
     )
 }
@@ -74,6 +79,7 @@ pub fn drafting_prompt(args: &DraftingPromptArgs) -> String {
         user_context = args.user_context,
         draft_section = draft_section,
         step_schema = args.step_schema,
+        planning_rules = PLANNING_RULES,
         control_step_rules = CONTROL_STEP_RULES,
     )
 }
@@ -169,6 +175,7 @@ mod tests {
             step_schema: "{}",
         });
         assert!(prompt.contains(CONTROL_STEP_RULES));
+        assert!(prompt.contains(PLANNING_RULES));
     }
 
     fn drafting_prompt_for(draft: Option<&str>) -> String {
@@ -185,6 +192,7 @@ mod tests {
     fn drafting_prompt_carries_the_shared_sections() {
         let prompt = drafting_prompt_for(None);
         assert!(prompt.contains(CONTROL_STEP_RULES));
+        assert!(prompt.contains(PLANNING_RULES));
         assert!(prompt.contains(TEMPLATING_RULES));
         assert!(!prompt.contains("Draft Under Revision"));
     }
