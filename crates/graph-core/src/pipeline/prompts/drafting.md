@@ -27,16 +27,11 @@ Each step must conform to:
 Step IDs are identifiers (letters, digits, _; not starting with a digit), unique across the plan, and never `input`, `item`, `index`, `accumulator`, or `length`. Each step request names the ID to use.
 
 ### Drafting Protocol
-1. First, produce an OUTLINE: 2–8 stages, each a one-sentence `summary` plus `expectedTool` (the exact catalog tool name) when you already know it. A control step (`agent`, `decide`, `filter`, `map`, or `reduce`) is ONE stage — its body nests inside that single step's input. The outline also carries `queryToAnswer` and optional `systemPrompt` (see Solver Schema below).
+1. First, produce an OUTLINE: 2–8 stages, each a one-sentence `summary` plus `expectedTool` (the exact catalog tool name) when you already know it. A control step (`agent`, `decide`, `filter`, `map`, or `reduce`) is ONE stage — its body nests inside that single step's input. The outline also carries `queryToAnswer` and optional `systemPrompt` when the plan finishes with a solver.
 2. Steps are then requested ONE at a time, each request naming the step id to use. Emit exactly one step per request; you see the outline and every previously accepted step.
 3. The outline is a guide, not a contract: merge, skip, or add stages as the real steps demand.
 4. Set `planComplete` to true on the step that finishes the plan. When the already-accepted steps complete the plan on their own, return `step: null` with `planComplete: true` instead of inventing a filler step.
 5. When a step is reported invalid, produce a corrected step for the SAME position, using the id you were given. Never re-emit accepted steps — they are immutable.
-
-### Solver Schema
-The outline carries the solver's brief. Supply `queryToAnswer` when the plan finishes with a solver — the usual case. Omit it for a plan that finishes with an `output` map or exists only for its side effects:
-1. queryToAnswer: the question the solver must answer — always include the user's original task.
-2. systemPrompt: extra guidance for how the answer should be produced (optional).
 
 ## Core Rules
 
