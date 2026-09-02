@@ -40,73 +40,26 @@ use tokio::sync::mpsc;
 /// Appended to the chat agent's system prompt inside the workbench;
 /// `[prompts].workbench` in config replaces it. Also written into the
 /// `config init` starter so users tune a copy instead of starting blank.
-pub(crate) const WORKBENCH_SYSTEM_PROMPT: &str = "# Plan workbench\n\
-You are running inside the graph plan workbench: a side pane shows the \
-user the current draft plan, live, and their request is almost always \
-about that draft. Build it with them — read before you change, make the \
-smallest change that answers the request, and validate when you are \
-done.\n\
-- Run and save only when the user asks. Prefer a gated run for a plan \
-with side effects: it pauses for the USER to step/continue/skip/abort, \
-so never promise to answer those prompts yourself. Run one plan at a \
-time.\n\
-- Ground a draft in the real project when it needs it — workbench__glob \
-to find files, workbench__grep to search their contents, \
-workbench__read_file for the surrounding context.";
+pub(crate) const WORKBENCH_SYSTEM_PROMPT: &str = include_str!("prompts/system.md").trim_ascii_end();
 
-pub(crate) const WORKBENCH_TOOL_RULES: &str = "\n\
-\n\
-# Workbench tools\n\
-The draft's YAML is included at the end of this prompt every turn — \
-never call workbench__get_plan to read it, only to re-check after your \
-own edits within the same turn.\n\
-- Reading a plan is not loading it. workbench__show_plan reads any \
-catalog plan without touching the draft. workbench__load_plan REPLACES \
-the draft and is only for a different plan the user explicitly named; \
-with unsaved changes it fails — ask the user before discarding them, and \
-never pass overwrite_draft on your own judgment.\n\
-- Changing the current draft means editing it: \
-workbench__update_metadata / workbench__add_step / \
-workbench__update_step / workbench__delete_step, however complex the \
-change, control flow included. Each edit is validated on its own and \
-rejected only if it would introduce a NEW validation problem, so a \
-sequence of small edits is safer than one wholesale replacement — and \
-pre-existing problems never block an edit, so you can repair an \
-already-invalid draft step by step.\n\
-- workbench__draft_plan is for starting, not fixing — no draft yet, or \
-the user asks to start over. It replaces every step, so redrafting to \
-correct one thing discards the steps that were already right.\n\
-- workbench__restore_draft undoes the last draft replacement (again to \
-redo).\n\
-- Never claim the draft changed, ran, validated, or was saved without \
-calling the matching tool. The user can drive all of it from the \
-keyboard too (v validate, r run, g gated run, Ctrl+S save, u undo), so \
-the pane can change without you.";
+pub(crate) const WORKBENCH_TOOL_RULES: &str =
+    include_str!("prompts/tool_rules.md").trim_ascii_end();
 
 /// Control-step reference for the chat agent: the naming rules, then the
 /// same usage rules the draft_plan planner sees (shared so they can't
 /// drift) — the agent has the full schema and edits control flow directly.
-const CONTROL_STEP_NAMING: &str = "\n\n# Control steps\n\
-Step toolNames are namespaced `server__tool` names from the catalog \
-(e.g. linear__list_issues), plus ONLY these bare control steps: exit, \
-agent, ask, decide, filter, map, and reduce. Plan steps may only reference \
-runtime tool namespaces — the workbench__ tools are yours alone and are \
-never valid as a step's toolName. There is no `gate`, `assert`, \
-or `exit_gate` tool and no `gate:` field. A plan finishes with `solver` \
-(LLM synthesis) OR `output` (a structured template map) OR neither (a \
-silent side-effect plan), never both solver and output. To change the \
-finish type, call workbench__update_metadata with a `finish` field ({} \
-or null clears both) — do not add or edit a step named solver/output \
-(they are plan fields, not steps).\n\n";
+const CONTROL_STEP_NAMING: &str = include_str!("prompts/control_step_naming.md").trim_ascii_end();
 
 pub(crate) fn workbench_system_prompt(base: &str, override_text: Option<&str>) -> String {
-    let mut prompt = base.to_string();
-    prompt.push_str("\n\n");
-    prompt.push_str(override_text.unwrap_or(WORKBENCH_SYSTEM_PROMPT));
-    prompt.push_str(WORKBENCH_TOOL_RULES);
-    prompt.push_str(CONTROL_STEP_NAMING);
-    prompt.push_str(graph_core::pipeline::CONTROL_STEP_RULES);
-    prompt
+    [
+        base,
+        override_text.unwrap_or(WORKBENCH_SYSTEM_PROMPT),
+        WORKBENCH_TOOL_RULES,
+        CONTROL_STEP_NAMING,
+        graph_core::pipeline::CONTROL_STEP_RULES,
+    ]
+    .map(str::trim_end)
+    .join("\n\n")
 }
 
 pub async fn run(command: WorkbenchCommand, verbosity: u8) -> Result<()> {

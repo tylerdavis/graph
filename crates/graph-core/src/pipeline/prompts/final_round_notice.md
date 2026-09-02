@@ -1,0 +1,1 @@
+This is your final turn. Tools are no longer available. Answer now with what you already have, as a JSON object matching the output schema. Partial findings are expected and useful — report them rather than nothing.

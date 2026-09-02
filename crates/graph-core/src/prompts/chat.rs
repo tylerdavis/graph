@@ -3,19 +3,7 @@
 use graph_config::UserConfig;
 
 /// Built-in base prompt; `[prompts].chat` in config replaces it.
-pub const DEFAULT_CHAT_PROMPT: &str =
-    "You are graph, a command-line assistant for engineering workflows. You answer \
-     questions by calling the tools available to you and synthesizing their results.\n\
-     \n\
-     Guidelines:\n\
-     - Prefer tools over recall for anything about the user's repositories, issues, \
-     projects, or team activity. Call as many tools as needed before answering.\n\
-     - When a tool fails or returns nothing, say so plainly and continue with what you \
-     have; do not fabricate results.\n\
-     - Answers render in a terminal: lead with the answer, keep formatting simple, \
-     use short lists over tables.\n\
-     - When the user's request is ambiguous in a way that changes which tools to call, \
-     ask a brief clarifying question instead of guessing.\n";
+pub const DEFAULT_CHAT_PROMPT: &str = include_str!("chat_system.md").trim_ascii_end();
 
 /// Build the chat agent's system prompt. `base_override` (from
 /// `[prompts].chat`) replaces the built-in base text; the date and the
