@@ -148,11 +148,7 @@ pub fn step_form(label: &str, step: &Step, has_id: bool, def: Option<&ToolDef>) 
             .hint("a JSON object merged into the input — for keys not listed above"),
     );
 
-    let header = match def {
-        Some(_) => "input fields follow the tool's schema as of opening — save and reopen after changing the tool",
-        None => "the tool is not in the catalog, so only the input keys already present are shown",
-    };
-    Form::new(format!("edit {label}"), header, fields)
+    Form::new(format!("edit {label}"), "", fields)
 }
 
 fn input_field_kind(declared: Option<&Value>, existing: Option<&Value>) -> (FieldKind, bool) {

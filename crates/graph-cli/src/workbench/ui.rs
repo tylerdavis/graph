@@ -1125,18 +1125,21 @@ fn draw_form(frame: &mut Frame, state: &FormState) {
         DIM,
     ));
     let footer_height = footer_lines.len() as u16;
+    let header_height = u16::from(!form.header.is_empty());
     let [header, body, footer] = *Layout::vertical([
-        Constraint::Length(1),
+        Constraint::Length(header_height),
         Constraint::Min(3),
         Constraint::Length(footer_height),
     ])
     .split(inner) else {
         return;
     };
-    frame.render_widget(
-        Paragraph::new(Line::styled(format!(" {}", form.header), ACCENT)),
-        header,
-    );
+    if header_height > 0 {
+        frame.render_widget(
+            Paragraph::new(Line::styled(format!(" {}", form.header), ACCENT)),
+            header,
+        );
+    }
     frame.render_widget(Paragraph::new(footer_lines), footer);
 
     let width = body.width.saturating_sub(1);
