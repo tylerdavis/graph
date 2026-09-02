@@ -1,0 +1,248 @@
+````markdown
+# Migrate graph config, plans, and tools to v0.13.0
+
+You are upgrading the graph files in this repository — `.graph/config.toml`,
+the plans under `.graph/plans/`, the user tools under `.graph/tools/`, and,
+if the user asks, the global library in `~/.config/graph/` — to graph
+v0.13.0. The release is backward compatible for every well-formed file:
+nothing you leave untouched changes meaning. But two things need checking
+before the upgrade is trusted, and one file kind can now be stamped with a
+version. Be conservative: apply only the migrations below; do not
+restructure unrelated steps, tools, or config.
+
+## Prerequisites
+
+- `graph --version` must report ≥ 0.13.0 wherever these files are read.
+- If plans run in CI from the container image
+  (`ghcr.io/tylerdavis/graph:vX.Y.Z`), the pin must move to ≥ v0.13.0
+  **in the same PR** as any file you stamp with a `version` key (Migration 3
+  below). A pre-0.13 binary reads the key as an unknown field: it refuses a
+  stamped `config.toml` outright and skips a stamped plan from its catalog.
+  Files load from the repo checkout but the engine comes from the pinned
+  image, so the two must move atomically. Check `.github/workflows/` for
+  `image:` pins.
+
+## What v0.13.0 changes (facts to work from)
+
+**1. Every file kind now carries a file version, separate from the binary.**
+Config, plan documents, tool documents, and the data directory each have an
+integer version that moves only when that file's schema changes. This
+release introduces all four at **v1**, which is the schema graph has always
+read — the changelog entries `Config v1`, `Plan v1`, `Tool v1`, and
+`Store v1` next to `Graph v0.13.0` record the introduction and carry no
+schema change. Where the version lives, and what a missing one means:
+
+| File | Version key | Missing means |
+| --- | --- | --- |
+| `config.toml` (global and project) | top-level `version = 1` | version 1 |
+| plan documents | top-level `version: 1` | version 1 |
+| tool documents | top-level `version: 1` | version 1 |
+| data directory | `<data_dir>/FORMAT`, written on first open | version 1 |
+
+A binary reads every version in its support window and migrates older files
+in memory as they load; the file on disk changes only when you run a
+`migrate` command. New commands:
+
+```text
+graph version                     # binary version + the version each file kind is written at
+graph config check                # each config file's version and whether the merged config loads
+graph config migrate [--global]   # rewrite config.toml to the current version, comments preserved
+graph plan migrate <name|path>    # rewrite one plan file to the current plan version
+graph tools migrate <path>        # rewrite one user tool file to the current tool version
+```
+
+`graph config check` prints one line per config file:
+`<path>	version 1	current (unstamped)` for a file with no `version` key,
+`current` once stamped, `migrate` when older than the binary writes, and
+`too new` / `too old` outside the window. Files graph itself writes — the
+workbench's save, `plan new`, `plan draft`, `plan show` — now always carry
+`version: 1`.
+
+**2. Plan steps and tool documents are read strictly.** Before this
+release, an unknown key on a *step* (top-level plan keys were already
+strict) and any unknown key in a *tool* document were silently dropped.
+Now they are load errors that name the key. A plan with one is left out of
+the catalog with that diagnostic; a tool file with one fails the whole tool
+catalog by path, so every command that builds it stops until the file is
+fixed:
+
+- A step accepts exactly `id`, `tool_name`, `input`, and `reasoning`. The
+  check runs at every depth — inside `decide`'s `then`/`else` and
+  `map`/`reduce`'s `do` bodies too. Error shape:
+  `steps[0]: unknown field \`retries\`` or
+  `steps[0].input.then[0].input.do: unknown field \`timeout\``. Keys inside
+  a step's `input` are the tool's business and are not checked.
+- A tool document accepts `name`, `description`, `input_schema`,
+  `output_schema`, `read_only`, `kind`, `version`, plus the keys of its
+  `kind`: `exec` → `command`, `args`, `env`, `cwd`, `timeout_secs`,
+  `output`; `prompt` → `prompt`, `system`, `model`, `caller_output_schema`,
+  `caller_model`; `reshape` → `shape`, `caller_shape`. Error shape:
+  `unknown field(s) \`tmeout_secs\` for a \`exec\` tool`.
+
+**3. The `[prompts].workbench` override no longer carries the tool rules.**
+The rules describing what each `workbench__*` tool does to the draft are
+now appended after the override and cannot be replaced by it. The override
+is framing and policy only: how the agent should behave in the workbench,
+when it may run or save, whether it reads the project. Previously the
+override was the agent's *only* description of those tools, so `graph config
+init` wrote the full tool list into it and customizations started from
+that text.
+
+**4. `graph --version` prints two lines** (`graph 0.13.0` then
+`file versions: config 1, plan 1, tool 1, store 1`). `-V` still prints the
+binary version alone; `graph version --json` reports `fileVersions` with
+`oldest` and `current` per kind.
+
+**5. The data directory gains a `FORMAT` marker** on first open, holding the
+store version. A data directory that was previously read-only at open will
+now fail to open until the marker can be written once.
+
+## Migration 1 — REQUIRED: find files the strict reader now rejects
+
+Run, from the repository root:
+
+```text
+graph plan list --json | jq '.skipped'
+graph tools list
+```
+
+Every entry under `skipped` whose reason contains `unknown field` is a plan
+that loaded before this release and no longer does. If `graph tools list`
+fails with `<path>: unknown field(s) ...`, fix that file and run it again —
+one bad tool file hides the rest of the catalog. For each hit, open the
+file and decide which of two cases it is:
+
+- **A misspelling of a real key** (`tool_name` written as `toolname`,
+  `timeout_secs` as `timeout`): fix the spelling. The key was being ignored,
+  so the file's behavior changes — a timeout that was never applied now
+  is. Say so in your report.
+- **A key that was never part of the grammar** (`retries`, `notes`,
+  `enabled`, ad-hoc annotations): delete it. If it carried intent worth
+  keeping, move it into `reasoning` on a step or `description` on a tool,
+  both of which are free text.
+
+Before:
+
+```yaml
+steps:
+  - id: E1
+    tool_name: user__fetch_issues
+    input: { project: "{{input.project}}" }
+    retries: 3
+    note: flaky on Mondays
+```
+
+After:
+
+```yaml
+steps:
+  - id: E1
+    tool_name: user__fetch_issues
+    input: { project: "{{input.project}}" }
+    reasoning: flaky on Mondays; the tool retries internally
+```
+
+Do the same sweep over the global library (`~/.config/graph/plans/`,
+`~/.config/graph/tools/`) if the user asks for it. Also grep for step keys
+the catalog cannot report because the plan is hidden by unconfigured
+`requires_servers`: `graph plan validate <name>` opens those from disk.
+
+## Migration 2 — REQUIRED where present: trim the workbench prompt override
+
+Grep `.graph/config.toml` and `~/.config/graph/config.toml` for a
+`workbench` key under `[prompts]` whose value mentions `workbench__`:
+
+```text
+grep -n 'workbench__' .graph/config.toml ~/.config/graph/config.toml
+```
+
+If the override contains tool descriptions (`workbench__show_plan reads any
+catalog plan…`, `workbench__load_plan REPLACES the draft…`, and so on), it is
+a copy of the old built-in text. Those rules are now appended after the
+override by graph itself, so the copy is redundant at best and, as the tools
+evolve, a stale contradiction of the real rules at worst.
+
+- If the override is an unmodified copy of the old default, **delete the
+  key** and let the built-in framing apply.
+- If it was customized, **keep only the framing and policy** — the
+  sentences about how the agent should behave, when it may run or save,
+  whether it reads the project — and drop every line that describes what a
+  `workbench__*` tool does.
+
+Before:
+
+```toml
+[prompts]
+workbench = """
+# Plan workbench
+You are running inside the graph plan workbench. Never run or save without asking.
+Operate on that draft with the workbench tools:
+- workbench__show_plan: read any catalog plan's YAML without touching the draft...
+- workbench__load_plan: open a DIFFERENT plan the user explicitly names...
+"""
+```
+
+After:
+
+```toml
+[prompts]
+workbench = """
+Build the draft plan with the user. Never run or save without asking.
+"""
+```
+
+## Migration 3 — RECOMMENDED: stamp files with their version
+
+Stamping is optional — an unstamped file is read as v1 — but it is what
+future upgrades key on, and a stamped file is refused by name, with the
+version it found and the versions the binary reads, instead of failing with
+an unknown-field error when a later schema moves. Only do this once the
+Prerequisites hold everywhere the files are read (in particular, the CI
+image pin).
+
+```text
+graph config check
+graph config migrate               # ./.graph/config.toml
+graph config migrate --global      # ~/.config/graph/config.toml, if the user asked for the global library
+graph plan migrate <name>          # once per plan file in .graph/plans/
+graph tools migrate <path>         # once per tool file in .graph/tools/
+```
+
+What the rewrites do:
+
+- `config migrate` writes `version = 1` as the first key and leaves every
+  other line, comment, and table where it was. A file already stamped is
+  left untouched.
+- `plan migrate` and `tools migrate` rewrite the document through the YAML
+  tree, so field order survives. A **leading comment block** (lines before
+  the first key) is preserved verbatim; comments elsewhere in the file are
+  dropped and the command reports how many. If a plan or tool carries
+  comments below its first key that the user wants to keep, either add
+  `version: 1` as the first key by hand instead of running `migrate`, or
+  move those comments into `reasoning` / `description` first.
+
+Commit the stamped files together with any image-pin change.
+
+## Migration 4 — AWARENESS: scripts that parse `graph --version`
+
+Grep workflows and scripts for `graph --version`. Anything that expects a
+single line (`graph --version | awk '{print $2}'`, a version-gate in a
+Makefile) should switch to `graph -V` for the bare binary version or
+`graph version --json` for the structured form.
+
+## Verify
+
+1. `graph version` reports `0.13.0` or newer, and
+   `file versions: config 1, plan 1, tool 1, store 1`.
+2. `graph config check` exits 0 and shows every config file as `current`
+   (or `current (unstamped)` if you skipped Migration 3).
+3. `graph plan list --json | jq '.skipped'` is empty, or contains only
+   plans that were deliberately left broken (say which and why).
+4. `graph plan validate <name>` for every plan you touched — must pass.
+5. `graph tools list` builds the catalog without naming any file.
+6. If the workbench override changed, open `graph wb plan` on a scratch plan
+   and confirm the agent still edits the draft with the `workbench__*` tools.
+7. Report per file: what was found, what changed, and validation status.
+   List the files you inspected and deliberately left alone, with the
+   reason.
+````

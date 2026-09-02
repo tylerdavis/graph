@@ -5,6 +5,7 @@ rss: true
 ---
 
 import SummaryV0_13_0 from '/snippets/changelog/v0.13.0/summary.mdx';
+import MigrationV0_13_0 from '/snippets/changelog/v0.13.0/migration.mdx';
 import SummaryV0_12_0 from '/snippets/changelog/v0.12.0/summary.mdx';
 import SummaryV0_11_0 from '/snippets/changelog/v0.11.0/summary.mdx';
 import SummaryV0_10_0 from '/snippets/changelog/v0.10.0/summary.mdx';
@@ -24,6 +25,15 @@ import SummaryV0_1_0 from '/snippets/changelog/v0.1.0/summary.mdx';
 <Update label="Graph v0.13.0" description="September 2, 2026" tags={["Graph"]}>
 <SummaryV0_13_0 />
 
+<Prompt
+  description="Migration suggested"
+  icon="sparkle"
+  iconType="solid"
+  actions={["copy"]}
+>
+  <MigrationV0_13_0 />
+</Prompt>
+
 ### Added
 
 - version the config, plan, tool, and store file formats independently of the binary (#121)
@@ -35,21 +45,25 @@ import SummaryV0_1_0 from '/snippets/changelog/v0.1.0/summary.mdx';
 </Update>
 
 <Update label="Config v1" description="September 2, 2026" tags={["Config"]}>
+### Config.toml now supports schema versioning
 - Introduced with graph v0.13.0.
 
 </Update>
 
 <Update label="Plan v1" description="September 2, 2026" tags={["Plan"]}>
+### Plan definitions now supports schema versioning
 - Introduced with graph v0.13.0.
 
 </Update>
 
 <Update label="Tool v1" description="September 2, 2026" tags={["Tool"]}>
+### Tool definitions now supports schema versioning
 - Introduced with graph v0.13.0.
 
 </Update>
 
 <Update label="Store v1" description="September 2, 2026" tags={["Store"]}>
+### Storage files now supports schema versioning
 - Introduced with graph v0.13.0.
 
 </Update>
@@ -101,11 +115,14 @@ import SummaryV0_1_0 from '/snippets/changelog/v0.1.0/summary.mdx';
 <Update label="Graph v0.10.0" description="August 4, 2026" tags={["Graph"]}>
 <SummaryV0_10_0 />
 
-<Accordion title="Migration required — a prompt for your coding agent" icon="wand-magic-sparkles">
-Existing plans may need updating. Copy this prompt into your coding agent in the repository that carries your plans:
-
-<MigrationV0_10_0 />
-</Accordion>
+<Prompt
+  description="Migration required"
+  icon="sparkle"
+  iconType="solid"
+  actions={["copy"]}
+>
+  <MigrationV0_10_0 />
+</Prompt>
 
 ### Added
 
