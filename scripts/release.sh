@@ -62,8 +62,8 @@ if [ -n "$last_tag" ]; then
   format_delta=$(paste -d' ' <(format_table "$last_tag") <(format_table HEAD) \
     | awk '$2 != $4 { printf "%s %s→%s\n", $1, $2, $4 }' | paste -sd',' - | sed 's/,/, /g')
 fi
-breaking=$(git-cliff --tag "v$new" --unreleased --context 2>/dev/null \
-  | jq '[.[] | .commits[]? | select(.breaking == true)] | length')
+unreleased=$(git-cliff --tag "v$new" --unreleased --context 2>/dev/null)
+breaking=$(jq '[.[] | .commits[]? | select(.breaking == true)] | length' <<<"$unreleased")
 if [ -n "$format_delta" ] || [ "${breaking:-0}" -gt 0 ]; then
   echo "release carries breaking changes: ${breaking:-0} breaking commit(s)${format_delta:+, file-version bump(s): $format_delta}"
   needed=$([ "$major" -ge 1 ] && echo major || echo minor)
@@ -72,6 +72,37 @@ if [ -n "$format_delta" ] || [ "${breaking:-0}" -gt 0 ]; then
     *) echo "a breaking release needs at least a $needed bump (got $level)" >&2; exit 1 ;;
   esac
 fi
+
+# The changelog files a breaking commit scoped `config`/`plan`/`tool`/`store`
+# under that file kind's own section, so the scope and the constant must
+# agree both ways: a moved constant needs a commit that documents it, and a
+# reserved-scope commit needs a moved constant (or it is a misfiled crate
+# change — pick another scope). The footer has to name the new version, since
+# that line is what the changelog prints next to the subject.
+file_versions=""
+for spec in $(format_table HEAD | tr ' ' '='); do
+  kind=${spec%%=*}; now=${spec#*=}
+  was=$(format_table "${last_tag:-HEAD}" | awk -v k="$kind" '$1 == k { print $2 }')
+  scoped=$(jq -r --arg k "$kind" '[.[] | .commits[]? | select(.breaking == true and .scope == $k)] | length' <<<"$unreleased")
+  if [ "$now" != "$was" ]; then
+    [ "$scoped" -gt 0 ] || { echo "$kind version moved $was→$now but no breaking commit is scoped ($kind) — the changelog cannot document it" >&2; exit 1; }
+    jq -e --arg k "$kind" --arg n "$now" \
+      '[.[] | .commits[]? | select(.breaking == true and .scope == $k)] | all(.breaking_description | test("\($k) version \($n)\\b"))' \
+      <<<"$unreleased" >/dev/null \
+      || { echo "every ($kind)! commit needs a footer 'BREAKING CHANGE: $kind version $now …' (see RELEASING.md > Version bumps)" >&2; exit 1; }
+    file_versions="${file_versions:+$file_versions, }$kind $now (from $was)"
+  else
+    [ "$scoped" -eq 0 ] || { echo "a commit is scoped ($kind)! but the $kind version did not move — reserved scopes mean a version bump" >&2; exit 1; }
+    file_versions="${file_versions:+$file_versions, }$kind $now"
+  fi
+done
+tag_message="graph v$new
+
+file versions: $file_versions"
+# git-cliff reads the not-yet-created tag's message from here, so the
+# CHANGELOG and the docs page render the "File versions" line for this
+# release now, exactly as a regeneration will after the tag exists.
+export GIT_CLIFF_WITH_TAG_MESSAGE="$tag_message"
 
 # A release needs at least one changelog-worthy commit. git-cliff emits no
 # section at all for a tag whose commits are every one ci:/chore:/test:, and
@@ -137,7 +168,7 @@ GRAPH_STORAGE=memory graph plan run compose_changelog --input tag="v$new"
 
 git add Cargo.toml Cargo.lock CHANGELOG.md docs/docs.json docs/changelog.mdx docs/snippets/changelog
 git commit -q -m "chore(release): v$new"
-git tag -a "v$new" -m "graph v$new"
+git tag -a "v$new" -m "$tag_message"
 git push -q origin main "v$new"
 
 echo "v$new pushed — binaries build at: https://github.com/tylerdavis/graph/actions"

@@ -71,9 +71,37 @@ release notes.
 The script enforces the floor: if any commit since the last tag is breaking
 (a `!` subject or a `BREAKING CHANGE:` footer, as git-cliff reports it) or
 any file-version constant moved, `patch` is refused; from 1.0 on, `minor` is
-refused too. Breaking commits render under their own **Breaking** heading in
-the changelog, ahead of every group, and `protect_breaking_commits` keeps a
-skip parser from ever hiding one.
+refused too.
+
+## Changelog sections
+
+Every release renders as one section per thing that can change
+independently — **Binary**, **Config**, **Plan**, **Tool**, **Store** — and
+only the sections with commits appear. Inside a section, **Breaking** comes
+first, then the usual groups (Added, Fixed, …). The file-kind sections carry
+their version in the heading (`### Config — version 2 (from 1)`), read from
+the tag message's `file versions:` line, and the release header repeats the
+whole line (`File versions: config 2 (from 1), plan 1, tool 1, store 1`). Both
+renderings — `CHANGELOG.md` via `cliff.toml`, `docs/changelog.mdx` via the
+`cliff_context` tool — apply the same rule:
+
+- a **breaking commit scoped `config`, `plan`, `tool`, or `store`** files under
+  that kind's section;
+- everything else files under **Binary**.
+
+Those four scopes are therefore reserved: they mean "this commit bumps that
+file kind's version", nothing else. `check-commit-subject.sh` rejects a
+reserved scope without `!` (an ordinary change to the crate that reads those
+files takes another scope: `graph-config`, `plans`, `tools`, `storage`, or
+none), and `release.sh` checks the other direction before cutting: a moved
+constant needs a `(kind)!` commit whose `BREAKING CHANGE:` footer names the
+new version, and a `(kind)!` commit needs a moved constant.
+
+Breaking commits are exactly what git-cliff reports as breaking: a `!` before
+the colon, or a `BREAKING CHANGE:` footer. Either sets the commit's
+`breaking` flag; the footer text (or, without one, nothing) is what prints
+after the subject. `protect_breaking_commits` keeps a skip parser from ever
+hiding one.
 
 ## Version bumps
 
@@ -99,14 +127,20 @@ only at a major release. A bump ships as one PR containing all of:
 4. A row in the **Version history** table on `docs/reference/file-versions.mdx`
    and a section describing the migration — that page is the URL every
    version-mismatch error prints.
-5. A breaking commit subject (`feat(config)!: …`) whose footer names the
-   file version: `BREAKING CHANGE: config version 2 (graph config migrate)`.
+5. A breaking commit scoped to the file kind (`feat(config)!: …`) whose
+   footer names the new version — `BREAKING CHANGE: config version 2 (graph
+   config migrate)` — which is what puts it under the changelog's Config
+   section with the version in the heading. The release script refuses to
+   cut without it.
 
 The `format_drift` check (`.graph/plans/format_drift.yaml`, run by
 `graph-checks.yaml`) fails a PR that changes a model file's schema without
 steps 1 and 4; the fixture tests catch a removed or renamed key
 mechanically. At release time the script diffs the four constants between
-the last tag and `HEAD` and passes the delta to `changelog_entry` as its
+the last tag and `HEAD`, checks step 5 both ways, writes the result into the
+tag message (`file versions: config 2 (from 1), plan 1, tool 1, store 1` —
+the tag is the source of truth, so the changelog reads it from there on
+every regeneration), and passes the delta to `changelog_entry` as its
 `formats` input, which forces `migration_needed` and builds the migration
 prompt around `graph config check` and the `migrate` commands rather than
 inferring from commit subjects. Move any `ghcr.io/tylerdavis/graph:vX.Y.Z`

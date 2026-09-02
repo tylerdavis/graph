@@ -44,7 +44,7 @@ steps:
 
         RELEASE: {{input.version}}
 
-        GROUPED COMMIT SUBJECTS FOR THIS RELEASE:
+        COMMIT SUBJECTS FOR THIS RELEASE, sectioned by what changed (Binary, then Config / Plan / Tool / Store for file-version bumps) and grouped within each section, Breaking first:
         {{E2.text}}
 
         FILE-FORMAT VERSIONS THIS RELEASE BUMPS (empty means none): {{input.formats}}

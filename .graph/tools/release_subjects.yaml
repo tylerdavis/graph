@@ -1,6 +1,6 @@
-# exec tool: one release's grouped commit subjects, from git-cliff's
-# structured context — the evidence changelog_entry infers a summary
-# from.
+# exec tool: one release's commit subjects, sectioned by file kind and
+# grouped, from git-cliff's structured context — the evidence
+# changelog_entry infers a summary from.
 #
 # This deliberately does NOT read CHANGELOG.md. The tag is the source of
 # truth for what is in a release; CHANGELOG.md is one rendering of it,
@@ -14,8 +14,10 @@
 # real release.
 name: release_subjects
 description: >
-  The grouped commit subjects for one release, from git-cliff's context
-  (the tag, not CHANGELOG.md), as the plain text an inference reads.
+  The commit subjects for one release, from git-cliff's context (the tag,
+  not CHANGELOG.md), as the plain text an inference reads: one "## Binary"
+  / "## Config" / … section per file kind that changed (a breaking commit
+  scoped to a file kind files under it), each grouped with Breaking first.
   Fails when git-cliff knows no such release — which is the case when
   every commit since the last tag is ci:/chore:/test:.
 kind: exec
@@ -31,13 +33,29 @@ args:
       context=$(git-cliff -c cliff.toml --tag "$version" --context)
     fi
     text=$(jq -r --arg v "$version" '
+      def kinds: ["binary", "config", "plan", "tool", "store"];
+      def file_kinds: ["config", "plan", "tool", "store"];
+      def strip: gsub("^\\s+|\\s+$"; "");
+      def section: if .breaking and .scope != null and (.scope as $s | file_kinds | index($s)) != null then .scope else "binary" end;
+      def subject: (.message | split("\n")[0] | strip);
+      def line:
+        subject
+        + (if .breaking and .breaking_description != null and (.breaking_description | split("\n")[0] | strip) != subject
+           then " — " + (.breaking_description | split("\n")[0] | strip) else "" end);
       map(select(.version == $v)) | first
       | if . == null then empty else
-          .commits
-          | map(select(.group != null))
-          | group_by(.group)
-          | map("### " + .[0].group + "\n\n"
-                + (map("- " + (.message | split("\n")[0])) | join("\n")))
+          . as $release
+          | [ kinds[] as $kind
+              | ($release.commits | map(select(.group != null and section == $kind))) as $commits
+              | select(($commits | length) > 0)
+              | "## " + ($kind | .[0:1] | ascii_upcase) + ($kind | .[1:]) + "\n\n"
+                + (
+                    ([ ($commits | map(select(.breaking))) | select(length > 0)
+                       | "### Breaking\n\n" + (map("- " + line) | join("\n")) ])
+                    + ($commits | map(select(.breaking | not)) | group_by(.group)
+                       | map("### " + .[0].group + "\n\n" + (map("- " + subject) | join("\n"))))
+                  | join("\n\n"))
+            ]
           | join("\n\n")
         end' <<<"$context")
     [ -n "$text" ] || { echo "git-cliff knows no release $version" >&2; exit 1; }
@@ -55,4 +73,4 @@ input_schema:
 output_schema:
   type: object
   properties:
-    text: { type: string, description: The release's grouped commit subjects }
+    text: { type: string, description: The release's commit subjects, sectioned by file kind and grouped }

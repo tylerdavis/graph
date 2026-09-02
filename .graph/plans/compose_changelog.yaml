@@ -14,7 +14,7 @@ steps:
     tool_name: user__cliff_context
     input:
       tag: '{{input.tag}}'
-    reasoning: Every release as template-ready data — version, an MDX-component-safe ident, human date, alphabetically grouped MDX-escaped subjects — newest first, plus a version-null entry for unreleased commits.
+    reasoning: Every release as template-ready data — version, an MDX-component-safe ident, human date, the tag's file-versions line, and MDX-escaped subjects sectioned by file kind (binary, config, plan, tool, store) then grouped with Breaking first — newest first, plus a version-null entry for unreleased commits.
   - id: E1
     tool_name: filter
     input:
@@ -51,12 +51,16 @@ steps:
                 <Migration{{item.ident}} />
                 </Accordion>
 
-                {{/B0.has_migration}}{{#item.groups}}### {{name}}
+                {{/B0.has_migration}}{{#item.file_versions_note}}File versions: {{text}}.
+
+                {{/item.file_versions_note}}{{#item.sections}}### {{label}}
+
+                {{#groups}}#### {{name}}
 
                 {{#subjects}}- {{subject}}
                 {{/subjects}}
-                {{/item.groups}}</Update>
-    reasoning: Per release, presence flags from snippet_status (which also enforces MDX safety on the summary, failing loudly with the file named) drive an import line and an <Update> block that references the snippet components — content stays in the snippet files.
+                {{/groups}}{{/item.sections}}</Update>
+    reasoning: Per release, presence flags from snippet_status (which also enforces MDX safety on the summary, failing loudly with the file named) drive an import line and an <Update> block that references the snippet components — content stays in the snippet files — followed by one h3 per file kind that changed (its label carries the version note) and h4 groups beneath.
   - id: E3
     tool_name: user__write_changelog_page
     input:

@@ -1,18 +1,24 @@
 # exec tool: git-cliff's release context, digested for logic-less
 # templating — the jq does everything the template dialect deliberately
 # cannot: date formatting (gmtime; %e then squeezing the pad space, since
-# BSD strftime lacks %-d), group_by (alphabetical, matching the rendered
-# CHANGELOG), subject extraction, and MDX escaping of < and { so a
-# commit subject can never break the docs build. Unreleased commits
-# surface as a release with version: null — the composing plan's filter
-# step drops them.
+# BSD strftime lacks %-d), sectioning by file kind (binary, config, plan,
+# tool, store — a breaking commit whose scope names a file kind files under
+# that kind, everything else under binary), group_by (alphabetical,
+# matching the rendered CHANGELOG, with Breaking first), subject
+# extraction, the per-kind version note parsed from the tag message's
+# "file versions:" line, and MDX escaping of < and { so a commit subject
+# can never break the docs build. Unreleased commits surface as a release
+# with version: null — the composing plan's filter step drops them.
 name: cliff_context
 description: >
   Releases from git-cliff as template-ready data: one {version, date,
-  groups: [{name, subjects}]} per release, newest first, subjects
-  MDX-escaped. Pass tag to include an about-to-be-cut release; "" for
-  the tagged history only. An entry with a null version carries the
-  unreleased commits — filter it out with a `filter` step.
+  sections: [{kind, label, groups: [{name, subjects}]}]} per release,
+  newest first, subjects MDX-escaped. Sections follow the file kinds
+  (binary, config, plan, tool, store); a file kind's label carries its
+  version note when the tag message records one. Pass tag to include an
+  about-to-be-cut release; "" for the tagged history only. An entry with a
+  null version carries the unreleased commits — filter it out with a
+  `filter` step.
 kind: exec
 command: bash
 args:
@@ -24,17 +30,44 @@ args:
     else
       context=$(git-cliff -c cliff.toml --context)
     fi
-    jq '{releases: [ .[] | {
-      version: .version,
-      ident: (if .version then (.version | sub("^v"; "V") | gsub("[.-]"; "_")) else null end),
-      date: (if .timestamp then (.timestamp | gmtime | strftime("%B %e, %Y") | gsub("  "; " ")) else null end),
-      groups: (.commits
-        | map(select(.group != null))
-        | group_by(.group)
-        | map({name: .[0].group,
-               subjects: map({subject: (.message | split("\n")[0]
-                             | gsub("<"; "&lt;") | gsub("\\{"; "&#123;"))})}))
-    } ]}' <<<"$context"
+    jq '
+      def kinds: ["binary", "config", "plan", "tool", "store"];
+      def file_kinds: ["config", "plan", "tool", "store"];
+      def strip: gsub("^\\s+|\\s+$"; "");
+      def mdx: gsub("<"; "&lt;") | gsub("\\{"; "&#123;");
+      def section: if .breaking and .scope != null and (.scope as $s | file_kinds | index($s)) != null then .scope else "binary" end;
+      def subject: (.message | split("\n")[0] | strip);
+      def line:
+        subject
+        + (if .breaking and .breaking_description != null and (.breaking_description | split("\n")[0] | strip) != subject
+           then " — " + (.breaking_description | split("\n")[0] | strip) else "" end);
+      def notes: (.message // "" | capture("file versions:(?<v>[^\n]*)")? // {v: ""} | .v
+                  | split(",") | map(strip) | map(select(. != ""))
+                  | map(capture("^(?<kind>[a-z]+) (?<note>.*)$")? // empty)
+                  | map({key: .kind, value: .note}) | from_entries);
+      {releases: [ .[] | . as $release | (notes) as $notes | {
+        version: .version,
+        ident: (if .version then (.version | sub("^v"; "V") | gsub("[.-]"; "_")) else null end),
+        date: (if .timestamp then (.timestamp | gmtime | strftime("%B %e, %Y") | gsub("  "; " ")) else null end),
+        file_versions: ($release.message // "" | capture("file versions:(?<v>[^\n]*)")? // {v: ""} | .v | strip),
+        file_versions_note: ($release.message // "" | capture("file versions:(?<v>[^\n]*)")? // {v: ""} | .v | strip
+                             | if . == "" then null else {text: .} end),
+        sections: [ kinds[] as $kind
+          | ($release.commits | map(select(.group != null and section == $kind))) as $commits
+          | select(($commits | length) > 0)
+          | {
+              kind: $kind,
+              label: (($kind | .[0:1] | ascii_upcase) + ($kind | .[1:])
+                      + (if $kind != "binary" and ($notes[$kind] // "") != "" then " — version " + $notes[$kind] else "" end)),
+              groups: (
+                ([ ($commits | map(select(.breaking))) | select(length > 0)
+                   | {name: "Breaking", subjects: map({subject: (line | mdx)})} ])
+                + ($commits | map(select(.breaking | not)) | group_by(.group)
+                   | map({name: .[0].group, subjects: map({subject: (subject | mdx)})}))
+              )
+            }
+        ]
+      } ]}' <<<"$context"
   - cliff_context
   - "{{input.tag}}"
 output: json
@@ -58,15 +91,28 @@ output_schema:
           version: { type: ["string", "null"] }
           ident:   { type: ["string", "null"], description: MDX-component-safe version, e.g. V0_10_0 }
           date:    { type: ["string", "null"] }
-          groups:
+          file_versions: { type: string, description: 'The tag message''s "file versions:" line, e.g. "config 2 (from 1), plan 1, tool 1, store 1"; empty when the tag records none' }
+          file_versions_note:
+            type: ["object", "null"]
+            description: The same line wrapped as {text} so a template section can gate on it, null when the tag records none
+            properties:
+              text: { type: string }
+          sections:
             type: array
             items:
               type: object
               properties:
-                name:     { type: string }
-                subjects:
+                kind:  { type: string, enum: [binary, config, plan, tool, store] }
+                label: { type: string, description: Heading text, e.g. "Config — version 2 (from 1)" }
+                groups:
                   type: array
                   items:
                     type: object
                     properties:
-                      subject: { type: string }
+                      name:     { type: string }
+                      subjects:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            subject: { type: string }

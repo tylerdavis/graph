@@ -13,20 +13,58 @@ body = """
 {% else %}
 ## Unreleased
 {% endif %}
-{%- set breaking = commits | filter(attribute="breaking", value=true) -%}
+{%- set kinds = ["binary", "config", "plan", "tool", "store"] -%}
+{%- set file_kinds = ["config", "plan", "tool", "store"] -%}
+{%- set versions = "" -%}
+{%- if message and message is containing("file versions:") -%}
+{%- set versions = message | split(pat="file versions:") | last | split(pat="\n") | first | trim -%}
+{%- endif -%}
+{%- if versions %}
+
+File versions: {{ versions }}.
+{%- endif -%}
+{%- for kind in kinds -%}
+{%- set_global bucket = [] -%}
+{%- for commit in commits -%}
+{%- if commit.breaking and commit.scope and commit.scope in file_kinds -%}
+{%- set section = commit.scope -%}
+{%- else -%}
+{%- set section = "binary" -%}
+{%- endif -%}
+{%- if section == kind -%}
+{%- set_global bucket = bucket | concat(with=commit) -%}
+{%- endif -%}
+{%- endfor -%}
+{%- if bucket | length > 0 -%}
+{%- set_global note = "" -%}
+{%- if versions -%}
+{%- for part in versions | split(pat=",") -%}
+{%- set part = part | trim -%}
+{%- if part is starting_with(kind ~ " ") -%}
+{%- set_global note = part | replace(from=kind ~ " ", to="") -%}
+{%- endif -%}
+{%- endfor -%}
+{%- endif %}
+
+### {{ kind | capitalize }}{% if kind != "binary" and note %} — version {{ note }}{% endif %}
+{%- set breaking = bucket | filter(attribute="breaking", value=true) -%}
 {%- if breaking | length > 0 %}
 
-### Breaking
+#### Breaking
 {% for commit in breaking %}
 - {{ commit.message | split(pat="\n") | first | trim }}{% if commit.breaking_description and commit.breaking_description != commit.message %} — {{ commit.breaking_description | split(pat="\n") | first | trim }}{% endif %}
 {%- endfor %}
-{% endif %}
-{% for group, commits in commits | filter(attribute="breaking", value=false) | group_by(attribute="group") %}
-### {{ group }}
-{% for commit in commits %}
+{%- endif -%}
+{%- for group, group_commits in bucket | filter(attribute="breaking", value=false) | group_by(attribute="group") %}
+
+#### {{ group }}
+{% for commit in group_commits %}
 - {{ commit.message | split(pat="\n") | first | trim }}
 {%- endfor %}
-{% endfor %}
+{%- endfor %}
+{%- endif -%}
+{%- endfor %}
+
 """
 trim = true
 
