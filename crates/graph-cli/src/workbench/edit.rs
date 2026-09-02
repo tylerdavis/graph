@@ -67,7 +67,8 @@ pub fn step_at(doc: &PlanDoc, target: &StepTarget) -> Option<(Step, bool)> {
     }
 }
 
-pub fn step_form(label: &str, step: &Step, has_id: bool, def: Option<&ToolDef>) -> Form {
+pub fn step_form(label: &str, step: &Step, has_id: bool, tools: &[ToolDef]) -> Form {
+    let def = tools.iter().find(|t| t.name == step.tool_name);
     let mut fields = Vec::new();
     if has_id {
         fields.push(
@@ -80,8 +81,9 @@ pub fn step_form(label: &str, step: &Step, has_id: bool, def: Option<&ToolDef>) 
     fields.push(
         Field::new("tool", "tool", FieldKind::Text, false)
             .required(true)
-            .hint("exact catalog name")
-            .value(Some(&Value::String(step.tool_name.clone()))),
+            .hint("type to filter the catalog — changing it reloads the input fields")
+            .value(Some(&Value::String(step.tool_name.clone())))
+            .options(tools.iter().map(|t| t.name.clone()).collect()),
     );
     fields.push(
         Field::new("reasoning", "reasoning", FieldKind::Text, true)
@@ -149,6 +151,47 @@ pub fn step_form(label: &str, step: &Step, has_id: bool, def: Option<&ToolDef>) 
     );
 
     Form::new(format!("edit {label}"), "", fields)
+}
+
+pub fn reload_step_form(form: &Form, label: &str, tools: &[ToolDef]) -> Form {
+    let text = |key: &str| form.fields.iter().find(|f| f.key == key).map(Field::text);
+    let has_id = form.fields.iter().any(|f| f.key == "id");
+    let mut input = Map::new();
+    for field in &form.fields {
+        let Some(key) = field.key.strip_prefix(INPUT_PREFIX) else {
+            continue;
+        };
+        match field.read() {
+            Ok(Some(value)) => {
+                input.insert(key.to_string(), value);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                input.insert(key.to_string(), Value::String(field.text()));
+            }
+        }
+    }
+    let step = Step {
+        id: text("id").unwrap_or_default(),
+        tool_name: text("tool").unwrap_or_default(),
+        input,
+        reasoning: text("reasoning").filter(|r| !r.trim().is_empty()),
+    };
+    let mut rebuilt = step_form(label, &step, has_id, tools);
+    if let (Some(extra), Some(old)) = (
+        rebuilt.fields.iter_mut().find(|f| f.key == EXTRA_KEY),
+        form.fields.iter().find(|f| f.key == EXTRA_KEY),
+    ) {
+        extra.textarea = old.textarea.clone();
+    }
+    let after_tool = rebuilt
+        .fields
+        .iter()
+        .position(|f| f.key == "tool")
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    rebuilt.set_focus(form.focused.max(after_tool));
+    rebuilt
 }
 
 fn input_field_kind(declared: Option<&Value>, existing: Option<&Value>) -> (FieldKind, bool) {
@@ -445,7 +488,7 @@ solver:
         let doc = doc();
         let target = StepTarget::Top { id: "E0".into() };
         let (step, has_id) = step_at(&doc, &target).unwrap();
-        let form = step_form("step E0", &step, has_id, Some(&search_def()));
+        let form = step_form("step E0", &step, has_id, &[search_def()]);
         assert_eq!(
             keys(&form),
             [
@@ -458,6 +501,8 @@ solver:
                 "extra"
             ]
         );
+        assert!(form.fields[1].is_select());
+        assert_eq!(form.fields[1].matches(), ["t__search"]);
         let query = &form.fields[3];
         assert!(query.required);
         assert_eq!(query.kind, FieldKind::Text);
@@ -473,7 +518,7 @@ solver:
     fn unknown_tools_get_fields_from_the_existing_input() {
         let doc = doc();
         let (step, _) = step_at(&doc, &StepTarget::Top { id: "E0".into() }).unwrap();
-        let form = step_form("step E0", &step, true, None);
+        let form = step_form("step E0", &step, true, &[]);
         assert_eq!(
             keys(&form),
             ["id", "tool", "reasoning", "in:limit", "in:query", "extra"]
@@ -486,9 +531,8 @@ solver:
     fn control_step_fields_come_from_the_control_schema() {
         let doc = doc();
         let defs = graph_core::pipeline::control_step_defs();
-        let exit = defs.iter().find(|d| d.name == "exit").unwrap();
         let (step, _) = step_at(&doc, &StepTarget::Top { id: "E4".into() }).unwrap();
-        let form = step_form("step E4", &step, true, Some(exit));
+        let form = step_form("step E4", &step, true, &defs);
         assert_eq!(
             keys(&form),
             [
@@ -516,7 +560,7 @@ solver:
         let doc = doc();
         let target = StepTarget::Top { id: "E0".into() };
         let (step, has_id) = step_at(&doc, &target).unwrap();
-        let mut form = step_form("step E0", &step, has_id, Some(&search_def()));
+        let mut form = step_form("step E0", &step, has_id, &[search_def()]);
         set(&mut form, "id", "search");
         set(&mut form, "in:query", "y");
         set(&mut form, "in:limit", "");
@@ -556,7 +600,7 @@ solver:
         let (step, has_id) = step_at(&doc, &target).unwrap();
         assert!(has_id);
         assert_eq!(step.tool_name, "t__fetch");
-        let mut form = step_form("step E2", &step, has_id, None);
+        let mut form = step_form("step E2", &step, has_id, &[]);
         set(&mut form, "tool", "t__get");
         set(&mut form, "reasoning", "fetch each");
         let edit = PendingEdit {
@@ -577,7 +621,7 @@ solver:
         };
         let (step, has_id) = step_at(&doc, &call).unwrap();
         assert!(!has_id);
-        let mut form = step_form("then branch of E3", &step, has_id, None);
+        let mut form = step_form("then branch of E3", &step, has_id, &[]);
         assert_eq!(keys(&form), ["tool", "reasoning", "in:message", "extra"]);
         set(&mut form, "in:message", "hi");
         let edit = PendingEdit {
@@ -597,6 +641,75 @@ solver:
             position: Some(4),
         };
         assert!(step_at(&doc, &gone).is_none());
+    }
+
+    #[test]
+    fn reloading_after_a_tool_change_keeps_typed_values() {
+        let doc = doc();
+        let fetch = ToolDef {
+            name: "t__fetch".to_string(),
+            description: String::new(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["url"],
+                "properties": {
+                    "url": {"type": "string"},
+                    "limit": {"type": "integer"}
+                }
+            }),
+            output_schema: None,
+            output_example: None,
+            read_only: Some(true),
+        };
+        let tools = vec![search_def(), fetch];
+        let (step, has_id) = step_at(&doc, &StepTarget::Top { id: "E0".into() }).unwrap();
+        let mut form = step_form("step E0", &step, has_id, &tools);
+        set(&mut form, "reasoning", "kept");
+        set(&mut form, "in:limit", "9");
+        set(&mut form, "in:tags", "{oops");
+        set(&mut form, "extra", "{\"page\": 1}");
+        set(&mut form, "tool", "t__fetch");
+        form.set_focus(2);
+
+        let reloaded = reload_step_form(&form, "step E0", &tools);
+        assert_eq!(
+            keys(&reloaded),
+            [
+                "id",
+                "tool",
+                "reasoning",
+                "in:url",
+                "in:limit",
+                "in:query",
+                "in:tags",
+                "extra"
+            ]
+        );
+        let text = |key: &str| {
+            reloaded
+                .fields
+                .iter()
+                .find(|f| f.key == key)
+                .unwrap()
+                .text()
+        };
+        assert_eq!(text("id"), "E0");
+        assert_eq!(text("tool"), "t__fetch");
+        assert_eq!(text("reasoning"), "kept");
+        assert_eq!(text("in:url"), "");
+        assert!(
+            reloaded
+                .fields
+                .iter()
+                .find(|f| f.key == "in:url")
+                .unwrap()
+                .required
+        );
+        assert_eq!(text("in:limit"), "9");
+        assert_eq!(text("in:query"), "x");
+        assert_eq!(text("in:tags"), "{oops", "unparsable text survives as text");
+        assert_eq!(text("extra"), "{\"page\": 1}");
+        assert_eq!(reloaded.focused, 2);
     }
 
     #[test]

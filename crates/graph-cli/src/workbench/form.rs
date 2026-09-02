@@ -34,10 +34,14 @@ pub struct Field {
     pub required: bool,
     pub textarea: TextArea<'static>,
     pub error: Option<String>,
+    pub options: Option<Vec<String>>,
+    pub highlight: usize,
+    committed: String,
 }
 
 const MIN_MULTILINE_ROWS: usize = 2;
 const MAX_MULTILINE_ROWS: usize = 8;
+pub const MAX_POPUP_ROWS: usize = 6;
 
 impl Field {
     pub fn new(key: &str, label: &str, kind: FieldKind, multiline: bool) -> Self {
@@ -52,9 +56,62 @@ impl Field {
             required: false,
             textarea,
             error: None,
+            options: None,
+            highlight: 0,
+            committed: String::new(),
         };
         field.set_focused(false);
         field
+    }
+
+    pub fn options(mut self, mut options: Vec<String>) -> Self {
+        options.sort();
+        options.dedup();
+        self.options = Some(options);
+        self.committed = self.text();
+        self.set_focused(false);
+        self
+    }
+
+    pub fn is_select(&self) -> bool {
+        self.options.is_some()
+    }
+
+    pub fn matches(&self) -> Vec<&str> {
+        let Some(options) = &self.options else {
+            return Vec::new();
+        };
+        let typed = self.text().trim().to_lowercase();
+        let rank = |option: &str| {
+            let lower = option.to_lowercase();
+            if lower == typed {
+                Some(0)
+            } else if lower.starts_with(&typed) {
+                Some(1)
+            } else if lower.contains(&typed) {
+                Some(2)
+            } else {
+                None
+            }
+        };
+        let mut ranked: Vec<(u8, &str)> = options
+            .iter()
+            .filter_map(|option| rank(option).map(|r| (r, option.as_str())))
+            .collect();
+        ranked.sort_by_key(|(r, _)| *r);
+        ranked.into_iter().map(|(_, option)| option).collect()
+    }
+
+    fn take_change(&mut self) -> bool {
+        if !self.is_select() {
+            return false;
+        }
+        let text = self.text();
+        if text == self.committed {
+            return false;
+        }
+        self.committed = text;
+        true
     }
 
     pub fn hint(mut self, hint: impl Into<String>) -> Self {
@@ -88,6 +145,7 @@ impl Field {
         self.textarea.set_cursor_line_style(Style::default());
         self.textarea.move_cursor(CursorMove::Bottom);
         self.textarea.move_cursor(CursorMove::End);
+        self.committed = self.text();
         self.set_focused(false);
         self
     }
@@ -132,7 +190,12 @@ impl Field {
     }
 
     pub fn set_focused(&mut self, focused: bool) {
-        let mut title = format!(" {} · {}", self.label, self.kind.label());
+        let kind = if self.is_select() {
+            "select"
+        } else {
+            self.kind.label()
+        };
+        let mut title = format!(" {} · {kind}", self.label);
         if self.required {
             title.push_str(", required");
         }
@@ -180,12 +243,13 @@ pub enum Verdict {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormAction {
     None,
     Save,
     Validate,
     Cancel,
+    Changed(String),
 }
 
 pub struct Form {
@@ -194,6 +258,7 @@ pub struct Form {
     pub fields: Vec<Field>,
     pub focused: usize,
     pub verdict: Option<Verdict>,
+    pending_change: Option<String>,
     pub scroll: Cell<u16>,
     pub view_rows: Cell<u16>,
     pub visible_fields: RefCell<Vec<(usize, Rect)>>,
@@ -207,6 +272,7 @@ impl Form {
             fields,
             focused: 0,
             verdict: None,
+            pending_change: None,
             scroll: Cell::new(0),
             view_rows: Cell::new(0),
             visible_fields: RefCell::new(Vec::new()),
@@ -229,10 +295,25 @@ impl Form {
     }
 
     pub fn total_height(&self) -> u16 {
-        self.layout()
-            .last()
-            .map(|(top, height)| top + height)
-            .unwrap_or(0)
+        let layout = self.layout();
+        let bottom = layout.last().map(|(top, height)| top + height).unwrap_or(0);
+        let popup_bottom = layout
+            .get(self.focused)
+            .map(|(top, height)| top + height + self.popup_height())
+            .unwrap_or(0);
+        bottom.max(popup_bottom)
+    }
+
+    pub fn popup_height(&self) -> u16 {
+        let Some(field) = self.fields.get(self.focused) else {
+            return 0;
+        };
+        let matches = field.matches().len().min(MAX_POPUP_ROWS);
+        if matches == 0 {
+            0
+        } else {
+            matches as u16 + 2
+        }
     }
 
     pub fn set_focus(&mut self, index: usize) {
@@ -240,11 +321,20 @@ impl Form {
             return;
         }
         let index = index.min(self.fields.len() - 1);
+        if let Some(previous) = self.fields.get_mut(self.focused) {
+            if previous.take_change() {
+                self.pending_change = Some(previous.key.clone());
+            }
+        }
         for (i, field) in self.fields.iter_mut().enumerate() {
             field.set_focused(i == index);
         }
         self.focused = index;
         self.follow_focus();
+    }
+
+    pub fn take_change(&mut self) -> Option<String> {
+        self.pending_change.take()
     }
 
     fn focus_next(&mut self) {
@@ -267,6 +357,7 @@ impl Form {
         let Some(&(top, height)) = self.layout().get(self.focused) else {
             return;
         };
+        let height = height + self.popup_height();
         let scroll = self.scroll.get();
         if top < scroll {
             self.scroll.set(top);
@@ -290,14 +381,6 @@ impl Form {
             KeyCode::Esc => return FormAction::Cancel,
             KeyCode::Char('s') if ctrl => return FormAction::Save,
             KeyCode::Char('t') if ctrl => return FormAction::Validate,
-            KeyCode::Tab => {
-                self.focus_next();
-                return FormAction::None;
-            }
-            KeyCode::BackTab => {
-                self.focus_previous();
-                return FormAction::None;
-            }
             KeyCode::PageDown => {
                 self.scroll_by(false, self.view_rows.get().max(1) / 2);
                 return FormAction::None;
@@ -308,10 +391,24 @@ impl Form {
             }
             _ => {}
         }
-        let Some(field) = self.fields.get_mut(self.focused) else {
-            return FormAction::None;
-        };
+        if self.focused < self.fields.len() {
+            if self.fields[self.focused].is_select() {
+                self.select_key(key);
+            } else {
+                self.text_key(key);
+            }
+        }
+        match self.pending_change.take() {
+            Some(key) => FormAction::Changed(key),
+            None => FormAction::None,
+        }
+    }
+
+    fn text_key(&mut self, key: KeyEvent) {
+        let field = &mut self.fields[self.focused];
         match key.code {
+            KeyCode::Tab => self.focus_next(),
+            KeyCode::BackTab => self.focus_previous(),
             KeyCode::Enter => {
                 let newline = key
                     .modifiers
@@ -330,7 +427,37 @@ impl Form {
                 field.textarea.input(key);
             }
         }
-        FormAction::None
+    }
+
+    fn select_key(&mut self, key: KeyEvent) {
+        let field = &mut self.fields[self.focused];
+        let matches = field.matches().len();
+        match key.code {
+            KeyCode::BackTab => self.focus_previous(),
+            KeyCode::Tab | KeyCode::Enter => {
+                let choice = field
+                    .matches()
+                    .get(field.highlight)
+                    .map(|choice| choice.to_string());
+                if let Some(choice) = choice {
+                    field.textarea = TextArea::from([choice]);
+                    field.textarea.move_cursor(CursorMove::End);
+                    field.set_focused(true);
+                }
+                self.focus_next();
+            }
+            KeyCode::Up if field.highlight == 0 => self.focus_previous(),
+            KeyCode::Up => field.highlight -= 1,
+            KeyCode::Down if field.highlight + 1 >= matches => self.focus_next(),
+            KeyCode::Down => field.highlight += 1,
+            _ => {
+                let before = field.text();
+                field.textarea.input(key);
+                if field.text() != before {
+                    field.highlight = 0;
+                }
+            }
+        }
     }
 
     pub fn paste(&mut self, text: &str) {
@@ -515,6 +642,73 @@ mod tests {
         assert_eq!(form.scroll.get(), 3);
         form.handle_key(key(KeyCode::PageUp));
         assert_eq!(form.scroll.get(), 0);
+    }
+
+    #[test]
+    fn select_fields_filter_pick_and_report_changes() {
+        let mut form = Form::new(
+            "t",
+            "",
+            vec![
+                Field::new("tool", "tool", FieldKind::Text, false)
+                    .value(Some(&json!("t__search")))
+                    .options(vec![
+                        "t__search".into(),
+                        "t__fetch".into(),
+                        "map".into(),
+                        "alt__t__search".into(),
+                    ]),
+                Field::new("note", "note", FieldKind::Text, true),
+            ],
+        );
+        assert_eq!(
+            form.fields[0].matches(),
+            ["t__search", "alt__t__search"],
+            "exact match first, then substring"
+        );
+        assert_eq!(form.popup_height(), 4);
+
+        form.handle_key(key(KeyCode::Tab));
+        assert_eq!(form.focused, 1);
+        form.handle_key(key(KeyCode::BackTab));
+        assert_eq!(form.focused, 0);
+
+        form.fields[0].textarea = TextArea::from(["t__"]);
+        form.fields[0].textarea.move_cursor(CursorMove::End);
+        assert_eq!(
+            form.fields[0].matches(),
+            ["t__fetch", "t__search", "alt__t__search"]
+        );
+        form.handle_key(key(KeyCode::Down));
+        assert_eq!(form.fields[0].highlight, 1);
+        form.handle_key(key(KeyCode::Char('f')));
+        assert_eq!(form.fields[0].highlight, 0, "typing resets the highlight");
+        assert_eq!(form.fields[0].matches(), ["t__fetch"]);
+        assert_eq!(
+            form.handle_key(key(KeyCode::Enter)),
+            FormAction::Changed("tool".to_string())
+        );
+        assert_eq!(form.fields[0].text(), "t__fetch");
+        assert_eq!(form.focused, 1);
+
+        form.set_focus(0);
+        assert_eq!(
+            form.handle_key(key(KeyCode::Tab)),
+            FormAction::None,
+            "unchanged"
+        );
+
+        form.set_focus(0);
+        form.fields[0].textarea = TextArea::from(["custom__tool"]);
+        assert!(form.fields[0].matches().is_empty());
+        assert_eq!(form.popup_height(), 0);
+        form.handle_key(key(KeyCode::Down));
+        assert_eq!(form.focused, 1, "no matches: Down leaves the field");
+        assert_eq!(form.take_change(), None, "handle_key already reported it");
+        form.set_focus(0);
+        form.fields[0].textarea = TextArea::from(["map"]);
+        form.set_focus(1);
+        assert_eq!(form.take_change(), Some("tool".to_string()));
     }
 
     #[test]

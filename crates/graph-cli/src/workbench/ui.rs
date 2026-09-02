@@ -1186,6 +1186,46 @@ fn draw_form(frame: &mut Frame, state: &FormState) {
     }
     *form.visible_fields.borrow_mut() = visible;
 
+    if let Some(field) = form.fields.get(form.focused) {
+        let matches = field.matches();
+        if !matches.is_empty() {
+            let (top, height) = form.layout()[form.focused];
+            let shown = matches.len().min(super::form::MAX_POPUP_ROWS);
+            let popup = Rect {
+                x: 1,
+                y: top + height,
+                width: width.saturating_sub(2),
+                height: shown as u16 + 2,
+            };
+            let first = field.highlight.saturating_sub(shown.saturating_sub(1));
+            let items: Vec<ListItem> = matches
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take(shown)
+                .map(|(index, name)| {
+                    let style = if index == field.highlight {
+                        Style::new().add_modifier(Modifier::REVERSED)
+                    } else {
+                        Style::new()
+                    };
+                    ListItem::new(Line::styled(format!(" {name}"), style))
+                })
+                .collect();
+            Clear.render(popup, &mut offscreen);
+            List::new(items)
+                .block(
+                    Block::bordered()
+                        .border_style(Style::new().fg(Color::Yellow))
+                        .title(format!(" {} of {} ", field.highlight + 1, matches.len()))
+                        .title_bottom(
+                            Line::styled(" Enter/Tab pick · Up/Down move ", DIM).right_aligned(),
+                        ),
+                )
+                .render(popup, &mut offscreen);
+        }
+    }
+
     let target = frame.buffer_mut();
     for row in 0..viewport.min(total.saturating_sub(scroll)) {
         for col in 0..width {

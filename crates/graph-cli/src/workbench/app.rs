@@ -914,6 +914,9 @@ fn on_mouse(app: &mut App, mouse: MouseEvent) -> Vec<Effect> {
                     .map(|(index, _)| *index);
                 if let Some(index) = hit_field {
                     state.form.set_focus(index);
+                    if let Some(field) = state.form.take_change() {
+                        reload_form(app, &field);
+                    }
                 }
             }
             MouseEventKind::ScrollUp => state.form.scroll_by(true, 3),
@@ -1400,8 +1403,7 @@ fn open_form(app: &mut App) -> Vec<Effect> {
                 app.status = "this row no longer matches the draft — reopen the plan".to_string();
                 return Vec::new();
             };
-            let def = app.ws.tools.iter().find(|t| t.name == step.tool_name);
-            super::edit::step_form(&label, &step, has_id, def)
+            super::edit::step_form(&label, &step, has_id, &app.ws.tools)
         }
     };
     app.status = format!(
@@ -1421,6 +1423,10 @@ fn on_form_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
     };
     match state.form.handle_key(key) {
         FormAction::None => Vec::new(),
+        FormAction::Changed(field) => {
+            reload_form(app, &field);
+            Vec::new()
+        }
         FormAction::Cancel => {
             app.status = format!("discarded changes to {}", state.label);
             app.mode = Mode::Idle;
@@ -1429,6 +1435,31 @@ fn on_form_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
         FormAction::Save => submit_form(app, true),
         FormAction::Validate => submit_form(app, false),
     }
+}
+
+fn reload_form(app: &mut App, field: &str) {
+    let Mode::Form(state) = &mut app.mode else {
+        return;
+    };
+    if field != "tool" || !matches!(state.target, EditTarget::Step(_)) {
+        return;
+    }
+    state.form = super::edit::reload_step_form(&state.form, &state.label, &app.ws.tools);
+    let tool = state
+        .form
+        .fields
+        .iter()
+        .find(|f| f.key == "tool")
+        .map(|f| f.text())
+        .unwrap_or_default();
+    app.status = if app.ws.tools.iter().any(|t| t.name == tool) {
+        format!(
+            "{} now calls {tool} — input fields reloaded from its schema",
+            state.label
+        )
+    } else {
+        format!("{tool} is not in the catalog — input fields kept as typed")
+    };
 }
 
 fn submit_form(app: &mut App, commit: bool) -> Vec<Effect> {
