@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct Step {
     /// Unique identifier templates reference the step by: "E0", "E1", …
     /// or a descriptive name like "fetch_pr_meta". See [`check_step_id`].
