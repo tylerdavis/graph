@@ -5,20 +5,29 @@ graph uses semantic versioning, driven by conventional commits.
 ## Cut a release
 
 ```bash
-mise run release:patch    # or release:minor / release:major
+mise run release:patch    # or release:minor / release:major — prepare, then stop
+# review docs/snippets/changelog/<version>/ (and CHANGELOG.md)
+mise run release:publish  # commit, tag, push
 ```
 
-This bumps the single workspace version in `Cargo.toml` and the docs'
-`release_version` variable in `docs/docs.json` (the installation page,
-download cards, and cookbook image pins render from it), regenerates
-`CHANGELOG.md`, and rebuilds the docs changelog page — graph dogfooding
-itself: the `changelog_entry` plan infers the release's summary (and a
-migration prompt when consumers must act) into
-`docs/snippets/changelog/<version>/`, and the `compose_changelog` plan
-renders `docs/changelog.mdx`, which imports those snippets (Mintlify
-snippets are never published as standalone pages), so each piece of
-prose exists in exactly one file. It then commits as
-`chore(release): vX.Y.Z`, tags `vX.Y.Z`, and pushes.
+Two steps, with the review in between. **Prepare** bumps the single
+workspace version in `Cargo.toml` and the docs' `release_version` variable
+in `docs/docs.json` (the installation page, download cards, and cookbook
+image pins render from it), regenerates `CHANGELOG.md`, and rebuilds the
+docs changelog page — graph dogfooding itself: the `changelog_entry` plan
+infers the release's summary (and a migration prompt when consumers must
+act) into `docs/snippets/changelog/<version>/`, and the `compose_changelog`
+plan renders `docs/changelog.mdx`, which imports those snippets (Mintlify
+snippets are never published as standalone pages), so each piece of prose
+exists in exactly one file. Nothing is committed: the tree is left holding
+exactly the release's files for you to read and edit.
+
+**Publish** re-runs `compose_changelog` (so a snippet you added or removed
+during the review reaches the page; content edits need nothing), commits
+as `chore(release): vX.Y.Z`, tags `vX.Y.Z`, and pushes. It refuses a tree
+with changes outside the release's file set, and it re-derives everything
+the tag needs from the same facts prepare used rather than trusting a
+scratch file. `mise run release:abort` drops a prepared release instead.
 
 ### What is the source of truth
 
@@ -43,13 +52,13 @@ used to be scraped for the inference evidence, which coupled the docs
 build to its heading format; `release_subjects` now reads the tag
 directly instead.
 
-**Review `docs/snippets/changelog/<version>/` before pushing onward**:
-the summary and the migration verdict are inferred and meant to be
-curated. Edit the snippet files freely — they are never regenerated —
-then re-run `graph plan run compose_changelog --input tag=""` (only
-needed when a snippet appears or disappears; content edits publish on
-their own) and commit. Never edit `docs/changelog.mdx` by hand; it is
-composed in full every time.
+**The review between prepare and publish is for
+`docs/snippets/changelog/<version>/`**: the summary and the migration
+verdict are inferred and meant to be curated. Edit the snippet files
+freely — they are never regenerated, and publish recomposes the page from
+them. To correct a release that is already out, edit its snippet, re-run
+`graph plan run compose_changelog --input tag=""`, and commit. Never edit
+`docs/changelog.mdx` by hand; it is composed in full every time.
 Requires `graph` ≥ v0.10.0 on PATH (`mise run install`); the release
 script validates this before touching anything. The pushed tag triggers
 `.github/workflows/release.yaml`, which builds and uploads release binaries
