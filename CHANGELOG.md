@@ -2,8 +2,13 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
-## v0.12.0 — 2026-08-12
+## Unreleased
 
+### Fixed
+
+- keep the tool rules out of `[prompts].workbench` so an override can't break the agent (#120)
+
+## Graph v0.12.0 — 2026-08-12
 
 ### Added
 
@@ -19,8 +24,7 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 
 - explain missing env vars at first use instead of dying silently
 
-## v0.11.0 — 2026-08-04
-
+## Graph v0.11.0 — 2026-08-04
 
 ### Added
 
@@ -42,8 +46,7 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 
 - release script keeps the docs release_version in step
 
-## v0.10.0 — 2026-08-04
-
+## Graph v0.10.0 — 2026-08-04
 
 ### Added
 
@@ -79,8 +82,11 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 - serve the control steps from the tool catalog
 - keep MCP writes inside the server's own config layer
 
-## v0.9.0 — 2026-07-30
+## Graph v0.9.0 — 2026-07-30
 
+### Breaking
+
+- draft plans one validated step at a time, always — a config carrying `[planner]` now fails to load;
 
 ### Added
 
@@ -93,7 +99,6 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 ### Changed
 
 - lift plan authoring rules into graph-core
-- draft plans one validated step at a time, always
 
 ### Documentation
 
@@ -120,8 +125,7 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 - keep plan list and validate off stdout
 - stop re-rendering caller-supplied reshape shapes
 
-## v0.8.1 — 2026-07-17
-
+## Graph v0.8.1 — 2026-07-17
 
 ### Added
 
@@ -134,8 +138,7 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 - wheel scrolls the steps/tool list view (#63)
 - hide list highlight when selection scrolls out of view (#64)
 
-## v0.8.0 — 2026-07-17
-
+## Graph v0.8.0 — 2026-07-17
 
 ### Added
 
@@ -165,12 +168,14 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 - carry failing tool error into aborted run result (#56)
 - default output_schema type + reset workbench iteration budget on progress (#57)
 
-## v0.7.0 — 2026-07-15
+## Graph v0.7.0 — 2026-07-15
 
+### Breaking
+
+- replace LadybugDB with file-based storage (#24)
 
 ### Added
 
-- replace LadybugDB with file-based storage (#24)
 - plan workbench — dual-pane TUI for drafting and test-running plans (#25)
 - workbench debug logging to <data_dir>/workbench.log (#28)
 - workbench step view shows body sub-steps and the finish stage (#30)
@@ -194,8 +199,7 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 - section-scoped bare keys are not roots in plan validation (#34)
 - a broken plan file no longer takes down the whole catalog (#35)
 
-## v0.6.0 — 2026-07-11
-
+## Graph v0.6.0 — 2026-07-11
 
 ### Added
 
@@ -204,15 +208,13 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 - map and reduce steps iterate a body over a list (#18)
 - pr_review anchors findings as inline diff comments (#20)
 
-## v0.5.0 — 2026-07-10
-
+## Graph v0.5.0 — 2026-07-10
 
 ### Added
 
 - grouped listing for graph tools list, tighter layout (#14)
 
-## v0.4.1 — 2026-07-10
-
+## Graph v0.4.1 — 2026-07-10
 
 ### Added
 
@@ -222,8 +224,7 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 
 - rewrite README, add MIT license (#12)
 
-## v0.4.0 — 2026-07-10
-
+## Graph v0.4.0 — 2026-07-10
 
 ### Added
 
@@ -236,8 +237,7 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 - CI cookbook — the dogfooded plans and workflow, annotated (#7)
 - cookbook as a section — pages by solution category (#8)
 
-## v0.3.0 — 2026-07-10
-
+## Graph v0.3.0 — 2026-07-10
 
 ### Added
 
@@ -247,8 +247,7 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 
 - portable version bump in release.sh; align workspace version with v0.2.0
 
-## v0.2.0 — 2026-07-10
-
+## Graph v0.2.0 — 2026-07-10
 
 ### Added
 
@@ -259,8 +258,7 @@ All notable changes to graph. Generated from conventional commits by git-cliff.
 
 - bring CLAUDE.md current — composability, exit gates, storage, build story, conventions
 
-## v0.1.0 — 2026-07-10
-
+## Graph v0.1.0 — 2026-07-10
 
 ### Added
 

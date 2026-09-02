@@ -1,18 +1,25 @@
 # exec tool: git-cliff's release context, digested for logic-less
 # templating — the jq does everything the template dialect deliberately
 # cannot: date formatting (gmtime; %e then squeezing the pad space, since
-# BSD strftime lacks %-d), group_by (alphabetical, matching the rendered
-# CHANGELOG), subject extraction, and MDX escaping of < and { so a
-# commit subject can never break the docs build. Unreleased commits
-# surface as a release with version: null — the composing plan's filter
-# step drops them.
+# BSD strftime lacks %-d), splitting a git release into changelog ENTRIES
+# (one for the binary, plus one per file kind whose version the tag
+# message records as bumped or new — "file versions: config 2 (from 1),
+# plan 1, tool 1, store 1 (new)"), routing each breaking commit scoped to a
+# bumped kind into that kind's entry, group_by (alphabetical, matching the
+# rendered CHANGELOG, with Breaking first), subject extraction, and MDX
+# escaping of < and { so a commit subject can never break the docs build.
+# Unreleased commits surface as an entry with version: null — the composing
+# plan's filter step drops them.
 name: cliff_context
 description: >
-  Releases from git-cliff as template-ready data: one {version, date,
-  groups: [{name, subjects}]} per release, newest first, subjects
-  MDX-escaped. Pass tag to include an about-to-be-cut release; "" for
-  the tagged history only. An entry with a null version carries the
-  unreleased commits — filter it out with a `filter` step.
+  Changelog entries from git-cliff as template-ready data: one {version,
+  label, date, kind, groups: [{name, subjects}]} per module version, newest
+  first — "Graph v0.13.0" for the binary, then "Config v2" / "Plan v2" /
+  "Tool v2" / "Store v2" for each file version the release's tag message
+  records as bumped or new. Subjects are MDX-escaped. Pass tag to include
+  an about-to-be-cut release; "" for the tagged history only. An entry
+  with a null version carries the unreleased commits — filter it out with
+  a `filter` step.
 kind: exec
 command: bash
 args:
@@ -24,17 +31,53 @@ args:
     else
       context=$(git-cliff -c cliff.toml --context)
     fi
-    jq '{releases: [ .[] | {
-      version: .version,
-      ident: (if .version then (.version | sub("^v"; "V") | gsub("[.-]"; "_")) else null end),
-      date: (if .timestamp then (.timestamp | gmtime | strftime("%B %e, %Y") | gsub("  "; " ")) else null end),
-      groups: (.commits
-        | map(select(.group != null))
-        | group_by(.group)
-        | map({name: .[0].group,
-               subjects: map({subject: (.message | split("\n")[0]
-                             | gsub("<"; "&lt;") | gsub("\\{"; "&#123;"))})}))
-    } ]}' <<<"$context"
+    jq '
+      def file_kinds: ["config", "plan", "tool", "store"];
+      def strip: gsub("^\\s+|\\s+$"; "");
+      def mdx: gsub("<"; "&lt;") | gsub("\\{"; "&#123;");
+      def subject: (.message | split("\n")[0] | strip);
+      def line:
+        subject
+        + (if .breaking and .breaking_description != null and (.breaking_description | split("\n")[0] | strip) != subject
+           then " — " + (.breaking_description | split("\n")[0] | strip) else "" end);
+      def groups:
+        ([ (map(select(.breaking))) | select(length > 0)
+           | {name: "Breaking", subjects: map({subject: (line | mdx)})} ])
+        + (map(select(.breaking | not)) | group_by(.group)
+           | map({name: .[0].group, subjects: map({subject: (subject | mdx)})}));
+      def bumps: (.message // "" | capture("file versions:(?<v>[^\n]*)")? // {v: ""} | .v
+                  | split(",") | map(strip)
+                  | map(capture("^(?<kind>[a-z]+) (?<version>[0-9]+) \\((?<how>from [0-9]+|new)\\)$")? // empty)
+                  | map(select(.kind as $k | file_kinds | index($k)))
+                  | sort_by(.kind as $k | file_kinds | index($k)));
+      def ident: sub("^v"; "V") | gsub("[.-]"; "_");
+      [ .[] | . as $release | (bumps) as $bumps | ($bumps | map(.kind)) as $bumped
+        | (.commits | map(select(.group != null))) as $commits
+        | ($commits | map(select((.breaking and .scope != null and (.scope as $s | $bumped | index($s)) != null) | not))) as $binary
+        | (if .timestamp then (.timestamp | gmtime | strftime("%B %e, %Y") | gsub("  "; " ")) else null end) as $date
+        | [ {
+              version: .version,
+              label: (if .version then "Graph " + .version else null end),
+              ident: (if .version then (.version | ident) else null end),
+              date: $date,
+              kind: "binary",
+              module: "Graph",
+              intro: null,
+              groups: ($binary | groups)
+            } ]
+          + [ $bumps[] as $bump
+              | ($commits | map(select(.breaking and .scope == $bump.kind))) as $own
+              | {
+                  version: ($bump.kind + "-v" + $bump.version),
+                  label: (($bump.kind | .[0:1] | ascii_upcase) + ($bump.kind | .[1:]) + " v" + $bump.version),
+                  ident: (($bump.kind + "-v" + $bump.version) | ident),
+                  date: $date,
+                  kind: $bump.kind,
+                  module: (($bump.kind | .[0:1] | ascii_upcase) + ($bump.kind | .[1:])),
+                  intro: (if ($own | length) == 0 then {text: ("Introduced" + (if $release.version then " with graph " + $release.version else "" end) + ".")} else null end),
+                  groups: ($own | groups)
+                } ]
+      ] | {entries: flatten}' <<<"$context"
   - cliff_context
   - "{{input.tag}}"
 output: json
@@ -50,14 +93,22 @@ input_schema:
 output_schema:
   type: object
   properties:
-    releases:
+    entries:
       type: array
       items:
         type: object
         properties:
-          version: { type: ["string", "null"] }
-          ident:   { type: ["string", "null"], description: MDX-component-safe version, e.g. V0_10_0 }
+          version: { type: ["string", "null"], description: 'The entry''s own version: the git tag ("v0.13.0") for the binary, "<kind>-v<N>" for a file version; null for unreleased commits' }
+          label:   { type: ["string", "null"], description: 'Heading text: "Graph v0.13.0", "Config v2"' }
+          ident:   { type: ["string", "null"], description: MDX-component-safe version, e.g. V0_10_0 or config_v2 }
           date:    { type: ["string", "null"] }
+          kind:    { type: string, enum: [binary, config, plan, tool, store] }
+          module:  { type: string, description: 'The module name as shown to readers — Graph, Config, Plan, Tool, Store' }
+          intro:
+            type: ["object", "null"]
+            description: For a file version that arrived with no commit of its own, a one-line note; null otherwise
+            properties:
+              text: { type: string }
           groups:
             type: array
             items:

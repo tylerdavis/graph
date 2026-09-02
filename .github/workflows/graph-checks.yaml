@@ -3,7 +3,8 @@
 # so there is no install step; all logic lives in the repo-carried plans
 # and tools (./.graph/) and the bundled github tool pack. GRAPH_EVENTS=github
 # turns failing gates into run annotations. docs-drift fails the check
-# (exit 4) on undocumented behavior changes; graph-review-9000 composes
+# (exit 4) on undocumented behavior changes; format-drift fails it on a
+# file-version schema change without a version bump; graph-review-9000 composes
 # plan__graph_review_core (the locally runnable review engine) with
 # plan__graph_review_thread_audit (thread lifecycle, decide-gated to runs
 # with prior findings), maintaining its eight-pass findings as living
@@ -54,6 +55,28 @@ jobs:
 
       - name: Docs drift gate
         run: graph plan run docs_drift --input base="$BASE" --input head="$HEAD"
+
+  # Sibling gate: any schema change to a versioned file (config,
+  # plan/tool documents, the store layout) must raise the matching *_FORMAT
+  # constant — see RELEASING.md, "Version bumps".
+  # Zero LLM calls unless a model file changed.
+  format-drift:
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/tylerdavis/graph:v0.12.0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Format drift gate
+        run: graph plan run format_drift --input base="$BASE" --input head="$HEAD"
 
   # The reviewer: graph_review_9000 wraps plan__graph_review_core (the
   # engine, also runnable locally over a worktree) and

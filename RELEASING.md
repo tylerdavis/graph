@@ -68,6 +68,92 @@ origin, tag doesn't already exist.
 Pre-1.0, minor releases may include breaking changes; call them out in the
 release notes.
 
+The script enforces the floor: if any commit since the last tag is breaking
+(a `!` subject or a `BREAKING CHANGE:` footer, as git-cliff reports it) or
+any file-version constant moved, `patch` is refused; from 1.0 on, `minor` is
+refused too.
+
+## Changelog entries
+
+The changelog is a flat list of entries, one per **module version**, newest
+first. Cutting a binary release produces a `Graph v0.13.0` entry; a release
+that also bumps a file version produces one more entry per bumped kind —
+`Config v2`, `Plan v2`, `Tool v2`, `Store v2` — each with its own heading and
+the same date (on the docs page, each `<Update>` card is also tagged with
+its module name, so readers can filter to one). Nothing is nested: a reader looking for what changed in the
+config schema finds a `Config v2` entry, not a subsection of the binary's.
+
+Which commits go where:
+
+- a **breaking commit scoped `config`, `plan`, `tool`, or `store`** is that
+  kind's entry, when the release bumps that kind;
+- everything else is the `Graph` entry;
+- a kind whose version is new in this release (its first constant) gets an
+  entry that says `Introduced with graph vX.Y.Z` when no commit is scoped to
+  it.
+
+Both renderings — `CHANGELOG.md` via `cliff.toml`, `docs/changelog.mdx` via
+the `cliff_context` tool — read the bumps from the tag message's
+`file versions:` line (`config 2 (from 1), plan 1, tool 1, store 1 (new)`),
+which `release.sh` writes. The tag stays the source of truth: a regeneration
+produces the same entries.
+
+The four scopes are therefore reserved: they mean "this commit bumps that
+file kind's version", nothing else. `check-commit-subject.sh` rejects a
+reserved scope without `!` (an ordinary change to the crate that reads those
+files takes another scope: `graph-config`, `plans`, `tools`, `storage`, or
+none), and `release.sh` checks the other direction before cutting: a moved
+constant needs a `(kind)!` commit whose `BREAKING CHANGE:` footer names the
+new version, and a `(kind)!` commit needs a moved constant.
+
+Breaking commits are exactly what git-cliff reports as breaking: a `!` before
+the colon, or a `BREAKING CHANGE:` footer. Either sets the commit's
+`breaking` flag; the footer text (or, without one, nothing) is what prints
+after the subject. `protect_breaking_commits` keeps a skip parser from ever
+hiding one.
+
+## Version bumps
+
+`config.toml`, plan documents, tool documents, and the data directory each
+carry an integer file version, independent of the binary version
+(`docs/reference/file-versions.mdx` is the user-facing contract). **Every** schema
+change to one of those files — a new optional key just as much as a
+removed or renamed one, a changed shape or meaning, a newly required key —
+is a **version bump**: the number is the schema's generation, and a binary
+reads a window of generations (`*_FORMAT_OLDEST..=*_FORMAT`) that narrows
+only at a major release. A bump ships as one PR containing all of:
+
+1. The constant raised: `CONFIG_FORMAT` (`crates/graph-config/src/format.rs`),
+   `PLAN_FORMAT` / `TOOL_FORMAT` (`crates/graph-core/src/format.rs`), or
+   `STORE_FORMAT` (`crates/graph-store/src/file.rs`).
+2. A migration appended to that file kind's chain — a forward-only function
+   from version N to N+1 over the raw document, returning notes for anything
+   it could not carry over. An additive change appends a no-op step.
+3. A frozen fixture pair: the version N file stays under
+   `tests/fixtures/v<N>/`, its version N+1 twin lands under `v<N+1>/` with the
+   same file name, and the golden-pair test proves they load identically.
+   Fixtures for every version in the window must keep loading.
+4. A breaking commit scoped to the file kind (`feat(config)!: …`) whose
+   footer names the new version — `BREAKING CHANGE: config version 2 (graph
+   config migrate)` — which is what gives it the changelog's own `Config v2`
+   entry. That entry is the record of what changed; the file-versions page
+   states the contract and never lists versions. The release script refuses
+   to cut without the commit.
+
+The `format_drift` check (`.graph/plans/format_drift.yaml`, run by
+`graph-checks.yaml`) fails a PR that changes a model file's schema without
+step 1; the fixture tests catch a removed or renamed key mechanically. At
+release time the script diffs the four constants between the last tag and
+`HEAD`, checks step 4 both ways, writes the result into the
+tag message (`file versions: config 2 (from 1), plan 1, tool 1, store 1` —
+the tag is the source of truth, so the changelog reads it from there on
+every regeneration), and passes the delta to `changelog_entry` as its
+`formats` input, which forces `migration_needed` and builds the migration
+prompt around `graph config check` and the `migrate` commands rather than
+inferring from commit subjects. Move any `ghcr.io/tylerdavis/graph:vX.Y.Z`
+pin in `.github/workflows/` in the same PR that stamps this repo's own
+`.graph/` files — an older image refuses a newer file version by name.
+
 ## Commit convention
 
 Conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `ci:`, `refactor:`,

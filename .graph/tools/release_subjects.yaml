@@ -1,6 +1,7 @@
-# exec tool: one release's grouped commit subjects, from git-cliff's
-# structured context — the evidence changelog_entry infers a summary
-# from.
+# exec tool: one release's commit subjects, split into the changelog's
+# entries (the binary, plus each file version the tag message records as
+# bumped or new) and grouped, from git-cliff's structured context — the
+# evidence changelog_entry infers a summary from.
 #
 # This deliberately does NOT read CHANGELOG.md. The tag is the source of
 # truth for what is in a release; CHANGELOG.md is one rendering of it,
@@ -14,10 +15,13 @@
 # real release.
 name: release_subjects
 description: >
-  The grouped commit subjects for one release, from git-cliff's context
-  (the tag, not CHANGELOG.md), as the plain text an inference reads.
-  Fails when git-cliff knows no such release — which is the case when
-  every commit since the last tag is ci:/chore:/test:.
+  The commit subjects for one release, from git-cliff's context (the tag,
+  not CHANGELOG.md), as the plain text an inference reads: a "## Graph
+  vX.Y.Z" section, then one "## Config v2" / "## Plan v2" / … section per
+  file version the release bumps (holding that kind's breaking commits),
+  each grouped with Breaking first. Fails when git-cliff knows no such
+  release — which is the case when every commit since the last tag is
+  ci:/chore:/test:.
 kind: exec
 command: bash
 args:
@@ -31,13 +35,33 @@ args:
       context=$(git-cliff -c cliff.toml --tag "$version" --context)
     fi
     text=$(jq -r --arg v "$version" '
+      def file_kinds: ["config", "plan", "tool", "store"];
+      def strip: gsub("^\\s+|\\s+$"; "");
+      def subject: (.message | split("\n")[0] | strip);
+      def line:
+        subject
+        + (if .breaking and .breaking_description != null and (.breaking_description | split("\n")[0] | strip) != subject
+           then " — " + (.breaking_description | split("\n")[0] | strip) else "" end);
+      def groups:
+        ([ (map(select(.breaking))) | select(length > 0)
+           | "### Breaking\n\n" + (map("- " + line) | join("\n")) ])
+        + (map(select(.breaking | not)) | group_by(.group)
+           | map("### " + .[0].group + "\n\n" + (map("- " + subject) | join("\n"))))
+        | join("\n\n");
+      def bumps: (.message // "" | capture("file versions:(?<v>[^\n]*)")? // {v: ""} | .v
+                  | split(",") | map(strip)
+                  | map(capture("^(?<kind>[a-z]+) (?<version>[0-9]+) \\((?<how>from [0-9]+|new)\\)$")? // empty)
+                  | map(select(.kind as $k | file_kinds | index($k))));
       map(select(.version == $v)) | first
       | if . == null then empty else
-          .commits
-          | map(select(.group != null))
-          | group_by(.group)
-          | map("### " + .[0].group + "\n\n"
-                + (map("- " + (.message | split("\n")[0])) | join("\n")))
+          . as $release | (bumps) as $bumps | ($bumps | map(.kind)) as $bumped
+          | (.commits | map(select(.group != null))) as $commits
+          | ($commits | map(select((.breaking and .scope != null and (.scope as $s | $bumped | index($s)) != null) | not))) as $binary
+          | ([ "## Graph " + $release.version + "\n\n" + ($binary | groups) ]
+             + [ $bumps[] as $bump
+                 | ($commits | map(select(.breaking and .scope == $bump.kind))) as $own
+                 | "## " + ($bump.kind | .[0:1] | ascii_upcase) + ($bump.kind | .[1:]) + " v" + $bump.version + "\n\n"
+                   + (if ($own | length) == 0 then "- Introduced with graph " + $release.version + "." else ($own | groups) end) ])
           | join("\n\n")
         end' <<<"$context")
     [ -n "$text" ] || { echo "git-cliff knows no release $version" >&2; exit 1; }
@@ -55,4 +79,4 @@ input_schema:
 output_schema:
   type: object
   properties:
-    text: { type: string, description: The release's grouped commit subjects }
+    text: { type: string, description: The release's commit subjects as changelog entries (binary, then each bumped file version), grouped }

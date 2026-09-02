@@ -36,6 +36,81 @@ if git rev-parse "v$new" >/dev/null 2>&1; then
   echo "tag v$new already exists" >&2; exit 1
 fi
 
+# The file-version constants (docs/reference/file-versions.mdx) at a ref, one
+# "<name> <version>" per line. A ref that predates a kind's constant reads
+# as "-": that kind had no version yet, and its first release announces it
+# as new rather than as a bump.
+format_table() {
+  local ref=$1
+  for spec in \
+    "config crates/graph-config/src/format.rs CONFIG_FORMAT" \
+    "plan crates/graph-core/src/format.rs PLAN_FORMAT" \
+    "tool crates/graph-core/src/format.rs TOOL_FORMAT" \
+    "store crates/graph-store/src/file.rs STORE_FORMAT"; do
+    set -- $spec
+    source=$(git show "$ref:$2" 2>/dev/null || true)
+    version=$(printf '%s\n' "$source" | sed -n "s/^pub const $3: u32 = \([0-9]*\);.*/\1/p" | head -1)
+    echo "$1 ${version:--}"
+  done
+}
+
+# A file-version bump or a breaking commit is a release-level decision, not a
+# patch: pre-1.0 it needs at least a minor, from 1.0 on it needs a major.
+# Checked before anything is mutated, alongside the tag check above.
+last_tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+format_delta=""
+if [ -n "$last_tag" ]; then
+  format_delta=$(paste -d' ' <(format_table "$last_tag") <(format_table HEAD) \
+    | awk '$2 != "-" && $2 != $4 { printf "%s %s→%s\n", $1, $2, $4 }' | paste -sd',' - | sed 's/,/, /g')
+fi
+unreleased=$(git-cliff --tag "v$new" --unreleased --context 2>/dev/null)
+breaking=$(jq '[.[] | .commits[]? | select(.breaking == true)] | length' <<<"$unreleased")
+if [ -n "$format_delta" ] || [ "${breaking:-0}" -gt 0 ]; then
+  echo "release carries breaking changes: ${breaking:-0} breaking commit(s)${format_delta:+, file-version bump(s): $format_delta}"
+  needed=$([ "$major" -ge 1 ] && echo major || echo minor)
+  case "$level:$needed" in
+    major:*|minor:minor|current:*) ;;
+    *) echo "a breaking release needs at least a $needed bump (got $level)" >&2; exit 1 ;;
+  esac
+fi
+
+# A breaking commit scoped `config`/`plan`/`tool`/`store` becomes that file
+# kind's own changelog entry, so the scope and the constant must agree both
+# ways: a moved constant needs a commit that documents it, and a
+# reserved-scope commit needs a moved constant (or it is a misfiled crate
+# change — pick another scope). The footer has to name the new version, since
+# that line is what the changelog prints next to the subject. A kind that had
+# no constant at the last tag is announced as new instead, with no commit
+# required — its first entry says so.
+file_versions=""
+for spec in $(format_table HEAD | tr ' ' '='); do
+  kind=${spec%%=*}; now=${spec#*=}
+  was=$(format_table "${last_tag:-HEAD}" | awk -v k="$kind" '$1 == k { print $2 }')
+  scoped=$(jq -r --arg k "$kind" '[.[] | .commits[]? | select(.breaking == true and .scope == $k)] | length' <<<"$unreleased")
+  if [ "$now" = "-" ]; then
+    echo "no $kind version constant at HEAD" >&2; exit 1
+  elif [ "$was" = "-" ]; then
+    file_versions="${file_versions:+$file_versions, }$kind $now (new)"
+  elif [ "$now" != "$was" ]; then
+    [ "$scoped" -gt 0 ] || { echo "$kind version moved $was→$now but no breaking commit is scoped ($kind) — the changelog cannot document it" >&2; exit 1; }
+    jq -e --arg k "$kind" --arg n "$now" \
+      '[.[] | .commits[]? | select(.breaking == true and .scope == $k)] | all(.breaking_description | test("\($k) version \($n)\\b"))' \
+      <<<"$unreleased" >/dev/null \
+      || { echo "every ($kind)! commit needs a footer 'BREAKING CHANGE: $kind version $now …' (see RELEASING.md > Version bumps)" >&2; exit 1; }
+    file_versions="${file_versions:+$file_versions, }$kind $now (from $was)"
+  else
+    [ "$scoped" -eq 0 ] || { echo "a commit is scoped ($kind)! but the $kind version did not move — reserved scopes mean a version bump" >&2; exit 1; }
+    file_versions="${file_versions:+$file_versions, }$kind $now"
+  fi
+done
+tag_message="graph v$new
+
+file versions: $file_versions"
+# git-cliff reads the not-yet-created tag's message from here, so the
+# CHANGELOG and the docs page render the "File versions" line for this
+# release now, exactly as a regeneration will after the tag exists.
+export GIT_CLIFF_WITH_TAG_MESSAGE="$tag_message"
+
 # A release needs at least one changelog-worthy commit. git-cliff emits no
 # section at all for a tag whose commits are every one ci:/chore:/test:, and
 # the release would then strand halfway — version bumped, CHANGELOG.md
@@ -95,12 +170,12 @@ fi
 # The regeneration above and the docs build below are two renderings of
 # one set of facts, not a pipeline — so the order here is convenience,
 # not a dependency.
-GRAPH_STORAGE=memory graph plan run changelog_entry --input version="v$new"
+GRAPH_STORAGE=memory graph plan run changelog_entry --input version="v$new" --input formats="$format_delta"
 GRAPH_STORAGE=memory graph plan run compose_changelog --input tag="v$new"
 
 git add Cargo.toml Cargo.lock CHANGELOG.md docs/docs.json docs/changelog.mdx docs/snippets/changelog
 git commit -q -m "chore(release): v$new"
-git tag -a "v$new" -m "graph v$new"
+git tag -a "v$new" -m "$tag_message"
 git push -q origin main "v$new"
 
 echo "v$new pushed — binaries build at: https://github.com/tylerdavis/graph/actions"

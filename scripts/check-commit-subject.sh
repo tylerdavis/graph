@@ -22,6 +22,33 @@ if [[ $subject =~ ^(Merge\ |Revert\ \"|fixup!|squash!|amend!|Updated\ mintlify\ 
   exit 0
 fi
 
+# The scopes config, plan, tool, and store are reserved: they mean "this
+# commit bumps that file kind's version" (RELEASING.md > "Version bumps"),
+# and the changelog files the commit under that kind's own section. Every
+# such bump is breaking for older binaries, so the `!` marker is mandatory —
+# a reserved scope without it is either a misfiled crate change (pick another
+# scope: graph-config, plans, tools, storage) or a bump missing its marker.
+if [[ $subject =~ ^($types)\((config|plan|tool|store)\):\ .+ ]]; then
+  scope=${BASH_REMATCH[2]}
+  cat >&2 <<EOF
+Commit subject uses the reserved scope "$scope" without the breaking marker:
+
+    $subject
+
+The scopes config, plan, tool, and store are reserved for file-version bumps
+and require \`!\`, e.g.
+
+    feat($scope)!: <what changed in the file's schema>
+
+    BREAKING CHANGE: $scope version <N> (graph $scope migrate)
+
+For an ordinary change to the crate that reads those files, use a different
+scope (graph-config, plans, tools, storage) or none. See RELEASING.md >
+"Version bumps".
+EOF
+  exit 1
+fi
+
 # Deliberately no length limit: this repo's subjects describe the user-visible
 # effect and several legitimate ones run long.
 if [[ $subject =~ ^($types)(\([a-z0-9._/-]+\))?!?:\ .+ ]]; then
