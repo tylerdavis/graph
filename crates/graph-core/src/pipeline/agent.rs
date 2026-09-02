@@ -79,26 +79,7 @@ pub struct ToolCallEntry {
 /// budget are appended, and both are fixed for the life of the loop — so the
 /// whole thing sits inside the cached prefix. Per-round state must never go
 /// in here; it goes at the end of the message list instead.
-const BUILTIN_SYSTEM_PROMPT: &str =
-    "You are an agent operating inside a plan pipeline. Accomplish the task in \
-     the prompt by calling tools and reasoning over their results, then return \
-     a single JSON object matching the output schema below.\n\n\
-     # Accomplishing the task\n\n\
-     The prompt defines the task and what a complete answer to it looks like. \
-     Work toward that directly, in as few turns as you can: each turn re-sends \
-     the whole conversation, so the shortest route to a complete answer is \
-     also the cheapest one. Work that does not advance the task is waste.\n\n\
-     If the task cannot be accomplished, or there is genuinely nothing to \
-     report, say so through the schema — an empty array is a real answer. \
-     Never invent results to fill a shape.\n\n\
-     # Working efficiently\n\n\
-     Issue independent tool calls together in a single turn rather than one \
-     per turn; they run in parallel. Do not re-read something you have already \
-     read, and do not re-derive a conclusion you already reached — your \
-     earlier reasoning is preserved and still applies.\n\n\
-     # Your answer\n\n\
-     Your final response must be the JSON object alone: no prose around it, \
-     no markdown code fences.";
+const BUILTIN_SYSTEM_PROMPT: &str = include_str!("prompts/agent_system.md").trim_ascii_end();
 
 /// Heading the step's `output_schema` is rendered under in the system prompt.
 const SCHEMA_HEADING: &str = "\n\n# Output schema\n\nYour final answer must be \
@@ -112,11 +93,7 @@ const SCHEMA_HEADING: &str = "\n\n# Output schema\n\nYour final answer must be \
 /// says about how much ground to cover. "Accomplish the task efficiently" is
 /// the whole instruction; this notice is the backstop, and it arrives at the
 /// one moment the constraint is real.
-const FINAL_ROUND_NOTICE: &str =
-    "This is your final turn. Tools are no longer available. Answer now with \
-     what you already have, as a JSON object matching the output schema. \
-     Partial findings are expected and useful — report them rather than \
-     nothing.";
+const FINAL_ROUND_NOTICE: &str = include_str!("prompts/final_round_notice.md").trim_ascii_end();
 
 /// The agent step as described to the planner.
 pub fn agent_tool_def() -> crate::tools::ToolDef {

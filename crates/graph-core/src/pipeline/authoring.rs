@@ -505,9 +505,14 @@ pub fn merge_planner_output(
     match existing {
         Some(mut doc) => {
             doc.steps = output.plan;
-            // Preserve an `output` finish; otherwise refresh the solver.
+            // Preserve an `output` finish; otherwise refresh the solver
+            // when the planner supplied one. A planner that omitted it is
+            // describing a plan that does not solve, which must not quietly
+            // discard a solver the draft already had.
             if doc.output.is_none() {
-                doc.solver = Some(output.solver_data);
+                if let Some(solver) = output.solver_data {
+                    doc.solver = Some(solver);
+                }
             }
             doc
         }
@@ -523,7 +528,7 @@ pub fn merge_planner_output(
             requires_servers: Vec::new(),
             input_schema: None,
             steps: output.plan,
-            solver: Some(output.solver_data),
+            solver: output.solver_data,
             output: None,
             path: None,
         },
@@ -1517,7 +1522,7 @@ solver:
                 input: Map::new(),
                 reasoning: None,
             }],
-            solver_data: SolverData::default(),
+            solver_data: Some(SolverData::default()),
         };
         let merged = merge_planner_output(Some(existing), "a totally different goal", output);
         assert_eq!(merged.identifier, "demo", "identity survives a revision");
@@ -1530,10 +1535,43 @@ solver:
     }
 
     #[test]
+    fn a_planner_that_omits_the_brief_leaves_an_existing_solver_alone() {
+        let mut existing = linked();
+        existing.output = None;
+        existing.solver = Some(SolverData {
+            query_to_answer: "the original question".to_string(),
+            ..SolverData::default()
+        });
+        let output = PlannerOutput {
+            plan: Vec::new(),
+            solver_data: None,
+        };
+        let merged = merge_planner_output(Some(existing), "revise it", output);
+        assert_eq!(
+            merged.solver.expect("solver kept").query_to_answer,
+            "the original question",
+            "an omitted brief must not silently drop the solver a draft already had"
+        );
+    }
+
+    #[test]
+    fn a_fresh_draft_without_a_brief_is_a_silent_plan() {
+        let output = PlannerOutput {
+            plan: Vec::new(),
+            solver_data: None,
+        };
+        let fresh = merge_planner_output(None, "post the digest to slack", output);
+        assert!(
+            fresh.solver.is_none() && fresh.output.is_none(),
+            "no brief and no output map is a side-effect plan, not an empty solver"
+        );
+    }
+
+    #[test]
     fn a_fresh_draft_takes_a_stated_name_over_the_goal_prose() {
         let output = PlannerOutput {
             plan: Vec::new(),
-            solver_data: SolverData::default(),
+            solver_data: Some(SolverData::default()),
         };
         let fresh = merge_planner_output(
             None,
@@ -1552,7 +1590,7 @@ solver:
     fn a_fresh_draft_falls_back_to_a_slug_of_the_goal() {
         let output = PlannerOutput {
             plan: Vec::new(),
-            solver_data: SolverData::default(),
+            solver_data: Some(SolverData::default()),
         };
         let fresh = merge_planner_output(None, "Summarize the sprint!", output);
         assert_eq!(fresh.identifier, "summarize_the_sprint");
@@ -1572,7 +1610,7 @@ solver:
     fn stated_names_in_goals_set_the_draft_identity() {
         let output = || PlannerOutput {
             plan: Vec::new(),
-            solver_data: SolverData::default(),
+            solver_data: Some(SolverData::default()),
         };
 
         // The incident goal: the name is stated, quoted, after filler.

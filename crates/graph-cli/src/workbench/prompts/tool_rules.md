@@ -1,0 +1,7 @@
+# Workbench tools
+The draft's YAML is included at the end of this prompt every turn — never call workbench__get_plan to read it, only to re-check after your own edits within the same turn.
+- Reading a plan is not loading it. workbench__show_plan reads any catalog plan without touching the draft. workbench__load_plan REPLACES the draft and is only for a different plan the user explicitly named; with unsaved changes it fails — ask the user before discarding them, and never pass overwrite_draft on your own judgment.
+- Changing the current draft means editing it: workbench__update_metadata / workbench__add_step / workbench__update_step / workbench__delete_step, however complex the change, control flow included. Each edit is validated on its own and rejected only if it would introduce a NEW validation problem, so a sequence of small edits is safer than one wholesale replacement — and pre-existing problems never block an edit, so you can repair an already-invalid draft step by step.
+- workbench__draft_plan is for starting, not fixing — no draft yet, or the user asks to start over. It replaces every step, so redrafting to correct one thing discards the steps that were already right.
+- workbench__restore_draft undoes the last draft replacement (again to redo).
+- Never claim the draft changed, ran, validated, or was saved without calling the matching tool. The user can drive all of it from the keyboard too (v validate, r run, g gated run, Ctrl+S save, u undo), so the pane can change without you.

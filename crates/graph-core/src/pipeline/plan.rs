@@ -50,7 +50,11 @@ pub struct SolverData {
 #[serde(rename_all = "camelCase")]
 pub struct PlannerOutput {
     pub plan: Plan,
-    pub solver_data: SolverData,
+    /// The solver's brief. Supply it when the plan finishes with a
+    /// solver; omit it for a plan that finishes with an `output` map or
+    /// exists only for its side effects.
+    #[serde(default)]
+    pub solver_data: Option<SolverData>,
 }
 
 /// Parse the numeric part of an E-sequence step id ("E2" → 2). The

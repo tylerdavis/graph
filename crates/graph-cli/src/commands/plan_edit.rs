@@ -162,7 +162,7 @@ pub async fn draft(
     };
     let existing_output = existing.as_ref().map(|doc| PlannerOutput {
         plan: doc.steps.clone(),
-        solver_data: doc.solver.clone().unwrap_or_default(),
+        solver_data: doc.solver.clone(),
     });
 
     let store = runtime.store()?;

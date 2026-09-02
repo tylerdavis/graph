@@ -722,7 +722,9 @@ impl Pipeline {
                 .filter(|step| !executed_ids.contains(&step.id)),
         );
         state.plan = merged;
-        state.solver_data = output.solver_data;
+        if let Some(solver_data) = output.solver_data {
+            state.solver_data = solver_data;
+        }
         plan::default_solver_data(&state.plan, &mut state.solver_data.data);
         Ok(())
     }
