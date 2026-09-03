@@ -37,6 +37,7 @@ pub struct Field {
     pub options: Option<Vec<String>>,
     pub highlight: usize,
     pub focused: bool,
+    pub strict: bool,
     committed: String,
     original: String,
 }
@@ -61,6 +62,7 @@ impl Field {
             options: None,
             highlight: 0,
             focused: false,
+            strict: false,
             committed: String::new(),
             original: String::new(),
         };
@@ -74,6 +76,11 @@ impl Field {
         self.options = Some(options);
         self.committed = self.text();
         self.set_focused(false);
+        self
+    }
+
+    pub fn strict(mut self) -> Self {
+        self.strict = true;
         self
     }
 
@@ -177,6 +184,15 @@ impl Field {
         let text = self.text();
         if text.trim().is_empty() {
             return Ok(None);
+        }
+        if let (true, Some(options)) = (self.strict, &self.options) {
+            if !options.iter().any(|option| option == text.trim()) {
+                return Err(format!(
+                    "{} must be one of: {}",
+                    self.label,
+                    options.join(", ")
+                ));
+            }
         }
         match self.kind {
             FieldKind::Text => Ok(Some(Value::String(text))),
@@ -826,6 +842,26 @@ mod tests {
         let mut reloaded = self::tests::form();
         reloaded.mark_reloaded();
         assert!(reloaded.is_dirty(), "a reload counts as a change");
+    }
+
+    #[test]
+    fn strict_selects_reject_text_outside_their_options() {
+        let mut form = Form::new(
+            "t",
+            "",
+            vec![Field::new("mode", "mode", FieldKind::Text, false)
+                .value(Some(&json!("solver")))
+                .options(vec!["solver".into(), "output".into()])
+                .strict()],
+        );
+        assert_eq!(form.read().unwrap()["mode"], json!("solver"));
+        form.fields[0].set_text("Solver");
+        assert_eq!(
+            form.read().unwrap_err(),
+            vec!["mode must be one of: output, solver".to_string()]
+        );
+        form.fields[0].set_text("");
+        assert!(form.read().unwrap().is_empty(), "empty is still just empty");
     }
 
     #[test]

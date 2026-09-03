@@ -3,7 +3,7 @@
 //! so the whole interaction model is testable headless.
 
 use super::edit::{EditTarget, PendingEdit, StepTarget};
-use super::editor::{EditorContext, EditorState};
+use super::editor::{EditorContext, EditorState, Resume};
 use super::form::{Form, FormAction, Verdict};
 use super::plan_ws::{OutlineRow, PlanWorkspace, RowKey, WsTab};
 use super::runner::UiDecision;
@@ -92,6 +92,17 @@ pub struct FormState {
     pub form: Form,
     pub target: EditTarget,
     pub label: String,
+    pub pending: bool,
+}
+
+impl Resume {
+    fn into_mode(self) -> Mode {
+        match self {
+            Resume::Idle => Mode::Idle,
+            Resume::Chatting => Mode::Chatting,
+            Resume::Running { gated } => Mode::Running { gated },
+        }
+    }
 }
 
 const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
@@ -721,11 +732,15 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
         }
 
         Msg::Validated(problems) => {
-            app.status = if problems.is_empty() {
+            let mut status = if problems.is_empty() {
                 "✓ plan is valid".to_string()
             } else {
                 format!("✗ {} validation problem(s) — see plan tab", problems.len())
             };
+            if app.dirty {
+                status.push_str(" · unsaved — Ctrl+S saves the plan");
+            }
+            app.status = status;
             app.ws.diagnostics = problems;
             Vec::new()
         }
@@ -764,13 +779,27 @@ fn on_edit_outcome(
     let Mode::Form(state) = &mut app.mode else {
         return Vec::new();
     };
+    state.pending = false;
     if committed {
         app.status = format!(
             "✓ {} applied to the draft — Ctrl+S saves the plan",
             state.label
         );
-        if let EditTarget::Step(StepTarget::New { index }) = &state.target {
-            app.ws.select_to(index + 1);
+        if let EditTarget::Step(StepTarget::New { .. }) = &state.target {
+            let added = state
+                .form
+                .fields
+                .iter()
+                .find(|f| f.key == "id")
+                .map(|f| f.text().trim().to_string());
+            if let Some(row) = added.and_then(|id| {
+                app.ws
+                    .steps
+                    .iter()
+                    .position(|r| r.key == RowKey::Step(id.clone()))
+            }) {
+                app.ws.select_to(row);
+            }
         }
         app.mode = Mode::Idle;
         return Vec::new();
@@ -876,7 +905,7 @@ fn on_paste(app: &mut App, text: String) -> Vec<Effect> {
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     match &mut app.mode {
         Mode::Editing(editor) => {
-            if !matches!(editor.context, EditorContext::ConfirmQuit) {
+            if !matches!(editor.context, EditorContext::ConfirmQuit { .. }) {
                 editor.textarea.insert_str(text);
             }
         }
@@ -1110,7 +1139,12 @@ fn request_quit(app: &mut App) -> Vec<Effect> {
         } else {
             "a task is still running — quit anyway? (y/n)"
         };
-        app.mode = Mode::Editing(Box::new(EditorState::confirm_quit(reason)));
+        let resume = match &app.mode {
+            Mode::Chatting => Resume::Chatting,
+            Mode::Running { gated } => Resume::Running { gated: *gated },
+            _ => Resume::Idle,
+        };
+        app.mode = Mode::Editing(Box::new(EditorState::confirm_quit(reason, resume)));
     } else {
         app.should_quit = true;
     }
@@ -1407,6 +1441,7 @@ fn open_add_form(app: &mut App, before: bool) -> Vec<Effect> {
         form,
         target: EditTarget::Step(StepTarget::New { index }),
         label,
+        pending: false,
     }));
     Vec::new()
 }
@@ -1482,6 +1517,7 @@ fn open_form(app: &mut App) -> Vec<Effect> {
         form,
         target,
         label,
+        pending: false,
     }));
     Vec::new()
 }
@@ -1548,14 +1584,21 @@ fn submit_form(app: &mut App, commit: bool) -> Vec<Effect> {
     let Mode::Form(state) = &mut app.mode else {
         return Vec::new();
     };
+    if state.pending {
+        app.status = "still applying the previous submit".to_string();
+        return Vec::new();
+    }
     match state.form.read() {
-        Ok(values) => vec![Effect::ApplyEdit {
-            edit: PendingEdit {
-                target: state.target.clone(),
-                values,
-            },
-            commit,
-        }],
+        Ok(values) => {
+            state.pending = true;
+            vec![Effect::ApplyEdit {
+                edit: PendingEdit {
+                    target: state.target.clone(),
+                    values,
+                },
+                commit,
+            }]
+        }
         Err(problems) => {
             app.status = format!("✗ {} problem(s) in the form", problems.len());
             state.form.verdict = Some(Verdict::Invalid {
@@ -1574,10 +1617,10 @@ fn on_editor_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
     };
 
     // Confirm dialogs are single-key.
-    if let EditorContext::ConfirmQuit = editor.context {
+    if let EditorContext::ConfirmQuit { resume } = editor.context {
         match key.code {
             KeyCode::Char('y') => app.should_quit = true,
-            KeyCode::Char('n') | KeyCode::Esc => app.mode = Mode::Idle,
+            KeyCode::Char('n') | KeyCode::Esc => app.mode = resume.into_mode(),
             _ => {}
         }
         return Vec::new();
@@ -1668,7 +1711,7 @@ fn submit_editor(app: &mut App) -> Vec<Effect> {
             }
             launch_run(app, gated, value)
         }
-        EditorContext::ConfirmQuit => Vec::new(),
+        EditorContext::ConfirmQuit { .. } => Vec::new(),
     }
 }
 
@@ -2480,7 +2523,7 @@ steps:
         assert!(!app.should_quit);
         match &app.mode {
             Mode::Editing(editor) => {
-                assert!(matches!(editor.context, EditorContext::ConfirmQuit))
+                assert!(matches!(editor.context, EditorContext::ConfirmQuit { .. }))
             }
             _ => panic!("expected the quit confirm"),
         }
@@ -2710,7 +2753,7 @@ steps:
     fn edit_mode_swallows_mouse() {
         let mut app = App::new(None);
         seed_regions(&app, demo_regions());
-        app.mode = Mode::Editing(Box::new(EditorState::confirm_quit("test")));
+        app.mode = Mode::Editing(Box::new(EditorState::confirm_quit("test", Resume::Idle)));
         update(&mut app, click(50, 15));
         assert_eq!(app.focus, Focus::Chat, "mouse ignored while editing");
     }
@@ -2997,6 +3040,74 @@ solver:
             matches!(app.mode, Mode::Idle),
             "an outcome with no form open is ignored"
         );
+    }
+
+    #[test]
+    fn declining_the_quit_prompt_resumes_the_interrupted_mode() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.mode = Mode::Running { gated: true };
+        update(&mut app, ctrl('c'));
+        assert!(matches!(app.mode, Mode::Editing(_)));
+        update(&mut app, key(KeyCode::Char('n')));
+        assert!(matches!(app.mode, Mode::Running { gated: true }));
+        app.focus = Focus::Workspace;
+        update(&mut app, key(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::Running { .. }), "no form mid-run");
+
+        app.mode = Mode::Chatting;
+        update(&mut app, ctrl('c'));
+        update(&mut app, key(KeyCode::Esc));
+        assert!(matches!(app.mode, Mode::Chatting));
+    }
+
+    #[test]
+    fn a_submit_in_flight_blocks_a_second_one_and_selection_follows_the_new_step() {
+        let mut app = App::new(Some(body_doc()));
+        app.focus = Focus::Workspace;
+        update(&mut app, key(KeyCode::Char('j')));
+        update(&mut app, key(KeyCode::Char('j')));
+        update(&mut app, key(KeyCode::Char('a')));
+        assert_eq!(
+            form_state(&app).target,
+            EditTarget::Step(StepTarget::New { index: 2 })
+        );
+        if let Mode::Form(state) = &mut app.mode {
+            state.form.fields[1].set_text("t__search");
+        }
+        assert_eq!(update(&mut app, ctrl('s')).len(), 1);
+        assert!(form_state(&app).pending);
+        assert!(
+            update(&mut app, ctrl('s')).is_empty(),
+            "second submit waits"
+        );
+        assert!(app.status.contains("still applying"));
+
+        let mut doc = body_doc();
+        doc.steps.insert(2, super::super::edit::blank_step("E4"));
+        doc.steps[2].tool_name = "t__search".to_string();
+        update(
+            &mut app,
+            Msg::DraftReplaced {
+                doc: Box::new(doc),
+                dirty: true,
+            },
+        );
+        update(
+            &mut app,
+            Msg::EditOutcome {
+                committed: true,
+                introduced: Vec::new(),
+                pre_existing: Vec::new(),
+            },
+        );
+        assert!(matches!(app.mode, Mode::Idle));
+        assert_eq!(
+            app.ws.steps[app.ws.selected].key,
+            RowKey::Step("E4".into()),
+            "selected by id, not by doc index"
+        );
+        update(&mut app, Msg::Validated(Vec::new()));
+        assert!(app.status.contains("unsaved"), "{}", app.status);
     }
 
     #[test]

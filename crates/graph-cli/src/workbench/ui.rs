@@ -1038,7 +1038,7 @@ fn scope_order(name: &str) -> (u8, u32) {
 }
 
 fn draw_editor(frame: &mut Frame, editor: &super::editor::EditorState) {
-    if matches!(editor.context, EditorContext::ConfirmQuit) {
+    if matches!(editor.context, EditorContext::ConfirmQuit { .. }) {
         let area = centered(frame.area(), 50, 20);
         frame.render_widget(Clear, area);
         let widget = Paragraph::new(editor.title.clone())

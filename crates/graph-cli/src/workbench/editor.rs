@@ -19,7 +19,16 @@ pub enum EditorContext {
     RunInput {
         gated: bool,
     },
-    ConfirmQuit,
+    ConfirmQuit {
+        resume: Resume,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resume {
+    Idle,
+    Chatting,
+    Running { gated: bool },
 }
 
 pub struct EditorState {
@@ -111,12 +120,12 @@ impl EditorState {
         }
     }
 
-    pub fn confirm_quit(reason: &str) -> Self {
+    pub fn confirm_quit(reason: &str, resume: Resume) -> Self {
         Self {
             title: reason.to_string(),
             header: Vec::new(),
             textarea: TextArea::default(),
-            context: EditorContext::ConfirmQuit,
+            context: EditorContext::ConfirmQuit { resume },
             error: None,
         }
     }

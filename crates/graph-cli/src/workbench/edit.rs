@@ -185,13 +185,7 @@ pub fn reload_step_form(form: &Form, label: &str, tools: &[ToolDef]) -> Form {
         reasoning: text("reasoning").filter(|r| !r.trim().is_empty()),
     };
     let mut rebuilt = step_form(label, &step, has_id, tools);
-    let after_tool = rebuilt
-        .fields
-        .iter()
-        .position(|f| f.key == "tool")
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    rebuilt.set_focus(form.focused.max(after_tool));
+    rebuilt.set_focus(form.focused);
     rebuilt.mark_reloaded();
     rebuilt
 }
@@ -200,7 +194,7 @@ fn input_field_kind(declared: Option<&Value>, existing: Option<&Value>) -> (Fiel
     match declared.and_then(Value::as_str) {
         Some("string") => (FieldKind::Text, true),
         Some("object") | Some("array") => (FieldKind::Json, true),
-        Some("number") | Some("integer") | Some("boolean") => (FieldKind::Json, false),
+        Some("number") | Some("integer") | Some("boolean") => (FieldKind::Auto, false),
         _ => match existing {
             Some(Value::String(_)) => (FieldKind::Text, true),
             Some(Value::Null) | None => (FieldKind::Auto, true),
@@ -300,7 +294,8 @@ fn metadata_fields(mode: FinishMode) -> Vec<Field> {
                     .iter()
                     .map(|mode| mode.label().to_string())
                     .collect(),
-            ),
+            )
+            .strict(),
     ];
     match mode {
         FinishMode::Solver => fields.extend([
@@ -608,7 +603,11 @@ solver:
         assert_eq!(query.text(), "x");
         assert_eq!(query.hint.as_deref(), Some("search text"));
         let limit = &form.fields[4];
-        assert_eq!((limit.kind, limit.multiline), (FieldKind::Json, false));
+        assert_eq!(
+            (limit.kind, limit.multiline),
+            (FieldKind::Auto, false),
+            "scalars accept a template as well as a literal"
+        );
         assert_eq!(limit.text(), "5");
         assert_eq!(form.fields[5].text(), "");
     }
@@ -876,6 +875,13 @@ solver:
             .find(|f| f.key == "finish")
             .unwrap()
             .is_select());
+        set(&mut form, "finish", "Solver");
+        assert_eq!(
+            form.read().unwrap_err(),
+            vec!["finish must be one of: output, silent, solver".to_string()],
+            "a mistyped mode never silently clears the finish"
+        );
+        set(&mut form, "finish", "solver");
         assert_eq!(
             text(&form, "solver_query"),
             "what happened with {{E0.query}}?"

@@ -276,9 +276,20 @@ fn check_edit(ctx: &WorkbenchContext, doc: &PlanDoc, edit: &super::edit::Pending
         };
     }
     let after = super::tools::plan_problems(&ctx.pipeline, &edited);
+    let blocking = authoring::static_problems(&edited);
     let (pre_existing, introduced): (Vec<String>, Vec<String>) = after
         .into_iter()
         .partition(|problem| before.contains(problem));
+    let introduced = introduced
+        .into_iter()
+        .map(|problem| {
+            if blocking.contains(&problem) {
+                problem
+            } else {
+                format!("non-blocking (submit still allowed): {problem}")
+            }
+        })
+        .collect();
     Msg::EditOutcome {
         committed: false,
         introduced,
