@@ -31,7 +31,6 @@ pub struct PendingEdit {
 }
 
 const INPUT_PREFIX: &str = "in:";
-const EXTRA_KEY: &str = "extra";
 const HINT_WIDTH: usize = 72;
 
 pub fn step_at(doc: &PlanDoc, target: &StepTarget) -> Option<(Step, bool)> {
@@ -145,18 +144,6 @@ pub fn step_form(label: &str, step: &Step, has_id: bool, tools: &[ToolDef]) -> F
             Field::new(&format!("{INPUT_PREFIX}{key}"), key, kind, multiline).value(Some(value)),
         );
     }
-    let closed = graph_core::pipeline::is_control_step(&step.tool_name)
-        || schema
-            .and_then(|s| s.get("additionalProperties"))
-            .and_then(Value::as_bool)
-            == Some(false);
-    if !closed {
-        fields.push(
-            Field::new(EXTRA_KEY, "additional input", FieldKind::Json, true)
-                .hint("a JSON object merged into the input — for keys not listed above"),
-        );
-    }
-
     Form::new(format!("edit {label}"), "", fields)
 }
 
@@ -185,12 +172,6 @@ pub fn reload_step_form(form: &Form, label: &str, tools: &[ToolDef]) -> Form {
         reasoning: text("reasoning").filter(|r| !r.trim().is_empty()),
     };
     let mut rebuilt = step_form(label, &step, has_id, tools);
-    if let (Some(extra), Some(old)) = (
-        rebuilt.fields.iter_mut().find(|f| f.key == EXTRA_KEY),
-        form.fields.iter().find(|f| f.key == EXTRA_KEY),
-    ) {
-        extra.textarea = old.textarea.clone();
-    }
     let after_tool = rebuilt
         .fields
         .iter()
@@ -471,14 +452,6 @@ impl PendingEdit {
                 input.insert(name.to_string(), value.clone());
             }
         }
-        if let Some(extra) = self.values.get(EXTRA_KEY) {
-            let Some(extra) = extra.as_object() else {
-                return Err(json!({"error": "additional input must be a JSON object"}));
-            };
-            for (key, value) in extra {
-                input.insert(key.clone(), value.clone());
-            }
-        }
         Ok(input)
     }
 
@@ -598,15 +571,7 @@ solver:
         let form = step_form("step E0", &step, has_id, &[search_def()]);
         assert_eq!(
             keys(&form),
-            [
-                "id",
-                "tool",
-                "reasoning",
-                "in:query",
-                "in:limit",
-                "in:tags",
-                "extra"
-            ]
+            ["id", "tool", "reasoning", "in:query", "in:limit", "in:tags"]
         );
         assert!(form.fields[1].is_select());
         assert_eq!(form.fields[1].matches(), ["t__search"]);
@@ -628,7 +593,7 @@ solver:
         let form = step_form("step E0", &step, true, &[]);
         assert_eq!(
             keys(&form),
-            ["id", "tool", "reasoning", "in:limit", "in:query", "extra"]
+            ["id", "tool", "reasoning", "in:limit", "in:query"]
         );
         assert_eq!(form.fields[3].kind, FieldKind::Json);
         assert_eq!(form.fields[4].kind, FieldKind::Text);
@@ -652,7 +617,6 @@ solver:
                 "in:model",
                 "in:when"
             ],
-            "control steps take no extra keys"
         );
         let when = form.fields.iter().find(|f| f.key == "in:when").unwrap();
         assert_eq!(when.kind, FieldKind::Json);
@@ -673,7 +637,6 @@ solver:
         set(&mut form, "in:limit", "");
         set(&mut form, "in:tags", "[\"a\"]");
         set(&mut form, "reasoning", "");
-        set(&mut form, "extra", "{\"page\": 2}");
         let values = form.read().unwrap();
         let edit = PendingEdit {
             target: EditTarget::Step(target),
@@ -686,7 +649,7 @@ solver:
         assert_eq!(step.reasoning, None);
         assert_eq!(
             Value::Object(step.input.clone()),
-            json!({"query": "y", "tags": ["a"], "page": 2})
+            json!({"query": "y", "tags": ["a"]})
         );
         assert_eq!(edited.steps[1].input["over"], json!("{{search.items}}"));
         assert_eq!(
@@ -729,7 +692,7 @@ solver:
         let (step, has_id) = step_at(&doc, &call).unwrap();
         assert!(!has_id);
         let mut form = step_form("then branch of E3", &step, has_id, &[]);
-        assert_eq!(keys(&form), ["tool", "reasoning", "in:message", "extra"]);
+        assert_eq!(keys(&form), ["tool", "reasoning", "in:message"]);
         set(&mut form, "in:message", "hi");
         let edit = PendingEdit {
             target: EditTarget::Step(call),
@@ -774,7 +737,6 @@ solver:
         set(&mut form, "reasoning", "kept");
         set(&mut form, "in:limit", "9");
         set(&mut form, "in:tags", "{oops");
-        set(&mut form, "extra", "{\"page\": 1}");
         set(&mut form, "tool", "t__fetch");
         form.set_focus(2);
 
@@ -788,8 +750,7 @@ solver:
                 "in:url",
                 "in:limit",
                 "in:query",
-                "in:tags",
-                "extra"
+                "in:tags"
             ]
         );
         let text = |key: &str| {
@@ -815,7 +776,6 @@ solver:
         assert_eq!(text("in:limit"), "9");
         assert_eq!(text("in:query"), "x");
         assert_eq!(text("in:tags"), "{oops", "unparsable text survives as text");
-        assert_eq!(text("extra"), "{\"page\": 1}");
         assert_eq!(reloaded.focused, 2);
     }
 
