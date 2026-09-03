@@ -1143,6 +1143,7 @@ fn draw_form(frame: &mut Frame, state: &FormState) {
     frame.render_widget(Paragraph::new(footer_lines), footer);
 
     let width = body.width.saturating_sub(1);
+    form.view_width.set(width.saturating_sub(2));
     let total = form.total_height();
     let viewport = body.height;
     form.view_rows.set(viewport);
@@ -1164,7 +1165,7 @@ fn draw_form(frame: &mut Frame, state: &FormState) {
             width,
             height,
         };
-        Widget::render(&form.fields[index].textarea, rect, &mut offscreen);
+        render_field(&form.fields[index], rect, &mut offscreen);
         if let Some(error) = &form.fields[index].error {
             let label = format!(" ✗ {error} ");
             let x = width.saturating_sub(label.chars().count() as u16 + 1);
@@ -1249,6 +1250,35 @@ fn draw_form(frame: &mut Frame, state: &FormState) {
             body,
             &mut state,
         );
+    }
+}
+
+fn render_field(field: &super::form::Field, rect: Rect, buf: &mut Buffer) {
+    let block = field.block();
+    let inner = block.inner(rect);
+    block.render(rect, buf);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let (rows, cursor) = wrap_input(
+        field.textarea.lines(),
+        field.textarea.cursor(),
+        inner.width as usize,
+    );
+    let visible = inner.height as usize;
+    let scroll = cursor.0.saturating_sub(visible - 1);
+    let lines: Vec<Line> = rows.into_iter().map(Line::from).collect();
+    Paragraph::new(lines)
+        .scroll((scroll as u16, 0))
+        .render(inner, buf);
+    if field.focused {
+        let position = Position {
+            x: inner.x + cursor.1 as u16,
+            y: inner.y + (cursor.0 - scroll) as u16,
+        };
+        if let Some(cell) = buf.cell_mut(position) {
+            cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+        }
     }
 }
 

@@ -36,6 +36,7 @@ pub struct Field {
     pub error: Option<String>,
     pub options: Option<Vec<String>>,
     pub highlight: usize,
+    pub focused: bool,
     committed: String,
 }
 
@@ -58,6 +59,7 @@ impl Field {
             error: None,
             options: None,
             highlight: 0,
+            focused: false,
             committed: String::new(),
         };
         field.set_focused(false);
@@ -186,11 +188,21 @@ impl Field {
         }
     }
 
-    pub fn height(&self) -> u16 {
+    pub fn wrapped_rows(&self, width: u16) -> usize {
+        if width == 0 {
+            return self.textarea.lines().len();
+        }
+        let width = width as usize;
+        self.textarea
+            .lines()
+            .iter()
+            .map(|line| line.chars().count().div_ceil(width).max(1))
+            .sum()
+    }
+
+    pub fn height(&self, width: u16) -> u16 {
         let rows = if self.multiline {
-            self.textarea
-                .lines()
-                .len()
+            self.wrapped_rows(width)
                 .clamp(MIN_MULTILINE_ROWS, MAX_MULTILINE_ROWS)
         } else {
             1
@@ -199,6 +211,10 @@ impl Field {
     }
 
     pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    pub fn block(&self) -> Block<'static> {
         let kind = if self.is_select() {
             "select"
         } else {
@@ -209,7 +225,7 @@ impl Field {
             title.push_str(", required");
         }
         title.push(' ');
-        let border = if focused {
+        let border = if self.focused {
             Style::new().fg(Color::Yellow)
         } else {
             Style::new().add_modifier(Modifier::DIM)
@@ -224,12 +240,7 @@ impl Field {
                 .right_aligned(),
             );
         }
-        self.textarea.set_block(block);
-        self.textarea.set_cursor_style(if focused {
-            Style::new().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::default()
-        });
+        block
     }
 
     fn at_first_line(&self) -> bool {
@@ -270,6 +281,7 @@ pub struct Form {
     pending_change: Option<String>,
     pub scroll: Cell<u16>,
     pub view_rows: Cell<u16>,
+    pub view_width: Cell<u16>,
     pub visible_fields: RefCell<Vec<(usize, Rect)>>,
 }
 
@@ -284,6 +296,7 @@ impl Form {
             pending_change: None,
             scroll: Cell::new(0),
             view_rows: Cell::new(0),
+            view_width: Cell::new(0),
             visible_fields: RefCell::new(Vec::new()),
         };
         form.set_focus(0);
@@ -292,10 +305,11 @@ impl Form {
 
     pub fn layout(&self) -> Vec<(u16, u16)> {
         let mut top = 0u16;
+        let width = self.view_width.get();
         self.fields
             .iter()
             .map(|field| {
-                let height = field.height();
+                let height = field.height(width);
                 let entry = (top, height);
                 top = top.saturating_add(height);
                 entry
@@ -718,6 +732,29 @@ mod tests {
         form.fields[0].textarea = TextArea::from(["map"]);
         form.set_focus(1);
         assert_eq!(form.take_change(), Some("tool".to_string()));
+    }
+
+    #[test]
+    fn multiline_heights_follow_the_wrapped_rows() {
+        let mut form = Form::new(
+            "t",
+            "",
+            vec![
+                Field::new("a", "a", FieldKind::Text, true).value(Some(&json!("abcdefghij"))),
+                Field::new("b", "b", FieldKind::Text, false).value(Some(&json!("abcdefghij"))),
+            ],
+        );
+        assert_eq!(form.fields[0].wrapped_rows(0), 1);
+        assert_eq!(form.fields[0].wrapped_rows(4), 3);
+        assert_eq!(form.layout(), vec![(0, 4), (4, 3)]);
+        form.view_width.set(4);
+        assert_eq!(
+            form.layout(),
+            vec![(0, 5), (5, 3)],
+            "single-line fields never grow"
+        );
+        form.fields[0].set_text(&"x".repeat(100));
+        assert_eq!(form.fields[0].height(4), 10, "clamped at the ceiling");
     }
 
     #[test]
