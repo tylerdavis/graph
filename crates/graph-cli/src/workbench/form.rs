@@ -154,6 +154,15 @@ impl Field {
         self.textarea.lines().join("\n")
     }
 
+    pub fn set_text(&mut self, text: &str) {
+        self.textarea = TextArea::from(text.lines().map(str::to_string).collect::<Vec<_>>());
+        self.textarea.set_cursor_line_style(Style::default());
+        self.textarea.move_cursor(CursorMove::Bottom);
+        self.textarea.move_cursor(CursorMove::End);
+        self.committed = self.text();
+        self.set_focused(false);
+    }
+
     pub fn read(&self) -> Result<Option<Value>, String> {
         let text = self.text();
         if text.trim().is_empty() {

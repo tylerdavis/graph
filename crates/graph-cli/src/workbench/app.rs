@@ -1441,8 +1441,21 @@ fn reload_form(app: &mut App, field: &str) {
     let Mode::Form(state) = &mut app.mode else {
         return;
     };
-    if field != "tool" || !matches!(state.target, EditTarget::Step(_)) {
-        return;
+    match (&state.target, field) {
+        (EditTarget::Metadata, "finish") => {
+            state.form = super::edit::reload_metadata_form(&state.form);
+            let mode = state
+                .form
+                .fields
+                .iter()
+                .find(|f| f.key == "finish")
+                .map(|f| f.text())
+                .unwrap_or_default();
+            app.status = format!("finish: {mode} — fields reloaded for that mode");
+            return;
+        }
+        (EditTarget::Step(_), "tool") => {}
+        _ => return,
     }
     state.form = super::edit::reload_step_form(&state.form, &state.label, &app.ws.tools);
     let tool = state

@@ -231,70 +231,162 @@ fn clip_hint(text: &str) -> String {
     clipped
 }
 
-pub fn metadata_form(doc: &PlanDoc) -> Form {
-    let string = |text: &str| Value::String(text.to_string());
-    let list = |items: &[String]| Value::Array(items.iter().map(|s| string(s)).collect());
-    let solver = doc.solver.as_ref();
-    let fields = vec![
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishMode {
+    Solver,
+    Output,
+    Silent,
+}
+
+impl FinishMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            FinishMode::Solver => "solver",
+            FinishMode::Output => "output",
+            FinishMode::Silent => "silent",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim() {
+            "solver" => Some(FinishMode::Solver),
+            "output" => Some(FinishMode::Output),
+            "silent" => Some(FinishMode::Silent),
+            _ => None,
+        }
+    }
+
+    fn of(doc: &PlanDoc) -> Self {
+        if doc.solver.is_some() {
+            FinishMode::Solver
+        } else if doc.output.is_some() {
+            FinishMode::Output
+        } else {
+            FinishMode::Silent
+        }
+    }
+}
+
+const FINISH_KEY: &str = "finish";
+
+fn metadata_fields(mode: FinishMode) -> Vec<Field> {
+    let mut fields = vec![
         Field::new("identifier", "identifier", FieldKind::Text, false)
             .required(true)
-            .hint("letters, digits, _, - — changing it makes this a new plan file")
-            .value(Some(&string(&doc.identifier))),
+            .hint("letters, digits, _, - — changing it makes this a new plan file"),
         Field::new("name", "name", FieldKind::Text, false)
             .required(true)
-            .hint("display name")
-            .value(Some(&string(&doc.name))),
+            .hint("display name"),
         Field::new("description", "description", FieldKind::Text, true)
-            .hint("what the plan does — shown in the catalog and used for routing")
-            .value(Some(&string(&doc.description))),
+            .hint("what the plan does — shown in the catalog and used for routing"),
         Field::new("exemplars", "exemplars", FieldKind::Lines, true)
-            .hint("example requests the plan should handle")
-            .value(Some(&list(&doc.exemplars))),
+            .hint("example requests the plan should handle"),
         Field::new(
             "requires_servers",
             "requires servers",
             FieldKind::Lines,
             true,
         )
-        .hint("MCP servers the plan needs configured")
-        .value(Some(&list(&doc.requires_servers))),
+        .hint("MCP servers the plan needs configured"),
         Field::new("input_schema", "input schema", FieldKind::Json, true)
-            .hint("JSON Schema for {{input.*}} — empty for a plan that takes no input")
-            .value(doc.input_schema.as_ref()),
-        Field::new(
-            "solver_query",
-            "solver: query to answer",
-            FieldKind::Text,
-            true,
-        )
-        .hint("set to finish with a solver report")
-        .value(solver.map(|s| string(&s.query_to_answer)).as_ref()),
-        Field::new(
-            "solver_system_prompt",
-            "solver: system prompt",
-            FieldKind::Text,
-            true,
-        )
-        .hint("extra guidance for the solver")
-        .value(
-            solver
-                .and_then(|s| s.system_prompt.as_deref())
-                .map(string)
-                .as_ref(),
-        ),
-        Field::new("solver_data", "solver: data", FieldKind::Json, true)
-            .hint("template map of step results the solver reads — empty means every step")
-            .value(
-                solver
-                    .filter(|s| !s.data.is_empty())
-                    .map(|s| Value::Object(s.data.clone()))
-                    .as_ref(),
+            .hint("JSON Schema for {{input.*}} — empty for a plan that takes no input"),
+        Field::new(FINISH_KEY, "finish", FieldKind::Text, false)
+            .required(true)
+            .hint("solver: an LLM report · output: a rendered template map · silent: side effects only")
+            .options(
+                [FinishMode::Solver, FinishMode::Output, FinishMode::Silent]
+                    .iter()
+                    .map(|mode| mode.label().to_string())
+                    .collect(),
             ),
-        Field::new("output", "output", FieldKind::Json, true)
-            .hint("template map — set to finish with rendered JSON instead of a solver")
-            .value(doc.output.clone().map(Value::Object).as_ref()),
     ];
+    match mode {
+        FinishMode::Solver => fields.extend([
+            Field::new(
+                "solver_query",
+                "solver: query to answer",
+                FieldKind::Text,
+                true,
+            )
+            .required(true)
+            .hint("the question the solver answers from the step results"),
+            Field::new(
+                "solver_system_prompt",
+                "solver: system prompt",
+                FieldKind::Text,
+                true,
+            )
+            .hint("extra guidance for the solver"),
+            Field::new("solver_data", "solver: data", FieldKind::Json, true)
+                .hint("template map of step results the solver reads — empty means every step"),
+        ]),
+        FinishMode::Output => fields.push(
+            Field::new("output", "output", FieldKind::Json, true)
+                .required(true)
+                .hint("template map rendered as the plan's JSON result"),
+        ),
+        FinishMode::Silent => {}
+    }
+    fields
+}
+
+fn metadata_texts(doc: &PlanDoc) -> Map<String, Value> {
+    let mut texts = Map::new();
+    let mut put = |key: &str, text: String| {
+        texts.insert(key.to_string(), Value::String(text));
+    };
+    let pretty = |value: &Value| serde_json::to_string_pretty(value).unwrap_or_default();
+    put("identifier", doc.identifier.clone());
+    put("name", doc.name.clone());
+    put("description", doc.description.clone());
+    put("exemplars", doc.exemplars.join("\n"));
+    put("requires_servers", doc.requires_servers.join("\n"));
+    if let Some(schema) = &doc.input_schema {
+        put("input_schema", pretty(schema));
+    }
+    put(FINISH_KEY, FinishMode::of(doc).label().to_string());
+    if let Some(solver) = &doc.solver {
+        put("solver_query", solver.query_to_answer.clone());
+        if let Some(prompt) = &solver.system_prompt {
+            put("solver_system_prompt", prompt.clone());
+        }
+        if !solver.data.is_empty() {
+            put("solver_data", pretty(&Value::Object(solver.data.clone())));
+        }
+    }
+    if let Some(output) = &doc.output {
+        put("output", pretty(&Value::Object(output.clone())));
+    }
+    texts
+}
+
+fn assemble_metadata_form(mode: FinishMode, texts: &Map<String, Value>) -> Form {
+    let mut fields = metadata_fields(mode);
+    for field in &mut fields {
+        if let Some(text) = texts.get(&field.key).and_then(Value::as_str) {
+            field.set_text(text);
+        }
+    }
     Form::new("edit plan metadata", "", fields)
+}
+
+pub fn metadata_form(doc: &PlanDoc) -> Form {
+    assemble_metadata_form(FinishMode::of(doc), &metadata_texts(doc))
+}
+
+pub fn reload_metadata_form(form: &Form) -> Form {
+    let mut texts = Map::new();
+    for field in &form.fields {
+        texts.insert(field.key.clone(), Value::String(field.text()));
+    }
+    let mode = texts
+        .get(FINISH_KEY)
+        .and_then(Value::as_str)
+        .and_then(FinishMode::parse)
+        .unwrap_or(FinishMode::Silent);
+    let mut rebuilt = assemble_metadata_form(mode, &texts);
+    rebuilt.set_focus(form.focused);
+    rebuilt
 }
 
 impl PendingEdit {
@@ -385,19 +477,31 @@ impl PendingEdit {
 
     fn metadata_patch(&self) -> Value {
         let get = |key: &str| self.values.get(key).cloned();
+        let mode = self
+            .text(FINISH_KEY)
+            .and_then(|text| FinishMode::parse(&text))
+            .unwrap_or(FinishMode::Silent);
         let mut finish = Map::new();
-        if let Some(query) = get("solver_query") {
-            let mut solver = json!({ "queryToAnswer": query });
-            if let Some(prompt) = get("solver_system_prompt") {
-                solver["systemPrompt"] = prompt;
+        match mode {
+            FinishMode::Solver => {
+                let mut solver = json!({
+                    "queryToAnswer": get("solver_query").unwrap_or_else(|| Value::String(String::new()))
+                });
+                if let Some(prompt) = get("solver_system_prompt") {
+                    solver["systemPrompt"] = prompt;
+                }
+                if let Some(data) = get("solver_data") {
+                    solver["data"] = data;
+                }
+                finish.insert("solver".to_string(), solver);
             }
-            if let Some(data) = get("solver_data") {
-                solver["data"] = data;
+            FinishMode::Output => {
+                finish.insert(
+                    "output".to_string(),
+                    get("output").unwrap_or_else(|| Value::Object(Map::new())),
+                );
             }
-            finish.insert("solver".to_string(), solver);
-        }
-        if let Some(output) = get("output") {
-            finish.insert("output".to_string(), output);
+            FinishMode::Silent => {}
         }
         json!({
             "identifier": get("identifier").unwrap_or(Value::Null),
@@ -713,26 +817,39 @@ solver:
         let doc = doc();
         let mut form = metadata_form(&doc);
         assert_eq!(
-            form.fields
-                .iter()
-                .find(|f| f.key == "exemplars")
-                .unwrap()
-                .text(),
-            "one\ntwo"
+            keys(&form),
+            [
+                "identifier",
+                "name",
+                "description",
+                "exemplars",
+                "requires_servers",
+                "input_schema",
+                "finish",
+                "solver_query",
+                "solver_system_prompt",
+                "solver_data"
+            ]
         );
+        let text =
+            |form: &Form, key: &str| form.fields.iter().find(|f| f.key == key).unwrap().text();
+        assert_eq!(text(&form, "exemplars"), "one\ntwo");
+        assert_eq!(text(&form, "finish"), "solver");
+        assert!(form
+            .fields
+            .iter()
+            .find(|f| f.key == "finish")
+            .unwrap()
+            .is_select());
         assert_eq!(
-            form.fields
-                .iter()
-                .find(|f| f.key == "solver_query")
-                .unwrap()
-                .text(),
+            text(&form, "solver_query"),
             "what happened with {{E0.query}}?"
         );
+
         set(&mut form, "name", "Renamed");
         set(&mut form, "exemplars", "one\n\nthree");
-        set(&mut form, "solver_query", "");
-        set(&mut form, "output", "{\"count\": \"{{E0.count}}\"}");
         set(&mut form, "input_schema", "{\"type\": \"object\"}");
+        set(&mut form, "solver_system_prompt", "be brief");
         let edit = PendingEdit {
             target: EditTarget::Metadata,
             values: form.read().unwrap(),
@@ -741,27 +858,51 @@ solver:
         edit.apply(&mut edited).unwrap();
         assert_eq!(edited.name, "Renamed");
         assert_eq!(edited.exemplars, vec!["one", "three"]);
+        assert_eq!(edited.input_schema, Some(json!({"type": "object"})));
+        let solver = edited.solver.as_ref().unwrap();
+        assert_eq!(solver.query_to_answer, "what happened with {{E0.query}}?");
+        assert_eq!(solver.system_prompt.as_deref(), Some("be brief"));
+        assert!(edited.output.is_none());
+
+        set(&mut form, "finish", "output");
+        form.set_focus(3);
+        let mut form = reload_metadata_form(&form);
+        assert_eq!(
+            keys(&form),
+            [
+                "identifier",
+                "name",
+                "description",
+                "exemplars",
+                "requires_servers",
+                "input_schema",
+                "finish",
+                "output"
+            ]
+        );
+        assert_eq!(text(&form, "name"), "Renamed", "common fields carry over");
+        assert_eq!(form.focused, 3);
+        let problems = form.read().unwrap_err();
+        assert_eq!(problems, vec!["output is required".to_string()]);
+        set(&mut form, "output", "{\"count\": \"{{E0.count}}\"}");
+        let edit = PendingEdit {
+            target: EditTarget::Metadata,
+            values: form.read().unwrap(),
+        };
+        let mut edited = doc.clone();
+        edit.apply(&mut edited).unwrap();
         assert!(edited.solver.is_none());
         assert_eq!(
             edited.output.as_ref().map(|o| Value::Object(o.clone())),
             Some(json!({"count": "{{E0.count}}"}))
         );
-        assert_eq!(edited.input_schema, Some(json!({"type": "object"})));
 
-        let mut both = metadata_form(&doc);
-        set(&mut both, "output", "{\"a\": 1}");
+        set(&mut form, "finish", "silent");
+        let mut form = reload_metadata_form(&form);
+        assert_eq!(keys(&form).last(), Some(&"finish"));
         let edit = PendingEdit {
             target: EditTarget::Metadata,
-            values: both.read().unwrap(),
-        };
-        let error = edit.apply(&mut doc.clone()).unwrap_err();
-        assert!(error["error"].as_str().unwrap().contains("not both"));
-
-        let mut silent = metadata_form(&doc);
-        set(&mut silent, "solver_query", "");
-        let edit = PendingEdit {
-            target: EditTarget::Metadata,
-            values: silent.read().unwrap(),
+            values: form.read().unwrap(),
         };
         let mut edited = doc.clone();
         edit.apply(&mut edited).unwrap();
