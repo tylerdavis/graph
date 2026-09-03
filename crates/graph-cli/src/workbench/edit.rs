@@ -16,6 +16,9 @@ pub enum StepTarget {
         body: String,
         position: Option<usize>,
     },
+    New {
+        index: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,8 +36,18 @@ pub struct PendingEdit {
 const INPUT_PREFIX: &str = "in:";
 const HINT_WIDTH: usize = 72;
 
+pub fn blank_step(id: &str) -> Step {
+    Step {
+        id: id.to_string(),
+        tool_name: String::new(),
+        input: Map::new(),
+        reasoning: None,
+    }
+}
+
 pub fn step_at(doc: &PlanDoc, target: &StepTarget) -> Option<(Step, bool)> {
     match target {
+        StepTarget::New { .. } => Some((blank_step(""), true)),
         StepTarget::Top { id } => doc
             .steps
             .iter()
@@ -383,6 +396,18 @@ impl PendingEdit {
     pub fn apply(&self, doc: &mut PlanDoc) -> Result<Value, Value> {
         match &self.target {
             EditTarget::Metadata => authoring::patch_metadata(doc, &self.metadata_patch()),
+            EditTarget::Step(StepTarget::New { index }) => {
+                let step = Step {
+                    id: self.text("id").unwrap_or_default(),
+                    tool_name: self.text("tool").unwrap_or_default(),
+                    input: self.input_object()?,
+                    reasoning: self.text("reasoning"),
+                };
+                let index = (*index).min(doc.steps.len());
+                let id = step.id.clone();
+                doc.steps.insert(index, step);
+                Ok(json!({"ok": true, "id": id, "index": index}))
+            }
             EditTarget::Step(StepTarget::Top { id }) => {
                 let mut patch = json!({
                     "id": id,
@@ -779,6 +804,47 @@ solver:
         assert_eq!(text("in:query"), "x");
         assert_eq!(text("in:tags"), "{oops", "unparsable text survives as text");
         assert_eq!(reloaded.focused, 2);
+    }
+
+    #[test]
+    fn a_new_step_is_inserted_at_its_index_on_apply() {
+        let doc = doc();
+        let mut form = step_form("new step", &blank_step("E9"), true, &[search_def()]);
+        assert_eq!(keys(&form), ["id", "tool", "reasoning"]);
+        assert_eq!(form.fields[0].text(), "E9");
+        assert!(
+            form.fields[1].matches().contains(&"t__search"),
+            "empty tool lists the catalog"
+        );
+        let problems = form.read().unwrap_err();
+        assert_eq!(problems, vec!["tool is required".to_string()]);
+
+        set(&mut form, "tool", "t__search");
+        let mut form = reload_step_form(&form, "new step", &[search_def()]);
+        assert_eq!(
+            keys(&form),
+            ["id", "tool", "reasoning", "in:query", "in:limit", "in:tags"]
+        );
+        set(&mut form, "in:query", "{{E0.query}} again");
+        let edit = PendingEdit {
+            target: EditTarget::Step(StepTarget::New { index: 1 }),
+            values: form.read().unwrap(),
+        };
+        let mut edited = doc.clone();
+        edit.apply(&mut edited).unwrap();
+        assert_eq!(edited.steps.len(), doc.steps.len() + 1);
+        assert_eq!(edited.steps[1].id, "E9");
+        assert_eq!(edited.steps[1].tool_name, "t__search");
+        assert_eq!(edited.steps[1].input["query"], json!("{{E0.query}} again"));
+        assert!(authoring::static_problems(&edited).is_empty());
+
+        let past_the_end = PendingEdit {
+            target: EditTarget::Step(StepTarget::New { index: 99 }),
+            values: edit.values.clone(),
+        };
+        let mut edited = doc.clone();
+        past_the_end.apply(&mut edited).unwrap();
+        assert_eq!(edited.steps.last().unwrap().id, "E9");
     }
 
     #[test]

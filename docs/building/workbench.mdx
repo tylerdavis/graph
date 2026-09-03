@@ -95,6 +95,8 @@ Select a row in the plan tab and press `Enter` (or `e`, or double-click it) to o
   <img src="/images/workbench/step-form.svg" alt="The step form for pr_review's exit gate: schema-driven fields with their hints, the required status first, the when condition as JSON, and a scrollbar because the form is taller than the window." />
 </Frame>
 
+`a` opens a blank step form to insert a step after the selected one, `A` before it; on the plan row it inserts at the start, and on a step inside a body it anchors on the owning top-level step. The form starts on the tool select with the next free `E` id filled in, and the draft is untouched until you submit.
+
 Each field's title says how its text is read: `text` is taken verbatim; `json` is parsed, and a parse error pins to the field; `json or text` tries JSON first and falls back to the literal, so a template like `{{E0.items}}` and a number like `0` both land as intended; `one per line` builds a list. Empty fields are omitted from the step; a required one blocks saving.
 
 Inside a form, `Tab` or `Enter` moves to the next field and `Shift+Tab` to the previous one; `Up`/`Down` cross a field boundary at its first or last line; `Shift+Enter` (or `Alt+Enter`, which works in every terminal — the workbench turns on the keyboard-enhancement protocol where the terminal supports it so `Shift+Enter` is distinguishable from `Enter`) inserts a newline in a multi-line field, which scrolls to keep the cursor visible; `PgUp`/`PgDn` or the wheel scroll the whole form when it is taller than the window, and a click focuses a field. `Ctrl+T` validates the edit without applying it, `Ctrl+S` submits it to the draft, `Esc` discards the changes — asking `y`/`n` first when there are unsubmitted ones.
@@ -169,6 +171,7 @@ Logging is always on, with the default filter (`warn,workbench=debug`) recording
 | `Enter` | chat | send (`Shift+Enter` or `Alt+Enter` inserts a newline; pasted newlines never submit) |
 | `j` / `k` | workspace | select a step or tool |
 | `Enter` / `e` | plan tab | edit the selected step in a form (the plan row: its metadata) |
+| `a` / `A` | plan tab | add a step after / before the selected one |
 | `Tab` / `Shift+Tab` | form | next / previous field (`Up`/`Down` at a field's edge do the same) |
 | `Ctrl+T` | form | validate the edit without applying it |
 | `PgUp` / `PgDn` | — | scroll the focused pane — chat, detail, debug, or run (a scrollbar appears when content overflows) |

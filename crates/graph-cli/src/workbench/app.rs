@@ -769,6 +769,9 @@ fn on_edit_outcome(
             "✓ {} applied to the draft — Ctrl+S saves the plan",
             state.label
         );
+        if let EditTarget::Step(StepTarget::New { index }) = &state.target {
+            app.ws.select_to(index + 1);
+        }
         app.mode = Mode::Idle;
         return Vec::new();
     }
@@ -1178,6 +1181,8 @@ fn on_workspace_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
         KeyCode::Char('r') => start_run(app, false),
         KeyCode::Char('g') => start_run(app, true),
         KeyCode::Enter | KeyCode::Char('e') => open_form(app),
+        KeyCode::Char('a') => open_add_form(app, false),
+        KeyCode::Char('A') => open_add_form(app, true),
         KeyCode::Char('u') => {
             if matches!(app.mode, Mode::Idle) {
                 vec![Effect::RestoreDraft]
@@ -1342,6 +1347,67 @@ fn open_inject_editor(app: &mut App) -> Vec<Effect> {
     app.mode = Mode::Editing(Box::new(EditorState::inject_result(
         prompt, prefill, provenance, references,
     )));
+    Vec::new()
+}
+
+fn open_add_form(app: &mut App, before: bool) -> Vec<Effect> {
+    if !matches!(app.mode, Mode::Idle) {
+        app.status = "busy — wait for the current task to finish".to_string();
+        return Vec::new();
+    }
+    if app.ws.tab != WsTab::Plan || app.ws.drafting.is_some() {
+        return Vec::new();
+    }
+    let Some(doc) = &app.ws.doc else {
+        app.status = "no plan to add to — draft one in chat first".to_string();
+        return Vec::new();
+    };
+    let Some(row) = app.ws.steps.get(app.ws.selected) else {
+        return Vec::new();
+    };
+    let anchor = row
+        .key
+        .top_step()
+        .and_then(|id| doc.steps.iter().position(|step| step.id == id));
+    let index = match (&row.key, anchor) {
+        (RowKey::Root, _) => 0,
+        (RowKey::Finish, _) | (_, None) => doc.steps.len(),
+        (_, Some(position)) => {
+            if before {
+                position
+            } else {
+                position + 1
+            }
+        }
+    };
+    let next = app
+        .ws
+        .steps
+        .iter()
+        .filter_map(|r| graph_core::pipeline::plan::step_number(&r.id))
+        .max()
+        .map_or(0, |n| n + 1);
+    let label = "new step".to_string();
+    let mut form = super::edit::step_form(
+        &label,
+        &super::edit::blank_step(&format!("E{next}")),
+        true,
+        &app.ws.tools,
+    );
+    form.set_focus(1);
+    let placement = match index {
+        0 => "at the start".to_string(),
+        n if n == doc.steps.len() => "at the end".to_string(),
+        n => format!("after {}", doc.steps[n - 1].id),
+    };
+    app.status = format!(
+        "new step {placement} — pick a tool to load its fields · Ctrl+S submit · Esc cancel"
+    );
+    app.mode = Mode::Form(Box::new(FormState {
+        form,
+        target: EditTarget::Step(StepTarget::New { index }),
+        label,
+    }));
     Vec::new()
 }
 
@@ -2871,6 +2937,66 @@ solver:
         update(&mut app, key(KeyCode::Enter));
         assert!(matches!(app.mode, Mode::Idle));
         assert!(app.status.contains("select a step"));
+    }
+
+    #[test]
+    fn add_keys_open_a_blank_form_anchored_on_the_selection() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.focus = Focus::Workspace;
+        update(&mut app, key(KeyCode::Char('j')));
+        update(&mut app, key(KeyCode::Char('a')));
+        let state = form_state(&app);
+        assert_eq!(state.label, "new step");
+        assert_eq!(state.target, EditTarget::Step(StepTarget::New { index: 1 }));
+        assert_eq!(state.form.fields[0].text(), "E2", "next free E id");
+        assert_eq!(state.form.fields[1].text(), "");
+        assert_eq!(state.form.focused, 1, "starts on the tool select");
+        assert!(app.status.contains("after E0"));
+
+        assert!(
+            update(&mut app, ctrl('s')).is_empty(),
+            "no tool: nothing submitted"
+        );
+        assert!(matches!(
+            &form_state(&app).form.verdict,
+            Some(Verdict::Invalid { problems, .. }) if problems == &["tool is required".to_string()]
+        ));
+        assert_eq!(
+            app.ws.doc.as_ref().unwrap().steps.len(),
+            2,
+            "draft untouched"
+        );
+        update(&mut app, key(KeyCode::Esc));
+        assert!(matches!(app.mode, Mode::Idle));
+
+        update(&mut app, key(KeyCode::Char('A')));
+        assert_eq!(
+            form_state(&app).target,
+            EditTarget::Step(StepTarget::New { index: 0 })
+        );
+        update(&mut app, key(KeyCode::Esc));
+
+        update(&mut app, key(KeyCode::Char('k')));
+        update(&mut app, key(KeyCode::Char('a')));
+        assert_eq!(
+            form_state(&app).target,
+            EditTarget::Step(StepTarget::New { index: 0 }),
+            "the plan row inserts at the start either way"
+        );
+        update(&mut app, key(KeyCode::Esc));
+
+        update(
+            &mut app,
+            Msg::EditOutcome {
+                committed: true,
+                introduced: Vec::new(),
+                pre_existing: Vec::new(),
+            },
+        );
+        assert!(
+            matches!(app.mode, Mode::Idle),
+            "an outcome with no form open is ignored"
+        );
     }
 
     #[test]

@@ -593,7 +593,7 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions
         .collect();
     let list = List::new(items)
         .block(Block::bordered().border_style(DIM).title(
-            " steps ─ j/k select · Enter edit · b breakpoint · v validate · r run · g debug ",
+            " steps ─ j/k select · Enter edit · a add · b breakpoint · v validate · r run · g debug ",
         ))
         .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
     let visible = (steps_area.height.saturating_sub(2) as usize).max(1);
@@ -1301,6 +1301,7 @@ fn draw_help(frame: &mut Frame, app: &App) {
             "Enter / e",
             "edit the selected step in a form (plan row: metadata)",
         ),
+        ("a / A", "add a step after / before the selected one"),
         (
             "PgUp / PgDn",
             "scroll the focused pane (chat · detail · debug · run)",
