@@ -2,8 +2,8 @@
 # changes a file-version schema (config, plan/tool documents, the store
 # layout) — additively or not — without bumping the matching *_FORMAT
 # constant — the CLAUDE.md rule, enforced. Sibling of docs_drift: zero LLM
-# calls unless one of the model files changed, then one judge call over the
-# model diff and the format-constant diff.
+# calls unless one of the model files changed, then one call on the reviewer
+# role over the model diff and the format-constant diff.
 version: 1
 identifier: format_drift
 name: Format drift gate
@@ -51,22 +51,39 @@ steps:
     tool_name: exit
     input:
       infer: |
-        Decide whether this PR changes a versioned file's schema
-        without accounting for it. Answer yes ONLY if BOTH hold:
+        Does this PR change a versioned file's schema WITHOUT bumping that
+        file's version? Decide it per file kind, then answer yes only if at
+        least one kind is unaccounted for; otherwise answer no.
 
-        1. The MODEL DIFF changes the schema of a file graph reads: it adds
-           a field (optional or required), removes a field, renames a field
-           or an enum value, adds or removes an enum variant, changes a
-           field's type or shape, or changes what values a field accepts or
-           what an existing value means. Every schema change counts,
-           additive ones included — the file version is the schema's
-           generation number. What does NOT count: changes to code that is
-           not part of a file's schema (validation messages, loaders,
-           helper functions), doc comments, and tests.
+        The file kinds, their model files, and their version constants:
+        - config: crates/graph-config/src/model.rs — `CONFIG_FORMAT`
+        - plan and tool documents: crates/graph-core/src/pipeline/*.rs and
+          crates/graph-core/src/user_tools.rs — `PLAN_FORMAT` and
+          `TOOL_FORMAT`
+        - store: crates/graph-store/src/file.rs — `STORE_FORMAT`
 
-        2. The change is not accounted for: no `CONFIG_FORMAT`,
-           `PLAN_FORMAT`, `TOOL_FORMAT`, or `STORE_FORMAT` constant is
-           raised in the FORMAT DIFF for the affected file kind.
+        For each kind whose model files appear in the MODEL DIFF, in order:
+
+        1. If the FORMAT DIFF raises that kind's constant (a line like
+           `pub const CONFIG_FORMAT: u32 = 1;` replaced by a higher number),
+           the kind is ACCOUNTED FOR, whatever its model diff contains. A
+           raised constant covers every schema change of every size —
+           removed types, renamed fields, whole structs replaced. Do not
+           weigh the size of the change against the bump. Move to the next
+           kind.
+
+        2. Otherwise the kind is UNACCOUNTED FOR if its model diff changes
+           the schema of the file: adds a field (optional or required),
+           removes a field, renames a field or an enum value, adds or
+           removes an enum variant, changes a field's type or shape, or
+           changes what values a field accepts or what an existing value
+           means. Every schema change counts, additive ones included — the
+           file version is the schema's generation number.
+
+        3. Otherwise the kind is fine. Changes to code that is not part of
+           a file's schema — validation messages, loaders, helper
+           functions, the description text of a schema property, doc
+           comments, tests — are not schema changes.
 
         Judge only from what you can see; a diff may end with a truncation
         marker.
@@ -76,6 +93,7 @@ steps:
 
         MODEL DIFF:
         {{E0.text}}
+      model: reviewer
       status: error
       message: >-
         schema change to a versioned file without a version bump —
