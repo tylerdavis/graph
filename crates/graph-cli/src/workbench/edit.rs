@@ -294,11 +294,7 @@ pub fn metadata_form(doc: &PlanDoc) -> Form {
             .hint("template map — set to finish with rendered JSON instead of a solver")
             .value(doc.output.clone().map(Value::Object).as_ref()),
     ];
-    Form::new(
-        "edit plan metadata",
-        "solver and output are mutually exclusive — leave both empty for a silent side-effect plan",
-        fields,
-    )
+    Form::new("edit plan metadata", "", fields)
 }
 
 impl PendingEdit {
