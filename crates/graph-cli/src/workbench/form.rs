@@ -38,6 +38,7 @@ pub struct Field {
     pub highlight: usize,
     pub focused: bool,
     committed: String,
+    original: String,
 }
 
 const MIN_MULTILINE_ROWS: usize = 2;
@@ -61,6 +62,7 @@ impl Field {
             highlight: 0,
             focused: false,
             committed: String::new(),
+            original: String::new(),
         };
         field.set_focused(false);
         field
@@ -148,6 +150,7 @@ impl Field {
         self.textarea.move_cursor(CursorMove::Bottom);
         self.textarea.move_cursor(CursorMove::End);
         self.committed = self.text();
+        self.original = self.committed.clone();
         self.set_focused(false);
         self
     }
@@ -162,7 +165,12 @@ impl Field {
         self.textarea.move_cursor(CursorMove::Bottom);
         self.textarea.move_cursor(CursorMove::End);
         self.committed = self.text();
+        self.original = self.committed.clone();
         self.set_focused(false);
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.text() != self.original
     }
 
     pub fn read(&self) -> Result<Option<Value>, String> {
@@ -278,6 +286,8 @@ pub struct Form {
     pub fields: Vec<Field>,
     pub focused: usize,
     pub verdict: Option<Verdict>,
+    pub confirming_discard: bool,
+    reloaded: bool,
     pending_change: Option<String>,
     pub scroll: Cell<u16>,
     pub view_rows: Cell<u16>,
@@ -293,6 +303,8 @@ impl Form {
             fields,
             focused: 0,
             verdict: None,
+            confirming_discard: false,
+            reloaded: false,
             pending_change: None,
             scroll: Cell::new(0),
             view_rows: Cell::new(0),
@@ -360,6 +372,14 @@ impl Form {
         self.pending_change.take()
     }
 
+    pub fn mark_reloaded(&mut self) {
+        self.reloaded = true;
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.reloaded || self.fields.iter().any(Field::is_dirty)
+    }
+
     fn focus_next(&mut self) {
         if self.focused + 1 < self.fields.len() {
             self.set_focus(self.focused + 1);
@@ -399,8 +419,22 @@ impl Form {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> FormAction {
+        if self.confirming_discard {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => return FormAction::Cancel,
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    self.confirming_discard = false;
+                }
+                _ => {}
+            }
+            return FormAction::None;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
+            KeyCode::Esc if self.is_dirty() => {
+                self.confirming_discard = true;
+                return FormAction::None;
+            }
             KeyCode::Esc => return FormAction::Cancel,
             KeyCode::Char('s') if ctrl => return FormAction::Submit,
             KeyCode::Char('t') if ctrl => return FormAction::Validate,
@@ -634,7 +668,12 @@ mod tests {
         assert_eq!(form.focused, 0, "first line: previous field");
         form.handle_key(key(KeyCode::Down));
         assert_eq!(form.focused, 1, "single line is both first and last");
-        assert_eq!(form.handle_key(key(KeyCode::Esc)), FormAction::Cancel);
+        assert_eq!(
+            form.handle_key(key(KeyCode::Esc)),
+            FormAction::None,
+            "dirty: asks first"
+        );
+        assert_eq!(form.handle_key(key(KeyCode::Char('n'))), FormAction::None);
         assert_eq!(
             form.handle_key(with(KeyCode::Char('s'), KeyModifiers::CONTROL)),
             FormAction::Submit
@@ -755,6 +794,38 @@ mod tests {
         );
         form.fields[0].set_text(&"x".repeat(100));
         assert_eq!(form.fields[0].height(4), 10, "clamped at the ceiling");
+    }
+
+    #[test]
+    fn esc_asks_before_discarding_unsubmitted_changes() {
+        let mut form = form();
+        assert!(!form.is_dirty());
+        assert_eq!(form.handle_key(key(KeyCode::Esc)), FormAction::Cancel);
+
+        form.handle_key(key(KeyCode::Char('x')));
+        assert!(form.is_dirty());
+        assert_eq!(form.handle_key(key(KeyCode::Esc)), FormAction::None);
+        assert!(form.confirming_discard);
+        assert_eq!(form.handle_key(key(KeyCode::Char('q'))), FormAction::None);
+        assert!(form.confirming_discard, "stray keys are swallowed");
+        assert_eq!(form.handle_key(key(KeyCode::Char('n'))), FormAction::None);
+        assert!(!form.confirming_discard);
+        assert_eq!(form.fields[0].text(), "E0x", "nothing was typed through");
+
+        form.handle_key(key(KeyCode::Esc));
+        assert_eq!(form.handle_key(key(KeyCode::Char('y'))), FormAction::Cancel);
+
+        let mut undone = self::tests::form();
+        undone.handle_key(key(KeyCode::Char('x')));
+        undone.handle_key(key(KeyCode::Backspace));
+        assert!(
+            !undone.is_dirty(),
+            "undoing the typing makes the form clean again"
+        );
+
+        let mut reloaded = self::tests::form();
+        reloaded.mark_reloaded();
+        assert!(reloaded.is_dirty(), "a reload counts as a change");
     }
 
     #[test]

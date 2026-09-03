@@ -1120,10 +1120,17 @@ fn draw_form(frame: &mut Frame, state: &FormState) {
         }
         None => {}
     }
-    footer_lines.push(Line::styled(
-        " Tab next · Shift+Tab prev · Shift+Enter newline · Ctrl+T validate · Ctrl+S submit · Esc cancel",
-        DIM,
-    ));
+    if form.confirming_discard {
+        footer_lines.push(Line::styled(
+            " discard unsubmitted changes? y discard · n keep editing",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        footer_lines.push(Line::styled(
+            " Tab next · Shift+Tab prev · Shift+Enter newline · Ctrl+T validate · Ctrl+S submit · Esc cancel",
+            DIM,
+        ));
+    }
     let footer_height = footer_lines.len() as u16;
     let header_height = u16::from(!form.header.is_empty());
     let [header, body, footer] = *Layout::vertical([

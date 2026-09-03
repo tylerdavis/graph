@@ -179,6 +179,7 @@ pub fn reload_step_form(form: &Form, label: &str, tools: &[ToolDef]) -> Form {
         .map(|i| i + 1)
         .unwrap_or(0);
     rebuilt.set_focus(form.focused.max(after_tool));
+    rebuilt.mark_reloaded();
     rebuilt
 }
 
@@ -374,6 +375,7 @@ pub fn reload_metadata_form(form: &Form) -> Form {
         .unwrap_or(FinishMode::Silent);
     let mut rebuilt = assemble_metadata_form(mode, &texts);
     rebuilt.set_focus(form.focused);
+    rebuilt.mark_reloaded();
     rebuilt
 }
 

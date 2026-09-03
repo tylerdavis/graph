@@ -2725,6 +2725,14 @@ solver:
         );
 
         update(&mut app, key(KeyCode::Esc));
+        assert!(
+            form_state(&app).form.confirming_discard,
+            "typed changes: Esc asks first"
+        );
+        update(&mut app, key(KeyCode::Char('n')));
+        assert!(matches!(app.mode, Mode::Form(_)));
+        update(&mut app, key(KeyCode::Esc));
+        update(&mut app, key(KeyCode::Char('y')));
         assert!(matches!(app.mode, Mode::Idle));
         assert!(app.status.contains("discarded"));
         assert_eq!(app.ws.doc.as_ref().unwrap().steps[0].id, "E0");

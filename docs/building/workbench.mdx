@@ -97,7 +97,7 @@ Select a row in the plan tab and press `Enter` (or `e`, or double-click it) to o
 
 Each field's title says how its text is read: `text` is taken verbatim; `json` is parsed, and a parse error pins to the field; `json or text` tries JSON first and falls back to the literal, so a template like `{{E0.items}}` and a number like `0` both land as intended; `one per line` builds a list. Empty fields are omitted from the step; a required one blocks saving.
 
-Inside a form, `Tab` or `Enter` moves to the next field and `Shift+Tab` to the previous one; `Up`/`Down` cross a field boundary at its first or last line; `Shift+Enter` (or `Alt+Enter`, which works in every terminal — the workbench turns on the keyboard-enhancement protocol where the terminal supports it so `Shift+Enter` is distinguishable from `Enter`) inserts a newline in a multi-line field, which scrolls to keep the cursor visible; `PgUp`/`PgDn` or the wheel scroll the whole form when it is taller than the window, and a click focuses a field. `Ctrl+T` validates the edit without applying it, `Ctrl+S` submits it to the draft, `Esc` discards the changes.
+Inside a form, `Tab` or `Enter` moves to the next field and `Shift+Tab` to the previous one; `Up`/`Down` cross a field boundary at its first or last line; `Shift+Enter` (or `Alt+Enter`, which works in every terminal — the workbench turns on the keyboard-enhancement protocol where the terminal supports it so `Shift+Enter` is distinguishable from `Enter`) inserts a newline in a multi-line field, which scrolls to keep the cursor visible; `PgUp`/`PgDn` or the wheel scroll the whole form when it is taller than the window, and a click focuses a field. `Ctrl+T` validates the edit without applying it, `Ctrl+S` submits it to the draft, `Esc` discards the changes — asking `y`/`n` first when there are unsubmitted ones.
 
 Validation and submission follow the same rule as the chat editing tools: the edit is accepted only when it introduces no **new** static problems (a duplicate id, a forward reference…); problems the plan already had are shown dimmed and never block. `Ctrl+T` also reports catalog problems, such as a tool name that doesn't resolve. A submitted edit replaces the draft — marked unsaved, undoable with `u`, written to disk by the next `Ctrl+S` outside the form — and re-validates it; renaming a top-level step id rewrites the downstream `{{id.*}}` references (a body step renamed while something still reads it is rejected). The `tool` field is a select over the catalog: type to filter, `Up`/`Down` to move through the matches, `Enter` or `Tab` to pick. Choosing a different tool reloads the input fields from the new tool's schema and keeps the values you already typed — keys the new schema doesn't list stay as their own fields, so nothing is lost silently.
 
@@ -180,7 +180,7 @@ Logging is always on, with the default filter (`warn,workbench=debug`) recording
 | `s` | paused | skip / inject (on error: replace the failed result; on a question: submit the answer) |
 | `a` | paused | abort the run |
 | `Ctrl+S` | anywhere | save the draft (in an editor or form: submit) |
-| `Esc` | editor / form | cancel (returns to the pause when injecting; discards the form's changes) |
+| `Esc` | editor / form | cancel (returns to the pause when injecting; a form with unsubmitted changes asks first) |
 | `?` | workspace | help overlay (works while paused too; any key closes it) |
 | `q`, `Ctrl+C` | — | quit (confirms when running or unsaved; while paused: abort the run) |
 
