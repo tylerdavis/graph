@@ -145,10 +145,17 @@ pub fn step_form(label: &str, step: &Step, has_id: bool, tools: &[ToolDef]) -> F
             Field::new(&format!("{INPUT_PREFIX}{key}"), key, kind, multiline).value(Some(value)),
         );
     }
-    fields.push(
-        Field::new(EXTRA_KEY, "additional input", FieldKind::Json, true)
-            .hint("a JSON object merged into the input — for keys not listed above"),
-    );
+    let closed = graph_core::pipeline::is_control_step(&step.tool_name)
+        || schema
+            .and_then(|s| s.get("additionalProperties"))
+            .and_then(Value::as_bool)
+            == Some(false);
+    if !closed {
+        fields.push(
+            Field::new(EXTRA_KEY, "additional input", FieldKind::Json, true)
+                .hint("a JSON object merged into the input — for keys not listed above"),
+        );
+    }
 
     Form::new(format!("edit {label}"), "", fields)
 }
@@ -643,9 +650,9 @@ solver:
                 "in:infer",
                 "in:message",
                 "in:model",
-                "in:when",
-                "extra"
-            ]
+                "in:when"
+            ],
+            "control steps take no extra keys"
         );
         let when = form.fields.iter().find(|f| f.key == "in:when").unwrap();
         assert_eq!(when.kind, FieldKind::Json);
