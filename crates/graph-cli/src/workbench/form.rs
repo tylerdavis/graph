@@ -266,7 +266,7 @@ pub enum Verdict {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormAction {
     None,
-    Save,
+    Submit,
     Validate,
     Cancel,
     Changed(String),
@@ -402,7 +402,7 @@ impl Form {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => return FormAction::Cancel,
-            KeyCode::Char('s') if ctrl => return FormAction::Save,
+            KeyCode::Char('s') if ctrl => return FormAction::Submit,
             KeyCode::Char('t') if ctrl => return FormAction::Validate,
             KeyCode::PageDown => {
                 self.scroll_by(false, self.view_rows.get().max(1) / 2);
@@ -637,7 +637,7 @@ mod tests {
         assert_eq!(form.handle_key(key(KeyCode::Esc)), FormAction::Cancel);
         assert_eq!(
             form.handle_key(with(KeyCode::Char('s'), KeyModifiers::CONTROL)),
-            FormAction::Save
+            FormAction::Submit
         );
         assert_eq!(
             form.handle_key(with(KeyCode::Char('t'), KeyModifiers::CONTROL)),

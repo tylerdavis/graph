@@ -765,7 +765,10 @@ fn on_edit_outcome(
         return Vec::new();
     };
     if committed {
-        app.status = format!("✓ {} saved", state.label);
+        app.status = format!(
+            "✓ {} applied to the draft — Ctrl+S saves the plan",
+            state.label
+        );
         app.mode = Mode::Idle;
         return Vec::new();
     }
@@ -1407,7 +1410,7 @@ fn open_form(app: &mut App) -> Vec<Effect> {
         }
     };
     app.status = format!(
-        "editing {label} — Tab/Enter next field · Shift+Enter newline · Ctrl+T validate · Ctrl+S save · Esc cancel"
+        "editing {label} — Tab/Enter next field · Shift+Enter newline · Ctrl+T validate · Ctrl+S submit · Esc cancel"
     );
     app.mode = Mode::Form(Box::new(FormState {
         form,
@@ -1432,7 +1435,7 @@ fn on_form_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
             app.mode = Mode::Idle;
             Vec::new()
         }
-        FormAction::Save => submit_form(app, true),
+        FormAction::Submit => submit_form(app, true),
         FormAction::Validate => submit_form(app, false),
     }
 }
@@ -2789,7 +2792,7 @@ solver:
             },
         );
         assert!(matches!(app.mode, Mode::Idle));
-        assert!(app.status.contains("plan metadata saved"));
+        assert!(app.status.contains("plan metadata applied to the draft"));
     }
 
     #[test]

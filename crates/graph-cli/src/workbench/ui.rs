@@ -1121,7 +1121,7 @@ fn draw_form(frame: &mut Frame, state: &FormState) {
         None => {}
     }
     footer_lines.push(Line::styled(
-        " Tab next · Shift+Tab prev · Shift+Enter newline · Ctrl+T validate · Ctrl+S save · Esc cancel",
+        " Tab next · Shift+Tab prev · Shift+Enter newline · Ctrl+T validate · Ctrl+S submit · Esc cancel",
         DIM,
     ));
     let footer_height = footer_lines.len() as u16;
