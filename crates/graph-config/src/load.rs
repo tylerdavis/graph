@@ -64,7 +64,9 @@ pub fn load_from(paths: &[PathBuf]) -> Result<LoadedConfig> {
         let declared = format::declared_version(&doc)
             .map_err(anyhow::Error::msg)
             .with_context(|| format!("parsing config file {}", path.display()))?;
-        let upgrade = format::upgrade(&mut doc, &path).map_err(anyhow::Error::msg)?;
+        let upgrade = format::upgrade(&mut doc, &path)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("migrating config file {}", path.display()))?;
         let mut table: toml::Table = doc
             .to_string()
             .parse()
@@ -315,6 +317,8 @@ description = "fast and cheap"
             models.known_names(),
             vec!["chat", "default", "judge", "nano", "planner", "repair", "solver"]
         );
+        let no_default = ModelRoles::from([("nano", models.get("nano").unwrap().clone())]);
+        assert_eq!(no_default.known_names(), vec!["nano"]);
         assert_eq!(
             models.described().map(|(name, _)| name).collect::<Vec<_>>(),
             vec!["nano"]
@@ -350,7 +354,10 @@ model = "nano-model"
         assert_eq!(loaded.layers[0].version, 1);
         assert_eq!(
             loaded.layers[0].notes,
-            vec!["dropped models.embedder.dimensions: graph no longer reads it"]
+            vec![
+                "dropped models.embedder.dimensions: graph no longer reads it",
+                "models.embedder is no longer a standard role: it stays as a custom role that nothing consults"
+            ]
         );
     }
 

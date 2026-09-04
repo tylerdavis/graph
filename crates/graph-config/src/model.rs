@@ -307,6 +307,7 @@ impl ModelRoles {
         let mut names: Vec<&str> = self.names().collect();
         names.push(DEFAULT_ROLE);
         names.extend(Role::ALL.iter().map(|role| role.as_str()));
+        names.retain(|name| self.resolve(name).is_some());
         names.sort_unstable();
         names.dedup();
         names

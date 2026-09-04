@@ -92,7 +92,7 @@ Semantics:
 
 - A call moves to the next candidate only on **outage-shaped errors** — the transient class the retry layer recognizes — and only after the failing provider's own retries are exhausted. Permanent errors (4xx, parse/schema failures) propagate immediately: a bad request would fail everywhere, and a fallback would only mask it.
 - Streaming fails over only while the stream is being established; once tokens flow, a mid-stream error surfaces as-is.
-- Fallbacks apply wherever the entry resolves — the agent loop, every pipeline role, structured output, and named-model calls. Each failover is logged as a warning on stderr.
+- Fallbacks apply wherever the role resolves — the agent loop, every standard role, structured output, and custom roles selected by name. Each failover is logged as a warning on stderr.
 
 ## Prompt caching
 

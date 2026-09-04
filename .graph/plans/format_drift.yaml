@@ -57,9 +57,8 @@ steps:
 
         The file kinds, their model files, and their version constants:
         - config: crates/graph-config/src/model.rs — `CONFIG_FORMAT`
-        - plan and tool documents: crates/graph-core/src/pipeline/*.rs and
-          crates/graph-core/src/user_tools.rs — `PLAN_FORMAT` and
-          `TOOL_FORMAT`
+        - plan documents: crates/graph-core/src/pipeline/*.rs — `PLAN_FORMAT`
+        - tool documents: crates/graph-core/src/user_tools.rs — `TOOL_FORMAT`
         - store: crates/graph-store/src/file.rs — `STORE_FORMAT`
 
         For each kind whose model files appear in the MODEL DIFF, in order:

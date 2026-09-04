@@ -15,32 +15,21 @@ pub type Migration = fn(&mut DocumentMut) -> Result<Vec<String>, String>;
 
 const MIGRATIONS: &[Migration] = &[named_models_become_roles];
 
+const RETIRED_ROLES: &[&str] = &["embedder", "use_case_solver"];
+
 fn named_models_become_roles(doc: &mut DocumentMut) -> Result<Vec<String>, String> {
     let mut notes = Vec::new();
-    let Some(models) = doc.get_mut("models").and_then(Item::as_table_like_mut) else {
+    let Some(models) = doc.get_mut("models") else {
         return Ok(notes);
     };
-    if let Some(named) = models.remove("named") {
-        let entries: Vec<(String, Item)> = match named {
-            Item::Table(table) => table
-                .into_iter()
-                .map(|(name, entry)| (name.to_string(), entry))
-                .collect(),
-            Item::Value(Value::InlineTable(table)) => table
-                .into_iter()
-                .map(|(name, entry)| (name.to_string(), Item::Value(entry)))
-                .collect(),
-            _ => return Err("models.named must be a table of model entries".to_string()),
-        };
-        for (name, entry) in entries {
-            if models.contains_key(&name) {
-                return Err(format!(
-                    "models.named.{name} and models.{name} are both set; config version 2 has one models.{name}, so remove one of them before migrating"
-                ));
-            }
-            models.insert(&name, entry);
-        }
+    match models {
+        Item::Table(table) => hoist_named_into_table(table)?,
+        Item::Value(Value::InlineTable(inline)) => hoist_named_into_inline(inline)?,
+        _ => return Err("models must be a table".to_string()),
     }
+    let Some(models) = models.as_table_like_mut() else {
+        return Ok(notes);
+    };
     for (name, entry) in models.iter_mut() {
         let dropped = match entry {
             Item::Table(table) => table.remove("dimensions").is_some(),
@@ -59,8 +48,106 @@ fn named_models_become_roles(doc: &mut DocumentMut) -> Result<Vec<String>, Strin
                 name.get()
             ));
         }
+        if RETIRED_ROLES.contains(&name.get()) {
+            notes.push(format!(
+                "models.{} is no longer a standard role: it stays as a custom role that nothing consults",
+                name.get()
+            ));
+        }
     }
     Ok(notes)
+}
+
+fn named_collision(name: &str) -> String {
+    format!(
+        "models.named.{name} and models.{name} are both set; config version 2 has one models.{name}, so remove one of them before migrating"
+    )
+}
+
+fn hoist_named_into_table(models: &mut toml_edit::Table) -> Result<(), String> {
+    let Some((_, named)) = models.remove_entry("named") else {
+        return Ok(());
+    };
+    let mut header_prefix = None;
+    let mut position = None;
+    let entries: Vec<(toml_edit::Key, Item)> = match named {
+        Item::Table(mut table) => {
+            if !table.is_implicit() {
+                header_prefix = table.decor().prefix().cloned();
+                position = table.position();
+            }
+            let keys: Vec<toml_edit::Key> = table
+                .iter()
+                .filter_map(|(name, _)| table.key(name).cloned())
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| table.remove(key.get()).map(|entry| (key, entry)))
+                .collect()
+        }
+        Item::Value(Value::InlineTable(table)) => table
+            .into_iter()
+            .map(|(name, entry)| (toml_edit::Key::new(name), Item::Value(entry)))
+            .collect(),
+        _ => return Err("models.named must be a table of model entries".to_string()),
+    };
+    let mut header_prefix =
+        header_prefix.filter(|prefix| !prefix.as_str().unwrap_or("").is_empty());
+    if models.is_implicit() && position.is_some() {
+        models.set_implicit(false);
+        if let Some(position) = position {
+            models.set_position(position);
+        }
+        if let Some(prefix) = header_prefix.take() {
+            models.decor_mut().set_prefix(prefix);
+        }
+    }
+    for (mut key, mut entry) in entries {
+        if models.contains_key(key.get()) {
+            return Err(named_collision(key.get()));
+        }
+        if let Some(prefix) = header_prefix.take() {
+            let prefix = prefix.as_str().unwrap_or("");
+            match &mut entry {
+                Item::Table(table) if !table.is_implicit() => {
+                    let own = table
+                        .decor()
+                        .prefix()
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("");
+                    let combined = format!("{prefix}{own}");
+                    table.decor_mut().set_prefix(combined);
+                }
+                _ => {
+                    let own = key
+                        .leaf_decor()
+                        .prefix()
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("");
+                    let combined = format!("{prefix}{own}");
+                    key.leaf_decor_mut().set_prefix(combined);
+                }
+            }
+        }
+        models.insert_formatted(&key, entry);
+    }
+    Ok(())
+}
+
+fn hoist_named_into_inline(models: &mut toml_edit::InlineTable) -> Result<(), String> {
+    let Some(named) = models.remove("named") else {
+        return Ok(());
+    };
+    let Value::InlineTable(named) = named else {
+        return Err("models.named must be a table of model entries".to_string());
+    };
+    for (name, entry) in named {
+        if models.contains_key(&name) {
+            return Err(named_collision(&name));
+        }
+        models.insert(name, entry);
+    }
+    models.fmt();
+    Ok(())
 }
 
 pub fn migration_count() -> usize {
@@ -384,7 +471,10 @@ output = 2.0
         assert_eq!(upgrade.from, 1);
         assert_eq!(
             upgrade.notes,
-            vec!["dropped models.embedder.dimensions: graph no longer reads it"]
+            vec![
+                "dropped models.embedder.dimensions: graph no longer reads it",
+                "models.embedder is no longer a standard role: it stays as a custom role that nothing consults"
+            ]
         );
         assert_eq!(
             doc.to_string(),
@@ -418,6 +508,84 @@ output = 2.0
         upgrade(&mut doc, Path::new("c.toml")).unwrap();
         assert_eq!(doc["models"]["nano"]["model"].as_str(), Some("n"));
         assert!(doc["models"].get("named").is_none());
+    }
+
+    #[test]
+    fn a_named_header_with_inline_entries_keeps_both_comments() {
+        let mut doc: DocumentMut = r#"[models]
+default = { provider = "p", model = "m" }
+
+# Named models: one per review job
+[models.named]
+# cheap scout
+scout = { provider = "p", model = "s" }
+reviewer = { provider = "p", model = "r" }
+
+[pricing."m"]
+input = 1.0
+"#
+        .parse()
+        .unwrap();
+        upgrade(&mut doc, Path::new("c.toml")).unwrap();
+        assert_eq!(
+            doc.to_string(),
+            r#"[models]
+default = { provider = "p", model = "m" }
+
+# Named models: one per review job
+# cheap scout
+scout = { provider = "p", model = "s" }
+reviewer = { provider = "p", model = "r" }
+
+[pricing."m"]
+input = 1.0
+"#
+        );
+    }
+
+    #[test]
+    fn a_named_header_under_an_implicit_models_table_keeps_its_place() {
+        let mut doc: DocumentMut = r#"[providers.p]
+type = "anthropic"
+
+[models.named]
+scout = { provider = "p", model = "s" }
+
+[pricing."m"]
+input = 1.0
+"#
+        .parse()
+        .unwrap();
+        upgrade(&mut doc, Path::new("c.toml")).unwrap();
+        assert_eq!(
+            doc.to_string(),
+            r#"[providers.p]
+type = "anthropic"
+
+[models]
+scout = { provider = "p", model = "s" }
+
+[pricing."m"]
+input = 1.0
+"#
+        );
+    }
+
+    #[test]
+    fn retired_role_slots_are_noted_but_kept() {
+        let mut doc: DocumentMut =
+            "[models]\nuse_case_solver = { provider = \"p\", model = \"u\" }\n"
+                .parse()
+                .unwrap();
+        let upgrade = upgrade(&mut doc, Path::new("c.toml")).unwrap();
+        assert_eq!(
+            upgrade.notes,
+            vec!["models.use_case_solver is no longer a standard role: it stays as a custom role that nothing consults"]
+        );
+        assert_eq!(
+            doc["models"]["use_case_solver"]["model"].as_str(),
+            Some("u")
+        );
     }
 
     #[test]

@@ -1034,8 +1034,6 @@ model: solver
 async fn caller_model_tools_advertise_named_models_in_the_catalog() {
     let docs = load_pack_tools(&["llm".to_string()]).unwrap();
 
-    // Described roles: the catalog schema advertises exactly those. `deep`
-    // has no description, so it stays selectable by name but is not offered.
     let registry = UserToolRegistry::builtins(docs.clone(), named_model_router());
     let defs = registry.tools().await.unwrap();
     let infer = defs.iter().find(|d| d.name == "builtin__infer").unwrap();
@@ -1048,7 +1046,6 @@ async fn caller_model_tools_advertise_named_models_in_the_catalog() {
     );
     assert!(!description.contains("deep"), "{description}");
 
-    // No described roles: no model property — nothing to select.
     let registry = UserToolRegistry::builtins(docs, router());
     let defs = registry.tools().await.unwrap();
     let infer = defs.iter().find(|d| d.name == "builtin__infer").unwrap();
