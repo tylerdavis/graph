@@ -68,8 +68,8 @@ pub enum ToolKind {
         /// Extra system prompt (optional).
         #[serde(default)]
         system: Option<String>,
-        /// Which configured model runs the call: a role name (`chat`,
-        /// `solver`, …) or a `[models.named]` entry. Default: chat.
+        /// Which configured model role runs the call: any `[models.<role>]`,
+        /// standard (`chat`, `solver`, …) or custom. Default: chat.
         #[serde(default)]
         model: Option<String>,
         /// Take `output_schema` from the call's input instead of (only)
@@ -79,8 +79,8 @@ pub enum ToolKind {
         caller_output_schema: bool,
         /// Let the call's `model` input pick the model (overriding the
         /// doc's `model`) — the generic `builtin__infer` path. The
-        /// catalog advertises configured `[models.named]` entries on the
-        /// tool's input schema when this is set.
+        /// catalog advertises the configured roles that carry a
+        /// `description` on the tool's input schema when this is set.
         #[serde(default)]
         caller_model: bool,
     },
@@ -607,22 +607,23 @@ impl UserToolRegistry {
 
     #[allow(clippy::too_many_arguments)]
     /// Add a `model` property to a caller-model prompt tool's catalog
-    /// schema, enumerating the configured `[models.named]` entries with
-    /// their descriptions — the planner's routing signal for picking the
-    /// smallest adequate model. No named models configured → no property:
-    /// a knob with nothing to select would only invite invented names.
+    /// schema, enumerating the configured roles that carry a `description`
+    /// — the planner's routing signal for picking the smallest adequate
+    /// model. No described roles → no property: a knob with nothing to
+    /// select would only invite invented names.
     fn advertise_named_models(&self, schema: &mut Value) {
-        let named = self.router.named_models();
-        if named.is_empty() {
+        let described: Vec<(&str, &str)> = self
+            .router
+            .described_models()
+            .filter_map(|(name, choice)| Some((name, choice.description.as_deref()?)))
+            .collect();
+        if described.is_empty() {
             return;
         }
-        let names: Vec<&String> = named.keys().collect();
-        let catalog = named
+        let names: Vec<&str> = described.iter().map(|(name, _)| *name).collect();
+        let catalog = described
             .iter()
-            .map(|(name, choice)| match &choice.description {
-                Some(description) => format!("{name} — {description}"),
-                None => format!("{name} — {}", choice.model),
-            })
+            .map(|(name, description)| format!("{name} — {description}"))
             .collect::<Vec<_>>()
             .join("; ");
         let description = format!(

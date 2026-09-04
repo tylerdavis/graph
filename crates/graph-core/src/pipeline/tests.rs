@@ -113,8 +113,8 @@ fn pipeline(
     pipeline_with_named(responses, registry, max_attempts, Default::default())
 }
 
-/// Like [`pipeline`], but seeds `[models.named]` entries so gate-model
-/// overrides can be exercised. Each named entry maps to the same mock
+/// Like [`pipeline`], but seeds custom `[models.<role>]` entries so
+/// gate-model overrides can be exercised. Each entry maps to the same mock
 /// provider but a distinct model string, which the scripted provider
 /// records on the request.
 fn pipeline_with_named(
@@ -130,18 +130,18 @@ fn pipeline_with_named(
     let mut providers: std::collections::HashMap<String, Arc<dyn ChatProvider>> =
         std::collections::HashMap::new();
     providers.insert("mock".to_string(), provider.clone());
-    let roles = ModelRoles {
-        default: Some(ModelChoice {
+    let mut entries = named;
+    entries.insert(
+        "default".to_string(),
+        ModelChoice {
             provider: "mock".to_string(),
             model: "test".to_string(),
             temperature: None,
-            dimensions: None,
             description: None,
             fallbacks: Vec::new(),
-        }),
-        named,
-        ..Default::default()
-    };
+        },
+    );
+    let roles = ModelRoles::new(entries);
     // The ledger is both the router's meter and the pipeline's tally, exactly
     // as `Runtime` wires it, so tests exercise the real attribution path.
     let usage = Arc::new(crate::usage::UsageLedger::unpriced());
@@ -688,7 +688,6 @@ fn named_model(model: &str) -> std::collections::BTreeMap<String, ModelChoice> {
             provider: "mock".to_string(),
             model: model.to_string(),
             temperature: None,
-            dimensions: None,
             description: None,
             fallbacks: Vec::new(),
         },

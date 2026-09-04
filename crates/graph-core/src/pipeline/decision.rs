@@ -29,9 +29,8 @@ pub struct DecideSpec {
     /// Inferred gate: a yes/no question answered by the `judge` model role.
     #[serde(default)]
     pub infer: Option<String>,
-    /// Model for the `infer` verdict: a role name, `default`, or a
-    /// `[models.named]` entry. Defaults to the `judge` role. Ignored
-    /// without `infer`.
+    /// Model role for the `infer` verdict: any configured `[models.<role>]`
+    /// or `default`. Defaults to the `judge` role. Ignored without `infer`.
     #[serde(default)]
     pub model: Option<String>,
     /// Branch taken when the gate holds.
@@ -73,7 +72,7 @@ pub fn decide_tool_def() -> crate::tools::ToolDef {
                     }
                 },
                 "infer": {"type": "string", "description": "A yes/no question about prior results; runs `then` on yes."},
-                "model": {"type": "string", "description": "Model for the `infer` verdict (a named model or role); defaults to the judge role."},
+                "model": {"type": "string", "description": "Model role for the `infer` verdict (any configured role, standard or custom); defaults to the judge role."},
                 "then": branch_schema.clone(),
                 "else": branch_schema
             }

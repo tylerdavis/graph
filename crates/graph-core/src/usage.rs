@@ -28,7 +28,7 @@ tokio::task_local! {
 /// The plan-level context of one inference.
 #[derive(Debug, Clone, Default)]
 pub struct CallSite {
-    /// Model role or named model — `chat`, `solver`, `repair`, `judge`.
+    /// Model role, standard or custom — `chat`, `solver`, `repair`, `judge`, …
     pub role: String,
     /// Step path in bus syntax: `E5`, `E4f/do.2/agent`. `None` for calls
     /// that belong to no step (the planner, a chat turn).

@@ -36,7 +36,7 @@ The canonical use is exactly this shape: **select before iterating**, so a later
 
 ## The gate and its scope
 
-The gate is evaluated once per element with two pseudo-roots in scope: `{{item}}` (the element) and `{{index}}` (0-based position). It may also reference plan `input` and any earlier top-level step. `where` is the shared condition grammar — `value`/`op`/`to` with `eq`, `ne`, `gt`, `lt`, `gte`, `lte`, `empty`, `not_empty`, `contains`. `infer` asks the [`judge` role](/models/models-and-providers#model-roles) a yes/no question per item; `model` pins those verdicts to a named model or role, and `concurrency` (default 1) runs them in parallel. A `where` gate costs no inference at all.
+The gate is evaluated once per element with two pseudo-roots in scope: `{{item}}` (the element) and `{{index}}` (0-based position). It may also reference plan `input` and any earlier top-level step. `where` is the shared condition grammar — `value`/`op`/`to` with `eq`, `ne`, `gt`, `lt`, `gte`, `lte`, `empty`, `not_empty`, `contains`. `infer` asks the [`judge` role](/models/models-and-providers#roles) a yes/no question per item; `model` pins those verdicts to another role, standard or custom, and `concurrency` (default 1) runs them in parallel. A `where` gate costs no inference at all.
 
 Like every control step, only `over` renders up front; the gate renders per item, when that item's scope exists — validation rejects `{{item}}` in `over` for exactly that reason.
 

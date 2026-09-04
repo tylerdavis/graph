@@ -12,7 +12,8 @@ pub struct Config {
     /// Named provider connections, e.g. `[providers.anthropic]`.
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderConfig>,
-    /// Per-role model assignment, e.g. `planner = { provider = "...", model = "..." }`.
+    /// Model roles, e.g. `[models.planner]`: the standard roles the engine
+    /// consults and any custom role, all in one shape.
     #[serde(default)]
     pub models: ModelRoles,
     /// MCP server definitions, e.g. `[mcp.github]`.
@@ -205,11 +206,9 @@ pub struct ModelChoice {
     pub provider: String,
     pub model: String,
     pub temperature: Option<f32>,
-    /// Embedding dimension; only meaningful for the embedder role.
-    pub dimensions: Option<u32>,
-    /// What this model is good for. Surfaced to the planner as a routing
-    /// signal wherever named models are selectable (e.g. `builtin__infer`'s
-    /// `model` input), so write it for that audience.
+    /// What this model is good for. A role carrying one is advertised to
+    /// the planner as a routing signal wherever roles are selectable (e.g.
+    /// `builtin__infer`'s `model` input), so write it for that audience.
     pub description: Option<String>,
     /// Failover candidates, tried in order when this model's provider is
     /// down (transient errors after its own retries are exhausted).
@@ -231,108 +230,115 @@ pub struct FallbackChoice {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct ModelRoles {
-    pub default: Option<ModelChoice>,
-    pub chat: Option<ModelChoice>,
-    pub planner: Option<ModelChoice>,
-    pub solver: Option<ModelChoice>,
-    pub use_case_solver: Option<ModelChoice>,
-    pub repair: Option<ModelChoice>,
-    pub embedder: Option<ModelChoice>,
-    /// Cheap verdict calls for inferred exit gates.
-    pub judge: Option<ModelChoice>,
-    /// User-defined named models (`[models.named.<name>]`), referenceable
-    /// wherever a model name is accepted (prompt-tool `model`,
-    /// `builtin__infer`'s `model` input). Names must not shadow the role
-    /// names above — enforced at config load.
-    pub named: BTreeMap<String, ModelChoice>,
-}
+#[serde(transparent)]
+pub struct ModelRoles(BTreeMap<String, ModelChoice>);
 
-/// One pipeline/agent role that needs a model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Role {
     Chat,
     Planner,
     Solver,
-    UseCaseSolver,
     Repair,
-    Embedder,
     Judge,
 }
 
 impl Role {
-    /// The role a config-facing name refers to, if any. These names are
-    /// reserved: `[models.named]` entries may not shadow them.
-    pub fn from_name(name: &str) -> Option<Role> {
-        match name {
-            "chat" => Some(Role::Chat),
-            "planner" => Some(Role::Planner),
-            "solver" => Some(Role::Solver),
-            "use_case_solver" => Some(Role::UseCaseSolver),
-            "repair" => Some(Role::Repair),
-            "embedder" => Some(Role::Embedder),
-            "judge" => Some(Role::Judge),
-            _ => None,
+    pub const ALL: [Role; 5] = [
+        Role::Chat,
+        Role::Planner,
+        Role::Solver,
+        Role::Repair,
+        Role::Judge,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Chat => "chat",
+            Role::Planner => "planner",
+            Role::Solver => "solver",
+            Role::Repair => "repair",
+            Role::Judge => "judge",
         }
+    }
+
+    pub fn from_name(name: &str) -> Option<Role> {
+        Role::ALL.into_iter().find(|role| role.as_str() == name)
     }
 }
 
-/// Names `[models.named]` entries may not use: the role keys plus `default`.
-pub const RESERVED_MODEL_NAMES: &[&str] = &[
-    "default",
-    "chat",
-    "planner",
-    "solver",
-    "use_case_solver",
-    "repair",
-    "embedder",
-    "judge",
-];
+impl std::fmt::Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+pub const DEFAULT_ROLE: &str = "default";
 
 impl ModelRoles {
-    /// Resolve a role to its model choice, falling back to `default`.
-    pub fn resolve(&self, role: Role) -> Option<&ModelChoice> {
-        let specific = match role {
-            Role::Chat => &self.chat,
-            Role::Planner => &self.planner,
-            Role::Solver => &self.solver,
-            Role::UseCaseSolver => &self.use_case_solver,
-            Role::Repair => &self.repair,
-            Role::Embedder => &self.embedder,
-            Role::Judge => &self.judge,
-        };
-        specific.as_ref().or(self.default.as_ref())
+    pub fn new(roles: BTreeMap<String, ModelChoice>) -> Self {
+        Self(roles)
     }
 
-    /// Every configured choice — the role slots plus `[models.named]`
-    /// entries — for whole-config validation passes.
+    pub fn get(&self, name: &str) -> Option<&ModelChoice> {
+        self.0.get(name)
+    }
+
+    pub fn resolve(&self, name: &str) -> Option<&ModelChoice> {
+        if let Some(choice) = self.0.get(name) {
+            return Some(choice);
+        }
+        let standard = name == DEFAULT_ROLE || Role::from_name(name).is_some();
+        standard.then(|| self.0.get(DEFAULT_ROLE)).flatten()
+    }
+
+    pub fn resolve_role(&self, role: Role) -> Option<&ModelChoice> {
+        self.resolve(role.as_str())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
+
+    pub fn known_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.names().collect();
+        names.push(DEFAULT_ROLE);
+        names.extend(Role::ALL.iter().map(|role| role.as_str()));
+        names.retain(|name| self.resolve(name).is_some());
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &ModelChoice)> {
+        self.0.iter().map(|(name, choice)| (name.as_str(), choice))
+    }
+
+    pub fn described(&self) -> impl Iterator<Item = (&str, &ModelChoice)> {
+        self.iter()
+            .filter(|(_, choice)| choice.description.is_some())
+    }
+
     pub fn all_choices(&self) -> impl Iterator<Item = &ModelChoice> {
-        [
-            &self.default,
-            &self.chat,
-            &self.planner,
-            &self.solver,
-            &self.use_case_solver,
-            &self.repair,
-            &self.embedder,
-            &self.judge,
-        ]
-        .into_iter()
-        .filter_map(Option::as_ref)
-        .chain(self.named.values())
+        self.0.values()
     }
+}
 
-    /// Resolve a model *name*: a role name (with its fallback to
-    /// `default`), the literal `default`, or a `[models.named]` entry.
-    pub fn resolve_name(&self, name: &str) -> Option<&ModelChoice> {
-        if name == "default" {
-            return self.default.as_ref();
-        }
-        match Role::from_name(name) {
-            Some(role) => self.resolve(role),
-            None => self.named.get(name),
-        }
+impl FromIterator<(String, ModelChoice)> for ModelRoles {
+    fn from_iter<I: IntoIterator<Item = (String, ModelChoice)>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl<const N: usize> From<[(&str, ModelChoice); N]> for ModelRoles {
+    fn from(entries: [(&str, ModelChoice); N]) -> Self {
+        entries
+            .into_iter()
+            .map(|(name, choice)| (name.to_string(), choice))
+            .collect()
     }
 }
 

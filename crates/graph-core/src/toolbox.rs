@@ -166,17 +166,16 @@ mod tests {
         providers.insert("mock".into(), Arc::new(EchoProvider));
         let router = Arc::new(graph_llm::ModelRouter::with_providers(
             providers,
-            ModelRoles {
-                default: Some(ModelChoice {
+            ModelRoles::from([(
+                "default",
+                ModelChoice {
                     provider: "mock".into(),
                     model: "m".into(),
                     temperature: None,
-                    dimensions: None,
                     description: None,
                     fallbacks: Vec::new(),
-                }),
-                ..Default::default()
-            },
+                },
+            )]),
         ));
         let pipeline = Arc::new(Pipeline {
             router,

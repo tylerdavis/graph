@@ -117,7 +117,7 @@ pub fn agent_tool_def() -> crate::tools::ToolDef {
                 },
                 "model": {
                     "type": "string",
-                    "description": "Model role or named model. Defaults to chat role."
+                    "description": "A configured model role, standard or custom. Defaults to the chat role."
                 },
                 "systemPrompt": {
                     "type": "string",

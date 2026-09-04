@@ -28,9 +28,9 @@ impl ModelRouter {
     }
 
     /// Like [`ModelRouter::get_structured`], but selecting the model by
-    /// `name` when `Some` (a role name, `default`, or a `[models.named]`
-    /// entry), falling back to `role` otherwise. The repair pass always
-    /// runs through the `Repair` role.
+    /// `name` when `Some` (any configured `[models.<role>]`, standard or
+    /// custom, or `default`), falling back to `role` otherwise. The repair
+    /// pass always runs through the `Repair` role.
     pub async fn get_structured_named<T>(
         &self,
         name: Option<&str>,

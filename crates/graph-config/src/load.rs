@@ -64,7 +64,9 @@ pub fn load_from(paths: &[PathBuf]) -> Result<LoadedConfig> {
         let declared = format::declared_version(&doc)
             .map_err(anyhow::Error::msg)
             .with_context(|| format!("parsing config file {}", path.display()))?;
-        let upgrade = format::upgrade(&mut doc, &path).map_err(anyhow::Error::msg)?;
+        let upgrade = format::upgrade(&mut doc, &path)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("migrating config file {}", path.display()))?;
         let mut table: toml::Table = doc
             .to_string()
             .parse()
@@ -90,16 +92,6 @@ pub fn load_from(paths: &[PathBuf]) -> Result<LoadedConfig> {
 
     for (name, server) in &config.mcp {
         server.validate(name).map_err(anyhow::Error::msg)?;
-    }
-
-    for name in config.models.named.keys() {
-        if crate::model::RESERVED_MODEL_NAMES.contains(&name.as_str()) {
-            anyhow::bail!(
-                "[models.named] entry '{name}' shadows a built-in role name; \
-                 reserved names: {}",
-                crate::model::RESERVED_MODEL_NAMES.join(", ")
-            );
-        }
     }
 
     Ok(LoadedConfig {
@@ -234,7 +226,7 @@ pub fn expand_tilde(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ProviderKind;
+    use crate::model::{ModelRoles, ProviderKind, Role};
 
     fn write(dir: &Path, name: &str, contents: &str) -> PathBuf {
         let path = dir.join(name);
@@ -283,16 +275,23 @@ cache_read = 0.01
     }
 
     #[test]
-    fn named_models_parse_resolve_and_reject_role_shadowing() {
+    fn standard_and_custom_roles_share_one_shape_and_one_resolution() {
         let dir = tempfile::tempdir().unwrap();
         let path = write(
             dir.path(),
             "config.toml",
             r#"
-[models]
-default = { provider = "p", model = "m" }
+version = 2
 
-[models.named.nano]
+[models.default]
+provider = "p"
+model = "m"
+
+[models.judge]
+provider = "p"
+model = "judge-model"
+
+[models.nano]
 provider = "p"
 model = "nano-model"
 description = "fast and cheap"
@@ -300,27 +299,86 @@ description = "fast and cheap"
         );
         let loaded = load_from(&[path]).unwrap();
         let models = &loaded.config.models;
-        assert_eq!(models.named["nano"].model, "nano-model");
+        assert_eq!(models.get("nano").unwrap().model, "nano-model");
         assert_eq!(
-            models.named["nano"].description.as_deref(),
+            models.get("nano").unwrap().description.as_deref(),
             Some("fast and cheap")
         );
-        assert_eq!(models.resolve_name("nano").unwrap().model, "nano-model");
-        // Role names resolve with the default fallback; unknown names don't.
-        assert_eq!(models.resolve_name("solver").unwrap().model, "m");
-        assert!(models.resolve_name("bogus").is_none());
+        assert_eq!(models.resolve("nano").unwrap().model, "nano-model");
+        assert_eq!(
+            models.resolve_role(Role::Judge).unwrap().model,
+            "judge-model"
+        );
+        assert_eq!(models.resolve_role(Role::Solver).unwrap().model, "m");
+        assert_eq!(models.resolve("solver").unwrap().model, "m");
+        assert_eq!(models.resolve("default").unwrap().model, "m");
+        assert!(models.resolve("bogus").is_none());
+        assert_eq!(
+            models.known_names(),
+            vec!["chat", "default", "judge", "nano", "planner", "repair", "solver"]
+        );
+        let no_default = ModelRoles::from([("nano", models.get("nano").unwrap().clone())]);
+        assert_eq!(no_default.known_names(), vec!["nano"]);
+        assert_eq!(
+            models.described().map(|(name, _)| name).collect::<Vec<_>>(),
+            vec!["nano"]
+        );
+        assert_eq!(
+            models.names().collect::<Vec<_>>(),
+            vec!["default", "judge", "nano"]
+        );
+        assert!(ModelRoles::default().resolve("chat").is_none());
+    }
 
+    #[test]
+    fn a_version_1_layer_hoists_named_models_into_roles() {
+        let dir = tempfile::tempdir().unwrap();
         let path = write(
             dir.path(),
-            "bad.toml",
+            "config.toml",
             r#"
-[models.named.judge]
+[models]
+default = { provider = "p", model = "m" }
+embedder = { provider = "p", model = "e", dimensions = 768 }
+
+[models.named.nano]
 provider = "p"
-model = "m"
+model = "nano-model"
 "#,
         );
-        let err = load_from(&[path]).unwrap_err().to_string();
-        assert!(err.contains("shadows a built-in role name"), "{err}");
+        let loaded = load_from(&[path]).unwrap();
+        let models = &loaded.config.models;
+        assert_eq!(models.get("nano").unwrap().model, "nano-model");
+        assert_eq!(models.get("embedder").unwrap().model, "e");
+        assert!(models.get("named").is_none());
+        assert_eq!(loaded.layers[0].version, 1);
+        assert_eq!(
+            loaded.layers[0].notes,
+            vec![
+                "dropped models.embedder.dimensions: graph no longer reads it",
+                "models.embedder is no longer a standard role: it stays as a custom role that nothing consults"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_version_1_named_model_that_collides_with_a_role_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "config.toml",
+            r#"
+[models]
+judge = { provider = "p", model = "m" }
+
+[models.named.judge]
+provider = "p"
+model = "other"
+"#,
+        );
+        let err = format!("{:#}", load_from(&[path]).unwrap_err());
+        assert!(err.contains("models.named.judge"), "{err}");
+        assert!(err.contains("models.judge"), "{err}");
     }
 
     #[test]
@@ -340,7 +398,7 @@ fallbacks = [
 "#,
         );
         let loaded = load_from(&[path]).unwrap();
-        let chat = loaded.config.models.chat.as_ref().unwrap();
+        let chat = loaded.config.models.get("chat").unwrap();
         assert_eq!(chat.fallbacks.len(), 2);
         assert_eq!(chat.fallbacks[0].provider, "openai");
         assert_eq!(chat.fallbacks[0].temperature, None);
@@ -351,7 +409,7 @@ fallbacks = [
         // stay backward-compatible (field omitted, defaults to empty).
         let rendered = toml::to_string(&loaded.config).unwrap();
         let reparsed: Config = toml::from_str(&rendered).unwrap();
-        assert_eq!(reparsed.models.chat.unwrap().fallbacks.len(), 2);
+        assert_eq!(reparsed.models.get("chat").unwrap().fallbacks.len(), 2);
         assert!(loaded
             .config
             .models
@@ -394,11 +452,11 @@ fallbacks = [
         assert_eq!(loaded.config.settings.history_limit, 50);
         // Non-overridden defaults from the global layer survive the merge.
         assert_eq!(
-            loaded.config.models.default.as_ref().unwrap().model,
+            loaded.config.models.get("default").unwrap().model,
             "claude-sonnet-5"
         );
         assert_eq!(
-            loaded.config.models.planner.as_ref().unwrap().model,
+            loaded.config.models.get("planner").unwrap().model,
             "claude-fable-5"
         );
         assert_eq!(loaded.sources.len(), 2);
