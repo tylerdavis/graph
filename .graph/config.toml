@@ -2,7 +2,7 @@
 # and local dogfooding. Requires ANTHROPIC_API_KEY in the environment —
 # config load fails loudly without it.
 
-version = 1
+version = 2
 
 [providers.anthropic]
 type = "anthropic"
@@ -26,12 +26,12 @@ repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
 # The two jobs this repo's review plan splits inference into. Named rather
 # than borrowed from a role, so a plan step says what it is asking for and
 # the model behind it can change without touching the plan.
-[models.named.scout]
+[models.scout]
 provider = "anthropic"
 model = "claude-haiku-4-5"
 description = "Repository context scout: many parallel grep/read rounds over a whole repo, gathering call sites and tests. High volume, shallow judgment."
 
-[models.named.reviewer]
+[models.reviewer]
 provider = "anthropic"
 model = "claude-sonnet-5"
 description = "Change reviewer: one deep pass over a diff and full file contents, holding the repo's invariants. Low volume, high judgment."
