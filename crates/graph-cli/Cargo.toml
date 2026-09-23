@@ -48,9 +48,30 @@ rmcp = { version = "2.2", default-features = false, features = [
     "elicitation",
 ] }
 schemars = "1"
+# OTLP export of run traces and diagnostics (`[telemetry]`). HTTP only —
+# Langfuse takes no gRPC — over the workspace's reqwest/rustls stack; the
+# async-runtime batch processors are the ones that work from inside tokio.
+opentelemetry = "0.33"
+opentelemetry_sdk = { version = "0.33", default-features = false, features = [
+    "trace",
+    "logs",
+    "rt-tokio",
+    "experimental_trace_batch_span_processor_with_async_runtime",
+    "experimental_logs_batch_log_processor_with_async_runtime",
+] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = [
+    "trace",
+    "logs",
+    "http-proto",
+    "http-json",
+    "reqwest-client",
+    "reqwest-rustls",
+] }
+opentelemetry-appender-tracing = "0.33"
 
 [dev-dependencies]
 tempfile = "3"
+opentelemetry_sdk = { version = "0.33", features = ["testing"] }
 # Scenario screenshots validate scripted tool outcomes against the real
 # output schemas (workbench/shots.rs).
 jsonschema = "0.26"

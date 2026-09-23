@@ -4,29 +4,37 @@ mod interlocutor;
 mod mcp_server;
 mod output;
 mod runtime;
+mod telemetry;
 mod workbench;
 
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Command};
 use output::SilentExit;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Before the log subscriber: the exporter is what the subscriber's OTLP
+    // layer forwards to, so it has to exist first.
+    let telemetry = telemetry::init(&telemetry_config_paths(&cli.command));
     // The workbench owns the terminal, so it routes tracing to a log file
     // itself instead of stderr.
     if !matches!(cli.command, Command::Workbench { .. }) {
         init_tracing(cli.verbose);
+    }
+    for warning in &telemetry.warnings {
+        tracing::warn!("{warning}");
     }
 
     // The one place a command's outcome becomes a process exit status. Commands
     // signal a specific code with `SilentExit` rather than `process::exit`, so
     // that everything they own is dropped — MCP children shut down, stdout
     // flushed — before the process ends. See `output::SilentExit`.
-    match dispatch(cli.command, cli.verbose).await {
+    let code = match dispatch(cli.command, cli.verbose).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => match error.downcast::<SilentExit>() {
             // Already reported on the command's own terms; don't print twice.
@@ -38,6 +46,26 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+    };
+    // After the command has emitted its last event (the usage summary
+    // included) and before the runtime drops the exporter's tasks.
+    telemetry::shutdown().await;
+    code
+}
+
+/// The config layers telemetry is read from: the same two files every
+/// command loads, except `mcp serve`, which trusts the project layer only
+/// when `--dir` pins it (see `mcp_server::project`).
+fn telemetry_config_paths(command: &Command) -> Vec<PathBuf> {
+    let global = graph_config::global_config_path();
+    match command {
+        Command::Mcp {
+            command: cli::McpCommand::Serve { dir: Some(dir) },
+        } => vec![global, dir.join(".graph/config.toml")],
+        Command::Mcp {
+            command: cli::McpCommand::Serve { dir: None },
+        } => vec![global],
+        _ => vec![global, graph_config::project_config_path()],
     }
 }
 
@@ -83,8 +111,12 @@ fn init_tracing(verbosity: u8) {
         _ => "trace",
     };
     let filter = EnvFilter::try_from_env("GRAPH_LOG").unwrap_or_else(|_| EnvFilter::new(default));
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        .finish()
+        .with(telemetry::logs_layer())
         .init();
 }

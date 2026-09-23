@@ -168,7 +168,11 @@ pub async fn draft(
     let store = runtime.store()?;
     // Drafting's deliverable is the plan, not prose: keep progress on stderr
     // so `--stdout` can hand clean YAML to a pipe.
-    let events = crate::output::make_sink(true, false);
+    let events = crate::output::make_sink(
+        true,
+        false,
+        crate::telemetry::RunInfo::draft().user(runtime.config.user.name.as_deref()),
+    );
     let pipeline = runtime.pipeline(&store, events).await?;
 
     let drafted = pipeline.draft_plan(goal, existing_output.as_ref()).await;

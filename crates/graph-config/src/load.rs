@@ -181,9 +181,10 @@ fn expand_env(input: &str, path: &str, missing: &mut Vec<(String, String)>) -> R
 
 /// Sort the unset `${VAR}` references onto whoever must report them.
 ///
-/// `[providers.<name>]` and `[mcp.<name>]` entries own their references:
-/// they stay loadable and carry the record in `missing_env`, erroring only
-/// when used. A missing variable anywhere else fails the load, exactly as
+/// `[providers.<name>]`, `[mcp.<name>]`, and `[telemetry]` own their
+/// references: they stay loadable and carry the record in `missing_env`,
+/// erroring only when used (telemetry reports it once at startup and stays
+/// off). A missing variable anywhere else fails the load, exactly as
 /// every missing variable used to — secrets must never silently become
 /// empty strings or literal `${VAR}` text.
 fn distribute_missing_env(config: &mut Config, missing: Vec<(String, String)>) -> Result<()> {
@@ -198,6 +199,17 @@ fn distribute_missing_env(config: &mut Config, missing: Vec<(String, String)>) -
                 .mcp
                 .get_mut(name)
                 .map(|server| (&mut server.missing_env, field)),
+            (Some("telemetry"), Some(head), rest) => {
+                let field = match rest {
+                    Some(rest) => format!("{head}.{rest}"),
+                    None => head.to_string(),
+                };
+                config
+                    .telemetry
+                    .missing_env
+                    .push(crate::model::MissingEnv { field, var });
+                continue;
+            }
             _ => None,
         };
         match entry {
@@ -640,5 +652,131 @@ fallbacks = [
         assert_eq!(loaded.config.tools.packs, vec!["github".to_string()]);
         // Setting packs alone must not wipe the default search paths.
         assert_eq!(loaded.config.tools.paths.len(), 2);
+    }
+
+    #[test]
+    fn telemetry_is_off_by_default_and_parses_when_set() {
+        use crate::model::TelemetryProtocol;
+        let empty = load_from(&[]).unwrap().config.telemetry;
+        assert!(empty.endpoint.is_none());
+        assert!(empty.signal_url("v1/traces").is_none());
+        assert_eq!(empty.protocol, TelemetryProtocol::HttpProtobuf);
+        assert_eq!(empty.service_name(), "graph");
+        assert_eq!(empty.timeout_secs(), 10);
+        assert!(!empty.capture_content);
+        assert!(!empty.logs);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "config.toml",
+            r#"
+            [telemetry]
+            endpoint = "http://localhost:4318/"
+            protocol = "http/json"
+            timeout_secs = 3
+            service_name = "graph-dev"
+            capture_content = true
+            logs = true
+            headers = { "x-langfuse-ingestion-version" = "4" }
+            resource = { "deployment.environment" = "dev" }
+            "#,
+        );
+        let telemetry = load_from(&[path]).unwrap().config.telemetry;
+        assert_eq!(
+            telemetry.signal_url("v1/traces").as_deref(),
+            Some("http://localhost:4318/v1/traces")
+        );
+        assert_eq!(telemetry.protocol, TelemetryProtocol::HttpJson);
+        assert_eq!(telemetry.timeout_secs(), 3);
+        assert_eq!(telemetry.service_name(), "graph-dev");
+        assert!(telemetry.capture_content && telemetry.logs);
+        assert_eq!(telemetry.headers["x-langfuse-ingestion-version"], "4");
+        assert_eq!(telemetry.resource["deployment.environment"], "dev");
+        assert!(telemetry.missing_env.is_empty());
+    }
+
+    #[test]
+    fn standard_otel_variables_override_the_telemetry_section() {
+        use crate::model::{TelemetryConfig, TelemetryProtocol};
+        let mut configured = TelemetryConfig {
+            endpoint: Some("http://from-config".into()),
+            service_name: Some("from-config".into()),
+            ..Default::default()
+        };
+        configured
+            .headers
+            .insert("Authorization".into(), "Basic from-config".into());
+        configured.headers.insert("x-keep".into(), "1".into());
+
+        let env = |name: &str| -> Option<String> {
+            match name {
+                "OTEL_EXPORTER_OTLP_ENDPOINT" => {
+                    Some("https://cloud.langfuse.com/api/public/otel".into())
+                }
+                "OTEL_EXPORTER_OTLP_PROTOCOL" => Some("http/json".into()),
+                "OTEL_EXPORTER_OTLP_TIMEOUT" => Some("2500".into()),
+                "OTEL_SERVICE_NAME" => Some("from-env".into()),
+                "OTEL_EXPORTER_OTLP_HEADERS" => {
+                    Some("Authorization=Basic cGs6c2s=, x-langfuse-ingestion-version=4".into())
+                }
+                _ => None,
+            }
+        };
+        let resolved = configured.with_env(&env).unwrap();
+        assert_eq!(
+            resolved.signal_url("v1/logs").as_deref(),
+            Some("https://cloud.langfuse.com/api/public/otel/v1/logs")
+        );
+        assert_eq!(resolved.protocol, TelemetryProtocol::HttpJson);
+        // Milliseconds per the OTel spec, rounded up to whole seconds.
+        assert_eq!(resolved.timeout_secs(), 3);
+        assert_eq!(resolved.service_name(), "from-env");
+        // The first `=` splits the pair, so base64 padding survives; entries
+        // the variable does not name are kept.
+        assert_eq!(resolved.headers["Authorization"], "Basic cGs6c2s=");
+        assert_eq!(resolved.headers["x-langfuse-ingestion-version"], "4");
+        assert_eq!(resolved.headers["x-keep"], "1");
+
+        // Nothing set: the section is returned as written.
+        let untouched = configured.with_env(&|_| None).unwrap();
+        assert_eq!(untouched.endpoint.as_deref(), Some("http://from-config"));
+        assert_eq!(untouched.headers.len(), 2);
+
+        let bad_protocol = |name: &str| -> Option<String> {
+            (name == "OTEL_EXPORTER_OTLP_PROTOCOL").then(|| "grpc".to_string())
+        };
+        let err = configured.with_env(&bad_protocol).unwrap_err();
+        assert!(err.contains("grpc"), "{err}");
+    }
+
+    #[test]
+    fn a_missing_var_in_telemetry_defers_with_its_field_path() {
+        // Same deferral as providers and MCP servers: the run still happens,
+        // telemetry stays off, and the startup warning names the variable.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "config.toml",
+            r#"
+            [telemetry]
+            endpoint = "http://localhost:4318"
+            headers = { Authorization = "Basic ${GRAPH_TEST_LANGFUSE_DOES_NOT_EXIST}" }
+            "#,
+        );
+        let loaded = load_from(&[path]).unwrap();
+        let telemetry = &loaded.config.telemetry;
+        assert_eq!(
+            telemetry.missing_env,
+            vec![crate::model::MissingEnv {
+                field: "headers.Authorization".into(),
+                var: "GRAPH_TEST_LANGFUSE_DOES_NOT_EXIST".into(),
+            }]
+        );
+        assert_eq!(
+            crate::model::describe_missing_env("telemetry", &telemetry.missing_env),
+            "environment variable GRAPH_TEST_LANGFUSE_DOES_NOT_EXIST \
+             (telemetry.headers.Authorization) is not set"
+        );
     }
 }

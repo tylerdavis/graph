@@ -69,6 +69,17 @@ model = "claude-sonnet-5"
 # input = 1.00
 # output = 5.00
 
+# OTLP export of run traces — Langfuse, an OpenTelemetry collector, any
+# OTLP/HTTP backend. The standard OTEL_EXPORTER_OTLP_* and OTEL_SERVICE_NAME
+# variables override these values.
+# [telemetry]
+# endpoint = "https://cloud.langfuse.com/api/public/otel"
+# capture_content = false   # put prompts, completions, and tool I/O on spans
+# logs = false              # also export the diagnostic log (-v / GRAPH_LOG)
+# [telemetry.headers]
+# Authorization = "Basic ${LANGFUSE_AUTH}"   # base64 of pk-lf-…:sk-lf-…
+# "x-langfuse-ingestion-version" = "4"
+
 # [mcp.github]
 # command = "docker"
 # args = ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"]

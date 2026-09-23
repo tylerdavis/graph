@@ -22,15 +22,20 @@ pub async fn run(args: AskArgs) -> Result<()> {
     let existing = resolve_thread(store.as_ref(), args.thread).await?;
 
     let stream_text = !args.json && !args.no_stream;
+    let run = crate::telemetry::RunInfo::conversation(
+        "ask",
+        existing.as_ref().map(|thread| thread.id.clone()),
+    )
+    .user(runtime.config.user.name.as_deref());
     let events: Arc<dyn graph_core::EventSink> = if args.json {
         // Quiet unless JSONL events were explicitly requested.
         if std::env::var("GRAPH_EVENTS").as_deref() == Ok("jsonl") {
-            crate::output::make_sink(true, false)
+            crate::output::make_sink(true, false, run)
         } else {
-            Arc::new(NullSink)
+            crate::telemetry::attach(Arc::new(NullSink), run)
         }
     } else {
-        crate::output::make_sink(!stream_text, false)
+        crate::output::make_sink(!stream_text, false, run)
     };
     // A conversation already has the user's attention: a plan called as
     // plan__* from here can put an `ask` step's question to them.

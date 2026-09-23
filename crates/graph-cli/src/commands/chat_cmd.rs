@@ -14,7 +14,12 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
     let runtime = Runtime::init()?;
     let store = runtime.store()?;
     let mut thread: Option<ThreadMeta> = resolve_thread(store.as_ref(), thread).await?;
-    let events: Arc<dyn graph_core::EventSink> = crate::output::make_sink(false, false);
+    let run = crate::telemetry::RunInfo::conversation(
+        "chat",
+        thread.as_ref().map(|meta| meta.id.clone()),
+    )
+    .user(runtime.config.user.name.as_deref());
+    let events: Arc<dyn graph_core::EventSink> = crate::output::make_sink(false, false, run);
     // A conversation already has the user's attention: a plan called as
     // plan__* from here can put an `ask` step's question to them.
     let hooks = crate::runtime::PipelineHooks {
