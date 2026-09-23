@@ -341,14 +341,52 @@ pub struct OtlpSink {
 struct State {
     root: Option<Context>,
     steps: Vec<(String, Context)>,
-    tools: Vec<PendingTool>,
 }
 
-struct PendingTool {
-    name: String,
-    args: Option<Value>,
-    step: Option<String>,
-    started: SystemTime,
+fn clip_strings(value: &mut Value, cap: usize) {
+    match value {
+        Value::String(text) if text.len() > cap => {
+            let mut cut = cap;
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            let dropped = text.len() - cut;
+            text.truncate(cut);
+            text.push_str(&format!("…[{dropped} bytes truncated]"));
+        }
+        Value::Array(items) => items.iter_mut().for_each(|item| clip_strings(item, cap)),
+        Value::Object(map) => map.values_mut().for_each(|item| clip_strings(item, cap)),
+        _ => {}
+    }
+}
+
+fn clipped_json(value: &Value, budget: usize) -> String {
+    let text = serde_json::to_string(value).unwrap_or_default();
+    if text.len() <= budget {
+        return text;
+    }
+    let mut cap = budget / 2;
+    while cap >= 64 {
+        let mut clipped = value.clone();
+        clip_strings(&mut clipped, cap);
+        let text = serde_json::to_string(&clipped).unwrap_or_default();
+        if text.len() <= budget {
+            return text;
+        }
+        cap /= 2;
+    }
+    let mut preview = text.clone();
+    let mut cut = budget / 2;
+    while !preview.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    preview.truncate(cut);
+    serde_json::json!({
+        "truncated": true,
+        "bytes": text.len(),
+        "preview": preview,
+    })
+    .to_string()
 }
 
 impl OtlpSink {
@@ -432,16 +470,7 @@ impl OtlpSink {
         if !self.capture {
             return None;
         }
-        let mut text = serde_json::to_string(value).unwrap_or_default();
-        if text.len() > MAX_ATTRIBUTE_BYTES {
-            let mut cut = MAX_ATTRIBUTE_BYTES;
-            while !text.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            text.truncate(cut);
-            text.push_str("…[truncated]");
-        }
-        Some(KeyValue::new(key, text))
+        Some(KeyValue::new(key, clipped_json(value, MAX_ATTRIBUTE_BYTES)))
     }
 
     fn root_event(&self, name: &'static str, attributes: Vec<KeyValue>) {
@@ -455,7 +484,6 @@ impl OtlpSink {
         for (_, cx) in state.steps.drain(..) {
             cx.span().end_with_timestamp(now);
         }
-        state.tools.clear();
         if let Some(root) = state.root.take() {
             root.span().end_with_timestamp(now);
         }
@@ -549,53 +577,43 @@ impl EventSink for OtlpSink {
             return;
         }
         let mut state = self.state.lock().unwrap();
-        let step = state.steps.last().map(|(k, _)| k.clone());
-        state.tools.push(PendingTool {
-            name: name.to_string(),
-            args: self.capture.then(|| args.clone()),
-            step,
-            started: SystemTime::now(),
-        });
-    }
-
-    fn tool_finished(&self, name: &str, elapsed: Duration, is_error: bool) {
-        if is_bare_control(name) {
+        if !state.steps.is_empty() {
             return;
         }
-        let now = SystemTime::now();
-        let mut state = self.state.lock().unwrap();
-        let pending = state
-            .tools
-            .iter()
-            .rposition(|t| t.name == name)
-            .map(|index| state.tools.remove(index));
-        let (args, step, started) = match pending {
-            Some(tool) => (tool.args, tool.step, tool.started),
-            None => (None, None, now.checked_sub(elapsed).unwrap_or(now)),
-        };
-        let parent = match &step {
-            Some(key) => self.step_context(&mut state, key),
-            None => self.parent_for(&mut state, None),
-        };
+        let parent = self.root(&mut state);
         let mut attributes = self.common.clone();
         attributes.extend([
             KeyValue::new("langfuse.observation.type", observation_type(name)),
             KeyValue::new("graph.tool.name", name.to_string()),
         ]);
-        if let (Some(args), None) = (&args, &step) {
-            attributes.extend(self.json_attribute("langfuse.observation.input", args));
-        }
-        let mut span = self.tracer.build_with_context(
+        attributes.extend(self.json_attribute("langfuse.observation.input", args));
+        let span = self.tracer.build_with_context(
             SpanBuilder::from_name(name.to_string())
-                .with_start_time(started)
+                .with_start_time(SystemTime::now())
                 .with_attributes(attributes),
             &parent,
         );
+        state
+            .steps
+            .push((format!("tool:{name}"), parent.with_span(span)));
+    }
+
+    fn tool_finished(&self, name: &str, _elapsed: Duration, is_error: bool) {
+        if is_bare_control(name) {
+            return;
+        }
+        let key = format!("tool:{name}");
+        let mut state = self.state.lock().unwrap();
+        let Some(index) = state.steps.iter().rposition(|(k, _)| *k == key) else {
+            return;
+        };
+        let (_, cx) = state.steps.remove(index);
+        let span = cx.span();
         if is_error {
             span.set_attribute(KeyValue::new("langfuse.observation.level", "ERROR"));
             span.set_status(Status::error("tool returned an error"));
         }
-        span.end_with_timestamp(now);
+        span.end_with_timestamp(SystemTime::now());
     }
 
     fn llm_call(&self, call: &LlmCallEvent) {
@@ -880,9 +898,11 @@ mod tests {
 
         let e0 = by_name(&spans, "E0 user__git_log");
         assert_eq!(e0.parent_span_id, root.span_context.span_id());
-        let tool = by_name(&spans, "user__git_log");
-        assert_eq!(tool.parent_span_id, e0.span_context.span_id());
-        assert!(attribute(tool, "langfuse.observation.input").is_none());
+        assert!(
+            !names(&spans).iter().any(|n| n == "user__git_log"),
+            "a tool call inside a step is the step span: {:?}",
+            names(&spans)
+        );
 
         let e1 = by_name(&spans, "E1 map");
         assert!(
@@ -978,7 +998,70 @@ mod tests {
         provider.force_flush().unwrap();
         let spans = exporter.get_finished_spans().unwrap();
         assert!(attribute(by_name(&spans, "E0 user__x"), "langfuse.observation.input").is_some());
-        assert!(attribute(by_name(&spans, "user__x"), "langfuse.observation.input").is_none());
+        assert!(!names(&spans).iter().any(|n| n == "user__x"));
+    }
+
+    #[test]
+    fn a_conversation_tool_call_holds_the_plan_it_invokes() {
+        let (sink, exporter, provider) = harness(RunInfo::conversation("ask", None), true);
+        sink.tool_started("plan__inner", &json!({"team": "core"}));
+        let inner = vec!["inner".to_string()];
+        sink.step_started(&inner, "E0", "user__git_log", &json!({}));
+        sink.step_finished(
+            &inner,
+            "E0",
+            "user__git_log",
+            &json!([]),
+            false,
+            Duration::ZERO,
+        );
+        sink.tool_finished("plan__inner", Duration::from_millis(3), true);
+        sink.tool_started("builtin__reshape", &json!({}));
+        sink.tool_finished("builtin__reshape", Duration::from_millis(1), false);
+        drop(sink);
+        provider.force_flush().unwrap();
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let root = by_name(&spans, "ask");
+        let call = by_name(&spans, "plan__inner");
+        assert_eq!(call.parent_span_id, root.span_context.span_id());
+        assert!(matches!(call.status, Status::Error { .. }));
+        assert_eq!(
+            attribute(call, "langfuse.observation.input"),
+            Some(&OtelValue::from(r#"{"team":"core"}"#))
+        );
+        let step = by_name(&spans, "E0 user__git_log");
+        assert_eq!(step.parent_span_id, call.span_context.span_id());
+        let reshape = by_name(&spans, "builtin__reshape");
+        assert_eq!(reshape.parent_span_id, root.span_context.span_id());
+    }
+
+    #[test]
+    fn clipped_content_stays_valid_json() {
+        let big = "x".repeat(200_000);
+        let value = json!({"instruction": "review", "data": big, "items": ["a", "b"]});
+        let text = clipped_json(&value, MAX_ATTRIBUTE_BYTES);
+        assert!(text.len() <= MAX_ATTRIBUTE_BYTES, "{}", text.len());
+        let parsed: Value = serde_json::from_str(&text).expect("still JSON");
+        assert_eq!(parsed["instruction"], "review");
+        assert_eq!(parsed["items"], json!(["a", "b"]));
+        let data = parsed["data"].as_str().unwrap();
+        assert!(
+            data.starts_with("xxxx") && data.contains("bytes truncated]"),
+            "{data}"
+        );
+
+        let small = json!({"said": "hi"});
+        assert_eq!(
+            clipped_json(&small, MAX_ATTRIBUTE_BYTES),
+            r#"{"said":"hi"}"#
+        );
+
+        let wide = json!((0..20_000).map(|i| i.to_string()).collect::<Vec<_>>());
+        let text = clipped_json(&wide, 4_096);
+        assert!(text.len() <= 4_096 + 64, "{}", text.len());
+        let parsed: Value = serde_json::from_str(&text).expect("still JSON");
+        assert_eq!(parsed["truncated"], true);
     }
 
     #[test]

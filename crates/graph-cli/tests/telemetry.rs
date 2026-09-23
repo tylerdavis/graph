@@ -154,7 +154,11 @@ Authorization = "Basic ${{GRAPH_TEST_OTLP_AUTH}}"
         Some("test")
     );
     let names = trace.span_names();
-    for expected in ["echo_ok", "E1 builtin__reshape", "builtin__reshape"] {
+    assert!(
+        !names.iter().any(|n| n == "builtin__reshape"),
+        "a step's tool call is the step span, not a child: {names:?}"
+    );
+    for expected in ["echo_ok", "E1 builtin__reshape"] {
         assert!(
             names.iter().any(|n| n == expected),
             "no span named {expected:?} in {names:?}"
