@@ -178,7 +178,7 @@ One OTLP/HTTP exporter for everything graph can observe about a run, aimed at an
 [telemetry]
 endpoint = "https://cloud.langfuse.com/api/public/otel"   # base URL; /v1/traces and /v1/logs are appended
 protocol = "http/protobuf"       # or "http/json"; no gRPC
-timeout_secs = 10
+timeout_secs = 30
 service_name = "graph"           # service.name on every span
 capture_content = true           # prompts, completions, tool arguments, step results on spans
 logs = false                     # also export the diagnostic log (-v / GRAPH_LOG) as OTLP logs
@@ -195,7 +195,7 @@ Authorization = "Basic ${LANGFUSE_AUTH}"   # base64 of "pk-lf-…:sk-lf-…"
 | --- | --- | --- |
 | `endpoint` | `OTEL_EXPORTER_OTLP_ENDPOINT` | base OTLP/HTTP URL; unset means telemetry is off |
 | `protocol` | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` (default) or `http/json` |
-| `timeout_secs` | `OTEL_EXPORTER_OTLP_TIMEOUT` (milliseconds) | per-export request timeout, default 10 s |
+| `timeout_secs` | `OTEL_EXPORTER_OTLP_TIMEOUT` (milliseconds) | per-export request timeout, default 30 s; a batch that exceeds it is dropped with a warning on stderr |
 | `service_name` | `OTEL_SERVICE_NAME` | `service.name`, default `graph` |
 | `headers` | `OTEL_EXPORTER_OTLP_HEADERS` (`k=v,k2=v2`, merged over the table) | request headers; values take `${VAR}` |
 | `resource` | — | extra resource attributes, repeated on every span so per-span filters see them |
@@ -206,7 +206,7 @@ The environment variable wins over the file, so a CI job can point a checked-in 
 
 **What a trace contains.** Each `plan run`, `ask` turn, `chat` session, MCP `plan_run` call, workbench run, and `plan draft` is one trace, named after the plan identifier or the command. Under the root: one span per plan step and body call (named `E3 user__git_log`, `E1/do.2/E5 builtin__infer`, keyed by the same bus path the workbench and `GRAPH_EVENTS=jsonl` use; a nested plan's steps sit under the step that called it), one span per tool call, and one `generation` span per billable model call under the step that spent it — the same attribution `by_step` reports. Every generation carries the standard `gen_ai.*` attributes: provider, model, input/output/cache token counts, and, when `[pricing]` prices the model, the cost. Errors mark their span and set its status. The `usage_summary` totals land on the root span, and so does the run's own input and output when `capture_content` is on: the plan input and its answer or output document (or the failure), the `ask` message and the reply.
 
-**Backend notes.** Langfuse reads these spans as-is: generations, usage, cost, `session.id` (the thread id for `ask`/`chat`), `user.id` (`[user].name`), and the `plan:<identifier>` / `command:<name>` tags are all on every span, as its filters require. Content is what makes a trace readable, so it is on by default; set `capture_content = false` for a backend that must not see what the tools returned. When on, it is written under both the current `gen_ai.input.messages` / `gen_ai.output.messages` keys and the `langfuse.observation.input` / `langfuse.observation.output` keys Langfuse maps, each capped at 64 KiB. Other backends keep the `langfuse.*` keys as plain metadata. Export is batched and flushed when the process exits, or continuously under `graph mcp serve`.
+**Backend notes.** Langfuse reads these spans as-is: generations, usage, cost, `session.id` (the thread id for `ask`/`chat`), `user.id` (`[user].name`), and the `plan:<identifier>` / `command:<name>` tags are all on every span, as its filters require. Content is what makes a trace readable, so it is on by default; set `capture_content = false` for a backend that must not see what the tools returned. When on, it is written once per span under the `langfuse.observation.input` / `langfuse.observation.output` keys Langfuse maps, each capped at 64 KiB; a tool call inside a plan leaves its arguments to the enclosing step span rather than repeating them. Other backends keep the `langfuse.*` keys as plain metadata. Export runs in the background in batches of 16 spans every 2 s (about 2 MB at most, under Langfuse's request ceiling), and the process drains what is left before it exits (up to two minutes); `graph mcp serve` exports continuously. An export that fails or times out is reported as a warning on stderr and that batch is lost.
 
 ## `[user]`
 

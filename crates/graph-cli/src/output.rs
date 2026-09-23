@@ -245,8 +245,7 @@ pub fn jsonl_events() -> bool {
 /// The standard sink choice: JSONL when `GRAPH_EVENTS=jsonl`, else the TTY
 /// sink (including `GRAPH_EVENTS=github`, which only adds failure
 /// annotations — see [`gha_annotations`]). `solver_stdout` only applies to
-/// the TTY sink (plan run). Either is teed with the OTLP exporter for `run`
-/// when `[telemetry]` is on.
+/// the TTY sink (plan run).
 pub fn make_sink(
     quiet_text: bool,
     solver_stdout: bool,

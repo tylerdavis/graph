@@ -36,16 +36,10 @@ pub struct LlmCall {
     pub model: String,
     pub usage: Usage,
     pub elapsed: Duration,
-    /// The request as sent (system, messages, tool names, parameters), only
-    /// when the meter asked for content via [`UsageMeter::captures_content`].
     pub input: Option<Value>,
-    /// The response (text, tool calls, structured output, stop reason),
-    /// captured under the same condition as `input`.
     pub output: Option<Value>,
 }
 
-/// The request as a JSON value a trace backend can show: what the model
-/// was asked, without the schema bodies of every tool.
 pub fn request_content(req: &ChatRequest) -> Value {
     json!({
         "system": req.system,
@@ -57,7 +51,6 @@ pub fn request_content(req: &ChatRequest) -> Value {
     })
 }
 
-/// The response as a JSON value: everything the caller could act on.
 pub fn response_content(response: &ChatResponse) -> Value {
     json!({
         "content": response.content,
@@ -72,9 +65,6 @@ pub fn response_content(response: &ChatResponse) -> Value {
 pub trait UsageMeter: Send + Sync {
     fn record(&self, call: LlmCall);
 
-    /// Whether calls should carry their request and response content. Off
-    /// by default: cloning every prompt is only worth it when a trace
-    /// backend will show it.
     fn captures_content(&self) -> bool {
         false
     }

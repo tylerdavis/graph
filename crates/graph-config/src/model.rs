@@ -31,8 +31,6 @@ pub struct Config {
     pub prompts: PromptConfig,
     #[serde(default)]
     pub workbench: WorkbenchConfig,
-    /// OTLP export of run traces and diagnostics, e.g. to Langfuse or an
-    /// OpenTelemetry collector. Off unless `endpoint` is set.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
     /// Per-model token prices, e.g. `[pricing."claude-sonnet-5"]`. Keyed by
@@ -102,40 +100,17 @@ pub struct WorkbenchConfig {
     pub log_path: Option<PathBuf>,
 }
 
-/// OTLP export settings: one exporter for run traces (plan runs, steps,
-/// tool calls, and every model call) and, optionally, the diagnostic log.
-/// Every field except the three graph-specific switches mirrors a standard
-/// `OTEL_*` environment variable, and the variable wins when both are set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct TelemetryConfig {
-    /// Base OTLP/HTTP URL; `/v1/traces` and `/v1/logs` are appended. Unset
-    /// means telemetry is off. `OTEL_EXPORTER_OTLP_ENDPOINT` overrides.
     pub endpoint: Option<String>,
-    /// `http/protobuf` (default) or `http/json`. `OTEL_EXPORTER_OTLP_PROTOCOL`
-    /// overrides. gRPC is not offered: Langfuse does not accept it.
     pub protocol: TelemetryProtocol,
-    /// Per-export request timeout. `OTEL_EXPORTER_OTLP_TIMEOUT` (milliseconds)
-    /// overrides.
     pub timeout_secs: Option<u64>,
-    /// `service.name` on every span. `OTEL_SERVICE_NAME` overrides; the
-    /// default is `graph`.
     pub service_name: Option<String>,
-    /// Request headers, e.g. `Authorization`; values support `${VAR}`.
-    /// `OTEL_EXPORTER_OTLP_HEADERS` (`k=v,k2=v2`) adds to or overrides them.
     pub headers: BTreeMap<String, String>,
-    /// Extra resource attributes, stamped on every span as well so backends
-    /// that filter per span (Langfuse) see them everywhere.
     pub resource: BTreeMap<String, String>,
-    /// Put prompts, completions, tool arguments, and step results on spans.
-    /// On by default; `false` keeps a trace to names, timings, token counts,
-    /// and cost, for backends that must not see what the tools returned.
     pub capture_content: bool,
-    /// Export the `tracing` diagnostic stream (what `-v` and `GRAPH_LOG`
-    /// select) as OTLP logs alongside the spans.
     pub logs: bool,
-    /// Unset `${VAR}` references in this entry, recorded at load. Telemetry
-    /// with any stays off and says so once at startup.
     #[serde(skip)]
     pub missing_env: Vec<MissingEnv>,
 }
@@ -167,10 +142,8 @@ pub enum TelemetryProtocol {
 
 impl TelemetryConfig {
     pub const DEFAULT_SERVICE_NAME: &'static str = "graph";
-    pub const DEFAULT_TIMEOUT_SECS: u64 = 10;
+    pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
-    /// The config with the standard `OTEL_*` variables applied on top,
-    /// looked up through `env` so the precedence is testable.
     pub fn with_env(&self, env: &dyn Fn(&str) -> Option<String>) -> Result<Self, String> {
         let mut resolved = self.clone();
         if let Some(endpoint) = env("OTEL_EXPORTER_OTLP_ENDPOINT").filter(|v| !v.is_empty()) {
@@ -222,8 +195,6 @@ impl TelemetryConfig {
         self.timeout_secs.unwrap_or(Self::DEFAULT_TIMEOUT_SECS)
     }
 
-    /// The URL for one OTLP signal path (`v1/traces`, `v1/logs`); `None`
-    /// when no endpoint is configured.
     pub fn signal_url(&self, signal: &str) -> Option<String> {
         let base = self.endpoint.as_deref()?.trim_end_matches('/');
         Some(format!("{base}/{signal}"))

@@ -1,19 +1,3 @@
-//! OTLP export: one exporter for run traces and, optionally, the
-//! diagnostic log, configured by `[telemetry]` and the standard `OTEL_*`
-//! variables.
-//!
-//! Traces are built from the same [`EventSink`] events the terminal and
-//! JSONL sinks render, teed alongside them by [`attach`]: the run is the
-//! root span, each plan step or body call a child span keyed by its bus
-//! path, every tool call a span under its step, and every billable model
-//! call a `generation` under the step that spent it. Attributes follow the
-//! OpenTelemetry GenAI conventions plus the `langfuse.*` keys Langfuse reads,
-//! which other backends keep as metadata; there is no per-backend config.
-//!
-//! Process-wide state lives in a `OnceLock` because the sink is chosen per
-//! command while the exporter must outlive every command and be flushed
-//! once, from `main`, after the last event.
-
 use graph_config::TelemetryConfig;
 use graph_core::usage::{LlmCallEvent, UsageReport};
 use graph_core::{EventSink, TeeSink};
@@ -33,6 +17,10 @@ use std::time::{Duration, SystemTime};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_ATTRIBUTE_BYTES: usize = 64 * 1024;
+const EXPORT_BATCH_SPANS: usize = 16;
+const EXPORT_QUEUE_SPANS: usize = 8192;
+const EXPORT_DELAY: Duration = Duration::from_secs(2);
+const SHUTDOWN_FLUSH: Duration = Duration::from_secs(120);
 
 static TELEMETRY: OnceLock<Telemetry> = OnceLock::new();
 
@@ -44,18 +32,12 @@ struct Telemetry {
     common: Vec<KeyValue>,
 }
 
-/// Outcome of [`init`]: whether the exporter is on, and anything the user
-/// should hear about it once tracing is up (init runs before the log
-/// subscriber exists, so it cannot warn itself).
 #[derive(Default)]
 pub struct Init {
     pub active: bool,
     pub warnings: Vec<String>,
 }
 
-/// Build the exporter from the given config layers, if `[telemetry]` (or
-/// `OTEL_EXPORTER_OTLP_ENDPOINT`) names an endpoint. A config that fails to
-/// load is left for the command to report; telemetry simply stays off.
 pub fn init(config_paths: &[PathBuf]) -> Init {
     let mut init = Init::default();
     let Ok(loaded) = graph_config::load_from(config_paths) else {
@@ -113,11 +95,18 @@ fn build(config: &TelemetryConfig) -> anyhow::Result<Telemetry> {
         )
         .build();
 
+    let http_client = reqwest::Client::builder()
+        .http1_only()
+        .pool_max_idle_per_host(0)
+        .timeout(timeout)
+        .build()?;
+
     let traces_url = config
         .signal_url("v1/traces")
         .ok_or_else(|| anyhow::anyhow!("no telemetry endpoint"))?;
     let span_exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
+        .with_http_client(http_client.clone())
         .with_protocol(protocol)
         .with_endpoint(traces_url)
         .with_headers(headers.clone())
@@ -127,6 +116,14 @@ fn build(config: &TelemetryConfig) -> anyhow::Result<Telemetry> {
         opentelemetry_sdk::trace::span_processor_with_async_runtime::BatchSpanProcessor::builder(
             span_exporter,
             opentelemetry_sdk::runtime::Tokio,
+        )
+        .with_batch_config(
+            opentelemetry_sdk::trace::BatchConfigBuilder::default()
+                .with_max_export_batch_size(EXPORT_BATCH_SPANS)
+                .with_max_queue_size(EXPORT_QUEUE_SPANS)
+                .with_scheduled_delay(EXPORT_DELAY)
+                .with_max_export_timeout(timeout)
+                .build(),
         )
         .build();
     let tracer_provider = SdkTracerProvider::builder()
@@ -141,6 +138,7 @@ fn build(config: &TelemetryConfig) -> anyhow::Result<Telemetry> {
             .ok_or_else(|| anyhow::anyhow!("no telemetry endpoint"))?;
         let log_exporter = opentelemetry_otlp::LogExporter::builder()
             .with_http()
+            .with_http_client(http_client)
             .with_protocol(protocol)
             .with_endpoint(logs_url)
             .with_headers(headers)
@@ -150,6 +148,12 @@ fn build(config: &TelemetryConfig) -> anyhow::Result<Telemetry> {
             opentelemetry_sdk::logs::log_processor_with_async_runtime::BatchLogProcessor::builder(
                 log_exporter,
                 opentelemetry_sdk::runtime::Tokio,
+            )
+            .with_batch_config(
+                opentelemetry_sdk::logs::BatchConfigBuilder::default()
+                    .with_scheduled_delay(EXPORT_DELAY)
+                    .with_max_export_timeout(timeout)
+                    .build(),
             )
             .build();
         Some(
@@ -178,15 +182,10 @@ fn build(config: &TelemetryConfig) -> anyhow::Result<Telemetry> {
     })
 }
 
-/// Whether model calls should carry prompts and completions — what the
-/// usage ledger asks its metered providers for.
 pub fn captures_content() -> bool {
     TELEMETRY.get().is_some_and(|t| t.capture_content)
 }
 
-/// The `tracing` layer that exports the diagnostic stream as OTLP logs, or
-/// `None` when `[telemetry].logs` is off. The exporter's own HTTP stack is
-/// filtered out so its diagnostics can never feed back into itself.
 pub fn logs_layer<S>() -> Option<impl tracing_subscriber::Layer<S>>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
@@ -204,40 +203,33 @@ where
     )
 }
 
-/// Flush and stop the exporter. Called once from `main` after the command
-/// returns, so it runs after every event, including the usage summary.
 pub async fn shutdown() {
     let Some(telemetry) = TELEMETRY.get() else {
         return;
     };
     let _ = tokio::task::spawn_blocking(|| {
-        if let Err(error) = telemetry.tracer_provider.shutdown() {
-            tracing::debug!(%error, "telemetry trace exporter shutdown");
+        if let Err(error) = telemetry
+            .tracer_provider
+            .shutdown_with_timeout(SHUTDOWN_FLUSH)
+        {
+            tracing::warn!(%error, "telemetry: trace export did not finish before exit");
         }
         if let Some(logs) = &telemetry.logger_provider {
-            if let Err(error) = logs.shutdown() {
-                tracing::debug!(%error, "telemetry log exporter shutdown");
+            if let Err(error) = logs.shutdown_with_timeout(SHUTDOWN_FLUSH) {
+                tracing::warn!(%error, "telemetry: log export did not finish before exit");
             }
         }
     })
     .await;
 }
 
-/// What a trace is about: the name it is filed under and the ids that
-/// group it with its neighbours.
 #[derive(Debug, Clone)]
 pub struct RunInfo {
-    /// The trace name: a plan identifier, `ask`, `chat`, `plan draft`.
     pub name: String,
     pub kind: RunKind,
-    /// Groups traces into a session (Langfuse `session.id`): the thread id
-    /// for conversations.
     pub session_id: Option<String>,
-    /// The `[user].name`, when set.
     pub user_id: Option<String>,
     pub tags: Vec<String>,
-    /// What the run was given: the plan input, the `ask` message. Shown as
-    /// the trace's input when content is captured.
     pub input: Option<Value>,
 }
 
@@ -293,8 +285,6 @@ impl RunInfo {
     }
 }
 
-/// A plan run's deliverable as one value for `run_finished`: the output
-/// document when there is one, else the answer text, else the exit message.
 pub fn plan_output(outcome: &graph_core::pipeline::PipelineOutcome) -> Value {
     if let Some(structured) = &outcome.structured {
         return structured.clone();
@@ -308,8 +298,6 @@ pub fn plan_output(outcome: &graph_core::pipeline::PipelineOutcome) -> Value {
     }
 }
 
-/// Report a plan run's result to `events`: the deliverable on success (an
-/// error exit counts as an error), the error message otherwise.
 pub fn report_plan_result(
     events: &dyn EventSink,
     result: &Result<graph_core::pipeline::PipelineOutcome, graph_core::pipeline::PipelineError>,
@@ -328,8 +316,6 @@ pub fn report_plan_result(
     }
 }
 
-/// `sink`, teed with an exporting sink for `run` when telemetry is on;
-/// `sink` unchanged otherwise.
 pub fn attach(sink: Arc<dyn EventSink>, run: RunInfo) -> Arc<dyn EventSink> {
     let Some(telemetry) = TELEMETRY.get() else {
         return sink;
@@ -343,7 +329,6 @@ pub fn attach(sink: Arc<dyn EventSink>, run: RunInfo) -> Arc<dyn EventSink> {
     Arc::new(TeeSink::new(vec![sink, Arc::new(exporting)]))
 }
 
-/// An [`EventSink`] that turns one run's events into a span tree.
 pub struct OtlpSink {
     tracer: SdkTracer,
     run: RunInfo,
@@ -355,9 +340,7 @@ pub struct OtlpSink {
 #[derive(Default)]
 struct State {
     root: Option<Context>,
-    /// Open step spans in start order, keyed by plan-qualified path.
     steps: Vec<(String, Context)>,
-    /// Tool calls started and not yet finished, with the step they belong to.
     tools: Vec<PendingTool>,
 }
 
@@ -422,10 +405,6 @@ impl OtlpSink {
         root
     }
 
-    /// The span a new child belongs under: the longest open step whose
-    /// path is a prefix of `key` (a body step under its map/decide step),
-    /// else the most recently opened step still running (a nested plan's
-    /// step under the call that entered it), else the root.
     fn parent_for(&self, state: &mut State, key: Option<&str>) -> Context {
         if let Some(key) = key {
             let mut prefix = key;
@@ -498,6 +477,10 @@ fn is_control(tool: &str) -> bool {
     ) || tool.starts_with(graph_core::toolbox::PLAN_TOOL_PREFIX)
 }
 
+fn is_bare_control(tool: &str) -> bool {
+    matches!(tool, "exit" | "decide" | "filter" | "map" | "reduce")
+}
+
 fn observation_type(tool: &str) -> &'static str {
     if tool == "agent" {
         "agent"
@@ -562,6 +545,9 @@ impl EventSink for OtlpSink {
     }
 
     fn tool_started(&self, name: &str, args: &Value) {
+        if is_bare_control(name) {
+            return;
+        }
         let mut state = self.state.lock().unwrap();
         let step = state.steps.last().map(|(k, _)| k.clone());
         state.tools.push(PendingTool {
@@ -573,6 +559,9 @@ impl EventSink for OtlpSink {
     }
 
     fn tool_finished(&self, name: &str, elapsed: Duration, is_error: bool) {
+        if is_bare_control(name) {
+            return;
+        }
         let now = SystemTime::now();
         let mut state = self.state.lock().unwrap();
         let pending = state
@@ -593,7 +582,7 @@ impl EventSink for OtlpSink {
             KeyValue::new("langfuse.observation.type", observation_type(name)),
             KeyValue::new("graph.tool.name", name.to_string()),
         ]);
-        if let Some(args) = &args {
+        if let (Some(args), None) = (&args, &step) {
             attributes.extend(self.json_attribute("langfuse.observation.input", args));
         }
         let mut span = self.tracer.build_with_context(
@@ -654,11 +643,9 @@ impl EventSink for OtlpSink {
         }
         if let Some(input) = &call.input {
             attributes.extend(self.json_attribute("langfuse.observation.input", input));
-            attributes.extend(self.json_attribute("gen_ai.input.messages", input));
         }
         if let Some(output) = &call.output {
             attributes.extend(self.json_attribute("langfuse.observation.output", output));
-            attributes.extend(self.json_attribute("gen_ai.output.messages", output));
         }
         let mut span = self.tracer.build_with_context(
             SpanBuilder::from_name(call.role.clone())
@@ -839,6 +826,7 @@ mod tests {
         );
 
         sink.step_started(&none, "E1", "map", &json!({}));
+        sink.tool_started("map", &json!({}));
         sink.step_started(&none, "E1/do.0/E5", "builtin__infer", &json!({}));
         sink.llm_call(&call("E1/do.0/E5", None));
         sink.step_finished(
@@ -897,6 +885,11 @@ mod tests {
         assert!(attribute(tool, "langfuse.observation.input").is_none());
 
         let e1 = by_name(&spans, "E1 map");
+        assert!(
+            !names(&spans).iter().any(|n| n == "map"),
+            "a control step's own tool pair is not a span: {:?}",
+            names(&spans)
+        );
         let body = by_name(&spans, "E1/do.0/E5 builtin__infer");
         assert_eq!(body.parent_span_id, e1.span_context.span_id());
         let generation = spans
@@ -973,8 +966,19 @@ mod tests {
             assert_eq!(has(step, "langfuse.observation.input"), capture);
             assert_eq!(has(step, "langfuse.observation.output"), capture);
             assert_eq!(has(generation, "langfuse.observation.input"), capture);
-            assert_eq!(has(generation, "gen_ai.input.messages"), capture);
+            assert!(!has(generation, "gen_ai.input.messages"));
         }
+
+        let (sink, exporter, provider) = harness(RunInfo::plan_run("p"), true);
+        sink.step_started(&[], "E0", "user__x", &json!({"big": 1}));
+        sink.tool_started("user__x", &json!({"big": 1}));
+        sink.tool_finished("user__x", Duration::from_millis(1), false);
+        sink.step_finished(&[], "E0", "user__x", &json!(2), false, Duration::ZERO);
+        drop(sink);
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        assert!(attribute(by_name(&spans, "E0 user__x"), "langfuse.observation.input").is_some());
+        assert!(attribute(by_name(&spans, "user__x"), "langfuse.observation.input").is_none());
     }
 
     #[test]

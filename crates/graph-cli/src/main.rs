@@ -18,8 +18,6 @@ use tracing_subscriber::EnvFilter;
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    // Before the log subscriber: the exporter is what the subscriber's OTLP
-    // layer forwards to, so it has to exist first.
     let telemetry = telemetry::init(&telemetry_config_paths(&cli.command));
     // The workbench owns the terminal, so it routes tracing to a log file
     // itself instead of stderr.
@@ -47,15 +45,10 @@ async fn main() -> ExitCode {
             }
         },
     };
-    // After the command has emitted its last event (the usage summary
-    // included) and before the runtime drops the exporter's tasks.
     telemetry::shutdown().await;
     code
 }
 
-/// The config layers telemetry is read from: the same two files every
-/// command loads, except `mcp serve`, which trusts the project layer only
-/// when `--dir` pins it (see `mcp_server::project`).
 fn telemetry_config_paths(command: &Command) -> Vec<PathBuf> {
     let global = graph_config::global_config_path();
     match command {

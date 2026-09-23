@@ -105,8 +105,6 @@ pub struct UsageLedger {
     /// while the sink is chosen per command — and `record` only ever has
     /// `&self`.
     events: Mutex<Option<std::sync::Arc<dyn crate::EventSink>>>,
-    /// Ask the metered providers for request/response content, so the
-    /// `llm_call` event can carry it to a trace backend.
     capture_content: bool,
 }
 
@@ -120,9 +118,6 @@ impl UsageLedger {
         }
     }
 
-    /// Carry prompts and completions on every `llm_call` event. Set before
-    /// the ledger is installed on a router: content is captured at the
-    /// provider, per call, by asking the meter.
     pub fn with_content_capture(mut self, capture: bool) -> Self {
         self.capture_content = capture;
         self
@@ -277,26 +272,16 @@ impl UsageMeter for UsageLedger {
     }
 }
 
-/// One billable call as sinks see it: the meter's record plus the step
-/// attribution and price the ledger adds.
 #[derive(Debug, Clone)]
 pub struct LlmCallEvent {
-    /// Step path in bus syntax (plan-qualified when nested) or a role name
-    /// for calls that belong to no step — the `by_step` grouping key.
     pub site: String,
-    /// The model role or named model the call resolved through.
     pub role: String,
-    /// Config name of the provider that served the call.
     pub provider: String,
-    /// The model that actually answered, after any failover.
     pub model: String,
     pub usage: Usage,
     pub elapsed: std::time::Duration,
-    /// `None` when the model has no configured price.
     pub cost_usd: Option<f64>,
-    /// Request content, only when the ledger captures content.
     pub input: Option<serde_json::Value>,
-    /// Response content, under the same condition.
     pub output: Option<serde_json::Value>,
 }
 

@@ -181,10 +181,9 @@ fn expand_env(input: &str, path: &str, missing: &mut Vec<(String, String)>) -> R
 
 /// Sort the unset `${VAR}` references onto whoever must report them.
 ///
-/// `[providers.<name>]`, `[mcp.<name>]`, and `[telemetry]` own their
-/// references: they stay loadable and carry the record in `missing_env`,
-/// erroring only when used (telemetry reports it once at startup and stays
-/// off). A missing variable anywhere else fails the load, exactly as
+/// `[providers.<name>]` and `[mcp.<name>]` entries own their references:
+/// they stay loadable and carry the record in `missing_env`, erroring only
+/// when used. A missing variable anywhere else fails the load, exactly as
 /// every missing variable used to — secrets must never silently become
 /// empty strings or literal `${VAR}` text.
 fn distribute_missing_env(config: &mut Config, missing: Vec<(String, String)>) -> Result<()> {
@@ -662,7 +661,7 @@ fallbacks = [
         assert!(empty.signal_url("v1/traces").is_none());
         assert_eq!(empty.protocol, TelemetryProtocol::HttpProtobuf);
         assert_eq!(empty.service_name(), "graph");
-        assert_eq!(empty.timeout_secs(), 10);
+        assert_eq!(empty.timeout_secs(), 30);
         assert!(empty.capture_content);
         assert!(!empty.logs);
 
@@ -729,16 +728,12 @@ fallbacks = [
             Some("https://cloud.langfuse.com/api/public/otel/v1/logs")
         );
         assert_eq!(resolved.protocol, TelemetryProtocol::HttpJson);
-        // Milliseconds per the OTel spec, rounded up to whole seconds.
         assert_eq!(resolved.timeout_secs(), 3);
         assert_eq!(resolved.service_name(), "from-env");
-        // The first `=` splits the pair, so base64 padding survives; entries
-        // the variable does not name are kept.
         assert_eq!(resolved.headers["Authorization"], "Basic cGs6c2s=");
         assert_eq!(resolved.headers["x-langfuse-ingestion-version"], "4");
         assert_eq!(resolved.headers["x-keep"], "1");
 
-        // Nothing set: the section is returned as written.
         let untouched = configured.with_env(&|_| None).unwrap();
         assert_eq!(untouched.endpoint.as_deref(), Some("http://from-config"));
         assert_eq!(untouched.headers.len(), 2);
@@ -752,8 +747,6 @@ fallbacks = [
 
     #[test]
     fn a_missing_var_in_telemetry_defers_with_its_field_path() {
-        // Same deferral as providers and MCP servers: the run still happens,
-        // telemetry stays off, and the startup warning names the variable.
         let dir = tempfile::tempdir().unwrap();
         let path = write(
             dir.path(),

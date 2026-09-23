@@ -1,11 +1,3 @@
-//! `[telemetry]` end to end: the real binary, a real OTLP/HTTP receiver.
-//!
-//! What matters here is the wire contract a backend sees — the path, the
-//! headers the config promised, a JSON body a Langfuse or an OpenTelemetry
-//! Collector would accept — and that the export happens *before* the
-//! process exits. Span-tree shape is covered by the unit tests next to the
-//! sink; nothing here needs credentials or a network beyond loopback.
-
 mod support;
 
 use serde_json::{json, Value};
@@ -53,8 +45,6 @@ impl Captured {
     }
 }
 
-/// A one-request-per-connection HTTP receiver on loopback, handing every
-/// request it accepts to the returned channel.
 fn otlp_receiver() -> (String, mpsc::Receiver<Captured>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -142,7 +132,6 @@ Authorization = "Basic ${{GRAPH_TEST_OTLP_AUTH}}"
         &[("GRAPH_TEST_OTLP_AUTH", "cGs6c2s=")],
     );
     run.code_is(0);
-    // The deliverable is untouched: telemetry never writes to stdout.
     assert_eq!(run.json(), json!({"said": "hi"}));
 
     let trace = expect_trace(&rx);
@@ -218,7 +207,6 @@ headers = {{ Authorization = "Basic ${{GRAPH_TEST_OTLP_AUTH_DOES_NOT_EXIST}}" }}
     scratch.write_plan("echo_ok", ECHO_PLAN);
 
     let run = scratch.graph(&["plan", "run", "echo_ok", r#"{"word":"hi"}"#]);
-    // The run itself is unaffected; only the export is withheld.
     run.code_is(0)
         .stderr_contains("telemetry disabled")
         .stderr_contains("GRAPH_TEST_OTLP_AUTH_DOES_NOT_EXIST")

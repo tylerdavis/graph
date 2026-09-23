@@ -9,10 +9,9 @@ use std::time::Duration;
 pub trait EventSink: Send + Sync {
     /// A fragment of assistant text as it streams.
     fn text_delta(&self, _text: &str) {}
-    /// One model call finished, with what it cost and where it belongs
-    /// (`call.site`: the step path in bus syntax, plan-qualified when
-    /// nested, or a role name for calls that belong to no step — the same
-    /// grouping key `by_step` uses).
+    /// One model call finished, with what it cost. `site` is the step path
+    /// in bus syntax (plan-qualified when nested) or a role name for calls
+    /// that belong to no step — the same grouping key `by_step` uses.
     ///
     /// Emitted once per *billable* call, which is not the same as once per
     /// step: an agent step emits one per round plus one per schema repair,
@@ -21,10 +20,6 @@ pub trait EventSink: Send + Sync {
     /// The run's totals, once, after the last step. Carries the same report
     /// `plan run --json` embeds.
     fn usage_summary(&self, _report: &UsageReport) {}
-    /// The run's deliverable, once, when it is known: the answer or output
-    /// document of a plan run, the assistant's reply to an `ask`, or the
-    /// error that ended it (`is_error`). Emitted by the command, which is
-    /// the only party that knows the whole run is over.
     fn run_finished(&self, _output: &Value, _is_error: bool) {}
     /// A tool invocation is starting.
     fn tool_started(&self, _name: &str, _args: &Value) {}
@@ -85,9 +80,6 @@ pub struct NullSink;
 
 impl EventSink for NullSink {}
 
-/// Forwards every event to each sink in turn, so a run can report to a
-/// terminal and a trace exporter at once without either knowing about the
-/// other. Sinks are called in order; a slow sink delays the ones after it.
 pub struct TeeSink {
     sinks: Vec<Arc<dyn EventSink>>,
 }

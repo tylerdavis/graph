@@ -818,6 +818,7 @@ dependencies = [
  "ratatui",
  "reedline",
  "regex",
+ "reqwest 0.13.4",
  "rmcp",
  "schemars 1.2.2",
  "serde",
