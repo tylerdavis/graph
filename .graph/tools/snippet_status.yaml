@@ -1,5 +1,7 @@
-# exec tool: the state of one release's docs/snippets/changelog/<version>/
-# snippets. Serves two callers: changelog_entry's never-regenerate guard
+# exec tool: the state of one changelog entry's snippets under
+# docs/snippets/changelog/<module>/<version>/ — graph/v0.13.0 for the
+# binary, config/v2 and so on for a file version. Serves two callers:
+# changelog_entry's never-regenerate guard
 # (exists) and compose_changelog's structure decisions (has_summary /
 # has_migration — the page imports snippets rather than embedding them,
 # so compose needs presence, not content). The summary is validated here
@@ -10,9 +12,11 @@
 version: 1
 name: snippet_status
 description: >
-  Whether docs/snippets/changelog/<version>/ holds generated snippets:
-  {exists, has_summary, has_migration}. exists true means the release's
-  entry was generated (and possibly hand-curated) — callers must not
+  Whether docs/snippets/changelog/<dir>/ holds generated snippets:
+  {exists, has_summary, has_migration}, where dir is the entry's
+  module/version — graph/v0.13.0 for the binary, config/v2 for a file
+  version. exists true means the entry was generated (and possibly
+  hand-curated) — callers must not
   regenerate it. Validates the summary is MDX-safe (no bare < or {
   outside backticks), failing loudly when it is not.
 kind: exec
@@ -36,15 +40,15 @@ args:
       --argjson has_migration "$has_migration" \
       '{exists: $exists, has_summary: $has_summary, has_migration: $has_migration}'
   - snippet_status
-  - "{{input.version}}"
+  - "{{input.dir}}"
 output: json
 timeout_secs: 10
 read_only: true
 input_schema:
   type: object
-  required: [version]
+  required: [dir]
   properties:
-    version: { type: string, description: Release tag, e.g. v0.10.0 }
+    dir: { type: string, description: The entry's directory under docs/snippets/changelog/, e.g. graph/v0.10.0 or config/v2 }
 output_schema:
   type: object
   properties:

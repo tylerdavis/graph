@@ -1,6 +1,9 @@
 # exec tool (side-effecting): persist one release's inferred changelog
-# front matter as docs/snippets/changelog/<version>/summary.mdx (+
-# migration.mdx when migration is needed). Snippets are Mintlify
+# front matter as docs/snippets/changelog/graph/<version>/summary.mdx (+
+# migration.mdx when migration is needed). A migration prompt that
+# belongs to a bumped file kind is moved by hand during the review to
+# that kind's directory (config/v2/migration.mdx), where compose renders
+# it under the kind's own entry. Snippets are Mintlify
 # snippets — imported by docs/changelog.mdx, never published as pages —
 # so they are the single copy of this content. The migration prompt is
 # wrapped in a four-backtick fence HERE so importing the snippet renders
@@ -11,7 +14,7 @@
 version: 1
 name: write_changelog_snippet
 description: >
-  Write docs/snippets/changelog/<version>/summary.mdx, plus a
+  Write docs/snippets/changelog/graph/<version>/summary.mdx, plus a
   fence-wrapped migration.mdx when migration_needed is "true".
   Overwrites — callers gate on snippet_status first so curated snippets
   are never clobbered.
@@ -22,7 +25,7 @@ args:
   - "pipefail"
   - |
     version=$1 summary=$2 needed=$3 prompt=$4
-    dir="docs/snippets/changelog/$version"
+    dir="docs/snippets/changelog/graph/$version"
     mkdir -p "$dir"
     printf '%s\n' "$summary" > "$dir/summary.mdx"
     written='["summary.mdx"]'

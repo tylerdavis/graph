@@ -6,7 +6,7 @@ graph uses semantic versioning, driven by conventional commits.
 
 ```bash
 mise run release:patch    # or release:minor / release:major — prepare, then stop
-# review docs/snippets/changelog/<version>/ (and CHANGELOG.md)
+# review docs/snippets/changelog/graph/<version>/ (and CHANGELOG.md)
 mise run release:publish  # commit, tag, push
 ```
 
@@ -16,18 +16,32 @@ in `docs/docs.json` (the installation page, download cards, and cookbook
 image pins render from it), regenerates `CHANGELOG.md`, and rebuilds the
 docs changelog page — graph dogfooding itself: the `changelog_entry` plan
 infers the release's summary (and a migration prompt when consumers must
-act) into `docs/snippets/changelog/<version>/`, and the `compose_changelog`
+act) into `docs/snippets/changelog/graph/<version>/`, and the `compose_changelog`
 plan renders `docs/changelog.mdx`, which imports those snippets (Mintlify
 snippets are never published as standalone pages), so each piece of prose
 exists in exactly one file. Nothing is committed: the tree is left holding
 exactly the release's files for you to read and edit.
 
-**Publish** re-runs `compose_changelog` (so a snippet you added or removed
-during the review reaches the page; content edits need nothing), commits
-as `chore(release): vX.Y.Z`, tags `vX.Y.Z`, and pushes. It refuses a tree
-with changes outside the release's file set, and it re-derives everything
-the tag needs from the same facts prepare used rather than trusting a
-scratch file. `mise run release:abort` drops a prepared release instead.
+Snippets live one directory per changelog entry, `<module>/<version>/`:
+`graph/v0.14.0/` for the binary, `config/v2/` (or `plan/`, `tool/`,
+`store/`) for a file version the release bumps. `changelog_entry` only
+ever writes the `graph/` directory; when the release bumps a file version,
+move the inferred migration prompt (and a summary, if you write one) into
+that kind's directory during the review, and the page renders it under
+the kind's own entry instead of the binary's. Summary themes are `###`
+headings; the commit groups the page renders below them are `####`.
+
+**Publish** commits the tree exactly as reviewed as `chore(release): vX.Y.Z`,
+tags `vX.Y.Z`, and pushes. It regenerates nothing: what you reviewed is what
+ships. Editing a snippet's text needs no further step, because the page
+imports the snippet. Adding, removing, or moving a snippet file changes the
+page's imports, so after that re-run
+`GRAPH_STORAGE=memory graph plan run compose_changelog --input tag=vX.Y.Z`
+and review the page again; publish refuses a page whose imports name a
+snippet that does not exist. It also refuses a tree with changes outside
+the release's file set, and it re-derives everything the tag needs from the
+same facts prepare used rather than trusting a scratch file.
+`mise run release:abort` drops a prepared release instead.
 
 ### What is the source of truth
 
@@ -37,7 +51,7 @@ and grouping — all of that lives in git and is derived on demand through
 
 The one thing git cannot supply is the prose: the inferred, then curated,
 summary and migration prompt. That is the only content this repo stores
-for a release, in `docs/snippets/changelog/<version>/`.
+for a release, in `docs/snippets/changelog/<module>/<version>/`.
 
 So there is one set of facts and three renderings of it:
 
@@ -53,10 +67,10 @@ build to its heading format; `release_subjects` now reads the tag
 directly instead.
 
 **The review between prepare and publish is for
-`docs/snippets/changelog/<version>/`**: the summary and the migration
+`docs/snippets/changelog/graph/<version>/`**: the summary and the migration
 verdict are inferred and meant to be curated. Edit the snippet files
-freely — they are never regenerated, and publish recomposes the page from
-them. To correct a release that is already out, edit its snippet, re-run
+freely — they are never regenerated, and the page imports them as they
+are at publish time. To correct a release that is already out, edit its snippet, re-run
 `graph plan run compose_changelog --input tag=""`, and commit. Never edit
 `docs/changelog.mdx` by hand; it is composed in full every time.
 Requires `graph` ≥ v0.10.0 on PATH (`mise run install`); the release
