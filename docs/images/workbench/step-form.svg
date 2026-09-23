@@ -335,19 +335,17 @@
 <text x="118.8" y="571.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="127.2" y="571.5" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">└─────────────────</text>
 <text x="286.8" y="571.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">Model</text>
-<text x="337.2" y="571.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">for</text>
-<text x="370.8" y="571.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">the</text>
-<text x="404.4" y="571.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">`infer`</text>
-<text x="471.6" y="571.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">verdict</text>
-<text x="538.8" y="571.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">(a</text>
-<text x="564.0" y="571.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">named</text>
-<text x="614.4" y="571.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">model</text>
-<text x="664.8" y="571.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">or</text>
-<text x="690.0" y="571.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">role);</text>
-<text x="748.8" y="571.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">defaults</text>
-<text x="824.4" y="571.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">to</text>
-<text x="849.6" y="571.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">the</text>
-<text x="883.2" y="571.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">…</text>
+<text x="337.2" y="571.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">role</text>
+<text x="379.2" y="571.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">for</text>
+<text x="412.8" y="571.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">the</text>
+<text x="446.4" y="571.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">`infer`</text>
+<text x="513.6" y="571.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">verdict</text>
+<text x="580.8" y="571.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">(any</text>
+<text x="622.8" y="571.5" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">configured</text>
+<text x="715.2" y="571.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">role,</text>
+<text x="765.6" y="571.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">standard</text>
+<text x="841.2" y="571.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">or</text>
+<text x="866.4" y="571.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">cu…</text>
 <text x="900.0" y="571.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">┘</text>
 <text x="908.4" y="571.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">█</text>
 <text x="916.8" y="571.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
