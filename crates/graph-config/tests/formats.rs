@@ -90,10 +90,12 @@ fn a_newer_format_is_refused_before_the_schema_is_consulted() {
     .unwrap();
     let err = format!("{:#}", load_from(std::slice::from_ref(&path)).unwrap_err());
     assert!(err.contains("is config version"), "{err}");
-    assert!(
-        err.contains(&format!("reads config version {CONFIG_FORMAT}")),
-        "{err}"
-    );
+    let window = if CONFIG_FORMAT_OLDEST == CONFIG_FORMAT {
+        format!("reads config version {CONFIG_FORMAT}")
+    } else {
+        format!("reads config versions {CONFIG_FORMAT_OLDEST} to {CONFIG_FORMAT}")
+    };
+    assert!(err.contains(&window), "{err}");
     assert!(!err.contains("unknown field"), "{err}");
 }
 

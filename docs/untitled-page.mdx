@@ -11,7 +11,7 @@ Generic LLM inference — the `prompt`[ tool kind](/tools/user-defined) exposed 
 | :-- | :-- | :-- |
 | `instruction` | string | required — complete, self-contained instruction; interpolate the data to analyze with `{{Ex...}}` templates |
 | `output_schema` | object | optional — an object JSON Schema for the result (top-level `"type": "object"` plus a `properties` map); omit for `{ "text": ... }` |
-| `model` | string | optional — a [named model](/models/models-and-providers#named-models) (or role name) to run on; omit for the chat default. When named models are configured, the catalog advertises them on this input with their descriptions, steering the planner toward the smallest adequate model |
+| `model` | string | optional — a configured [model role](/models/models-and-providers#roles), standard or custom, to run on; omit for the chat default. Roles carrying a `description` are advertised on this input with those descriptions, steering the planner toward the smallest adequate model |
 
 The `output_schema` must be an **object** schema — give it an explicit top-level `"type": "object"` and a `properties` map, e.g. `{"type":"object","properties":{"score":{"type":"number"}},"required":["score"]}`. A bare `{properties, required}` with the `type` omitted is coerced to an object rather than rejected, but write it out: the schema is also what the provider validates against.
 

@@ -32,7 +32,7 @@ The planner has the full step vocabulary — [exit gates](/plans/exit-gates), [d
 
 - **Exit gracefully rather than fabricate.** When data comes up empty, draft an `exit` with an honest message instead of inventing results.
 - **Gate check-shaped plans.** Validations and assertions end in explicit gated exits, not solver prose.
-- **Infer per item, not per list.** Inference over a list becomes a `map` body calling [`builtin__infer`](/tools/builtins#builtin-infer) with `{{item}}`, and when [named models](/models/models-and-providers#named-models) are configured, their descriptions steer each call to the smallest adequate model.
+- **Infer per item, not per list.** Inference over a list becomes a `map` body calling [`builtin__infer`](/tools/builtins#builtin-infer) with `{{item}}`, and when [roles with descriptions](/models/models-and-providers#custom-roles) are configured, those descriptions steer each call to the smallest adequate model.
 
 ## Replanning
 

@@ -51,7 +51,7 @@ Seven reserved `tool_name`s are executor-intercepted, never dispatched to a regi
 | --- | --- | --- |
 | `when` | no | logical gate (below); mutually exclusive with `infer`; **both omitted = unconditional exit** |
 | `infer` | no | yes/no question judged by the `judge` role |
-| `model` | no | model for the `infer` verdict: a role name, `default`, or a [named model](/models/models-and-providers#named-models); ignored without `infer` |
+| `model` | no | model for the `infer` verdict: any configured [role](/models/models-and-providers#roles), standard or custom, or `default`; ignored without `infer` |
 | `status` | yes | `success` \| `error` â€” error maps to exit code 4 on `plan run` |
 | `message` | no | shown as the plan's answer / error message; may use templates |
 | `output` | no | template map emitted as the plan's structured output when the exit fires |
@@ -95,7 +95,7 @@ Legal everywhere, including inside `decide` branches and `map`/`reduce` bodies â
 | `output_schema` | yes | JSON Schema the result must satisfy; must be `"type": "object"` or declare `properties` |
 | `tools` | no | glob patterns selecting which catalog tools the agent may call (e.g. `linear__*`); defaults to the full catalog minus `plan_and_execute` |
 | `max_iterations` | no | tool rounds before the loop gives up; default 8 |
-| `model` | no | model for the loop: a role name, `default`, or a [named model](/models/models-and-providers#named-models) |
+| `model` | no | model for the loop: any configured [role](/models/models-and-providers#roles), standard or custom, or `default` |
 | `system_prompt` | no | replaces the default agent system prompt; may use templates |
 
 Legal everywhere, including inside `decide` branches and `map`/`reduce` bodies.

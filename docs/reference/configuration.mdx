@@ -51,32 +51,48 @@ profile = "default"
 
 Provider behavior — structured-output mechanisms, retries, and the `bedrock` roadmap status — is covered in [Models & providers](/models/models-and-providers#providers).
 
-## `[models]` — per-role assignment
+## `[models.<role>]` — model roles
 
-Each pipeline role resolves to a model, falling back to `default`:
+Every model is a **role**: one `[models.<role>]` table per name, all with the same keys. The standard roles are the ones graph's own calls resolve through, falling back to `default`; any other name is a custom role.
 
 ```toml
-[models]
-default = { provider = "anthropic", model = "claude-sonnet-5" }
-chat    = { provider = "anthropic", model = "claude-sonnet-5" }
-planner = { provider = "anthropic", model = "claude-sonnet-5" }
-solver  = { provider = "anthropic", model = "claude-haiku-4-5", temperature = 0.4 }
-repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
+[models.default]
+provider = "anthropic"
+model = "claude-sonnet-5"
+
+[models.solver]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+temperature = 0.4
+
+[models.nano]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+description = "fast and cheap; small self-contained tasks like per-item map bodies"
 ```
 
-| Role | Used for |
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `provider` | yes | a `[providers.<name>]` entry |
+| `model` | yes | the model id sent to that provider |
+| `temperature` | no | request temperature; provider default when unset |
+| `description` | no | what the role is good for — a planner-facing routing signal; a role with one is advertised to the planner |
+| `fallbacks` | no | ordered failover candidates, below |
+
+| Standard role | Used for |
 | --- | --- |
+| `default` | what every standard role falls back to |
 | `chat` | the agent loop (`ask`/`chat`) |
 | `planner` | `plan_and_execute` plan authoring |
 | `solver` | plan report synthesis |
 | `repair` | one-shot JSON repair when structured output fails to parse |
 | `judge` | yes/no verdicts for [inferred exit gates](/plans/exit-gates) |
 
-Where each role fires, and the usual cost setup, are in [Models & providers](/models/models-and-providers#roles).
+Custom roles are selectable by name from a [prompt tool](/tools/user-defined)'s `model` field, [`builtin__infer`](/tools/builtins#builtin-infer)'s `model` input, and an `infer` gate's `model` override; they never fall back. Where each role fires, the usual cost setup, and the selection rules are in [Models & providers](/models/models-and-providers#roles).
 
 ### `fallbacks` — provider failover
 
-Any model entry (a role or a named model) can carry an ordered list of failover candidates, used when its provider is having an outage:
+Any role can carry an ordered list of failover candidates, used when its provider is having an outage:
 
 ```toml
 [models.chat]
@@ -90,18 +106,6 @@ fallbacks = [
 
 Each candidate names its own provider **and** model; `temperature` optionally overrides. Every referenced provider must exist under `[providers]` (checked at startup). When failover triggers, what carries over, and where fallbacks apply are in [Models & providers](/models/models-and-providers#provider-failover).
 
-## `[models.named]` — named models
-
-Beyond the fixed roles, any number of **named models** — referenceable wherever a model name is accepted: a [prompt tool](/tools/user-defined)'s `model` field, or [`builtin__infer`](/tools/builtins#builtin-infer)'s `model` input.
-
-```toml
-[models.named.nano]
-provider = "anthropic"
-model = "claude-haiku-4-5"
-description = "fast and cheap; small self-contained tasks like per-item map bodies"
-```
-
-The `description` is a planner-facing routing signal, and names resolve in exactly three places — the full story, including the no-shadowing and no-silent-fallback rules, is in [Models & providers](/models/models-and-providers#named-models).
 
 ## `[mcp.*]`
 

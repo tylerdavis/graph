@@ -78,8 +78,9 @@ import BinaryDownloads from "/shared/binary_downloads.mdx";
         type = "anthropic"
         api_key = "${ANTHROPIC_API_KEY}"   # read from your environment at load time
         
-        [models]
-        default = { provider = "anthropic", model = "claude-sonnet-5" }
+        [models.default]
+        provider = "anthropic"
+        model = "claude-sonnet-5"
         
         [mcp.linear]
         url = "https://mcp.linear.app/mcp"

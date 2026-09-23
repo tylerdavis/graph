@@ -41,9 +41,8 @@ pub struct FilterSpec {
     /// answered by the `judge` model role — one verdict per item.
     #[serde(default)]
     pub infer: Option<String>,
-    /// Model for `infer` verdicts: a role name, `default`, or a
-    /// `[models.named]` entry. Defaults to the `judge` role. Ignored
-    /// without `infer`.
+    /// Model role for `infer` verdicts: any configured `[models.<role>]`
+    /// or `default`. Defaults to the `judge` role. Ignored without `infer`.
     #[serde(default)]
     pub model: Option<String>,
     /// Maximum `infer` verdicts in flight; 1 (the default) evaluates
@@ -91,7 +90,7 @@ pub fn filter_tool_def() -> crate::tools::ToolDef {
                     }
                 },
                 "infer": {"type": "string", "description": "A yes/no question about {{item}}; the element is kept on yes. One judge call per item."},
-                "model": {"type": "string", "description": "Model for `infer` verdicts (a named model or role); defaults to the judge role."},
+                "model": {"type": "string", "description": "Model role for `infer` verdicts (any configured role, standard or custom); defaults to the judge role."},
                 "concurrency": {"type": "integer", "minimum": 1, "description": "Maximum `infer` verdicts in flight; 1 (default) evaluates one at a time."}
             }
         }),
