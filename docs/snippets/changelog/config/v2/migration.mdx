@@ -1,0 +1,16 @@
+````markdown
+This repository uses `graph` config files that need to be migrated for graph v0.14.0.
+
+**What changed:** The config file format has bumped from version 1 to version 2. The `[models.<role>]` table now replaces the old fixed role slots and the `[models.named]` section — every model is now configured as a role rather than having separate named/fixed-role slots.
+
+**Steps to perform:**
+
+1. Run `graph config check` first to see the current state of your config file(s) and identify what needs updating.
+2. Run `graph config migrate` to rewrite your local config to version 2. If you also have a global config, run `graph config migrate --global` as well.
+3. Do NOT attempt to hand-edit the `[models.*]` tables yourself — do not invent the exact key shapes. Trust the `graph config migrate` command to apply the correct rewrite (from fixed role slots and `[models.named]` to `[models.<role>]`).
+4. After migrating, verify every plan file still validates correctly by running `graph plan validate` against each plan in this repository.
+5. Search this repository (and any CI workflow files, e.g. `.github/workflows/*.yml`) for references to a pinned graph container image of the form `ghcr.io/tylerdavis/graph:vX.Y.Z`. If any workflow pins an older version, update the pin to `v0.14.0` in the same change as the config rewrite — an older image will refuse to read the new config version by name.
+6. For full details on the schema change, consult this release's CHANGELOG.md entries titled "Graph" and "Config v2" — the "Breaking" line under "Config v2" names the schema change; do not guess beyond what `graph config migrate` applies.
+
+**Report back:** List which config file(s) you migrated, whether a `--global` config was found and migrated, whether any CI workflow image pins were updated, and confirm `graph plan validate` passed for all plans. If you found no config files, workflows, or plans needing changes, say so explicitly and leave everything else untouched.
+````

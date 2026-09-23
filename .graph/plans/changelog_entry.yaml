@@ -1,7 +1,7 @@
 version: 1
 identifier: changelog_entry
 name: changelog_entry
-description: Generates one release's docs-changelog front matter — a user-facing summary plus, only when consumers must act, a self-contained migration prompt — and persists it as docs/snippets/changelog/<version>/. The prose is the only part of a release that is stored; everything mechanical is derived from the tag on demand. Idempotent by design; an existing snippet directory means the entry was generated (and possibly hand-curated), so the plan exits without touching it. Run by scripts/release.sh at release time.
+description: Generates one release's docs-changelog front matter — a user-facing summary plus, only when consumers must act, a self-contained migration prompt — and persists it as docs/snippets/changelog/graph/<version>/. The prose is the only part of a release that is stored; everything mechanical is derived from the tag on demand. Idempotent by design; an existing snippet directory means the entry was generated (and possibly hand-curated), so the plan exits without touching it. Run by scripts/release.sh at release time.
 input_schema:
   type: object
   required: [version]
@@ -17,7 +17,7 @@ steps:
   - id: E0
     tool_name: user__snippet_status
     input:
-      version: '{{input.version}}'
+      dir: 'graph/{{input.version}}'
     reasoning: Snippets are generated once and then curated by hand — find out whether this release already has one before spending any inference.
   - id: E1
     tool_name: exit
@@ -27,7 +27,7 @@ steps:
         op: eq
         to: true
       status: success
-      message: 'changelog.d/{{input.version}} already exists — curated snippets are never regenerated'
+      message: 'docs/snippets/changelog/graph/{{input.version}} already exists — curated snippets are never regenerated'
       output:
         version: '{{input.version}}'
         regenerated: false
@@ -55,7 +55,7 @@ steps:
 
         Produce:
 
-        1. `summary` — a concise, prose-based overview organized by theme. Structure: h4 headings (####) naming each theme in user-benefit language (what you can now do — e.g. "Run plans from anywhere"), each followed by one or two plain sentences describing the theme. New capabilities always come first; behavior changes a user could trip on come last. Scale with the release: a large release earns three or four themes, a small one earns one, and a patch that needs no themes is just one or two sentences with no headings at all. Do NOT repeat the commit subjects or their technical phrasing — the grouped commit list renders directly below this summary, so the summary's job is what the changes add up to, in plain language, keeping only the jargon a reader needs to act (a flag, a config key). Do not over-communicate: anything the commit list already conveys adds nothing here. No marketing language, no exclamation marks. The summary renders as MDX: wrap every literal code fragment in backticks, and never emit a bare angle bracket or curly brace outside backticks (they parse as JSX and break the page); headings must be #### (h4) — deeper levels than the commit-group headings below.
+        1. `summary` — a concise, prose-based overview organized by theme. Structure: h3 headings (###) naming each theme in user-benefit language (what you can now do — e.g. "Run plans from anywhere"), each followed by one or two plain sentences describing the theme. New capabilities always come first; behavior changes a user could trip on come last. Scale with the release: a large release earns three or four themes, a small one earns one, and a patch that needs no themes is just one or two sentences with no headings at all. Do NOT repeat the commit subjects or their technical phrasing — the grouped commit list renders directly below this summary, so the summary's job is what the changes add up to, in plain language, keeping only the jargon a reader needs to act (a flag, a config key). Do not over-communicate: anything the commit list already conveys adds nothing here. No marketing language, no exclamation marks. The summary renders as MDX: wrap every literal code fragment in backticks, and never emit a bare angle bracket or curly brace outside backticks (they parse as JSX and break the page); headings must be ### (h3) — one level above the #### commit-group headings the page renders below the summary.
 
         2. `migration_needed` — true ONLY when an existing user artifact requires action to stay correct: a breaking change to the CLI surface, config format, plan/tool document formats, or template dialect; a previously-working pattern whose behavior changed; or a new capability that existing plans should adopt because their current shape is latently broken (crashes or produces wrong results on real inputs). A purely additive feature nobody must adopt is false. If a change alters a capability that was itself INTRODUCED in this same release's commit list, there is nothing pre-existing to migrate — false. Be conservative — a false true wastes every reader's attention, and a human reviews your verdict before it publishes.
 
@@ -66,7 +66,7 @@ steps:
         properties:
           summary:
             type: string
-            description: Themed MDX-safe summary — '####' h4 headings naming each theme in user-benefit language, each followed by 1-2 plain sentences; a trivial patch is 1-2 sentences with no headings
+            description: Themed MDX-safe summary — '###' h3 headings naming each theme in user-benefit language, each followed by 1-2 plain sentences; a trivial patch is 1-2 sentences with no headings
           migration_needed:
             type: boolean
             description: true only when existing plans/tools/CI require action

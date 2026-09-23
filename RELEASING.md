@@ -6,7 +6,7 @@ graph uses semantic versioning, driven by conventional commits.
 
 ```bash
 mise run release:patch    # or release:minor / release:major — prepare, then stop
-# review docs/snippets/changelog/<version>/ (and CHANGELOG.md)
+# review docs/snippets/changelog/graph/<version>/ (and CHANGELOG.md)
 mise run release:publish  # commit, tag, push
 ```
 
@@ -16,11 +16,20 @@ in `docs/docs.json` (the installation page, download cards, and cookbook
 image pins render from it), regenerates `CHANGELOG.md`, and rebuilds the
 docs changelog page — graph dogfooding itself: the `changelog_entry` plan
 infers the release's summary (and a migration prompt when consumers must
-act) into `docs/snippets/changelog/<version>/`, and the `compose_changelog`
+act) into `docs/snippets/changelog/graph/<version>/`, and the `compose_changelog`
 plan renders `docs/changelog.mdx`, which imports those snippets (Mintlify
 snippets are never published as standalone pages), so each piece of prose
 exists in exactly one file. Nothing is committed: the tree is left holding
 exactly the release's files for you to read and edit.
+
+Snippets live one directory per changelog entry, `<module>/<version>/`:
+`graph/v0.14.0/` for the binary, `config/v2/` (or `plan/`, `tool/`,
+`store/`) for a file version the release bumps. `changelog_entry` only
+ever writes the `graph/` directory; when the release bumps a file version,
+move the inferred migration prompt (and a summary, if you write one) into
+that kind's directory during the review, and the page renders it under
+the kind's own entry instead of the binary's. Summary themes are `###`
+headings; the commit groups the page renders below them are `####`.
 
 **Publish** re-runs `compose_changelog` (so a snippet you added or removed
 during the review reaches the page; content edits need nothing), commits
@@ -37,7 +46,7 @@ and grouping — all of that lives in git and is derived on demand through
 
 The one thing git cannot supply is the prose: the inferred, then curated,
 summary and migration prompt. That is the only content this repo stores
-for a release, in `docs/snippets/changelog/<version>/`.
+for a release, in `docs/snippets/changelog/<module>/<version>/`.
 
 So there is one set of facts and three renderings of it:
 
@@ -53,7 +62,7 @@ build to its heading format; `release_subjects` now reads the tag
 directly instead.
 
 **The review between prepare and publish is for
-`docs/snippets/changelog/<version>/`**: the summary and the migration
+`docs/snippets/changelog/graph/<version>/`**: the summary and the migration
 verdict are inferred and meant to be curated. Edit the snippet files
 freely — they are never regenerated, and publish recomposes the page from
 them. To correct a release that is already out, edit its snippet, re-run

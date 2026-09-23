@@ -33,14 +33,14 @@ steps:
         - id: B0
           tool_name: user__snippet_status
           input:
-            version: '{{item.version}}'
+            dir: '{{item.snippet}}'
         - id: B1
           tool_name: builtin__reshape
           input:
             shape:
               imports: |-
-                {{#B0.has_summary}}import Summary{{item.ident}} from '/snippets/changelog/{{item.version}}/summary.mdx';
-                {{/B0.has_summary}}{{#B0.has_migration}}import Migration{{item.ident}} from '/snippets/changelog/{{item.version}}/migration.mdx';
+                {{#B0.has_summary}}import Summary{{item.ident}} from '/snippets/changelog/{{item.snippet}}/summary.mdx';
+                {{/B0.has_summary}}{{#B0.has_migration}}import Migration{{item.ident}} from '/snippets/changelog/{{item.snippet}}/migration.mdx';
                 {{/B0.has_migration}}
               block: |-
                 <Update label="{{item.label}}" description="{{item.date}}" tags={["{{item.module}}"]}>
@@ -54,12 +54,12 @@ steps:
 
                 {{/B0.has_migration}}{{#item.intro}}- {{text}}
 
-                {{/item.intro}}{{#item.groups}}### {{name}}
+                {{/item.intro}}{{#item.groups}}#### {{name}}
 
                 {{#subjects}}- {{subject}}
                 {{/subjects}}
                 {{/item.groups}}</Update>
-    reasoning: Per entry, presence flags from snippet_status (which also enforces MDX safety on the summary, failing loudly with the file named; a file-version entry such as config-v2 has no snippet directory and so no imports) drive an import line and an <Update> block that references the snippet components — content stays in the snippet files — followed by the entry's groups.
+    reasoning: Per entry, presence flags from snippet_status over the entry's own directory (graph/<tag> for the binary, <kind>/v<N> for a file version — which also enforces MDX safety on the summary, failing loudly with the file named; an entry with no directory gets no imports) drive an import line and an <Update> block that references the snippet components — content stays in the snippet files — followed by the entry's groups as h4, one level below the summary's h3 themes.
   - id: E3
     tool_name: user__write_changelog_page
     input:

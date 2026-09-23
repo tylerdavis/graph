@@ -60,6 +60,7 @@ args:
               version: .version,
               label: (if .version then "Graph " + .version else null end),
               ident: (if .version then (.version | ident) else null end),
+              snippet: (if .version then "graph/" + .version else null end),
               date: $date,
               kind: "binary",
               module: "Graph",
@@ -72,6 +73,7 @@ args:
                   version: ($bump.kind + "-v" + $bump.version),
                   label: (($bump.kind | .[0:1] | ascii_upcase) + ($bump.kind | .[1:]) + " v" + $bump.version),
                   ident: (($bump.kind + "-v" + $bump.version) | ident),
+                  snippet: ($bump.kind + "/v" + $bump.version),
                   date: $date,
                   kind: $bump.kind,
                   module: (($bump.kind | .[0:1] | ascii_upcase) + ($bump.kind | .[1:])),
@@ -102,6 +104,7 @@ output_schema:
           version: { type: ["string", "null"], description: 'The entry''s own version: the git tag ("v0.13.0") for the binary, "<kind>-v<N>" for a file version; null for unreleased commits' }
           label:   { type: ["string", "null"], description: 'Heading text: "Graph v0.13.0", "Config v2"' }
           ident:   { type: ["string", "null"], description: MDX-component-safe version, e.g. V0_10_0 or config_v2 }
+          snippet: { type: ["string", "null"], description: 'The entry''s snippet directory under docs/snippets/changelog/: "graph/v0.13.0" for the binary, "<kind>/v<N>" for a file version; null for unreleased commits' }
           date:    { type: ["string", "null"] }
           kind:    { type: string, enum: [binary, config, plan, tool, store] }
           module:  { type: string, description: 'The module name as shown to readers — Graph, Config, Plan, Tool, Store' }
