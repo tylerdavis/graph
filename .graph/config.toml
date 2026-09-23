@@ -30,12 +30,6 @@ provider = "anthropic"
 model = "claude-sonnet-5"
 description = "Change reviewer: one deep pass over a diff and full file contents, holding the repo's invariants. Low volume, high judgment."
 
-# What the review and drift plans cost, in USD per million tokens. Present so
-# `graph plan run` reports dollars and not just tokens — the reason this repo
-# can say what a review run costs instead of estimating it. Prices change:
-# verify against current published rates before trusting the figure.
-# cache_write/cache_read are omitted deliberately; the 1.25x / 0.10x defaults
-# are the standard multipliers.
 [pricing."claude-sonnet-5"]
 input = 3.00
 output = 15.00
