@@ -6,9 +6,9 @@
 #       snippets, compose docs/changelog.mdx — and STOP, leaving it all
 #       uncommitted for review. `current` prepares the existing version
 #       without bumping (first release).
-#   scripts/release.sh publish                        after the review: recompose
-#       the docs page from the (possibly edited) snippets, commit as
-#       chore(release): vX.Y.Z, tag vX.Y.Z, push. The pushed tag triggers
+#   scripts/release.sh publish                        after the review: commit the
+#       tree exactly as reviewed as chore(release): vX.Y.Z, tag vX.Y.Z,
+#       push. Nothing is regenerated. The pushed tag triggers
 #       .github/workflows/release.yaml.
 #   scripts/release.sh abort                          drop a prepared release.
 set -euo pipefail
@@ -193,8 +193,10 @@ prepare() {
   # kind's directory, e.g. config/v2/, and renders under its entry) — and
   # compose_changelog rebuilds docs/changelog.mdx, which IMPORTS the
   # snippets rather than embedding them, so each piece of prose exists in
-  # exactly one file. `publish` composes again, so snippet edits made
-  # during the review need no extra step.
+  # exactly one file. `publish` commits the page as reviewed and never
+  # composes again: editing a snippet's text needs nothing, but adding,
+  # removing, or moving a snippet file changes the page's imports, so the
+  # reviewer re-runs compose_changelog before publishing.
   #
   # Both plans read the tags through git-cliff, never this CHANGELOG.md.
   GRAPH_STORAGE=memory graph plan run changelog_entry --input version="v$new" --input formats="$format_delta"
@@ -207,10 +209,12 @@ v$new is prepared and NOT committed. Review before publishing:
   docs/snippets/changelog/graph/v$new/   the inferred summary (and migration prompt, if any) — edit freely;
                                          a prompt about a bumped file kind belongs in that kind's directory (config/v2/)
   CHANGELOG.md                           the commit rendering — fix a wrong entry by retyping its commit, not here
+  docs/changelog.mdx                     composed from the snippets; if you add, remove, or move a snippet file, re-run
+                                         GRAPH_STORAGE=memory graph plan run compose_changelog --input tag=v$new
 
   git diff --stat
 
-Then:   mise run release:publish     commit, tag v$new, push
+Then:   mise run release:publish     commit the tree as reviewed, tag v$new, push
 Or:     mise run release:abort       drop everything above
 EOF
 }
@@ -232,13 +236,20 @@ require_prepared() {
 
 publish() {
   require_prepared
-  require_graph
   resolve_release "$new"
 
-  # The review may have edited the snippets; the page imports them, so the
-  # recomposition is what carries a changed snippet set (a migration prompt
-  # added or removed) into the page. Content edits need nothing.
-  GRAPH_STORAGE=memory graph plan run compose_changelog --input tag="v$new"
+  # The tree is committed exactly as reviewed. The page's imports must
+  # still match the snippet files on disk, or the docs build breaks after
+  # the push — check that here instead of regenerating anything.
+  local missing
+  missing=$(grep -o "from '/snippets/changelog/[^']*'" docs/changelog.mdx \
+    | sed "s|from '/snippets/changelog/||; s|'\$||" \
+    | while read -r snippet; do [ -f "docs/snippets/changelog/$snippet" ] || echo "  $snippet"; done)
+  if [ -n "$missing" ]; then
+    echo "docs/changelog.mdx imports snippets that do not exist — re-run compose_changelog --input tag=v$new and review again:" >&2
+    echo "$missing" >&2
+    exit 1
+  fi
 
   git add "${release_files[@]}"
   git commit -q -m "chore(release): v$new"

@@ -31,12 +31,17 @@ that kind's directory during the review, and the page renders it under
 the kind's own entry instead of the binary's. Summary themes are `###`
 headings; the commit groups the page renders below them are `####`.
 
-**Publish** re-runs `compose_changelog` (so a snippet you added or removed
-during the review reaches the page; content edits need nothing), commits
-as `chore(release): vX.Y.Z`, tags `vX.Y.Z`, and pushes. It refuses a tree
-with changes outside the release's file set, and it re-derives everything
-the tag needs from the same facts prepare used rather than trusting a
-scratch file. `mise run release:abort` drops a prepared release instead.
+**Publish** commits the tree exactly as reviewed as `chore(release): vX.Y.Z`,
+tags `vX.Y.Z`, and pushes. It regenerates nothing: what you reviewed is what
+ships. Editing a snippet's text needs no further step, because the page
+imports the snippet. Adding, removing, or moving a snippet file changes the
+page's imports, so after that re-run
+`GRAPH_STORAGE=memory graph plan run compose_changelog --input tag=vX.Y.Z`
+and review the page again; publish refuses a page whose imports name a
+snippet that does not exist. It also refuses a tree with changes outside
+the release's file set, and it re-derives everything the tag needs from the
+same facts prepare used rather than trusting a scratch file.
+`mise run release:abort` drops a prepared release instead.
 
 ### What is the source of truth
 
@@ -64,8 +69,8 @@ directly instead.
 **The review between prepare and publish is for
 `docs/snippets/changelog/graph/<version>/`**: the summary and the migration
 verdict are inferred and meant to be curated. Edit the snippet files
-freely — they are never regenerated, and publish recomposes the page from
-them. To correct a release that is already out, edit its snippet, re-run
+freely — they are never regenerated, and the page imports them as they
+are at publish time. To correct a release that is already out, edit its snippet, re-run
 `graph plan run compose_changelog --input tag=""`, and commit. Never edit
 `docs/changelog.mdx` by hand; it is composed in full every time.
 Requires `graph` ≥ v0.10.0 on PATH (`mise run install`); the release
