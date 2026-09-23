@@ -175,6 +175,7 @@ pub struct PlanWorkspace {
     /// A draft in flight; the plan tab renders this instead
     /// of the doc rows while set.
     pub drafting: Option<DraftingProgress>,
+    pub context_loaded: bool,
 }
 
 impl PlanWorkspace {
@@ -247,6 +248,7 @@ impl PlanWorkspace {
     }
 
     pub fn set_context(&mut self, tools: Vec<ToolDef>, shapes: Vec<ToolShape>) {
+        self.context_loaded = true;
         self.shapes = shapes
             .into_iter()
             .map(|shape| (shape.tool.clone(), shape))

@@ -182,6 +182,9 @@ pub struct App {
     /// reducer. Empty until the first frame — clicks then safely no-op.
     pub regions: RefCell<Regions>,
     pub last_click: Option<(usize, std::time::Instant)>,
+    /// The terminal reports Shift+Enter distinctly (keyboard-enhancement
+    /// protocol); otherwise only Alt+Enter can insert a newline.
+    pub enhanced_keys: bool,
 }
 
 impl App {
@@ -207,7 +210,24 @@ impl App {
             should_quit: false,
             regions: RefCell::new(Regions::default()),
             last_click: None,
+            enhanced_keys: false,
         }
+    }
+
+    pub fn newline_key(&self) -> &'static str {
+        if self.enhanced_keys {
+            "Shift+Enter"
+        } else {
+            "Alt+Enter"
+        }
+    }
+
+    fn catalog_ready(&mut self) -> bool {
+        if self.ws.context_loaded {
+            return true;
+        }
+        self.status = "the tool catalog is still loading — try again in a moment".to_string();
+        false
     }
 
     fn busy(&self) -> bool {
@@ -1392,8 +1412,14 @@ fn open_add_form(app: &mut App, before: bool) -> Vec<Effect> {
     if app.ws.tab != WsTab::Plan || app.ws.drafting.is_some() {
         return Vec::new();
     }
-    let Some(doc) = &app.ws.doc else {
+    if app.ws.doc.is_none() {
         app.status = "no plan to add to — draft one in chat first".to_string();
+        return Vec::new();
+    }
+    if !app.catalog_ready() {
+        return Vec::new();
+    }
+    let Some(doc) = &app.ws.doc else {
         return Vec::new();
     };
     let Some(row) = app.ws.steps.get(app.ws.selected) else {
@@ -1454,8 +1480,14 @@ fn open_form(app: &mut App) -> Vec<Effect> {
     if app.ws.tab != WsTab::Plan || app.ws.drafting.is_some() {
         return Vec::new();
     }
-    let Some(doc) = &app.ws.doc else {
+    if app.ws.doc.is_none() {
         app.status = "no plan to edit — draft one in chat first".to_string();
+        return Vec::new();
+    }
+    if !app.catalog_ready() {
+        return Vec::new();
+    }
+    let Some(doc) = &app.ws.doc else {
         return Vec::new();
     };
     let Some(row) = app.ws.steps.get(app.ws.selected) else {
@@ -1511,7 +1543,8 @@ fn open_form(app: &mut App) -> Vec<Effect> {
         }
     };
     app.status = format!(
-        "editing {label} — Tab/Enter next field · Shift+Enter newline · Ctrl+T validate · Ctrl+S submit · Esc cancel"
+        "editing {label} — Tab/Enter next field · {} newline · Ctrl+T validate · Ctrl+S submit · Esc cancel",
+        app.newline_key()
     );
     app.mode = Mode::Form(Box::new(FormState {
         form,
@@ -2803,6 +2836,12 @@ solver:
 "#)
     }
 
+    fn ready(doc: PlanDoc) -> App {
+        let mut app = App::new(Some(doc));
+        app.ws.set_context(Vec::new(), Vec::new());
+        app
+    }
+
     fn form_state(app: &App) -> &FormState {
         match &app.mode {
             Mode::Form(state) => state,
@@ -2812,7 +2851,7 @@ solver:
 
     #[test]
     fn enter_opens_the_step_form_and_esc_discards() {
-        let mut app = App::new(Some(two_step_doc()));
+        let mut app = ready(two_step_doc());
         app.focus = Focus::Workspace;
         update(&mut app, key(KeyCode::Char('j')));
         assert!(update(&mut app, key(KeyCode::Enter)).is_empty());
@@ -2849,7 +2888,7 @@ solver:
 
     #[test]
     fn form_submission_emits_an_edit_and_outcomes_settle_it() {
-        let mut app = App::new(Some(two_step_doc()));
+        let mut app = ready(two_step_doc());
         app.focus = Focus::Workspace;
         update(&mut app, key(KeyCode::Char('e')));
         assert_eq!(form_state(&app).target, EditTarget::Metadata);
@@ -2914,7 +2953,7 @@ solver:
 
     #[test]
     fn unreadable_forms_never_submit() {
-        let mut app = App::new(Some(two_step_doc()));
+        let mut app = ready(two_step_doc());
         app.focus = Focus::Workspace;
         update(&mut app, key(KeyCode::Char('j')));
         update(&mut app, key(KeyCode::Enter));
@@ -2934,7 +2973,7 @@ solver:
 
     #[test]
     fn body_rows_open_on_their_owner_and_structural_rows_refuse() {
-        let mut app = App::new(Some(body_doc()));
+        let mut app = ready(body_doc());
         app.focus = Focus::Workspace;
         for _ in 0..3 {
             update(&mut app, key(KeyCode::Char('j')));
@@ -2984,7 +3023,7 @@ solver:
 
     #[test]
     fn add_keys_open_a_blank_form_anchored_on_the_selection() {
-        let mut app = App::new(Some(two_step_doc()));
+        let mut app = ready(two_step_doc());
         app.focus = Focus::Workspace;
         update(&mut app, key(KeyCode::Char('j')));
         update(&mut app, key(KeyCode::Char('a')));
@@ -3044,7 +3083,7 @@ solver:
 
     #[test]
     fn declining_the_quit_prompt_resumes_the_interrupted_mode() {
-        let mut app = App::new(Some(two_step_doc()));
+        let mut app = ready(two_step_doc());
         app.mode = Mode::Running { gated: true };
         update(&mut app, ctrl('c'));
         assert!(matches!(app.mode, Mode::Editing(_)));
@@ -3062,7 +3101,7 @@ solver:
 
     #[test]
     fn a_submit_in_flight_blocks_a_second_one_and_selection_follows_the_new_step() {
-        let mut app = App::new(Some(body_doc()));
+        let mut app = ready(body_doc());
         app.focus = Focus::Workspace;
         update(&mut app, key(KeyCode::Char('j')));
         update(&mut app, key(KeyCode::Char('j')));
@@ -3111,8 +3150,29 @@ solver:
     }
 
     #[test]
-    fn the_form_waits_for_idle_and_the_plan_tab() {
+    fn the_form_waits_for_the_catalog() {
         let mut app = App::new(Some(two_step_doc()));
+        app.focus = Focus::Workspace;
+        update(&mut app, key(KeyCode::Char('j')));
+        update(&mut app, key(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::Idle));
+        assert!(app.status.contains("catalog is still loading"));
+        update(&mut app, key(KeyCode::Char('a')));
+        assert!(matches!(app.mode, Mode::Idle));
+        update(
+            &mut app,
+            Msg::ContextLoaded {
+                tools: Vec::new(),
+                shapes: Vec::new(),
+            },
+        );
+        update(&mut app, key(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::Form(_)));
+    }
+
+    #[test]
+    fn the_form_waits_for_idle_and_the_plan_tab() {
+        let mut app = ready(two_step_doc());
         app.focus = Focus::Workspace;
         app.mode = Mode::Chatting;
         update(&mut app, key(KeyCode::Enter));
@@ -3133,7 +3193,7 @@ solver:
 
     #[test]
     fn double_click_opens_the_form_which_then_owns_the_mouse() {
-        let mut app = App::new(Some(two_step_doc()));
+        let mut app = ready(two_step_doc());
         seed_regions(&app, demo_regions());
         update(&mut app, click(45, 4));
         assert_eq!(app.ws.selected, 1);

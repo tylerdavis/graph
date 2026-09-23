@@ -78,7 +78,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         draw_editor(frame, editor);
     }
     if let Mode::Form(state) = &app.mode {
-        draw_form(frame, state);
+        draw_form(frame, state, app.newline_key());
     }
     if app.show_help {
         draw_help(frame, app);
@@ -170,7 +170,7 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions) {
     // owns all editing state; this is a display of its lines and cursor.
     let input_block = Block::bordered()
         .border_style(DIM)
-        .title(" Enter send · Shift+Enter newline ");
+        .title(format!(" Enter send · {} newline ", app.newline_key()));
     let input_inner = input_block.inner(input);
     frame.render_widget(input_block, input);
     let empty = input_rows.len() == 1 && input_rows[0].is_empty();
@@ -1083,7 +1083,7 @@ fn draw_editor(frame: &mut Frame, editor: &super::editor::EditorState) {
     frame.render_widget(Paragraph::new(footer_lines), footer);
 }
 
-fn draw_form(frame: &mut Frame, state: &FormState) {
+fn draw_form(frame: &mut Frame, state: &FormState, newline_key: &str) {
     let form = &state.form;
     let area = centered(frame.area(), 80, 88);
     frame.render_widget(Clear, area);
@@ -1127,7 +1127,9 @@ fn draw_form(frame: &mut Frame, state: &FormState) {
         ));
     } else {
         footer_lines.push(Line::styled(
-            " Tab next · Shift+Tab prev · Shift+Enter newline · Ctrl+T validate · Ctrl+S submit · Esc cancel",
+            format!(
+                " Tab next · Shift+Tab prev · {newline_key} newline · Ctrl+T validate · Ctrl+S submit · Esc cancel"
+            ),
             DIM,
         ));
     }
@@ -1295,7 +1297,10 @@ fn draw_help(frame: &mut Frame, app: &App) {
     let bindings = [
         ("Tab", "toggle focus chat ↔ workspace"),
         ("1 / 2 / 3", "workspace tab (Alt+n from anywhere)"),
-        ("Enter", "send chat message (Shift+Enter for newline)"),
+        (
+            "Enter",
+            "send chat message (Alt+Enter for newline; Shift+Enter where the terminal supports it)",
+        ),
         ("j / k", "select step or tool"),
         (
             "Enter / e",
