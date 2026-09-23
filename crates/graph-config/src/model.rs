@@ -106,7 +106,7 @@ pub struct WorkbenchConfig {
 /// tool calls, and every model call) and, optionally, the diagnostic log.
 /// Every field except the three graph-specific switches mirrors a standard
 /// `OTEL_*` environment variable, and the variable wins when both are set.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct TelemetryConfig {
     /// Base OTLP/HTTP URL; `/v1/traces` and `/v1/logs` are appended. Unset
@@ -128,7 +128,8 @@ pub struct TelemetryConfig {
     /// that filter per span (Langfuse) see them everywhere.
     pub resource: BTreeMap<String, String>,
     /// Put prompts, completions, tool arguments, and step results on spans.
-    /// Off by default: they carry whatever the tools returned.
+    /// On by default; `false` keeps a trace to names, timings, token counts,
+    /// and cost, for backends that must not see what the tools returned.
     pub capture_content: bool,
     /// Export the `tracing` diagnostic stream (what `-v` and `GRAPH_LOG`
     /// select) as OTLP logs alongside the spans.
@@ -137,6 +138,22 @@ pub struct TelemetryConfig {
     /// with any stays off and says so once at startup.
     #[serde(skip)]
     pub missing_env: Vec<MissingEnv>,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            protocol: TelemetryProtocol::default(),
+            timeout_secs: None,
+            service_name: None,
+            headers: BTreeMap::new(),
+            resource: BTreeMap::new(),
+            capture_content: true,
+            logs: false,
+            missing_env: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

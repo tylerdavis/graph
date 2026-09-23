@@ -663,7 +663,7 @@ fallbacks = [
         assert_eq!(empty.protocol, TelemetryProtocol::HttpProtobuf);
         assert_eq!(empty.service_name(), "graph");
         assert_eq!(empty.timeout_secs(), 10);
-        assert!(!empty.capture_content);
+        assert!(empty.capture_content);
         assert!(!empty.logs);
 
         let dir = tempfile::tempdir().unwrap();
@@ -676,7 +676,7 @@ fallbacks = [
             protocol = "http/json"
             timeout_secs = 3
             service_name = "graph-dev"
-            capture_content = true
+            capture_content = false
             logs = true
             headers = { "x-langfuse-ingestion-version" = "4" }
             resource = { "deployment.environment" = "dev" }
@@ -690,7 +690,7 @@ fallbacks = [
         assert_eq!(telemetry.protocol, TelemetryProtocol::HttpJson);
         assert_eq!(telemetry.timeout_secs(), 3);
         assert_eq!(telemetry.service_name(), "graph-dev");
-        assert!(telemetry.capture_content && telemetry.logs);
+        assert!(!telemetry.capture_content && telemetry.logs);
         assert_eq!(telemetry.headers["x-langfuse-ingestion-version"], "4");
         assert_eq!(telemetry.resource["deployment.environment"], "dev");
         assert!(telemetry.missing_env.is_empty());

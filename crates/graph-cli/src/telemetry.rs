@@ -236,6 +236,9 @@ pub struct RunInfo {
     /// The `[user].name`, when set.
     pub user_id: Option<String>,
     pub tags: Vec<String>,
+    /// What the run was given: the plan input, the `ask` message. Shown as
+    /// the trace's input when content is captured.
+    pub input: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,6 +256,7 @@ impl RunInfo {
             session_id: None,
             user_id: None,
             tags: vec![format!("plan:{identifier}")],
+            input: None,
         }
     }
 
@@ -263,6 +267,7 @@ impl RunInfo {
             session_id: thread_id,
             user_id: None,
             tags: vec![format!("command:{command}")],
+            input: None,
         }
     }
 
@@ -273,12 +278,53 @@ impl RunInfo {
             session_id: None,
             user_id: None,
             tags: vec!["command:plan-draft".to_string()],
+            input: None,
         }
     }
 
     pub fn user(mut self, name: Option<&str>) -> Self {
         self.user_id = name.map(str::to_string);
         self
+    }
+
+    pub fn input(mut self, input: Value) -> Self {
+        self.input = Some(input);
+        self
+    }
+}
+
+/// A plan run's deliverable as one value for `run_finished`: the output
+/// document when there is one, else the answer text, else the exit message.
+pub fn plan_output(outcome: &graph_core::pipeline::PipelineOutcome) -> Value {
+    if let Some(structured) = &outcome.structured {
+        return structured.clone();
+    }
+    if !outcome.answer.is_empty() {
+        return Value::String(outcome.answer.clone());
+    }
+    match &outcome.exit {
+        Some(exit) => serde_json::json!({ "exit": exit.status, "message": exit.message }),
+        None => Value::Null,
+    }
+}
+
+/// Report a plan run's result to `events`: the deliverable on success (an
+/// error exit counts as an error), the error message otherwise.
+pub fn report_plan_result(
+    events: &dyn EventSink,
+    result: &Result<graph_core::pipeline::PipelineOutcome, graph_core::pipeline::PipelineError>,
+) {
+    match result {
+        Ok(outcome) => {
+            let asserted = matches!(
+                &outcome.exit,
+                Some(exit) if exit.status == graph_core::pipeline::ExitStatus::Error
+            );
+            events.run_finished(&plan_output(outcome), asserted);
+        }
+        Err(error) => {
+            events.run_finished(&serde_json::json!({ "error": error.to_string() }), true);
+        }
     }
 }
 
@@ -362,6 +408,9 @@ impl OtlpSink {
             "graph.run.kind",
             format!("{:?}", self.run.kind).to_lowercase(),
         ));
+        if let Some(input) = &self.run.input {
+            attributes.extend(self.json_attribute("langfuse.observation.input", input));
+        }
         let span = self.tracer.build_with_context(
             SpanBuilder::from_name(self.run.name.clone())
                 .with_start_time(SystemTime::now())
@@ -619,6 +668,24 @@ impl EventSink for OtlpSink {
             &parent,
         );
         span.end_with_timestamp(now);
+    }
+
+    fn run_finished(&self, output: &Value, is_error: bool) {
+        let mut state = self.state.lock().unwrap();
+        let root = self.root(&mut state);
+        let span = root.span();
+        if let Some(output) = self.json_attribute("langfuse.observation.output", output) {
+            span.set_attribute(output);
+        }
+        if is_error {
+            let message = output
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("run failed")
+                .to_string();
+            span.set_attribute(KeyValue::new("langfuse.observation.level", "ERROR"));
+            span.set_status(Status::error(message));
+        }
     }
 
     fn usage_summary(&self, report: &UsageReport) {
@@ -908,6 +975,54 @@ mod tests {
             assert_eq!(has(generation, "langfuse.observation.input"), capture);
             assert_eq!(has(generation, "gen_ai.input.messages"), capture);
         }
+    }
+
+    #[test]
+    fn the_root_carries_the_run_input_and_output_when_captured() {
+        for capture in [false, true] {
+            let run = RunInfo::plan_run("echo").input(json!({"word": "hi"}));
+            let (sink, exporter, provider) = harness(run, capture);
+            sink.step_started(&[], "E1", "builtin__reshape", &json!({}));
+            sink.step_finished(
+                &[],
+                "E1",
+                "builtin__reshape",
+                &json!({}),
+                false,
+                Duration::ZERO,
+            );
+            sink.run_finished(&json!({"said": "hi"}), false);
+            sink.usage_summary(&UsageReport::default());
+            provider.force_flush().unwrap();
+
+            let spans = exporter.get_finished_spans().unwrap();
+            let root = by_name(&spans, "echo");
+            assert_eq!(
+                attribute(root, "langfuse.observation.input").is_some(),
+                capture
+            );
+            assert_eq!(
+                attribute(root, "langfuse.observation.output"),
+                capture
+                    .then(|| OtelValue::from(r#"{"said":"hi"}"#))
+                    .as_ref()
+            );
+            assert!(matches!(root.status, Status::Unset));
+        }
+
+        let (sink, exporter, provider) = harness(RunInfo::plan_run("broken"), false);
+        sink.run_finished(&json!({"error": "E1 failed"}), true);
+        drop(sink);
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let root = by_name(&spans, "broken");
+        assert!(
+            matches!(&root.status, Status::Error { description } if description == "E1 failed")
+        );
+        assert_eq!(
+            attribute(root, "langfuse.observation.level"),
+            Some(&OtelValue::from("ERROR"))
+        );
     }
 
     #[test]

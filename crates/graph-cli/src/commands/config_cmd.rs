@@ -74,7 +74,7 @@ model = "claude-sonnet-5"
 # variables override these values.
 # [telemetry]
 # endpoint = "https://cloud.langfuse.com/api/public/otel"
-# capture_content = false   # put prompts, completions, and tool I/O on spans
+# capture_content = true    # default; false keeps prompts, completions, and tool I/O off spans
 # logs = false              # also export the diagnostic log (-v / GRAPH_LOG)
 # [telemetry.headers]
 # Authorization = "Basic ${LANGFUSE_AUTH}"   # base64 of pk-lf-…:sk-lf-…

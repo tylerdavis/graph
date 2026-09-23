@@ -180,7 +180,7 @@ endpoint = "https://cloud.langfuse.com/api/public/otel"   # base URL; /v1/traces
 protocol = "http/protobuf"       # or "http/json"; no gRPC
 timeout_secs = 10
 service_name = "graph"           # service.name on every span
-capture_content = false          # prompts, completions, tool arguments, step results on spans
+capture_content = true           # prompts, completions, tool arguments, step results on spans
 logs = false                     # also export the diagnostic log (-v / GRAPH_LOG) as OTLP logs
 
 [telemetry.headers]
@@ -199,14 +199,14 @@ Authorization = "Basic ${LANGFUSE_AUTH}"   # base64 of "pk-lf-…:sk-lf-…"
 | `service_name` | `OTEL_SERVICE_NAME` | `service.name`, default `graph` |
 | `headers` | `OTEL_EXPORTER_OTLP_HEADERS` (`k=v,k2=v2`, merged over the table) | request headers; values take `${VAR}` |
 | `resource` | — | extra resource attributes, repeated on every span so per-span filters see them |
-| `capture_content` | — | put prompts, completions, tool arguments, and step results on spans (off: token counts and cost only) |
+| `capture_content` | — | put prompts, completions, tool arguments, and step results on spans; on by default, `false` leaves names, timings, token counts, and cost only |
 | `logs` | — | export the `tracing` diagnostic stream as OTLP logs, at the level `-v` / `GRAPH_LOG` selects |
 
 The environment variable wins over the file, so a CI job can point a checked-in config at a different collector without editing it.
 
-**What a trace contains.** Each `plan run`, `ask` turn, `chat` session, MCP `plan_run` call, workbench run, and `plan draft` is one trace, named after the plan identifier or the command. Under the root: one span per plan step and body call (named `E3 user__git_log`, `E1/do.2/E5 builtin__infer`, keyed by the same bus path the workbench and `GRAPH_EVENTS=jsonl` use; a nested plan's steps sit under the step that called it), one span per tool call, and one `generation` span per billable model call under the step that spent it — the same attribution `by_step` reports. Every generation carries the standard `gen_ai.*` attributes: provider, model, input/output/cache token counts, and, when `[pricing]` prices the model, the cost. Errors mark their span and set its status. The `usage_summary` totals land on the root span.
+**What a trace contains.** Each `plan run`, `ask` turn, `chat` session, MCP `plan_run` call, workbench run, and `plan draft` is one trace, named after the plan identifier or the command. Under the root: one span per plan step and body call (named `E3 user__git_log`, `E1/do.2/E5 builtin__infer`, keyed by the same bus path the workbench and `GRAPH_EVENTS=jsonl` use; a nested plan's steps sit under the step that called it), one span per tool call, and one `generation` span per billable model call under the step that spent it — the same attribution `by_step` reports. Every generation carries the standard `gen_ai.*` attributes: provider, model, input/output/cache token counts, and, when `[pricing]` prices the model, the cost. Errors mark their span and set its status. The `usage_summary` totals land on the root span, and so does the run's own input and output when `capture_content` is on: the plan input and its answer or output document (or the failure), the `ask` message and the reply.
 
-**Backend notes.** Langfuse reads these spans as-is: generations, usage, cost, `session.id` (the thread id for `ask`/`chat`), `user.id` (`[user].name`), and the `plan:<identifier>` / `command:<name>` tags are all on every span, as its filters require. Content is behind `capture_content` because it contains whatever the tools returned; when on, it is written under both the current `gen_ai.input.messages` / `gen_ai.output.messages` keys and the `langfuse.observation.input` / `langfuse.observation.output` keys Langfuse maps, each capped at 64 KiB. Other backends keep the `langfuse.*` keys as plain metadata. Export is batched and flushed when the process exits, or continuously under `graph mcp serve`.
+**Backend notes.** Langfuse reads these spans as-is: generations, usage, cost, `session.id` (the thread id for `ask`/`chat`), `user.id` (`[user].name`), and the `plan:<identifier>` / `command:<name>` tags are all on every span, as its filters require. Content is what makes a trace readable, so it is on by default; set `capture_content = false` for a backend that must not see what the tools returned. When on, it is written under both the current `gen_ai.input.messages` / `gen_ai.output.messages` keys and the `langfuse.observation.input` / `langfuse.observation.output` keys Langfuse maps, each capped at 64 KiB. Other backends keep the `langfuse.*` keys as plain metadata. Export is batched and flushed when the process exits, or continuously under `graph mcp serve`.
 
 ## `[user]`
 

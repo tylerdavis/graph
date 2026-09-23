@@ -21,6 +21,11 @@ pub trait EventSink: Send + Sync {
     /// The run's totals, once, after the last step. Carries the same report
     /// `plan run --json` embeds.
     fn usage_summary(&self, _report: &UsageReport) {}
+    /// The run's deliverable, once, when it is known: the answer or output
+    /// document of a plan run, the assistant's reply to an `ask`, or the
+    /// error that ended it (`is_error`). Emitted by the command, which is
+    /// the only party that knows the whole run is over.
+    fn run_finished(&self, _output: &Value, _is_error: bool) {}
     /// A tool invocation is starting.
     fn tool_started(&self, _name: &str, _args: &Value) {}
     /// A tool invocation finished.
@@ -104,6 +109,12 @@ impl EventSink for TeeSink {
 
     fn usage_summary(&self, report: &UsageReport) {
         self.sinks.iter().for_each(|s| s.usage_summary(report));
+    }
+
+    fn run_finished(&self, output: &Value, is_error: bool) {
+        self.sinks
+            .iter()
+            .for_each(|s| s.run_finished(output, is_error));
     }
 
     fn tool_started(&self, name: &str, args: &Value) {

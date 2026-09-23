@@ -225,7 +225,9 @@ pub async fn run_plan(
     // but a client watching a long run has no other way to see it building.
     let events = crate::telemetry::attach(
         events,
-        crate::telemetry::RunInfo::plan_run(identifier).user(runtime.config.user.name.as_deref()),
+        crate::telemetry::RunInfo::plan_run(identifier)
+            .user(runtime.config.user.name.as_deref())
+            .input(input.clone()),
     );
     runtime.usage.attach_events(events.clone());
     let pipeline = runtime
@@ -241,6 +243,7 @@ pub async fn run_plan(
         .run_explicit(&query, doc.steps.clone(), finish, Some(input))
         .await;
     runtime.shutdown().await;
+    crate::telemetry::report_plan_result(events.as_ref(), &result);
 
     // Drained before the branches below: a cancelled or failed run has still
     // spent the tokens, and that is exactly when the number is worth having.

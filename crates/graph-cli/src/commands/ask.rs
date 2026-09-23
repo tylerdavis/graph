@@ -26,7 +26,8 @@ pub async fn run(args: AskArgs) -> Result<()> {
         "ask",
         existing.as_ref().map(|thread| thread.id.clone()),
     )
-    .user(runtime.config.user.name.as_deref());
+    .user(runtime.config.user.name.as_deref())
+    .input(serde_json::Value::String(message.clone()));
     let events: Arc<dyn graph_core::EventSink> = if args.json {
         // Quiet unless JSONL events were explicitly requested.
         if std::env::var("GRAPH_EVENTS").as_deref() == Ok("jsonl") {
@@ -45,7 +46,7 @@ pub async fn run(args: AskArgs) -> Result<()> {
     };
     runtime.usage.attach_events(events.clone());
     let toolbox = runtime.toolbox_with(&store, events.clone(), hooks).await?;
-    let agent = runtime.agent(events, toolbox)?;
+    let agent = runtime.agent(events.clone(), toolbox)?;
 
     let mut messages = match &existing {
         Some(thread) => store.load_messages(&thread.id).await?,
@@ -58,6 +59,10 @@ pub async fn run(args: AskArgs) -> Result<()> {
 
     let result = agent.run_turn(&mut messages).await;
     runtime.shutdown().await;
+    match &result {
+        Ok(outcome) => events.run_finished(&serde_json::Value::String(outcome.text.clone()), false),
+        Err(error) => events.run_finished(&serde_json::json!({"error": error.to_string()}), true),
+    }
     // The ledger, not `outcome.usage`: a turn that called a `plan__*` tool
     // spent tokens in the solver and inside that plan's steps too, and the
     // agent's own tally cannot see any of it.
