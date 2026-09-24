@@ -283,11 +283,6 @@ impl RunInfo {
         self.input = Some(input);
         self
     }
-
-    pub fn session(mut self, id: Option<String>) -> Self {
-        self.session_id = id;
-        self
-    }
 }
 
 pub fn plan_output(outcome: &graph_core::pipeline::PipelineOutcome) -> Value {
@@ -321,17 +316,28 @@ pub fn report_plan_result(
     }
 }
 
-pub fn attach(sink: Arc<dyn EventSink>, run: RunInfo) -> Arc<dyn EventSink> {
-    let Some(telemetry) = TELEMETRY.get() else {
-        return sink;
-    };
-    let exporting = OtlpSink::new(
+pub fn exporter(run: RunInfo) -> Option<Arc<dyn EventSink>> {
+    let telemetry = TELEMETRY.get()?;
+    Some(Arc::new(OtlpSink::new(
         telemetry.tracer.clone(),
         run,
         telemetry.capture_content,
         telemetry.common.clone(),
-    );
-    Arc::new(TeeSink::new(vec![sink, Arc::new(exporting)]))
+    )))
+}
+
+pub fn attach(sink: Arc<dyn EventSink>, run: RunInfo) -> Arc<dyn EventSink> {
+    match exporter(run) {
+        Some(exporting) => tee(sink, Some(exporting)),
+        None => sink,
+    }
+}
+
+pub fn tee(sink: Arc<dyn EventSink>, exporting: Option<Arc<dyn EventSink>>) -> Arc<dyn EventSink> {
+    match exporting {
+        Some(exporting) => Arc::new(TeeSink::new(vec![sink, exporting])),
+        None => sink,
+    }
 }
 
 pub struct OtlpSink {
@@ -773,24 +779,47 @@ impl EventSink for OtlpSink {
     }
 
     fn draft_step_started(&self, index: usize, summary: &str) {
-        self.root_event(
-            "draft_step_started",
-            vec![
-                KeyValue::new("index", index as i64),
-                KeyValue::new("summary", summary.to_string()),
-            ],
+        let key = format!("draft.{index}");
+        let mut state = self.state.lock().unwrap();
+        let parent = self.parent_for(&mut state, None);
+        let mut attributes = self.attrs(&state);
+        attributes.extend([
+            KeyValue::new("langfuse.observation.type", "chain"),
+            KeyValue::new("graph.draft.index", index as i64),
+            KeyValue::new("graph.draft.summary", summary.to_string()),
+        ]);
+        let span = self.tracer.build_with_context(
+            SpanBuilder::from_name(format!("draft step {}: {summary}", index + 1))
+                .with_start_time(SystemTime::now())
+                .with_attributes(attributes),
+            &parent,
         );
+        state.steps.push((key, parent.with_span(span)));
     }
 
-    fn draft_step_finished(&self, index: usize, _step: &Value, problems: &[String], attempt: u32) {
-        self.root_event(
-            "draft_step_finished",
-            vec![
-                KeyValue::new("index", index as i64),
-                KeyValue::new("attempt", i64::from(attempt)),
-                KeyValue::new("accepted", problems.is_empty()),
-            ],
-        );
+    fn draft_step_finished(&self, index: usize, step: &Value, problems: &[String], attempt: u32) {
+        let key = format!("draft.{index}");
+        let mut state = self.state.lock().unwrap();
+        let Some(position) = state.steps.iter().rposition(|(k, _)| *k == key) else {
+            return;
+        };
+        if !problems.is_empty() {
+            state.steps[position].1.span().add_event(
+                "attempt rejected",
+                vec![
+                    KeyValue::new("attempt", i64::from(attempt)),
+                    KeyValue::new("problems", problems.join("; ")),
+                ],
+            );
+            return;
+        }
+        let (_, cx) = state.steps.remove(position);
+        let span = cx.span();
+        span.set_attribute(KeyValue::new("graph.draft.attempts", i64::from(attempt)));
+        if let Some(output) = self.json_attribute("langfuse.observation.output", step) {
+            span.set_attribute(output);
+        }
+        span.end_with_timestamp(SystemTime::now());
     }
 }
 
@@ -1072,7 +1101,7 @@ mod tests {
 
     #[test]
     fn each_run_started_opens_a_fresh_trace_in_the_session() {
-        let run = RunInfo::conversation("workbench", None).session(Some("wb-1".into()));
+        let run = RunInfo::conversation("workbench", Some("wb-1".into()));
         let (sink, exporter, provider) = harness(run, true);
         sink.run_started(&RunStart {
             name: "sprint_analysis".into(),
@@ -1207,6 +1236,59 @@ mod tests {
             attribute(root, "langfuse.observation.level"),
             Some(&OtelValue::from("ERROR"))
         );
+    }
+
+    #[test]
+    fn a_shared_exporter_keeps_a_turns_tools_and_generations_in_one_trace() {
+        let (sink, exporter, provider) =
+            harness(RunInfo::conversation("workbench", Some("wb".into())), true);
+        sink.run_started(&RunStart {
+            name: "workbench".into(),
+            session_id: None,
+            input: Some(json!("draft a plan")),
+        });
+        let chat = || LlmCallEvent {
+            role: "chat".into(),
+            ..call("chat", None)
+        };
+        sink.llm_call(&chat());
+        sink.tool_started("workbench__draft_plan", &json!({"goal": "g"}));
+        sink.draft_outline(&json!([{"summary": "list issues"}, {"summary": "summarize"}]));
+        sink.draft_step_started(0, "list issues");
+        sink.llm_call(&LlmCallEvent {
+            role: "planner".into(),
+            site: "planner".into(),
+            ..call("planner", None)
+        });
+        sink.draft_step_finished(0, &Value::Null, &["bad tool".into()], 1);
+        sink.draft_step_finished(0, &json!({"id": "E0"}), &[], 2);
+        sink.tool_finished("workbench__draft_plan", Duration::ZERO, false);
+        sink.llm_call(&chat());
+        sink.run_finished(&json!("done"), false);
+        drop(sink);
+        provider.force_flush().unwrap();
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let root = by_name(&spans, "workbench");
+        assert!(spans
+            .iter()
+            .all(|s| s.span_context.trace_id() == root.span_context.trace_id()));
+        let draft_tool = by_name(&spans, "workbench__draft_plan");
+        assert_eq!(draft_tool.parent_span_id, root.span_context.span_id());
+        let stage = by_name(&spans, "draft step 1: list issues");
+        assert_eq!(stage.parent_span_id, draft_tool.span_context.span_id());
+        assert_eq!(stage.events.len(), 1);
+        assert_eq!(
+            attribute(stage, "graph.draft.attempts"),
+            Some(&OtelValue::I64(2))
+        );
+        let planner = by_name(&spans, "planner");
+        assert_eq!(planner.parent_span_id, stage.span_context.span_id());
+        let chats: Vec<_> = spans.iter().filter(|s| s.name == "chat").collect();
+        assert_eq!(chats.len(), 2);
+        assert!(chats
+            .iter()
+            .all(|s| s.parent_span_id == root.span_context.span_id()));
     }
 
     #[test]
