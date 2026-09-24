@@ -1,6 +1,6 @@
 use graph_config::TelemetryConfig;
 use graph_core::usage::{LlmCallEvent, UsageReport};
-use graph_core::{EventSink, TeeSink};
+use graph_core::{EventSink, RunStart, TeeSink};
 use opentelemetry::trace::{
     Span as _, SpanBuilder, SpanKind, Status, TraceContextExt, Tracer as _, TracerProvider as _,
 };
@@ -283,6 +283,11 @@ impl RunInfo {
         self.input = Some(input);
         self
     }
+
+    pub fn session(mut self, id: Option<String>) -> Self {
+        self.session_id = id;
+        self
+    }
 }
 
 pub fn plan_output(outcome: &graph_core::pipeline::PipelineOutcome) -> Value {
@@ -341,6 +346,7 @@ pub struct OtlpSink {
 struct State {
     root: Option<Context>,
     steps: Vec<(String, Context)>,
+    run: Option<RunStart>,
 }
 
 fn clip_strings(value: &mut Value, cap: usize) {
@@ -391,9 +397,6 @@ fn clipped_json(value: &Value, budget: usize) -> String {
 
 impl OtlpSink {
     pub fn new(tracer: SdkTracer, run: RunInfo, capture: bool, mut common: Vec<KeyValue>) -> Self {
-        if let Some(session) = &run.session_id {
-            common.push(KeyValue::new("session.id", session.clone()));
-        }
         if let Some(user) = &run.user_id {
             common.push(KeyValue::new("user.id", user.clone()));
         }
@@ -414,6 +417,19 @@ impl OtlpSink {
         }
     }
 
+    fn attrs(&self, state: &State) -> Vec<KeyValue> {
+        let mut attributes = self.common.clone();
+        let session = state
+            .run
+            .as_ref()
+            .and_then(|run| run.session_id.as_ref())
+            .or(self.run.session_id.as_ref());
+        if let Some(session) = session {
+            attributes.push(KeyValue::new("session.id", session.clone()));
+        }
+        attributes
+    }
+
     fn root(&self, state: &mut State) -> Context {
         if let Some(root) = &state.root {
             return root.clone();
@@ -423,17 +439,28 @@ impl OtlpSink {
             RunKind::Conversation => "agent",
             RunKind::Draft => "chain",
         };
-        let mut attributes = self.common.clone();
+        let name = state
+            .run
+            .as_ref()
+            .map_or(self.run.name.as_str(), |run| run.name.as_str())
+            .to_string();
+        let input = state
+            .run
+            .as_ref()
+            .and_then(|run| run.input.as_ref())
+            .or(self.run.input.as_ref())
+            .cloned();
+        let mut attributes = self.attrs(state);
         attributes.push(KeyValue::new("langfuse.observation.type", kind));
         attributes.push(KeyValue::new(
             "graph.run.kind",
             format!("{:?}", self.run.kind).to_lowercase(),
         ));
-        if let Some(input) = &self.run.input {
+        if let Some(input) = &input {
             attributes.extend(self.json_attribute("langfuse.observation.input", input));
         }
         let span = self.tracer.build_with_context(
-            SpanBuilder::from_name(self.run.name.clone())
+            SpanBuilder::from_name(name)
                 .with_start_time(SystemTime::now())
                 .with_attributes(attributes),
             &Context::new(),
@@ -524,7 +551,7 @@ impl EventSink for OtlpSink {
         let key = qualify(call_stack, path);
         let mut state = self.state.lock().unwrap();
         let parent = self.parent_for(&mut state, Some(&key));
-        let mut attributes = self.common.clone();
+        let mut attributes = self.attrs(&state);
         attributes.extend([
             KeyValue::new("langfuse.observation.type", observation_type(tool)),
             KeyValue::new("graph.step.path", key.clone()),
@@ -581,7 +608,7 @@ impl EventSink for OtlpSink {
             return;
         }
         let parent = self.root(&mut state);
-        let mut attributes = self.common.clone();
+        let mut attributes = self.attrs(&state);
         attributes.extend([
             KeyValue::new("langfuse.observation.type", observation_type(name)),
             KeyValue::new("graph.tool.name", name.to_string()),
@@ -628,7 +655,7 @@ impl EventSink for OtlpSink {
             "cache_read_input_tokens": usage.cache_read_input_tokens,
             "cache_creation_input_tokens": usage.cache_creation_input_tokens,
         });
-        let mut attributes = self.common.clone();
+        let mut attributes = self.attrs(&state);
         attributes.extend([
             KeyValue::new("langfuse.observation.type", "generation"),
             KeyValue::new("gen_ai.operation.name", "chat"),
@@ -673,6 +700,13 @@ impl EventSink for OtlpSink {
             &parent,
         );
         span.end_with_timestamp(now);
+    }
+
+    fn run_started(&self, run: &RunStart) {
+        let mut state = self.state.lock().unwrap();
+        self.end_all(&mut state);
+        state.run = Some(run.clone());
+        self.root(&mut state);
     }
 
     fn run_finished(&self, output: &Value, is_error: bool) {
@@ -1034,6 +1068,69 @@ mod tests {
         assert_eq!(step.parent_span_id, call.span_context.span_id());
         let reshape = by_name(&spans, "builtin__reshape");
         assert_eq!(reshape.parent_span_id, root.span_context.span_id());
+    }
+
+    #[test]
+    fn each_run_started_opens_a_fresh_trace_in_the_session() {
+        let run = RunInfo::conversation("workbench", None).session(Some("wb-1".into()));
+        let (sink, exporter, provider) = harness(run, true);
+        sink.run_started(&RunStart {
+            name: "sprint_analysis".into(),
+            session_id: None,
+            input: Some(json!({"team": "core"})),
+        });
+        sink.step_started(&[], "E0", "user__x", &json!({}));
+        sink.step_finished(&[], "E0", "user__x", &json!(1), false, Duration::ZERO);
+        sink.run_finished(&json!({"ok": true}), false);
+        sink.usage_summary(&UsageReport::default());
+
+        sink.run_started(&RunStart {
+            name: "workbench".into(),
+            session_id: Some("thread-9".into()),
+            input: Some(json!("fix E0")),
+        });
+        sink.tool_started("workbench__validate_plan", &json!({}));
+        sink.tool_finished("workbench__validate_plan", Duration::ZERO, false);
+        sink.run_finished(&json!("done"), false);
+        drop(sink);
+        provider.force_flush().unwrap();
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let first = by_name(&spans, "sprint_analysis");
+        let second = by_name(&spans, "workbench");
+        assert_ne!(
+            first.span_context.trace_id(),
+            second.span_context.trace_id(),
+            "one trace per run"
+        );
+        assert_eq!(
+            attribute(first, "langfuse.observation.input"),
+            Some(&OtelValue::from(r#"{"team":"core"}"#))
+        );
+        assert_eq!(
+            attribute(first, "langfuse.observation.output"),
+            Some(&OtelValue::from(r#"{"ok":true}"#))
+        );
+        let step = by_name(&spans, "E0 user__x");
+        assert_eq!(step.parent_span_id, first.span_context.span_id());
+        assert_eq!(
+            attribute(step, "session.id"),
+            Some(&OtelValue::from("wb-1"))
+        );
+        assert_eq!(
+            attribute(first, "session.id"),
+            Some(&OtelValue::from("wb-1"))
+        );
+        let tool = by_name(&spans, "workbench__validate_plan");
+        assert_eq!(tool.parent_span_id, second.span_context.span_id());
+        assert_eq!(
+            attribute(tool, "session.id"),
+            Some(&OtelValue::from("thread-9"))
+        );
+        assert_eq!(
+            attribute(second, "session.id"),
+            Some(&OtelValue::from("thread-9"))
+        );
     }
 
     #[test]

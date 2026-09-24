@@ -153,13 +153,15 @@ async fn run_plan_workbench(
 
     // Plan runs report through their own sink; gated runs add a UiGate.
     let user = runtime.config.user.name.as_deref();
+    let session = Some(uuid::Uuid::new_v4().simple().to_string());
     let run_sink: Arc<dyn EventSink> = crate::telemetry::attach(
         Arc::new(chat::ChannelSink::plan_run(tx.clone())),
         crate::telemetry::RunInfo::plan_run(
             doc.as_ref()
                 .map_or("workbench", |doc| doc.identifier.as_str()),
         )
-        .user(user),
+        .user(user)
+        .session(session.clone()),
     );
     // Either ChannelSink would do: both feed the same channel, and usage is
     // the one event they report identically regardless of kind.
@@ -173,7 +175,7 @@ async fn run_plan_workbench(
     // The chat agent: normal catalog + the workbench draft tools.
     let agent_sink: Arc<dyn EventSink> = crate::telemetry::attach(
         Arc::new(chat::ChannelSink::agent(tx.clone())),
-        crate::telemetry::RunInfo::conversation("workbench", None).user(user),
+        crate::telemetry::RunInfo::conversation("workbench", session).user(user),
     );
     let toolbox = runtime.toolbox(&store, agent_sink.clone()).await?;
     // The workbench doesn't yet support open-ended sub-tasks, so hide

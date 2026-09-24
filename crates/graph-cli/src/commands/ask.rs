@@ -22,12 +22,14 @@ pub async fn run(args: AskArgs) -> Result<()> {
     let existing = resolve_thread(store.as_ref(), args.thread).await?;
 
     let stream_text = !args.json && !args.no_stream;
-    let run = crate::telemetry::RunInfo::conversation(
-        "ask",
-        existing.as_ref().map(|thread| thread.id.clone()),
-    )
-    .user(runtime.config.user.name.as_deref())
-    .input(serde_json::Value::String(message.clone()));
+    let created = existing.is_none();
+    let thread = match existing {
+        Some(thread) => thread,
+        None => store.create_thread(&title_from(&message)).await?,
+    };
+    let run = crate::telemetry::RunInfo::conversation("ask", Some(thread.id.clone()))
+        .user(runtime.config.user.name.as_deref())
+        .input(serde_json::Value::String(message.clone()));
     let events: Arc<dyn graph_core::EventSink> = if args.json {
         // Quiet unless JSONL events were explicitly requested.
         if std::env::var("GRAPH_EVENTS").as_deref() == Ok("jsonl") {
@@ -48,9 +50,10 @@ pub async fn run(args: AskArgs) -> Result<()> {
     let toolbox = runtime.toolbox_with(&store, events.clone(), hooks).await?;
     let agent = runtime.agent(events.clone(), toolbox)?;
 
-    let mut messages = match &existing {
-        Some(thread) => store.load_messages(&thread.id).await?,
-        None => Vec::new(),
+    let mut messages = if created {
+        Vec::new()
+    } else {
+        store.load_messages(&thread.id).await?
     };
     let pre_len = messages.len();
     messages.push(ChatMessage::User {
@@ -67,13 +70,14 @@ pub async fn run(args: AskArgs) -> Result<()> {
     // spent tokens in the solver and inside that plan's steps too, and the
     // agent's own tally cannot see any of it.
     let usage = runtime.usage.take();
+    if !usage.is_empty() {
+        events.usage_summary(&usage);
+    }
+    if created && result.is_err() {
+        let _ = store.delete_thread(&thread.id).await;
+    }
     let outcome = result?;
 
-    // Persist only successful turns; a new thread is created on demand.
-    let thread = match existing {
-        Some(thread) => thread,
-        None => store.create_thread(&title_from(&message)).await?,
-    };
     store
         .append_messages(&thread.id, &messages[pre_len..])
         .await?;

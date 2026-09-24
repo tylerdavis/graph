@@ -21,6 +21,7 @@ pub trait EventSink: Send + Sync {
     /// `plan run --json` embeds.
     fn usage_summary(&self, _report: &UsageReport) {}
     fn run_finished(&self, _output: &Value, _is_error: bool) {}
+    fn run_started(&self, _run: &RunStart) {}
     /// A tool invocation is starting.
     fn tool_started(&self, _name: &str, _args: &Value) {}
     /// A tool invocation finished.
@@ -75,6 +76,13 @@ pub trait EventSink: Send + Sync {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RunStart {
+    pub name: String,
+    pub session_id: Option<String>,
+    pub input: Option<Value>,
+}
+
 /// Discards everything (used by `--json` and tests).
 pub struct NullSink;
 
@@ -107,6 +115,10 @@ impl EventSink for TeeSink {
         self.sinks
             .iter()
             .for_each(|s| s.run_finished(output, is_error));
+    }
+
+    fn run_started(&self, run: &RunStart) {
+        self.sinks.iter().for_each(|s| s.run_started(run));
     }
 
     fn tool_started(&self, name: &str, args: &Value) {
