@@ -274,6 +274,77 @@ impl BodyError {
     }
 }
 
+impl Pipeline {
+    async fn run_agent_body(
+        &self,
+        path: &super::StepPath,
+        input: &Map<String, Value>,
+        scope: &Map<String, Value>,
+    ) -> Result<super::agent::AgentRun, super::agent::AgentFail> {
+        let path_text = path.to_string();
+        self.events.step_started(
+            &self.call_stack,
+            &path_text,
+            AGENT_TOOL,
+            &Value::Object(input.clone()),
+        );
+        let started = std::time::Instant::now();
+        let run = self.run_agent_scoped(path, input, scope).await;
+        let (result, is_error) = match &run {
+            Ok(run) => (run.result.clone(), false),
+            Err(super::agent::AgentFail::Empty(error)) => {
+                (json!({"error": error.to_string(), "emptyData": true}), true)
+            }
+            Err(super::agent::AgentFail::Failed(message)) => (json!({"error": message}), true),
+            Err(super::agent::AgentFail::Aborted(error)) => {
+                (json!({"error": "aborted", "cause": error}), true)
+            }
+        };
+        self.events.step_finished(
+            &self.call_stack,
+            &path_text,
+            AGENT_TOOL,
+            &result,
+            is_error,
+            started.elapsed(),
+        );
+        run
+    }
+
+    async fn run_ask_body(
+        &self,
+        path: &super::StepPath,
+        input: &Map<String, Value>,
+        scope: &Map<String, Value>,
+    ) -> Result<Value, super::ask::AskFail> {
+        let path_text = path.to_string();
+        self.events.step_started(
+            &self.call_stack,
+            &path_text,
+            ASK_TOOL,
+            &Value::Object(input.clone()),
+        );
+        let started = std::time::Instant::now();
+        let run = self.run_ask_scoped(path, input, scope).await;
+        let (result, is_error) = match &run {
+            Ok(value) => (value.clone(), false),
+            Err(super::ask::AskFail::Empty(error)) => {
+                (json!({"error": error.to_string(), "emptyData": true}), true)
+            }
+            Err(super::ask::AskFail::Failed(message)) => (json!({"error": message}), true),
+        };
+        self.events.step_finished(
+            &self.call_stack,
+            &path_text,
+            ASK_TOOL,
+            &result,
+            is_error,
+            started.elapsed(),
+        );
+        run
+    }
+}
+
 /// Map an agent step's failure onto the body error channel. `Empty` stays
 /// a `Render` error rather than becoming a tool failure: data running out
 /// degrades and never replans, at any depth.
@@ -355,7 +426,7 @@ impl Pipeline {
                     // exactly as a body call would. Rendering the whole
                     // input up front — as the branches below need — would
                     // undo that deferral, so it happens after this check.
-                    return match self.run_agent_scoped(&path, &call.input, &scope).await {
+                    return match self.run_agent_body(&path, &call.input, &scope).await {
                         Ok(run) => Ok(BodyRun {
                             result: run.result,
                             steps_executed: 1 + run.tool_calls,
@@ -373,7 +444,7 @@ impl Pipeline {
                     // Like `agent`, an ask renders its own fields against
                     // this body's scope so {{item}}/{{index}}/
                     // {{accumulator}} reach the question and the default.
-                    return match self.run_ask_scoped(&path, &call.input, &scope).await {
+                    return match self.run_ask_body(&path, &call.input, &scope).await {
                         Ok(result) => Ok(BodyRun {
                             result,
                             steps_executed: 1,
@@ -449,7 +520,7 @@ impl Pipeline {
                     // scope, so — unlike every other body step — its input
                     // is not rendered up front.
                     let value = if body_step.tool_name == AGENT_TOOL {
-                        match self.run_agent_scoped(&path, &body_step.input, &scope).await {
+                        match self.run_agent_body(&path, &body_step.input, &scope).await {
                             Ok(run) => {
                                 steps_executed += run.tool_calls;
                                 run.result
@@ -464,7 +535,7 @@ impl Pipeline {
                             }
                         }
                     } else if body_step.tool_name == ASK_TOOL {
-                        match self.run_ask_scoped(&path, &body_step.input, &scope).await {
+                        match self.run_ask_body(&path, &body_step.input, &scope).await {
                             Ok(result) => result,
                             Err(fail) => {
                                 return Err(ask_body_error(

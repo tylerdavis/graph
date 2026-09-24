@@ -2,7 +2,7 @@
 
 mod events;
 
-pub use events::{EventSink, NullSink};
+pub use events::{EventSink, NullSink, RunStart, TeeSink};
 
 use crate::tools::{ToolOutcome, ToolRegistry};
 use futures::StreamExt;

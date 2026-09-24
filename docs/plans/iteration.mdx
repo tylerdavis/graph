@@ -99,7 +99,7 @@ Body steps count in `steps_executed` — a map over 3 items with a two-step body
 | non-array `over` | plan defect: hard error (your plans) or replan (`plan_and_execute`) |
 | ordering | `results` is always in input order, whatever `concurrency` |
 | item fails | step fails; in-flight items drain, unstarted items skip |
-| trace events | one `map`/`reduce` event bracketing the run, plus normal tool events per item |
+| trace events | one `map`/`reduce` event bracketing the run, plus normal tool events per item; an `agent` or `ask` body call reports its own step at the item path (`E1/do.2`), so its rounds and tool calls have a step to belong to |
 | `steps_executed` / envelopes | the step counts as 1, plus 1 per body call or body step per item |
 | cost | 0 inference — plus whatever the body calls |
 

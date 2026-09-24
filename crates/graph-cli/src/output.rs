@@ -213,22 +213,16 @@ impl EventSink for JsonlSink {
         self.emit(serde_json::json!({"event": "synthesizing"}));
     }
 
-    fn llm_call(
-        &self,
-        site: &str,
-        model: &str,
-        usage: &graph_llm::types::Usage,
-        elapsed: Duration,
-    ) {
+    fn llm_call(&self, call: &graph_core::usage::LlmCallEvent) {
         self.emit(serde_json::json!({
             "event": "llm_call",
-            "site": site,
-            "model": model,
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "cache_creation_input_tokens": usage.cache_creation_input_tokens,
-            "cache_read_input_tokens": usage.cache_read_input_tokens,
-            "ms": elapsed.as_millis() as u64,
+            "site": call.site,
+            "model": call.model,
+            "input_tokens": call.usage.input_tokens,
+            "output_tokens": call.usage.output_tokens,
+            "cache_creation_input_tokens": call.usage.cache_creation_input_tokens,
+            "cache_read_input_tokens": call.usage.cache_read_input_tokens,
+            "ms": call.elapsed.as_millis() as u64,
         }));
     }
 
@@ -252,14 +246,19 @@ pub fn jsonl_events() -> bool {
 /// sink (including `GRAPH_EVENTS=github`, which only adds failure
 /// annotations — see [`gha_annotations`]). `solver_stdout` only applies to
 /// the TTY sink (plan run).
-pub fn make_sink(quiet_text: bool, solver_stdout: bool) -> std::sync::Arc<dyn EventSink> {
-    if jsonl_events() {
+pub fn make_sink(
+    quiet_text: bool,
+    solver_stdout: bool,
+    run: crate::telemetry::RunInfo,
+) -> std::sync::Arc<dyn EventSink> {
+    let sink: std::sync::Arc<dyn EventSink> = if jsonl_events() {
         std::sync::Arc::new(JsonlSink::new(quiet_text))
     } else if solver_stdout {
         std::sync::Arc::new(TtySink::for_plan_run())
     } else {
         std::sync::Arc::new(TtySink::new(quiet_text))
-    }
+    };
+    crate::telemetry::attach(sink, run)
 }
 
 /// Surface a failure to the CI system, if an annotation mode is active.

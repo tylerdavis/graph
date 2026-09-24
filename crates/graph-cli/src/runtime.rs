@@ -52,7 +52,10 @@ impl Runtime {
         // The meter has to be installed before anything resolves a provider —
         // resolution is when providers get wrapped, so a meter added later
         // would silently miss whatever was already handed out.
-        let usage = Arc::new(UsageLedger::new(loaded.config.pricing.clone()));
+        let usage = Arc::new(
+            UsageLedger::new(loaded.config.pricing.clone())
+                .with_content_capture(crate::telemetry::captures_content()),
+        );
         let router = ModelRouter::from_config(&loaded.config)?.with_meter(usage.clone());
         let registry = Arc::new(McpManager::new(loaded.config.mcp.clone()));
         Ok(Self {

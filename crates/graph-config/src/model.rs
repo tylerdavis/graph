@@ -31,6 +31,8 @@ pub struct Config {
     pub prompts: PromptConfig,
     #[serde(default)]
     pub workbench: WorkbenchConfig,
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
     /// Per-model token prices, e.g. `[pricing."claude-sonnet-5"]`. Keyed by
     /// the model id as written in `[models]` — that is what goes on the wire.
     /// Absent prices mean usage is reported in tokens with no dollar figure.
@@ -96,6 +98,107 @@ pub struct WorkbenchConfig {
     /// `<data_dir>/workbench.log`; the `GRAPH_WORKBENCH_LOG` env var wins
     /// over both.
     pub log_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TelemetryConfig {
+    pub endpoint: Option<String>,
+    pub protocol: TelemetryProtocol,
+    pub timeout_secs: Option<u64>,
+    pub service_name: Option<String>,
+    pub headers: BTreeMap<String, String>,
+    pub resource: BTreeMap<String, String>,
+    pub capture_content: bool,
+    pub logs: bool,
+    #[serde(skip)]
+    pub missing_env: Vec<MissingEnv>,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            protocol: TelemetryProtocol::default(),
+            timeout_secs: None,
+            service_name: None,
+            headers: BTreeMap::new(),
+            resource: BTreeMap::new(),
+            capture_content: true,
+            logs: false,
+            missing_env: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TelemetryProtocol {
+    #[default]
+    #[serde(rename = "http/protobuf")]
+    HttpProtobuf,
+    #[serde(rename = "http/json")]
+    HttpJson,
+}
+
+impl TelemetryConfig {
+    pub const DEFAULT_SERVICE_NAME: &'static str = "graph";
+    pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
+
+    pub fn with_env(&self, env: &dyn Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let mut resolved = self.clone();
+        if let Some(endpoint) = env("OTEL_EXPORTER_OTLP_ENDPOINT").filter(|v| !v.is_empty()) {
+            resolved.endpoint = Some(endpoint);
+        }
+        if let Some(protocol) = env("OTEL_EXPORTER_OTLP_PROTOCOL") {
+            resolved.protocol = match protocol.as_str() {
+                "http/protobuf" => TelemetryProtocol::HttpProtobuf,
+                "http/json" => TelemetryProtocol::HttpJson,
+                other => {
+                    let problem = format!(
+                        "OTEL_EXPORTER_OTLP_PROTOCOL must be http/protobuf or http/json, got {other:?}"
+                    );
+                    return Err(problem);
+                }
+            };
+        }
+        if let Some(timeout) = env("OTEL_EXPORTER_OTLP_TIMEOUT") {
+            let millis: u64 = timeout.trim().parse().map_err(|_| {
+                format!(
+                    "OTEL_EXPORTER_OTLP_TIMEOUT must be a number of milliseconds, got {timeout:?}"
+                )
+            })?;
+            resolved.timeout_secs = Some(millis.div_ceil(1000).max(1));
+        }
+        if let Some(name) = env("OTEL_SERVICE_NAME").filter(|v| !v.is_empty()) {
+            resolved.service_name = Some(name);
+        }
+        if let Some(headers) = env("OTEL_EXPORTER_OTLP_HEADERS") {
+            for pair in headers.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+                let (key, value) = pair.split_once('=').ok_or_else(|| {
+                    format!("OTEL_EXPORTER_OTLP_HEADERS entry {pair:?} is not key=value")
+                })?;
+                resolved
+                    .headers
+                    .insert(key.trim().to_string(), value.trim().to_string());
+            }
+        }
+        Ok(resolved)
+    }
+
+    pub fn service_name(&self) -> &str {
+        self.service_name
+            .as_deref()
+            .unwrap_or(Self::DEFAULT_SERVICE_NAME)
+    }
+
+    pub fn timeout_secs(&self) -> u64 {
+        self.timeout_secs.unwrap_or(Self::DEFAULT_TIMEOUT_SECS)
+    }
+
+    pub fn signal_url(&self, signal: &str) -> Option<String> {
+        let base = self.endpoint.as_deref()?.trim_end_matches('/');
+        Some(format!("{base}/{signal}"))
+    }
 }
 
 /// Runtime-state storage. Defaults to plain files under `data_dir`, so a

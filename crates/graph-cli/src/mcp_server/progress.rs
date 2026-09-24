@@ -167,7 +167,7 @@ impl EventSink for ProgressSink {
         self.emit("synthesizing the answer".into());
     }
 
-    fn llm_call(&self, site: &str, _model: &str, usage: &Usage, _elapsed: Duration) {
+    fn llm_call(&self, call: &graph_core::usage::LlmCallEvent) {
         // Cumulative rather than per-call deltas: a client that samples the
         // notification stream still sees the current total, and one line per
         // inference sits at the same granularity as the step events already
@@ -175,11 +175,12 @@ impl EventSink for ProgressSink {
         let (calls, total) = {
             let mut spend = self.spend.lock().unwrap();
             spend.0 += 1;
-            spend.1.add(usage);
+            spend.1.add(&call.usage);
             (spend.0, spend.1)
         };
         self.emit(format!(
-            "{site} — {calls} call(s), {} in / {} out so far",
+            "{} — {calls} call(s), {} in / {} out so far",
+            call.site,
             compact_tokens(total.total_input_tokens()),
             compact_tokens(total.output_tokens),
         ));
@@ -255,12 +256,26 @@ mod tests {
         }
     }
 
+    fn call(site: &str, usage: Usage) -> graph_core::usage::LlmCallEvent {
+        graph_core::usage::LlmCallEvent {
+            site: site.into(),
+            role: "chat".into(),
+            provider: "p".into(),
+            model: "m".into(),
+            usage,
+            elapsed: Duration::from_millis(1),
+            cost_usd: None,
+            input: None,
+            output: None,
+        }
+    }
+
     #[tokio::test]
     async fn spend_notifications_accumulate_across_calls() {
         let (sink, mut rx) = sink();
 
-        sink.llm_call("E0", "m", &tokens(1_000, 100), Duration::from_millis(1));
-        sink.llm_call("E1", "m", &tokens(2_000, 200), Duration::from_millis(1));
+        sink.llm_call(&call("E0", tokens(1_000, 100)));
+        sink.llm_call(&call("E1", tokens(2_000, 200)));
 
         let first = rx.try_recv().unwrap();
         let second = rx.try_recv().unwrap();

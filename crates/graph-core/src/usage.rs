@@ -105,6 +105,7 @@ pub struct UsageLedger {
     /// while the sink is chosen per command — and `record` only ever has
     /// `&self`.
     events: Mutex<Option<std::sync::Arc<dyn crate::EventSink>>>,
+    capture_content: bool,
 }
 
 impl UsageLedger {
@@ -113,7 +114,13 @@ impl UsageLedger {
             calls: Mutex::new(Vec::new()),
             prices,
             events: Mutex::new(None),
+            capture_content: false,
         }
+    }
+
+    pub fn with_content_capture(mut self, capture: bool) -> Self {
+        self.capture_content = capture;
+        self
     }
 
     /// Stream each call to `sink` as it lands, in addition to tallying it.
@@ -235,10 +242,20 @@ fn rank_model(model: &ModelUsage) -> f64 {
 impl UsageMeter for UsageLedger {
     fn record(&self, call: LlmCall) {
         let site = CallSite::current();
-        let group = site.group();
+        let event = LlmCallEvent {
+            site: site.group(),
+            role: site.role.clone(),
+            cost_usd: self.cost(&call.model, &call.usage),
+            provider: call.provider.clone(),
+            model: call.model.clone(),
+            usage: call.usage,
+            elapsed: call.elapsed,
+            input: call.input,
+            output: call.output,
+        };
         self.calls.lock().unwrap().push(CallRecord {
             provider: call.provider,
-            model: call.model.clone(),
+            model: call.model,
             site,
             usage: call.usage,
         });
@@ -246,9 +263,26 @@ impl UsageMeter for UsageLedger {
         // one that touched the ledger would deadlock on `calls`.
         let sink = self.events.lock().unwrap().clone();
         if let Some(sink) = sink {
-            sink.llm_call(&group, &call.model, &call.usage, call.elapsed);
+            sink.llm_call(&event);
         }
     }
+
+    fn captures_content(&self) -> bool {
+        self.capture_content
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LlmCallEvent {
+    pub site: String,
+    pub role: String,
+    pub provider: String,
+    pub model: String,
+    pub usage: Usage,
+    pub elapsed: std::time::Duration,
+    pub cost_usd: Option<f64>,
+    pub input: Option<serde_json::Value>,
+    pub output: Option<serde_json::Value>,
 }
 
 /// What a run spent.
@@ -359,7 +393,47 @@ mod tests {
             model: model.into(),
             usage,
             elapsed: Duration::from_millis(1),
+            input: None,
+            output: None,
         }
+    }
+
+    #[derive(Default)]
+    struct Captured(Mutex<Vec<LlmCallEvent>>);
+
+    impl crate::EventSink for Captured {
+        fn llm_call(&self, call: &LlmCallEvent) {
+            self.0.lock().unwrap().push(call.clone());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_llm_call_event_carries_attribution_price_and_content() {
+        let ledger = Arc::new(priced_ledger().with_content_capture(true));
+        let sink = Arc::new(Captured::default());
+        ledger.attach_events(sink.clone());
+        assert!(ledger.captures_content());
+
+        let mut metered = call("sonnet", tokens(1_000_000, 0));
+        metered.input = Some(serde_json::json!({"system": "s"}));
+        metered.output = Some(serde_json::json!({"content": "c"}));
+        CallSite::role("solver")
+            .at("E2")
+            .in_plans(&["outer".to_string()])
+            .scope(async { ledger.record(metered) })
+            .await;
+
+        let events = sink.0.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.site, "outer/E2");
+        assert_eq!(event.role, "solver");
+        assert_eq!(event.provider, "anthropic");
+        assert_eq!(event.model, "sonnet");
+        assert_eq!(event.cost_usd, Some(3.0));
+        assert_eq!(event.input.as_ref().unwrap()["system"], "s");
+        assert_eq!(event.output.as_ref().unwrap()["content"], "c");
+        assert!(!UsageLedger::unpriced().captures_content());
     }
 
     fn tokens(input: u64, output: u64) -> Usage {

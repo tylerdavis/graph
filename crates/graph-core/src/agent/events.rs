@@ -1,9 +1,9 @@
 //! Progress events emitted by the agent loop. Sinks render them for a TTY,
 //! as JSONL, or (later) into a TUI.
 
-use crate::usage::UsageReport;
-use graph_llm::types::Usage;
+use crate::usage::{LlmCallEvent, UsageReport};
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub trait EventSink: Send + Sync {
@@ -16,10 +16,12 @@ pub trait EventSink: Send + Sync {
     /// Emitted once per *billable* call, which is not the same as once per
     /// step: an agent step emits one per round plus one per schema repair,
     /// and a failed-over call reports the model that actually answered.
-    fn llm_call(&self, _site: &str, _model: &str, _usage: &Usage, _elapsed: Duration) {}
+    fn llm_call(&self, _call: &LlmCallEvent) {}
     /// The run's totals, once, after the last step. Carries the same report
     /// `plan run --json` embeds.
     fn usage_summary(&self, _report: &UsageReport) {}
+    fn run_finished(&self, _output: &Value, _is_error: bool) {}
+    fn run_started(&self, _run: &RunStart) {}
     /// A tool invocation is starting.
     fn tool_started(&self, _name: &str, _args: &Value) {}
     /// A tool invocation finished.
@@ -74,7 +76,165 @@ pub trait EventSink: Send + Sync {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RunStart {
+    pub name: String,
+    pub session_id: Option<String>,
+    pub input: Option<Value>,
+}
+
 /// Discards everything (used by `--json` and tests).
 pub struct NullSink;
 
 impl EventSink for NullSink {}
+
+pub struct TeeSink {
+    sinks: Vec<Arc<dyn EventSink>>,
+}
+
+impl TeeSink {
+    pub fn new(sinks: Vec<Arc<dyn EventSink>>) -> Self {
+        Self { sinks }
+    }
+}
+
+impl EventSink for TeeSink {
+    fn text_delta(&self, text: &str) {
+        self.sinks.iter().for_each(|s| s.text_delta(text));
+    }
+
+    fn llm_call(&self, call: &LlmCallEvent) {
+        self.sinks.iter().for_each(|s| s.llm_call(call));
+    }
+
+    fn usage_summary(&self, report: &UsageReport) {
+        self.sinks.iter().for_each(|s| s.usage_summary(report));
+    }
+
+    fn run_finished(&self, output: &Value, is_error: bool) {
+        self.sinks
+            .iter()
+            .for_each(|s| s.run_finished(output, is_error));
+    }
+
+    fn run_started(&self, run: &RunStart) {
+        self.sinks.iter().for_each(|s| s.run_started(run));
+    }
+
+    fn tool_started(&self, name: &str, args: &Value) {
+        self.sinks.iter().for_each(|s| s.tool_started(name, args));
+    }
+
+    fn tool_finished(&self, name: &str, elapsed: Duration, is_error: bool) {
+        self.sinks
+            .iter()
+            .for_each(|s| s.tool_finished(name, elapsed, is_error));
+    }
+
+    fn iteration(&self, n: u32) {
+        self.sinks.iter().for_each(|s| s.iteration(n));
+    }
+
+    fn replanning(&self, attempt: u32) {
+        self.sinks.iter().for_each(|s| s.replanning(attempt));
+    }
+
+    fn planning(&self) {
+        self.sinks.iter().for_each(|s| s.planning());
+    }
+
+    fn synthesizing(&self) {
+        self.sinks.iter().for_each(|s| s.synthesizing());
+    }
+
+    fn solver_delta(&self, text: &str) {
+        self.sinks.iter().for_each(|s| s.solver_delta(text));
+    }
+
+    fn step_started(&self, call_stack: &[String], path: &str, tool: &str, input: &Value) {
+        self.sinks
+            .iter()
+            .for_each(|s| s.step_started(call_stack, path, tool, input));
+    }
+
+    fn step_finished(
+        &self,
+        call_stack: &[String],
+        path: &str,
+        tool: &str,
+        result: &Value,
+        is_error: bool,
+        elapsed: Duration,
+    ) {
+        self.sinks
+            .iter()
+            .for_each(|s| s.step_finished(call_stack, path, tool, result, is_error, elapsed));
+    }
+
+    fn draft_outline(&self, items: &Value) {
+        self.sinks.iter().for_each(|s| s.draft_outline(items));
+    }
+
+    fn draft_step_started(&self, index: usize, summary: &str) {
+        self.sinks
+            .iter()
+            .for_each(|s| s.draft_step_started(index, summary));
+    }
+
+    fn draft_step_finished(&self, index: usize, step: &Value, problems: &[String], attempt: u32) {
+        self.sinks
+            .iter()
+            .for_each(|s| s.draft_step_finished(index, step, problems, attempt));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Log(Mutex<Vec<String>>);
+
+    impl EventSink for Log {
+        fn tool_started(&self, name: &str, _args: &Value) {
+            self.0.lock().unwrap().push(format!("start {name}"));
+        }
+        fn step_finished(
+            &self,
+            call_stack: &[String],
+            path: &str,
+            _tool: &str,
+            _result: &Value,
+            is_error: bool,
+            _elapsed: Duration,
+        ) {
+            self.0.lock().unwrap().push(format!(
+                "finish {}/{path} err={is_error}",
+                call_stack.join("/")
+            ));
+        }
+    }
+
+    #[test]
+    fn a_tee_reaches_every_sink_in_order() {
+        let a = Arc::new(Log::default());
+        let b = Arc::new(Log::default());
+        let tee = TeeSink::new(vec![a.clone(), b.clone()]);
+        tee.tool_started("user__git_log", &Value::Null);
+        tee.step_finished(
+            &["inner".into()],
+            "E1",
+            "user__git_log",
+            &Value::Null,
+            true,
+            Duration::ZERO,
+        );
+        let expected = vec![
+            "start user__git_log".to_string(),
+            "finish inner/E1 err=true".to_string(),
+        ];
+        assert_eq!(*a.0.lock().unwrap(), expected);
+        assert_eq!(*b.0.lock().unwrap(), expected);
+    }
+}

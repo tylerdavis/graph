@@ -1,0 +1,16 @@
+version = 3
+
+[telemetry]
+endpoint = "https://cloud.langfuse.com/api/public/otel"
+protocol = "http/json"
+timeout_secs = 5
+service_name = "graph-ci"
+capture_content = true
+logs = true
+
+[telemetry.headers]
+Authorization = "Basic ${GRAPH_FIXTURE_LANGFUSE_AUTH}"
+"x-langfuse-ingestion-version" = "4"
+
+[telemetry.resource]
+"deployment.environment" = "ci"

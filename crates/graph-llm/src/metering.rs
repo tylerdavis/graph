@@ -23,6 +23,7 @@ use crate::types::{ChatRequest, ChatResponse, EventStream, StreamEvent, Usage};
 use crate::{ChatProvider, LlmError};
 use async_trait::async_trait;
 use futures::StreamExt;
+use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -35,12 +36,38 @@ pub struct LlmCall {
     pub model: String,
     pub usage: Usage,
     pub elapsed: Duration,
+    pub input: Option<Value>,
+    pub output: Option<Value>,
+}
+
+pub fn request_content(req: &ChatRequest) -> Value {
+    json!({
+        "system": req.system,
+        "messages": req.messages,
+        "tools": req.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+        "temperature": req.temperature,
+        "max_tokens": req.max_tokens,
+        "response_schema": req.response_schema.as_ref().map(|s| s.name.as_str()),
+    })
+}
+
+pub fn response_content(response: &ChatResponse) -> Value {
+    json!({
+        "content": response.content,
+        "tool_calls": response.tool_calls,
+        "structured": response.structured,
+        "stop_reason": response.stop_reason,
+    })
 }
 
 /// Receives every metered call. Implementors aggregate; they must not fail —
 /// a bookkeeping problem never breaks an inference.
 pub trait UsageMeter: Send + Sync {
     fn record(&self, call: LlmCall);
+
+    fn captures_content(&self) -> bool {
+        false
+    }
 }
 
 /// Wraps a provider and reports each call's usage to a meter.
@@ -59,13 +86,8 @@ impl MeteredProvider {
         }
     }
 
-    fn record(&self, model: String, usage: Usage, started: Instant) {
-        self.meter.record(LlmCall {
-            provider: self.provider.clone(),
-            model,
-            usage,
-            elapsed: started.elapsed(),
-        });
+    fn capture(&self, req: &ChatRequest) -> Option<Value> {
+        self.meter.captures_content().then(|| request_content(req))
     }
 }
 
@@ -74,14 +96,24 @@ impl ChatProvider for MeteredProvider {
     async fn chat(&self, req: ChatRequest) -> Result<ChatResponse, LlmError> {
         let started = Instant::now();
         let model = req.model.clone();
+        let input = self.capture(&req);
         let response = self.inner.chat(req).await?;
-        self.record(model, response.usage, started);
+        let output = input.is_some().then(|| response_content(&response));
+        self.meter.record(LlmCall {
+            provider: self.provider.clone(),
+            model,
+            usage: response.usage,
+            elapsed: started.elapsed(),
+            input,
+            output,
+        });
         Ok(response)
     }
 
     async fn chat_stream(&self, req: ChatRequest) -> Result<EventStream, LlmError> {
         let started = Instant::now();
         let model = req.model.clone();
+        let input = self.capture(&req);
         let stream = self.inner.chat_stream(req).await?;
 
         // Usage only lands on the terminal `Completed` event, so the meter
@@ -98,6 +130,8 @@ impl ChatProvider for MeteredProvider {
                         model: model.clone(),
                         usage: response.usage,
                         elapsed: started.elapsed(),
+                        input: input.clone(),
+                        output: input.is_some().then(|| response_content(response)),
                     });
                 }
             })
@@ -202,6 +236,52 @@ mod tests {
         let calls = meter.calls();
         assert_eq!(calls.len(), 1, "exactly one record per completed stream");
         assert_eq!(calls[0].usage.input_tokens, 7);
+    }
+
+    #[derive(Default)]
+    struct ContentRecorder(Recorder);
+
+    impl UsageMeter for ContentRecorder {
+        fn record(&self, call: LlmCall) {
+            self.0.record(call);
+        }
+
+        fn captures_content(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn content_rides_along_only_when_the_meter_asks_for_it() {
+        let plain = Arc::new(Recorder::default());
+        let provider =
+            MeteredProvider::new(Arc::new(Fixed(usage(1, 1))), "p".into(), plain.clone());
+        provider.chat(request("m")).await.unwrap();
+        assert!(plain.calls()[0].input.is_none());
+        assert!(plain.calls()[0].output.is_none());
+
+        let capturing = Arc::new(ContentRecorder::default());
+        let provider =
+            MeteredProvider::new(Arc::new(Fixed(usage(1, 1))), "p".into(), capturing.clone());
+        let mut req = request("m");
+        req.system = "be brief".into();
+        req.messages.push(crate::types::ChatMessage::User {
+            content: "hi".into(),
+        });
+        provider.chat(req.clone()).await.unwrap();
+        let mut stream = provider.chat_stream(req).await.unwrap();
+        while stream.next().await.is_some() {}
+
+        let calls = capturing.0.calls();
+        assert_eq!(calls.len(), 2);
+        for call in &calls {
+            let input = call.input.as_ref().unwrap();
+            assert_eq!(input["system"], "be brief");
+            assert_eq!(input["messages"][0]["content"], "hi");
+            let output = call.output.as_ref().unwrap();
+            assert_eq!(output["content"], "answered as m");
+            assert_eq!(output["stop_reason"], "end_turn");
+        }
     }
 
     #[tokio::test]

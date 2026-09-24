@@ -99,10 +99,14 @@ fn init_debug_log(runtime: &Runtime, verbosity: u8) -> Option<std::path::PathBuf
         .ok()?;
     let filter = tracing_subscriber::EnvFilter::try_from_env("GRAPH_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_log_filter(verbosity)));
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::sync::Mutex::new(file))
         .with_ansi(false)
+        .finish()
+        .with(crate::telemetry::logs_layer())
         .try_init()
         .ok()?;
     tracing::info!(
@@ -151,7 +155,15 @@ async fn run_plan_workbench(
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
 
     // Plan runs report through their own sink; gated runs add a UiGate.
-    let run_sink: Arc<dyn EventSink> = Arc::new(chat::ChannelSink::plan_run(tx.clone()));
+    let user = runtime.config.user.name.as_deref();
+    let session = Some(uuid::Uuid::new_v4().simple().to_string());
+    let exporter = crate::telemetry::exporter(
+        crate::telemetry::RunInfo::conversation("workbench", session).user(user),
+    );
+    let run_sink: Arc<dyn EventSink> = crate::telemetry::tee(
+        Arc::new(chat::ChannelSink::plan_run(tx.clone())),
+        exporter.clone(),
+    );
     // Either ChannelSink would do: both feed the same channel, and usage is
     // the one event they report identically regardless of kind.
     runtime.usage.attach_events(run_sink.clone());
@@ -162,7 +174,8 @@ async fn run_plan_workbench(
     let draft = Arc::new(std::sync::Mutex::new(tools::DraftState::new(doc.clone())));
 
     // The chat agent: normal catalog + the workbench draft tools.
-    let agent_sink: Arc<dyn EventSink> = Arc::new(chat::ChannelSink::agent(tx.clone()));
+    let agent_sink: Arc<dyn EventSink> =
+        crate::telemetry::tee(Arc::new(chat::ChannelSink::agent(tx.clone())), exporter);
     let toolbox = runtime.toolbox(&store, agent_sink.clone()).await?;
     // The workbench doesn't yet support open-ended sub-tasks, so hide
     // `plan_and_execute` from both the chat agent's tool list and the

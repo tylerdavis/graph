@@ -17,7 +17,7 @@ pub mod user_tools;
 #[cfg(test)]
 mod user_tools_tests;
 
-pub use agent::{Agent, AgentError, EventSink, NullSink, TurnOutcome};
+pub use agent::{Agent, AgentError, EventSink, NullSink, RunStart, TeeSink, TurnOutcome};
 pub use store::{Store, StoreError, ThreadMeta, ToolShape};
 pub use tools::{
     CompositeRegistry, ExcludingRegistry, ToolDef, ToolError, ToolOutcome, ToolRegistry,

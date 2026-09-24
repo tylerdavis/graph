@@ -329,7 +329,10 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
     let store = runtime.store()?;
     // Non-JSON runs stream the solver's answer to stdout as it generates;
     // --json buffers and emits the envelope instead.
-    let events: Arc<dyn graph_core::EventSink> = crate::output::make_sink(json, !json);
+    let run = crate::telemetry::RunInfo::plan_run(&doc.identifier)
+        .user(runtime.config.user.name.as_deref())
+        .input(input.clone());
+    let events: Arc<dyn graph_core::EventSink> = crate::output::make_sink(json, !json, run);
     // `ask` steps reach the terminal when there is one. When there isn't
     // (CI, a redirected stdin, machine-readable events), the hook is
     // absent and each `ask` resolves by its declared `whenUnanswered` —
@@ -348,6 +351,7 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         .run_explicit(&query, doc.steps.clone(), finish, Some(input))
         .await;
     runtime.shutdown().await;
+    crate::telemetry::report_plan_result(events.as_ref(), &result);
 
     // Under GRAPH_EVENTS=jsonl the `usage_summary` event carries the report
     // and stderr is one JSON object per line, so a prose summary there would

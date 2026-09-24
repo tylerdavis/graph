@@ -14,7 +14,12 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
     let runtime = Runtime::init()?;
     let store = runtime.store()?;
     let mut thread: Option<ThreadMeta> = resolve_thread(store.as_ref(), thread).await?;
-    let events: Arc<dyn graph_core::EventSink> = crate::output::make_sink(false, false);
+    let run = crate::telemetry::RunInfo::conversation(
+        "chat",
+        thread.as_ref().map(|meta| meta.id.clone()),
+    )
+    .user(runtime.config.user.name.as_deref());
+    let events: Arc<dyn graph_core::EventSink> = crate::output::make_sink(false, false, run);
     // A conversation already has the user's attention: a plan called as
     // plan__* from here can put an `ask` step's question to them.
     let hooks = crate::runtime::PipelineHooks {
@@ -23,7 +28,7 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
     };
     runtime.usage.attach_events(events.clone());
     let toolbox = runtime.toolbox_with(&store, events.clone(), hooks).await?;
-    let agent = runtime.agent(events, toolbox)?;
+    let agent = runtime.agent(events.clone(), toolbox)?;
 
     let mut messages: Vec<ChatMessage> = match &thread {
         Some(meta) => {
@@ -54,15 +59,29 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
                     continue;
                 }
                 let pre_len = messages.len();
+                let created = thread.is_none();
+                if created {
+                    match store.create_thread(&title_from(&line)).await {
+                        Ok(meta) => thread = Some(meta),
+                        Err(e) => eprintln!("warning: failed to create thread: {e}"),
+                    }
+                }
+                events.run_started(&graph_core::RunStart {
+                    name: "chat".to_string(),
+                    session_id: thread.as_ref().map(|meta| meta.id.clone()),
+                    input: Some(serde_json::Value::String(line.clone())),
+                });
                 messages.push(ChatMessage::User {
                     content: line.clone(),
                 });
-                match agent.run_turn(&mut messages).await {
-                    Ok(_) => {
+                let result = agent.run_turn(&mut messages).await;
+                // Per turn, not per session: the ledger drains, so
+                // each turn reports its own spend.
+                let usage = runtime.usage.take();
+                match result {
+                    Ok(outcome) => {
+                        events.run_finished(&serde_json::Value::String(outcome.text), false);
                         println!();
-                        // Per turn, not per session: the ledger drains, so
-                        // each turn reports its own spend.
-                        let usage = runtime.usage.take();
                         if !usage.is_empty() && !crate::output::jsonl_events() {
                             eprintln!("\x1b[2m{}\x1b[0m", usage.summary());
                         }
@@ -74,10 +93,19 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
                         }
                     }
                     Err(e) => {
+                        events.run_finished(&serde_json::json!({"error": e.to_string()}), true);
                         // Drop the failed turn's messages so a retry starts clean.
                         messages.truncate(pre_len);
+                        if created {
+                            if let Some(meta) = thread.take() {
+                                let _ = store.delete_thread(&meta.id).await;
+                            }
+                        }
                         eprintln!("error: {e}");
                     }
+                }
+                if !usage.is_empty() {
+                    events.usage_summary(&usage);
                 }
             }
             Ok(Signal::CtrlC) => continue,

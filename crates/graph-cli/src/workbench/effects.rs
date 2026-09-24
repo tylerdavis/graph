@@ -92,8 +92,21 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                 };
                 let mut history = ctx.history.lock().await;
                 let pre_len = history.len();
+                agent.events.run_started(&graph_core::RunStart {
+                    name: "workbench".to_string(),
+                    session_id: None,
+                    input: Some(serde_json::Value::String(message.clone())),
+                });
                 history.push(ChatMessage::User { content: message });
                 let result = agent.run_turn(&mut history).await;
+                match &result {
+                    Ok(outcome) => agent
+                        .events
+                        .run_finished(&serde_json::Value::String(outcome.text.clone()), false),
+                    Err(error) => agent
+                        .events
+                        .run_finished(&serde_json::json!({"error": error.to_string()}), true),
+                }
                 if let Err(error) = &result {
                     // Drop the failed turn's messages so a retry starts
                     // clean — except when the turn hit the iteration cap:
@@ -108,7 +121,7 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                 // plan's spend too.
                 let usage = ctx.pipeline.usage.take();
                 if !usage.is_empty() {
-                    let _ = ctx.tx.send(Msg::RunUsage(usage.summary()));
+                    agent.events.usage_summary(&usage);
                 }
                 tracing::debug!(
                     target: "workbench",
@@ -151,10 +164,16 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                     doc.steps.len()
                 );
                 let run_started = std::time::Instant::now();
+                pipeline.events.run_started(&graph_core::RunStart {
+                    name: doc.identifier.clone(),
+                    session_id: None,
+                    input: Some(input.clone()),
+                });
                 let query = format!("Run the '{}' plan", doc.name);
                 let result = pipeline
                     .run_explicit(&query, doc.steps.clone(), doc.finish(), Some(input))
                     .await;
+                crate::telemetry::report_plan_result(pipeline.events.as_ref(), &result);
                 tracing::debug!(
                     target: "workbench",
                     "run took {:.1}s",
@@ -165,7 +184,7 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                 // tokens were still spent.
                 let usage = pipeline.usage.take();
                 if !usage.is_empty() {
-                    let _ = ctx.tx.send(Msg::RunUsage(usage.summary()));
+                    pipeline.events.usage_summary(&usage);
                 }
                 let msg = super::runner::report(result).finished_msg();
                 let _ = ctx.tx.send(msg);
