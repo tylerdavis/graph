@@ -4,8 +4,10 @@
 
 mod app;
 mod chat;
+mod edit;
 mod editor;
 mod effects;
+mod form;
 mod fs_tools;
 mod plan_ws;
 mod runner;
@@ -22,7 +24,8 @@ use anyhow::{bail, Context, Result};
 use app::{App, Msg};
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    EventStream,
+    EventStream, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -211,7 +214,8 @@ async fn run_plan_workbench(
         effects::run_effect(app::Effect::Validate, &context);
     }
 
-    let mut terminal = setup_terminal()?;
+    let (mut terminal, enhanced_keys) = setup_terminal()?;
+    app.enhanced_keys = enhanced_keys;
     let loop_result = event_loop(&mut terminal, &mut app, &mut rx, &context).await;
     restore_terminal(&mut terminal)?;
     loop_result
@@ -286,7 +290,7 @@ async fn event_loop(
 
 // ── Terminal lifecycle ───────────────────────────────────────────────────
 
-fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+fn setup_terminal() -> Result<(Terminal<CrosstermBackend<Stdout>>, bool)> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     // Bracketed paste: a multi-line paste arrives as one Event::Paste
@@ -299,14 +303,22 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
         EnableBracketedPaste,
         EnableMouseCapture
     )?;
+    let enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+    if enhanced {
+        crossterm::execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
     install_panic_hook();
-    Ok(Terminal::new(CrosstermBackend::new(stdout))?)
+    Ok((Terminal::new(CrosstermBackend::new(stdout))?, enhanced))
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
+        PopKeyboardEnhancementFlags,
         DisableMouseCapture,
         DisableBracketedPaste,
         LeaveAlternateScreen
@@ -325,6 +337,7 @@ fn install_panic_hook() {
             let _ = disable_raw_mode();
             let _ = crossterm::execute!(
                 std::io::stdout(),
+                PopKeyboardEnhancementFlags,
                 DisableMouseCapture,
                 DisableBracketedPaste,
                 LeaveAlternateScreen

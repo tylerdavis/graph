@@ -87,6 +87,24 @@ impl DraftState {
 
 pub type SharedDraft = Arc<Mutex<DraftState>>;
 
+pub fn publish_draft(
+    draft: &Mutex<DraftState>,
+    tx: &UnboundedSender<Msg>,
+    doc: PlanDoc,
+    dirty: bool,
+) {
+    {
+        let mut state = draft.lock().unwrap();
+        state.undo = state.doc.take().map(|old| (old, state.dirty));
+        state.doc = Some(doc.clone());
+        state.dirty = dirty;
+    }
+    let _ = tx.send(Msg::DraftReplaced {
+        doc: Box::new(doc),
+        dirty,
+    });
+}
+
 pub struct WorkbenchTools {
     draft: SharedDraft,
     pipeline: Arc<Pipeline>,
@@ -122,16 +140,7 @@ impl WorkbenchTools {
     /// bad replacement is one restore away. Only load_plan needs the dirty
     /// guard, and it does its check-and-replace under the same lock.
     fn publish(&self, doc: PlanDoc, dirty: bool) {
-        {
-            let mut state = self.draft.lock().unwrap();
-            state.undo = state.doc.take().map(|old| (old, state.dirty));
-            state.doc = Some(doc.clone());
-            state.dirty = dirty;
-        }
-        let _ = self.tx.send(Msg::DraftReplaced {
-            doc: Box::new(doc),
-            dirty,
-        });
+        publish_draft(&self.draft, &self.tx, doc, dirty);
     }
 
     /// Resolve a catalog identifier or YAML file path to a plan document.

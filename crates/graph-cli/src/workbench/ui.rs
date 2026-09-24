@@ -1,20 +1,22 @@
 //! Rendering: the generic dual-pane shell (chat · workspace · status bar ·
 //! modals) with the plan workspace as the right-pane body.
 
-use super::app::{App, ChatEntry, Focus, GateKind, GatePrompt, Mode};
+use super::app::{App, ChatEntry, Focus, FormState, GateKind, GatePrompt, Mode};
 use super::editor::EditorContext;
+use super::form::Verdict;
 use super::plan_ws::{
     DraftingProgress, PlanWorkspace, RowKey, RunLine, StepRow, StepStatus, WsTab,
 };
 use graph_core::pipeline::{
     AGENT_TOOL, DECIDE_TOOL, EXIT_TOOL, FILTER_TOOL, MAP_TOOL, MAX_STEP_ATTEMPTS, REDUCE_TOOL,
 };
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Clear, List, ListItem, ListState, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Tabs, Wrap,
+    ScrollbarState, Tabs, Widget, Wrap,
 };
 use ratatui::Frame;
 
@@ -74,6 +76,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // only modal overlay is the editor, plus help on top of anything.
     if let Mode::Editing(editor) = &app.mode {
         draw_editor(frame, editor);
+    }
+    if let Mode::Form(state) = &app.mode {
+        draw_form(frame, state, app.newline_key());
     }
     if app.show_help {
         draw_help(frame, app);
@@ -165,7 +170,7 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions) {
     // owns all editing state; this is a display of its lines and cursor.
     let input_block = Block::bordered()
         .border_style(DIM)
-        .title(" Enter send · Alt+Enter newline ");
+        .title(format!(" Enter send · {} newline ", app.newline_key()));
     let input_inner = input_block.inner(input);
     frame.render_widget(input_block, input);
     let empty = input_rows.len() == 1 && input_rows[0].is_empty();
@@ -177,7 +182,10 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions) {
     let visible = input_inner.height.max(1) as usize;
     let scroll = cursor.0.saturating_sub(visible - 1);
     frame.render_widget(Paragraph::new(text).scroll((scroll as u16, 0)), input_inner);
-    if app.focus == Focus::Chat && !matches!(app.mode, Mode::Editing(_)) && !app.show_help {
+    if app.focus == Focus::Chat
+        && !matches!(app.mode, Mode::Editing(_) | Mode::Form(_))
+        && !app.show_help
+    {
         frame.set_cursor_position((
             input_inner.x + cursor.1 as u16,
             input_inner.y + (cursor.0 - scroll) as u16,
@@ -584,11 +592,9 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions
         })
         .collect();
     let list = List::new(items)
-        .block(
-            Block::bordered()
-                .border_style(DIM)
-                .title(" steps ─ j/k select · b breakpoint · v validate · r run · g debug "),
-        )
+        .block(Block::bordered().border_style(DIM).title(
+            " steps ─ j/k select · e edit · a add · b breakpoint · v validate · r run · g debug ",
+        ))
         .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
     let visible = (steps_area.height.saturating_sub(2) as usize).max(1);
     ws.list_view_rows.set(visible);
@@ -877,6 +883,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             GateKind::Ask { .. } => "asking",
         },
         Mode::Editing(_) => "editing",
+        Mode::Form(_) => "editing",
     };
     let mut spans = vec![
         Span::styled(format!(" {mode} "), ACCENT.add_modifier(Modifier::REVERSED)),
@@ -1031,7 +1038,7 @@ fn scope_order(name: &str) -> (u8, u32) {
 }
 
 fn draw_editor(frame: &mut Frame, editor: &super::editor::EditorState) {
-    if matches!(editor.context, EditorContext::ConfirmQuit) {
+    if matches!(editor.context, EditorContext::ConfirmQuit { .. }) {
         let area = centered(frame.area(), 50, 20);
         frame.render_widget(Clear, area);
         let widget = Paragraph::new(editor.title.clone())
@@ -1076,14 +1083,230 @@ fn draw_editor(frame: &mut Frame, editor: &super::editor::EditorState) {
     frame.render_widget(Paragraph::new(footer_lines), footer);
 }
 
+fn draw_form(frame: &mut Frame, state: &FormState, newline_key: &str) {
+    let form = &state.form;
+    let area = centered(frame.area(), 80, 88);
+    frame.render_widget(Clear, area);
+    let outer = Block::bordered()
+        .border_style(Style::new().fg(Color::Yellow))
+        .title(format!(" {} ", form.title));
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    let mut footer_lines: Vec<Line> = Vec::new();
+    match &form.verdict {
+        Some(Verdict::Valid { pre_existing }) => {
+            footer_lines.push(Line::styled(" ✓ valid", OK));
+            for problem in pre_existing.iter().take(3) {
+                footer_lines.push(Line::styled(format!("   pre-existing: {problem}"), DIM));
+            }
+        }
+        Some(Verdict::Invalid {
+            problems,
+            pre_existing,
+        }) => {
+            for problem in problems.iter().take(5) {
+                footer_lines.push(Line::styled(format!(" ✗ {problem}"), ERROR));
+            }
+            if problems.len() > 5 {
+                footer_lines.push(Line::styled(
+                    format!("   … and {} more", problems.len() - 5),
+                    ERROR,
+                ));
+            }
+            for problem in pre_existing.iter().take(2) {
+                footer_lines.push(Line::styled(format!("   pre-existing: {problem}"), DIM));
+            }
+        }
+        None => {}
+    }
+    if form.confirming_discard {
+        footer_lines.push(Line::styled(
+            " discard unsubmitted changes? y discard · n keep editing",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        footer_lines.push(Line::styled(
+            format!(
+                " Tab next · Shift+Tab prev · {newline_key} newline · Ctrl+T validate · Ctrl+S submit · Esc cancel"
+            ),
+            DIM,
+        ));
+    }
+    let footer_height = footer_lines.len() as u16;
+    let header_height = u16::from(!form.header.is_empty());
+    let [header, body, footer] = *Layout::vertical([
+        Constraint::Length(header_height),
+        Constraint::Min(3),
+        Constraint::Length(footer_height),
+    ])
+    .split(inner) else {
+        return;
+    };
+    if header_height > 0 {
+        frame.render_widget(
+            Paragraph::new(Line::styled(format!(" {}", form.header), ACCENT)),
+            header,
+        );
+    }
+    frame.render_widget(Paragraph::new(footer_lines), footer);
+
+    let width = body.width.saturating_sub(1);
+    form.view_width.set(width.saturating_sub(2));
+    let total = form.total_height();
+    let viewport = body.height;
+    form.view_rows.set(viewport);
+    let max_scroll = total.saturating_sub(viewport);
+    form.scroll.set(form.scroll.get().min(max_scroll));
+    let scroll = form.scroll.get();
+
+    let mut offscreen = Buffer::empty(Rect {
+        x: 0,
+        y: 0,
+        width,
+        height: total.max(1),
+    });
+    let mut visible = Vec::new();
+    for (index, (top, height)) in form.layout().into_iter().enumerate() {
+        let rect = Rect {
+            x: 0,
+            y: top,
+            width,
+            height,
+        };
+        render_field(&form.fields[index], rect, &mut offscreen);
+        if let Some(error) = &form.fields[index].error {
+            let label = format!(" ✗ {error} ");
+            let x = width.saturating_sub(label.chars().count() as u16 + 1);
+            offscreen.set_string(x, top, label, ERROR);
+        }
+        let end = top + height;
+        if end > scroll && top < scroll + viewport {
+            let shown_top = top.max(scroll);
+            visible.push((
+                index,
+                Rect {
+                    x: body.x,
+                    y: body.y + (shown_top - scroll),
+                    width,
+                    height: end.min(scroll + viewport) - shown_top,
+                },
+            ));
+        }
+    }
+    *form.visible_fields.borrow_mut() = visible;
+
+    if let Some(field) = form.fields.get(form.focused) {
+        let matches = field.matches();
+        if !matches.is_empty() {
+            let (top, height) = form.layout()[form.focused];
+            let shown = matches.len().min(super::form::MAX_POPUP_ROWS);
+            let popup = Rect {
+                x: 1,
+                y: top + height,
+                width: width.saturating_sub(2),
+                height: shown as u16 + 2,
+            };
+            let first = field.highlight.saturating_sub(shown.saturating_sub(1));
+            let items: Vec<ListItem> = matches
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take(shown)
+                .map(|(index, name)| {
+                    let style = if index == field.highlight {
+                        Style::new().add_modifier(Modifier::REVERSED)
+                    } else {
+                        Style::new()
+                    };
+                    ListItem::new(Line::styled(format!(" {name}"), style))
+                })
+                .collect();
+            Clear.render(popup, &mut offscreen);
+            List::new(items)
+                .block(
+                    Block::bordered()
+                        .border_style(Style::new().fg(Color::Yellow))
+                        .title(format!(" {} of {} ", field.highlight + 1, matches.len()))
+                        .title_bottom(
+                            Line::styled(" Enter/Tab pick · Up/Down move ", DIM).right_aligned(),
+                        ),
+                )
+                .render(popup, &mut offscreen);
+        }
+    }
+
+    let target = frame.buffer_mut();
+    for row in 0..viewport.min(total.saturating_sub(scroll)) {
+        for col in 0..width {
+            let from = Position {
+                x: col,
+                y: row + scroll,
+            };
+            let to = Position {
+                x: body.x + col,
+                y: body.y + row,
+            };
+            if let (Some(source), Some(dest)) = (offscreen.cell(from), target.cell_mut(to)) {
+                *dest = source.clone();
+            }
+        }
+    }
+    if total > viewport {
+        let mut state = ScrollbarState::new(max_scroll as usize).position(scroll as usize);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            body,
+            &mut state,
+        );
+    }
+}
+
+fn render_field(field: &super::form::Field, rect: Rect, buf: &mut Buffer) {
+    let block = field.block();
+    let inner = block.inner(rect);
+    block.render(rect, buf);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let (rows, cursor) = wrap_input(
+        field.textarea.lines(),
+        field.textarea.cursor(),
+        inner.width as usize,
+    );
+    let visible = inner.height as usize;
+    let scroll = cursor.0.saturating_sub(visible - 1);
+    let lines: Vec<Line> = rows.into_iter().map(Line::from).collect();
+    Paragraph::new(lines)
+        .scroll((scroll as u16, 0))
+        .render(inner, buf);
+    if field.focused {
+        let position = Position {
+            x: inner.x + cursor.1 as u16,
+            y: inner.y + (cursor.0 - scroll) as u16,
+        };
+        if let Some(cell) = buf.cell_mut(position) {
+            cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+        }
+    }
+}
+
 fn draw_help(frame: &mut Frame, app: &App) {
     let area = centered(frame.area(), 60, 70);
     frame.render_widget(Clear, area);
     let bindings = [
         ("Tab", "toggle focus chat ↔ workspace"),
         ("1 / 2 / 3", "workspace tab (Alt+n from anywhere)"),
-        ("Enter", "send chat message (Alt+Enter for newline)"),
+        (
+            "Enter",
+            "send chat message (Alt+Enter for newline; Shift+Enter where the terminal supports it)",
+        ),
         ("j / k", "select step or tool"),
+        (
+            "Enter / e",
+            "edit the selected step in a form (plan row: metadata)",
+        ),
+        ("a / A", "add a step after / before the selected one"),
         (
             "PgUp / PgDn",
             "scroll the focused pane (chat · detail · debug · run)",
