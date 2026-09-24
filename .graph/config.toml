@@ -9,7 +9,8 @@ type = "anthropic"
 api_key = "${ANTHROPIC_API_KEY}"
 
 [models]
-default = { provider = "anthropic", model = "claude-opus-5-5" }
+default = { provider = "anthropic", model = "claude-sonnet-5" }
+# The docs-drift verdict is a single yes/no call — a fast model is plenty.
 judge   = { provider = "anthropic", model = "claude-haiku-4-5" }
 repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
 
@@ -26,13 +27,12 @@ description = "Repository context scout: many parallel grep/read rounds over a w
 
 [models.reviewer]
 provider = "anthropic"
-model = "claude-opus-5-5"
+model = "claude-sonnet-5"
 description = "Change reviewer: one deep pass over a diff and full file contents, holding the repo's invariants. Low volume, high judgment."
 
-[pricing."claude-opus-5-5"]
-input = 4.00
-output = 20.00
-cache_read = 0.20
+[pricing."claude-sonnet-5"]
+input = 3.00
+output = 15.00
 
 [pricing."claude-haiku-4-5"]
 input = 1.00
