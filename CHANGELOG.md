@@ -2,6 +2,18 @@
 
 All notable changes to graph. Generated from conventional commits by git-cliff.
 
+## Graph v0.15.0 — 2026-09-24
+
+### Added
+
+- edit steps and plan metadata in a form from the workbench plan tab (#128)
+
+## Config v3 — 2026-09-24
+
+### Breaking
+
+- OTLP telemetry export for run traces and logs via [telemetry] (config version 3) (#129) — config version 3 (graph config migrate)
+
 ## Graph v0.14.0 — 2026-09-23
 
 ## Config v2 — 2026-09-23

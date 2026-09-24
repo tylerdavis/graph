@@ -1,0 +1,28 @@
+````markdown
+This release (graph v0.15.0) bumps the config file format from version 2 to version 3, adding OTLP telemetry export support via a new `[telemetry]` section. Any existing `graph` config file is now on an outdated format and must be migrated.
+
+Do the following in this repository:
+
+1. Locate graph config file(s). These are typically named `graph.toml` or similar, and may exist both locally (project config) and globally (user config). Search with something like:
+   - `grep -rl "config_version" .` or `grep -rl "\[telemetry\]" .`
+   - Also check for a global config (often under a user config directory) if you have access to it.
+
+2. For each config file found, run:
+   - `graph config check` to see whether it flags the file as needing migration.
+   - `graph config migrate` for the local/project config.
+   - `graph config migrate --global` if a global config is in use.
+
+3. After migrating, verify each config file now declares config version 3 (e.g. a `version = 3` or equivalent field the migrate command writes), and confirm no plan or CI workflow is manually pinning an older config version's expectations.
+
+4. If any plan files exist in the repo, re-validate them after the config migration:
+   - `graph plan validate <plan-file>` for each plan file (search with `grep -rl "steps:" .` or similar to find plan YAML files).
+   - Note: this release does not bump the plan or tool file formats, so plan/tool files themselves should not need `graph plan migrate` or `graph tools migrate` — but re-run `graph plan validate` anyway to confirm the migrated config doesn't break anything.
+
+5. Search CI workflows for any pinned graph image reference, e.g.:
+   - `grep -rn "ghcr.io/tylerdavis/graph:v" .github/workflows/`
+   If found, update the pin to `ghcr.io/tylerdavis/graph:v0.15.0` in the same change as the config migration, since an older pinned image will refuse to read a config file already rewritten to version 3.
+
+6. Do not hand-write the new `[telemetry]` keys yourself — trust `graph config migrate` to add the correct schema.
+
+Be conservative: only touch config files and the CI image pin described above. Do not modify plan or tool files beyond re-validating them. Report exactly which files you migrated, which CI workflow pins you updated, and which files (if any) you deliberately left unchanged because they were already current or out of scope.
+````

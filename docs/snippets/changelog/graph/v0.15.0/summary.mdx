@@ -1,0 +1,7 @@
+### Edit plans visually from the workbench
+
+The plan workbench's plan tab now lets you edit steps and plan metadata directly in a form, without hand-editing YAML.
+
+### OTLP telemetry export for run traces and logs
+
+Config now supports a `[telemetry]` section for exporting run traces and logs via OTLP. This is a breaking config format change: config moves to version 3, and existing config files must be migrated with `graph config migrate`.
