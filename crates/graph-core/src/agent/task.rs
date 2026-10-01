@@ -110,7 +110,7 @@ pub async fn run_task_agent(
             } else {
                 spec.tools.clone()
             },
-            response_schema: if final_round {
+            response_schema: if final_round || spec.tools.is_empty() {
                 spec.output_schema.clone().map(|schema| ResponseSchema {
                     name: "agent_output".to_string(),
                     schema,

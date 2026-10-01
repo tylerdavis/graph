@@ -70,6 +70,7 @@ pub struct ToolCatalog {
     pub plans: BTreeSet<String>,
     /// MCP server names configured under `[mcp.*]`.
     pub mcp_servers: BTreeSet<String>,
+    pub agents: BTreeSet<String>,
 }
 
 /// The outcome of resolving a plan's tool names against a catalog.
@@ -306,8 +307,17 @@ fn check_tool(
                 ));
             }
         }
+        _ if tool.starts_with(super::AGENT_TOOL_PREFIX) => {
+            let name = &tool[super::AGENT_TOOL_PREFIX.len()..];
+            if !catalog.agents.contains(name) {
+                check.errors.push(format!(
+                    "step {step_id}: unknown agent '{name}' ({tool}) — no agent with \
+                     that name is built in or defined under an agents directory"
+                ));
+            }
+        }
         _ if tool.starts_with(crate::user_tools::BUILTIN_TOOL_PREFIX) => {
-            if !catalog.builtin_tools.contains(tool) {
+            if !catalog.builtin_tools.contains(tool) && !super::is_native_tool(tool) {
                 check.errors.push(format!(
                     "step {step_id}: unknown builtin tool '{tool}' — not \
                      provided by the enabled tool packs ([tools].packs)"
@@ -449,6 +459,7 @@ mod tests {
             user_tools: BTreeSet::from(["user__git_log".to_string()]),
             plans: BTreeSet::from(["urgent_issues".to_string()]),
             mcp_servers: BTreeSet::from(["linear".to_string()]),
+            agents: BTreeSet::from(["outliner".to_string()]),
         }
     }
 
