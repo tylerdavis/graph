@@ -35,7 +35,7 @@ Decisions carried in:
 - **Change:** a route with `cases` renders one arm per case plus `else`, wherever `then`/`else` render today. That covers the plan tab, step form, and bus paths.
 - **Verify:** the workbench tests, and a screenshot for a `cases` route.
 
-## Task 4: Docs and planner surface
+## [x] Task 4: Docs and planner surface
 - **Change:**
   - Rename `branching.mdx` content to `route`, with a migration note, and add the named-cases section.
   - Update `plan-schema.mdx` and the gate docs, and replace `decide` step references across `docs/`.

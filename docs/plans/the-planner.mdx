@@ -28,7 +28,7 @@ With no shape at all for a tool, the planner is instructed to use whole-result r
 
 ## What the planner is instructed to do
 
-The planner has the full step vocabulary — [exit gates](/plans/exit-gates), [decide](/plans/branching), [map/reduce](/plans/iteration), and `plan__*` composition — plus standing instructions that shape its drafts:
+The planner has the full step vocabulary — [exit gates](/plans/exit-gates), [route](/plans/branching), [map/reduce](/plans/iteration), and `plan__*` composition — plus standing instructions that shape its drafts:
 
 - **Exit gracefully rather than fabricate.** When data comes up empty, draft an `exit` with an honest message instead of inventing results.
 - **Gate check-shaped plans.** Validations and assertions end in explicit gated exits, not solver prose.

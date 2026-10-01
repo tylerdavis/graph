@@ -57,7 +57,7 @@ Seven reserved `tool_name`s are executor-intercepted, never dispatched to a regi
 | `message` | no | shown as the plan's answer / error message; may use templates |
 | `output` | no | template map emitted as the plan's structured output when the exit fires |
 
-### `decide` — [fork into one of two branches](/plans/branching)
+### `route` — [fork into one of its branches](/plans/branching)
 
 | Field | Required | Notes |
 | --- | --- | --- |
@@ -65,8 +65,11 @@ Seven reserved `tool_name`s are executor-intercepted, never dispatched to a regi
 | `infer` | 〃 | yes/no question judged by the `judge` role |
 | `decide` | 〃 | decision gate, as on `exit` |
 | `model` | no | as on `exit`; may itself be a template |
-| `then` | yes | body (below), run when the gate holds |
-| `else` | no | body, run otherwise |
+| `then` | unless `cases` | body (below), run when the gate holds |
+| `cases` | with `decide.options` | one body per option key; the decision model's choice runs. Keys must match `decide.options` exactly |
+| `else` | no | body, run when the gate does not hold — or, under `cases`, when the choice's confidence is below `decide.min_confidence` |
+
+With `cases`, `decide` also takes `options`: case name → description, 2 to 255 entries, names made of letters, digits, and underscores (not `then`, `else`, or `do`). `options` is legal only on `route`.
 
 ### `filter` — [partition a list](/plans/selection)
 
@@ -79,7 +82,7 @@ Seven reserved `tool_name`s are executor-intercepted, never dispatched to a regi
 | `model` | no | as on `exit`; applies to every `infer` verdict |
 | `concurrency` | no | max `infer` or `decide` verdicts in flight; default 1; ignored for `where` |
 
-Legal everywhere, including inside `decide` branches and `map`/`reduce` bodies — the one nestable control step (it makes no tool call). Inside a body its `{{item}}`/`{{index}}` shadow the enclosing body's within the gate.
+Legal everywhere, including inside `route` branches and `map`/`reduce` bodies — the one nestable control step (it makes no tool call). Inside a body its `{{item}}`/`{{index}}` shadow the enclosing body's within the gate.
 
 ### `map` / `reduce` — [run a body per item](/plans/iteration)
 
@@ -101,7 +104,7 @@ Legal everywhere, including inside `decide` branches and `map`/`reduce` bodies �
 | `model` | no | model for the loop: any configured [role](/models/models-and-providers#roles), standard or custom, or `default` |
 | `system_prompt` | no | replaces the default agent system prompt; may use templates |
 
-Legal everywhere, including inside `decide` branches and `map`/`reduce` bodies.
+Legal everywhere, including inside `route` branches and `map`/`reduce` bodies.
 
 ### `ask` — [put a question to the user](/plans/ask-step)
 
@@ -112,7 +115,7 @@ Legal everywhere, including inside `decide` branches and `map`/`reduce` bodies.
 | `when_unanswered` | no | `fail` (default) \| `default` — behaviour when nobody can be asked |
 | `default` | with `when_unanswered: default` | fallback answer; must conform to `output_schema`; may use templates |
 
-Legal everywhere, including inside `decide` branches and `map`/`reduce` bodies. Whether a human is reachable depends on the host, not the plan, so `when_unanswered` is what keeps one plan runnable both interactively and in CI.
+Legal everywhere, including inside `route` branches and `map`/`reduce` bodies. Whether a human is reachable depends on the host, not the plan, so `when_unanswered` is what keeps one plan runnable both interactively and in CI.
 
 ## Gate grammar (`when` / `if` / `where`)
 
@@ -132,7 +135,7 @@ Either form:
 - **A single tool call** — `{tool_name, input}`, no id. Any catalog tool, including `plan__*` and `plan_and_execute`.
 - **An inline step list** — normal steps with ids, run in order, with same-branch/same-iteration dataflow. Body ids must not reuse top-level ids and are invisible outside the body.
 
-Bodies must not contain `decide`, `map`, or `reduce` (branches may contain `exit`; map/reduce bodies may not). `agent`, `ask`, and `filter` are legal in any body. For other nested control flow, call a `plan__*` sub-plan — cycles are detected and nesting is capped at 8.
+Bodies must not contain `route`, `map`, or `reduce` (branches may contain `exit`; map/reduce bodies may not). `agent`, `ask`, and `filter` are legal in any body. For other nested control flow, call a `plan__*` sub-plan — cycles are detected and nesting is capped at 8.
 
 ## Step results of control steps
 
@@ -141,7 +144,7 @@ Bodies must not contain `decide`, `map`, or `reduce` (branches may contain `exit
 | `exit` (not fired) | `{passed: true, verdict?, reason?, probability?}` — `probability` under a `decide` gate |
 | `agent` | `{output, iterations, tools_called, final}` — `output` conforms to `output_schema` when `final` is true; when the budget ran out first, `final` is `false` and `output` is `{}` |
 | `ask` | `{answer, answered, reason?}` — `answer` conforms to `output_schema`; `answered` is false when the `default` was used, and `reason` is then `"declined"` or `"unavailable"` |
-| `decide` | `{branch, verdict, reason, result, probability?}` — `result` is the branch's single-call result or its last step's result; `probability` under a `decide` gate |
+| `route` | `{branch, verdict, reason, result, probability?}` — `result` is the branch's single-call result or its last step's result; `probability` under a `decide` gate. With `cases`: `{branch, choice, confidence, probabilities, result}` — `branch` is the case that ran, `else`, or `null` |
 | `filter` | `{count, items: […], dropped: […], dropped_count, probabilities?}` — both halves of the partition, input order; `probabilities` (aligned with `over`) under a `decide` gate |
 | `map` | `{count, results: […]}` in input order |
 | `reduce` | `{count, result}` — the final accumulator |
