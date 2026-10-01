@@ -4,7 +4,7 @@
 //! dispatched to a tool registry, and skips the solver entirely (an
 //! escape hatch is a zero-inference exit, except the verdict call itself).
 
-use super::condition::{check_gate, select_gate};
+use super::condition::{check_gate, select_gate, with_probability};
 pub use super::condition::{Condition, DecideGate, Op, Verdict};
 use graph_llm::ModelRouter;
 use serde::{Deserialize, Serialize};
@@ -87,18 +87,10 @@ pub fn exit_tool_def() -> crate::tools::ToolDef {
                     }
                 },
                 "infer": {"type": "string", "description": "A yes/no question about prior results; exits when the answer is yes."},
-                "decide": {
-                    "type": "object",
-                    "required": ["question"],
-                    "description": "A yes/no question answered by a decision model (only when one is configured); fires when its probability reaches min_confidence.",
-                    "properties": {
-                        "question": {"type": "string"},
-                        "state": {"description": "The data to judge, usually a template like {{E2.text}}"},
-                        "criteria": {"type": "object", "properties": {"true": {"type": "string"}, "false": {"type": "string"}}},
-                        "min_confidence": {"type": "number", "description": "0 to 1; default 0.5"},
-                        "model": {"type": "string", "description": "A decision model role; defaults to decider"}
-                    }
-                },
+                "decide": super::condition::decide_gate_schema(
+                    "A yes/no question answered by a decision model (only when one is configured); fires when its probability reaches min_confidence.",
+                    "The data to judge, usually a template like {{E2.text}}",
+                ),
                 "model": {"type": "string", "description": "Model role for the `infer` verdict (any configured role, standard or custom); defaults to the judge role."}
             }
         }),
@@ -144,15 +136,14 @@ pub async fn evaluate(
     };
 
     if !triggered {
-        let mut passed = json!({
-            "passed": true,
-            "verdict": false,
-            "reason": reason,
-        });
-        if let Some(probability) = probability {
-            passed["probability"] = json!(probability);
-        }
-        return Ok(ExitEval::Passed(passed));
+        return Ok(ExitEval::Passed(with_probability(
+            json!({
+                "passed": true,
+                "verdict": false,
+                "reason": reason,
+            }),
+            probability,
+        )));
     }
 
     let mut message = spec.message.unwrap_or_else(|| match spec.status {

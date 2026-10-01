@@ -11,7 +11,7 @@
 //! and `dropped`): selection narrows what runs next, never what is
 //! known.
 
-use super::condition::{check_gate, select_gate, Condition, DecideGate};
+use super::condition::{check_gate, Condition, DecideGate, Gate};
 use super::gate::StepPath;
 use super::iterate::{template_roots, type_name};
 use super::state::BusKind;
@@ -93,18 +93,10 @@ pub fn filter_tool_def() -> crate::tools::ToolDef {
                     }
                 },
                 "infer": {"type": "string", "description": "A yes/no question about {{item}}; the element is kept on yes. One judge call per item."},
-                "decide": {
-                    "type": "object",
-                    "required": ["question"],
-                    "description": "A per-item yes/no question answered by a decision model (only when one is configured); keeps the element when its probability reaches min_confidence. Results add `probabilities`, aligned with `over`.",
-                    "properties": {
-                        "question": {"type": "string"},
-                        "state": {"description": "The data to judge, usually {{item}}"},
-                        "criteria": {"type": "object", "properties": {"true": {"type": "string"}, "false": {"type": "string"}}},
-                        "min_confidence": {"type": "number", "description": "0 to 1; default 0.5"},
-                        "model": {"type": "string", "description": "A decision model role; defaults to decider"}
-                    }
-                },
+                "decide": super::condition::decide_gate_schema(
+                    "A per-item yes/no question answered by a decision model (only when one is configured); keeps the element when its probability reaches min_confidence. Results add `probabilities`, aligned with `over`.",
+                    "The data to judge, usually {{item}}",
+                ),
                 "model": {"type": "string", "description": "Model role for `infer` verdicts (any configured role, standard or custom); defaults to the judge role."},
                 "concurrency": {"type": "integer", "minimum": 1, "description": "Maximum `infer` verdicts in flight; 1 (default) evaluates one at a time."}
             }
@@ -418,11 +410,7 @@ impl Pipeline {
                 let outcome = crate::usage::CallSite::role("decider")
                     .at(path.to_string())
                     .in_plans(&self.call_stack)
-                    .scope(async {
-                        let gate = select_gate(None, None, Some(&gate), None, "where")?
-                            .expect("decide gate present");
-                        check_gate(gate, &self.router).await
-                    })
+                    .scope(check_gate(Gate::Decide(&gate), &self.router))
                     .await
                     .map_err(|e| FilterFail::Failed(format!("item {index}: {e}")))?;
                 Ok((outcome.triggered, outcome.probability))
@@ -438,11 +426,13 @@ impl Pipeline {
                 let outcome = crate::usage::CallSite::role("judge")
                     .at(path.to_string())
                     .in_plans(&self.call_stack)
-                    .scope(async {
-                        let gate = select_gate(None, Some(&rendered), None, model, "where")?
-                            .expect("infer gate present");
-                        check_gate(gate, &self.router).await
-                    })
+                    .scope(check_gate(
+                        Gate::Infer {
+                            question: &rendered,
+                            model,
+                        },
+                        &self.router,
+                    ))
                     .await
                     .map_err(|e| FilterFail::Failed(format!("item {index}: {e}")))?;
                 Ok((outcome.triggered, None))

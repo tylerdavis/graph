@@ -7,7 +7,7 @@
 //! when that branch is the right one to take.
 
 use super::body::{body_schema, parse_branch, validate_body, BodyFail};
-use super::condition::{check_gate, select_gate, Condition, DecideGate};
+use super::condition::{check_gate, select_gate, with_probability, Condition, DecideGate};
 use super::state::BusKind;
 use super::{ExecutionEnd, Pipeline, RunState, Step};
 use crate::template::{render_input, render_str, RenderError, Roots};
@@ -75,18 +75,10 @@ pub fn decide_tool_def() -> crate::tools::ToolDef {
                     }
                 },
                 "infer": {"type": "string", "description": "A yes/no question about prior results; runs `then` on yes."},
-                "decide": {
-                    "type": "object",
-                    "required": ["question"],
-                    "description": "A yes/no question answered by a decision model (only when one is configured); fires when its probability reaches min_confidence.",
-                    "properties": {
-                        "question": {"type": "string"},
-                        "state": {"description": "The data to judge, usually a template like {{E2.text}}"},
-                        "criteria": {"type": "object", "properties": {"true": {"type": "string"}, "false": {"type": "string"}}},
-                        "min_confidence": {"type": "number", "description": "0 to 1; default 0.5"},
-                        "model": {"type": "string", "description": "A decision model role; defaults to decider"}
-                    }
-                },
+                "decide": super::condition::decide_gate_schema(
+                    "A yes/no question answered by a decision model (only when one is configured); fires when its probability reaches min_confidence.",
+                    "The data to judge, usually a template like {{E2.text}}",
+                ),
                 "model": {"type": "string", "description": "Model role for the `infer` verdict (any configured role, standard or custom); defaults to the judge role."},
                 "then": branch_schema.clone(),
                 "else": branch_schema
@@ -337,13 +329,6 @@ impl Pipeline {
             probability,
         ))
     }
-}
-
-fn with_probability(mut result: Value, probability: Option<f64>) -> Value {
-    if let Some(probability) = probability {
-        result["probability"] = json!(probability);
-    }
-    result
 }
 
 #[cfg(test)]
