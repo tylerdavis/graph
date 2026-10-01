@@ -1,7 +1,10 @@
 //! Store conformance suite: every backend must satisfy the same semantics.
 //! Each case runs against `MemoryStore` and `FileStore`.
 
-use graph_core::store::{conversation, message_entries, EntryBody, NewEntry, Store, StoreError};
+mod common;
+
+use common::MessageLog;
+use graph_core::store::{conversation, EntryBody, NewEntry, Store};
 use graph_llm::types::{ChatMessage, ToolCall};
 use graph_store::{FileStore, MemoryStore};
 use serde_json::json;
@@ -13,19 +16,6 @@ fn backends(dir: &tempfile::TempDir) -> Vec<(&'static str, Arc<dyn Store>)> {
         ("file", Arc::new(FileStore::open(dir.path()).unwrap())),
     ]
 }
-
-trait MessageLog: Store {
-    async fn append_messages(&self, id: &str, messages: &[ChatMessage]) -> Result<(), StoreError> {
-        self.append_entries(id, &message_entries("chat", messages))
-            .await
-    }
-
-    async fn load_messages(&self, id: &str) -> Result<Vec<ChatMessage>, StoreError> {
-        Ok(conversation(&self.load_entries(id).await?))
-    }
-}
-
-impl<T: Store + ?Sized> MessageLog for T {}
 
 #[tokio::test]
 async fn thread_lifecycle_and_message_roundtrip() {
