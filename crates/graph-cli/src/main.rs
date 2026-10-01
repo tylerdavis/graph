@@ -72,6 +72,7 @@ async fn dispatch(command: Command, verbose: u8) -> Result<()> {
         } => mcp_server::serve(dir).await,
         Command::Mcp { command } => commands::mcp_cmd::run(command).await,
         Command::Tools { command } => commands::tools_cmd::run(command).await,
+        Command::Agents { command } => commands::agents_cmd::run(command),
         Command::Ask {
             message,
             thread,

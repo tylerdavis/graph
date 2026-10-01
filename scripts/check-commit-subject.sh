@@ -22,20 +22,20 @@ if [[ $subject =~ ^(Merge\ |Revert\ \"|fixup!|squash!|amend!|Updated\ mintlify\ 
   exit 0
 fi
 
-# The scopes config, plan, tool, and store are reserved: they mean "this
+# The scopes config, plan, tool, agent, and store are reserved: they mean "this
 # commit bumps that file kind's version" (RELEASING.md > "Version bumps"),
 # and the changelog files the commit under that kind's own section. Every
 # such bump is breaking for older binaries, so the `!` marker is mandatory —
 # a reserved scope without it is either a misfiled crate change (pick another
-# scope: graph-config, plans, tools, storage) or a bump missing its marker.
-if [[ $subject =~ ^($types)\((config|plan|tool|store)\):\ .+ ]]; then
+# scope: graph-config, plans, tools, agents, storage) or a bump missing its marker.
+if [[ $subject =~ ^($types)\((config|plan|tool|agent|store)\):\ .+ ]]; then
   scope=${BASH_REMATCH[2]}
   cat >&2 <<EOF
 Commit subject uses the reserved scope "$scope" without the breaking marker:
 
     $subject
 
-The scopes config, plan, tool, and store are reserved for file-version bumps
+The scopes config, plan, tool, agent, and store are reserved for file-version bumps
 and require \`!\`, e.g.
 
     feat($scope)!: <what changed in the file's schema>

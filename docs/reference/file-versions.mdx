@@ -1,16 +1,17 @@
 ---
 title: "File versions"
-description: "Versions for config, plans, tools, and the data directory"
+description: "Versions for config, plans, tools, agents, and the data directory"
 icon: "code-branch"
 ---
 
-graph reads four kinds of file it did not write in the same release: `config.toml`, plan documents, tool documents, and the data directory. Each carries a **file version** — an integer, separate from the binary's version and from each other — that moves every time that file's schema changes.
+graph reads five kinds of file it did not write in the same release: `config.toml`, plan documents, tool documents, agent documents, and the data directory. Each carries a **file version** — an integer, separate from the binary's version and from each other — that moves every time that file's schema changes.
 
 | File | Where the version lives | Missing means |
 | --- | --- | --- |
 | `config.toml` (global and project) | top-level `version = 1` | version 1 |
 | plan documents | top-level `version: 1` | version 1 |
 | tool documents | top-level `version: 1` | version 1 |
+| agent documents | top-level `version: 1` | version 1 |
 | data directory | `<data_dir>/FORMAT`, written on first open | version 1 |
 
 `graph version` prints the binary version and the file version each kind is written at:
@@ -18,7 +19,7 @@ graph reads four kinds of file it did not write in the same release: `config.tom
 ```text
 $ graph version
 graph 0.13.0
-file versions: config 1, plan 1, tool 1, store 1
+file versions: config 1, plan 1, tool 1, agent 1, store 1
 ```
 
 Each file kind has a **support window**: the oldest version this binary still reads through the one it writes. The line shows the window whenever it is wider than one version (`config 3 (reads 2-3)`), and `graph version --json` reports `oldest` and `current` under `fileVersions`.
@@ -60,18 +61,21 @@ graph config migrate --global   # the same for ~/.config/graph/config.toml
 
 `migrate` preserves comments and layout; it writes `version` as the first key and leaves everything else where it was. A file already at the current version is left untouched. On a terminal, any command that loads a config file older than the current version prints a one-line hint to run `migrate`; non-interactive runs (CI, `graph mcp serve`) stay silent, since the in-memory upgrade already happened.
 
-## Plans and tools
+## Plans, tools, and agents
 
 A plan file outside the binary's window is **skipped with a diagnostic** and stays out of the catalog, exactly like a file that fails to parse: `plan list --json` reports it under `skipped`, and naming it (`plan run`, `plan show`) reports the version mismatch rather than "no plan named". A tool file outside the window fails the tool catalog by name.
 
 ```text
 graph plan migrate <name|path>      # rewrite a plan file to the current plan version
 graph tools migrate <path>          # rewrite a tool file to the current tool version
+graph agents migrate <path>         # rewrite an agent file to the current agent version
 ```
 
-Both rewrite the document through the YAML tree, so field order survives. A **leading comment block** (the lines before the first key) is preserved verbatim; comments elsewhere in the file do not survive a YAML round-trip, and the command says how many it dropped. Files written by graph itself — the workbench's save, `plan new`, `plan draft`, `plan show` — always carry the current `version`.
+An agent file outside the window, or one that fails to parse, is reported by `graph agents list` and `graph agents validate` with its path.
 
-Every plan and tool file is read strictly: an unknown key anywhere in a step or a tool document is a load error naming the key, never silently ignored. A misspelled `timeout_secs` used to be dropped on the floor; now the file is skipped and the diagnostic says why.
+Both rewrite the document through the YAML tree, so field order survives. A **leading comment block** (the lines before the first key) is preserved verbatim; comments elsewhere in the file do not survive a YAML round-trip, and the command says how many it dropped. Files written by graph itself — the workbench's save, `plan new`, `plan draft`, `plan show`, `agents show` — always carry the current `version`.
+
+Every plan, tool, and agent file is read strictly: an unknown key anywhere in a step, a tool document, or an agent document is a load error naming the key, never silently ignored. A misspelled `timeout_secs` used to be dropped on the floor; now the file is skipped and the diagnostic says why.
 
 ## Data directory
 

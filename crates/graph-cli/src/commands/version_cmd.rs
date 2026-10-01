@@ -11,7 +11,7 @@ pub struct Format {
     pub oldest: u32,
 }
 
-pub fn formats() -> [Format; 4] {
+pub fn formats() -> [Format; 5] {
     [
         Format {
             name: "config",
@@ -27,6 +27,11 @@ pub fn formats() -> [Format; 4] {
             name: "tool",
             current: graph_core::format::TOOL_FORMAT,
             oldest: graph_core::format::TOOL_FORMAT_OLDEST,
+        },
+        Format {
+            name: "agent",
+            current: graph_core::format::AGENT_FORMAT,
+            oldest: graph_core::format::AGENT_FORMAT_OLDEST,
         },
         Format {
             name: "store",
@@ -80,7 +85,7 @@ mod tests {
     fn the_envelope_names_every_format_with_its_range() {
         let body = outcome().body;
         assert_eq!(body["version"], json!(VERSION));
-        for name in ["config", "plan", "tool", "store"] {
+        for name in ["config", "plan", "tool", "agent", "store"] {
             let entry = &body["fileVersions"][name];
             assert!(entry["current"].as_u64().unwrap() >= entry["oldest"].as_u64().unwrap());
             assert!(entry["oldest"].as_u64().unwrap() >= 1);

@@ -53,6 +53,11 @@ pub enum Command {
         #[command(subcommand)]
         command: ToolsCommand,
     },
+    /// Inspect, validate, and migrate agent definitions
+    Agents {
+        #[command(subcommand)]
+        command: AgentsCommand,
+    },
     /// Manage conversation threads
     Threads {
         #[command(subcommand)]
@@ -357,6 +362,33 @@ pub enum ToolsCommand {
         json: bool,
     },
     /// Rewrite a user tool file to the current tool format
+    Migrate {
+        path: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentsCommand {
+    /// List every agent: built-in, global (~/.config/graph/agents), and project (./.graph/agents)
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print an agent's effective definition, the file to copy when customizing it
+    Show {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate every agent, or one agent file against the others
+    Validate {
+        path: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rewrite an agent file to the current agent format
     Migrate {
         path: PathBuf,
         #[arg(long)]
