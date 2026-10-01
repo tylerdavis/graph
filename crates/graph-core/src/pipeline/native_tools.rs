@@ -12,18 +12,15 @@ pub const CATALOG_OUTLINE_TOOL: &str = "builtin__catalog_outline";
 
 pub const VALIDATE_PLAN_TOOL: &str = "builtin__validate_plan";
 
-pub const OUTLINE_TOOL: &str = "builtin__outline";
-
 pub const PLAN_FROM_DRAFT_TOOL: &str = "builtin__plan_from_draft";
 
 pub const APPLY_EDITS_TOOL: &str = "builtin__apply_edits";
 
-pub const NATIVE_TOOLS: [&str; 7] = [
+pub const NATIVE_TOOLS: [&str; 6] = [
     CATALOG_OUTLINE_TOOL,
     DRAFT_CONTEXT_TOOL,
     ACCEPT_STEP_TOOL,
     VALIDATE_PLAN_TOOL,
-    OUTLINE_TOOL,
     PLAN_FROM_DRAFT_TOOL,
     APPLY_EDITS_TOOL,
 ];
@@ -74,29 +71,6 @@ pub fn native_tool_defs() -> Vec<ToolDef> {
                     "valid": {"type": "boolean"},
                     "problems": {"type": "array", "items": {"type": "string"}},
                     "side_effects": {"type": "array", "items": {"type": "string"}}
-                }
-            })),
-            output_example: None,
-            read_only: Some(true),
-        },
-        ToolDef {
-            name: OUTLINE_TOOL.to_string(),
-            description: "Converts a plan outline between a list of entries and numbered text \
-                          with one entry per line. Pass `entries` or `text`; both come back."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "entries": {"type": "array", "items": {"type": "string"}, "description": "The outline entries, in order"},
-                    "text": {"type": "string", "description": "The outline, one entry per line"}
-                }
-            }),
-            output_schema: Some(json!({
-                "type": "object",
-                "required": ["entries", "text"],
-                "properties": {
-                    "entries": {"type": "array", "items": {"type": "string"}},
-                    "text": {"type": "string"}
                 }
             })),
             output_example: None,
@@ -184,7 +158,6 @@ impl Pipeline {
             DRAFT_CONTEXT_TOOL => self.draft_context(input).await,
             ACCEPT_STEP_TOOL => self.accept_step(input),
             VALIDATE_PLAN_TOOL => self.validate_plan_input(input).await,
-            OUTLINE_TOOL => outline(input),
             PLAN_FROM_DRAFT_TOOL => plan_from_draft(input),
             APPLY_EDITS_TOOL => apply_edits(input),
             _ => Err(format!("unknown native tool '{name}'")),
@@ -259,37 +232,6 @@ fn called_tools(value: &Value) -> BTreeSet<String> {
     tools
 }
 
-fn outline(input: Value) -> Result<Value, String> {
-    let entries: Vec<String> = match (&input["entries"], &input["text"]) {
-        (Value::Array(items), _) => items
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect(),
-        (_, Value::String(text)) => text.lines().map(str::to_string).collect(),
-        _ => return Err("pass the outline as `entries` or `text`".to_string()),
-    };
-    let entries: Vec<String> = entries
-        .iter()
-        .map(|entry| {
-            entry
-                .trim()
-                .trim_start_matches(|c: char| {
-                    c.is_ascii_digit() || c == '.' || c == ')' || c == '-'
-                })
-                .trim()
-                .to_string()
-        })
-        .filter(|entry| !entry.is_empty())
-        .collect();
-    let text: Vec<String> = entries
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| format!("{}. {entry}", index + 1))
-        .collect();
-    Ok(json!({ "entries": entries, "text": text.join("\n") }))
-}
-
 fn plan_from_draft(input: Value) -> Result<Value, String> {
     let goal = input["goal"]
         .as_str()
@@ -360,18 +302,6 @@ mod tests {
                 {"id": "E1", "tool_name": "t__report", "input": {"rows": "{{E0.values}}"}},
             ],
         })
-    }
-
-    #[test]
-    fn an_outline_round_trips_between_entries_and_numbered_text() {
-        let both = outline(json!({"entries": ["find it", "report it"]})).unwrap();
-        assert_eq!(both["text"], json!("1. find it\n2. report it"));
-        let parsed = outline(json!({"text": "1. find it\n\n 2) report it \n- tidy up"})).unwrap();
-        assert_eq!(
-            parsed["entries"],
-            json!(["find it", "report it", "tidy up"])
-        );
-        assert!(outline(json!({})).is_err());
     }
 
     #[test]

@@ -46,7 +46,7 @@ A chat turn through `plan_and_execute` is 4+ inference calls: the agent (decidin
 
 ## Drafting without executing
 
-The same planner also powers **draft-only** planning: `graph plan draft`, and the built-in `author_plan` plan the [workbench](/workbench/plan-workbench) runs for new plans, produce a plan for you to review instead of executing it. `author_plan` adds an outline review with you, a refinement pass by the `plan_refiner` agent, and a final validation.
+The same planner also powers **draft-only** planning: `graph plan draft`, and the built-in `author_plan` plan the [workbench](/workbench/plan-workbench) runs for new plans, produce a plan for you to review instead of executing it. `author_plan` adds a refinement pass by the `plan_refiner` agent and a final validation.
 
 A draft is the built-in plan `draft`, so `graph plan draft` and the workbench run the same plan, and each stage can be inspected with `graph plan show` and replaced by a plan file with the same identifier. `draft` runs two plans and returns the outline with the drafted `steps`, the `solver` brief, and `done`, `failed`, and `problems`:
 

@@ -1,7 +1,7 @@
 version: 1
 identifier: author_plan
 name: Author a plan
-description: Drafts a new plan for a goal with the user — outline, review, full plan, refinement and validation — and returns the plan document.
+description: Drafts a new plan for a goal — outline, full plan, refinement and validation — and returns the plan document.
 input_schema:
   type: object
   required: [goal]
@@ -15,88 +15,12 @@ steps:
     input:
       goal: "{{input.goal}}"
     reasoning: The coarse, whiteboard-level stages of a system that meets the goal.
-  - id: review
-    tool_name: reduce
-    input:
-      over: [1, 2, 3]
-      initial:
-        entries: "{{outline.entries}}"
-        settled: false
-      do:
-        - id: round
-          tool_name: decide
-          input:
-            if: { value: "{{accumulator.settled}}", op: eq, to: false }
-            then:
-              - id: shown
-                tool_name: builtin__outline
-                input:
-                  entries: "{{accumulator.entries}}"
-              - id: answer
-                tool_name: ask
-                input:
-                  prompt: "Outline for: {{input.goal}}\n\n{{shown.text}}\n\nApprove it to draft the full plan, or describe what to change."
-                  output_schema:
-                    type: object
-                    required: [approve, changes]
-                    properties:
-                      approve:
-                        type: boolean
-                        description: Draft the full plan from this outline
-                      changes:
-                        type: string
-                        description: What to change in the outline, in plain words; leave empty when approving
-                  when_unanswered: fail
-              - id: verdict
-                tool_name: decide
-                input:
-                  if: { value: "{{answer.answer.approve}}", op: eq, to: true }
-                  then:
-                    tool_name: builtin__reshape
-                    input:
-                      shape:
-                        entries: "{{accumulator.entries}}"
-                        settled: true
-                  else:
-                    - id: revised
-                      tool_name: builtin__infer
-                      input:
-                        model: outliner
-                        instruction: "Revise this coarse, whiteboard-level outline of a plan as the user asks. Keep everything they didn't ask to change. Each entry is one or two plain sentences describing one stage of the system, in the order the stages run.\n\nGoal: {{input.goal}}\n\nCurrent outline:\n{{shown.text}}\n\nThe user's changes:\n{{answer.answer.changes}}"
-                        output_schema:
-                          type: object
-                          required: [entries]
-                          properties:
-                            entries:
-                              type: array
-                              items:
-                                type: string
-                              description: The revised outline's stages, in the order they run
-                    - id: next
-                      tool_name: builtin__reshape
-                      input:
-                        shape:
-                          entries: "{{revised.entries}}"
-                          settled: false
-              - id: state
-                tool_name: builtin__reshape
-                input:
-                  shape: "{{verdict.result}}"
-            else:
-              tool_name: builtin__reshape
-              input:
-                shape: "{{accumulator}}"
-        - id: carried
-          tool_name: builtin__reshape
-          input:
-            shape: "{{round.result}}"
-    reasoning: Up to three review rounds; the user approves the outline or says what to change, and it is revised and shown again.
   - id: expanded
     tool_name: plan__draft_expand
     input:
       goal: "{{input.goal}}"
-      outline: "{{review.result.entries}}"
-    reasoning: One validated step per agreed stage.
+      outline: "{{outline.entries}}"
+    reasoning: One validated step per outline stage.
   - id: drafted
     tool_name: builtin__plan_from_draft
     input:
@@ -123,7 +47,7 @@ steps:
     reasoning: The final check, and which tools in the plan aren't read-only.
 output:
   plan: "{{refined.plan}}"
-  outline: "{{review.result.entries}}"
+  outline: "{{outline.entries}}"
   valid: "{{verified.valid}}"
   problems: "{{verified.problems}}"
   side_effects: "{{verified.side_effects}}"
