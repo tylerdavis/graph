@@ -1,0 +1,193 @@
+version: 1
+identifier: graph_review_9000
+name: graph_review_9000
+description: Reviews a GitHub PR against graph-cli's own invariants by composing two plans — plan__graph_review_thread_audit settles the living review threads from earlier runs (fixed in code → resolved with a reply, dismissed by a human reply → declined), called via a decide gate only when prior findings exist, and plan__graph_review_core runs the eight-pass principal-engineer review over base_sha...head_sha with the audited findings as known context so only genuinely new findings come back. This wrapper owns everything GitHub — PR metadata, thread readback, posting new findings as inline review threads, and a marker-keyed summary comment with lifecycle counts that refreshes in place. Open threads and human replies are never deleted. Thread hygiene runs before the empty-diff gate, so a fully reverted PR still settles its threads.
+input_schema:
+  properties:
+    pr:
+      description: Pull request number in the repository to review
+      type: integer
+  required:
+  - pr
+  type: object
+steps:
+- id: E0
+  tool_name: builtin__gh_pr_meta
+  input:
+    pr: '{{input.pr}}'
+  reasoning: Fetch PR metadata (title, body, base_sha, head_sha, author, state) needed for the empty-diff gate, the thread audit, and the core review's inputs.
+- id: E2
+  tool_name: builtin__git_diff
+  input:
+    base: '{{E0.base_sha}}'
+    exclude: Cargo.lock CHANGELOG.md
+    head: '{{E0.head_sha}}'
+    max_bytes: 1024
+    paths: .
+  reasoning: Gate-only diff — this wrapper never reads the text beyond checking emptiness (the excludes must match the core's, or the two would disagree on what "nothing to review" means). plan__graph_review_core fetches its own full diff; the tiny byte budget cannot change the emptiness verdict since truncation only shortens non-empty output.
+- id: E4b
+  tool_name: builtin__gh_pr_review_threads
+  input:
+    marker: graph_review_9000:finding
+    pr: '{{input.pr}}'
+  reasoning: Read back the inline review threads this plan posted on earlier runs (recognized by the hidden graph_review_9000:finding payload tag), each with its heuristic state — open, resolved (closed by our own identity), declined (closed by a human) — plus any human replies. Feeds the decide gate below and, through the audit plan, the reviewer's known-findings context. Empty on a PR's first review.
+- id: G1
+  tool_name: decide
+  input:
+    if:
+      op: eq
+      to: true
+      value: '{{E4b.has_findings}}'
+    then:
+      tool_name: plan__graph_review_thread_audit
+      input:
+        pr: '{{input.pr}}'
+        base: '{{E0.base_sha}}'
+        head: '{{E0.head_sha}}'
+        title: '{{E0.title}}'
+        findings: '{{E4b.findings}}'
+    else:
+      tool_name: builtin__reshape
+      input:
+        shape:
+          findings: []
+          threads: []
+          still_open_count: 0
+          resolved_now_count: 0
+          declined_now_count: 0
+          transitions_count: 0
+          has_transitions: false
+  reasoning: 'First-run PRs (no prior findings) skip the audit plan — and its review-sized prompt over the full diff and file contents — entirely. The else branch emits the audit plan''s exact output contract as literals so every downstream template ({{G1.result.*}}) resolves identically on both branches: keep its keys in lockstep with graph_review_thread_audit''s output map.'
+- id: E3
+  tool_name: exit
+  input:
+    message: No meaningful diff found for PR {{input.pr}} (after excluding Cargo.lock/CHANGELOG.md) — nothing to review; existing findings were still audited and synced.
+    status: success
+    when:
+      op: empty
+      value: '{{E2.text}}'
+  reasoning: Nothing to review on an empty diff — but only after the thread lifecycle above has settled prior findings, which is exactly the reverted-PR case this gate used to strand.
+- id: C1
+  tool_name: plan__graph_review_core
+  input:
+    base: '{{E0.base_sha}}'
+    head: '{{E0.head_sha}}'
+    title: '{{E0.title}}'
+    body: '{{E0.body}}'
+    known_findings: '{{G1.result.findings}}'
+  reasoning: >-
+    The review engine — fetches its own evidence (changed files, diff, full
+    contents at head), clusters the diff into functional groups, scouts each
+    scoutworthy group's blast radius, and runs the eight-pass review with the
+    audited findings as a suppression list. Returns the change-level framing,
+    severity-ordered pass table, and only genuinely new findings. Reading
+    '{{C1.findings}}' (not '{{C1.output.findings}}') is deliberately safe
+    here — E2's gate uses the same range and excludes as the core's own
+    empty-diff exit, so the core never exits when called from this wrapper.
+    Keep the two gates in lockstep.
+- id: E6
+  tool_name: map
+  input:
+    concurrency: 8
+    do:
+      input:
+        shape:
+          blocker_ordinal: '{{item.blocker_ordinal}}'
+          body: |-
+            > [!{{item.alert_type}}]
+            > **{{item.severity_label}}: {{item.finding}}**
+            > {{item.explanation}}
+
+            **Fix** — {{item.fix_markdown}}
+
+            <details>
+            <summary><b>🤖 One-shot agent fix</b></summary>
+
+            ```
+            {{item.agent_prompt}}
+            ```
+
+            </details>
+          file: '{{item.file}}'
+          finding: '{{item.finding}}'
+          fix_short: '{{item.fix_short}}'
+          invariant: '{{item.invariant}}'
+          is_blocker: '{{item.is_blocker}}'
+          label: '{{item.label}}'
+          line: '{{item.line}}'
+          path: '{{item.file}}'
+          payload:
+            file: '{{item.file}}'
+            finding: '{{item.finding}}'
+            fix_short: '{{item.fix_short}}'
+            invariant: '{{item.invariant}}'
+            label: '{{item.label}}'
+            line: '{{item.line}}'
+            severity: '{{item.severity}}'
+          severity: '{{item.severity}}'
+      tool_name: builtin__reshape
+    over: '{{C1.findings}}'
+  reasoning: Convert the core review's findings into thread-sync create entries — path plus an alert-style markdown body built from severity, finding, explanation, fix, and agent prompt, and a structured payload that gh_pr_thread_sync embeds as a hidden tag so gh_pr_review_threads can read the finding back on the next run.
+- id: E7
+  tool_name: user__gh_pr_thread_sync
+  input:
+    creates: '{{E6.results}}'
+    head_sha: '{{E0.head_sha}}'
+    marker: graph_review_9000:finding
+    pr: '{{input.pr}}'
+    sweep_marker: graph_review_9000:inline
+    threads: []
+  reasoning: Post the review's new findings as inline comments carrying the graph_review_9000:finding payload tag, read back by E4b on the next run. Transitions to existing threads were already applied inside the audit plan before the empty-diff gate; this call only creates. sweep_marker covers the legacy-comment sweep on reviewed runs (the audit plan only runs when new-style threads exist); drop both once open PRs predating 2026-08-04 are closed.
+- id: E8
+  tool_name: builtin__gh_pr_comment
+  input:
+    body: |-
+      > [!{{C1.overall_alert_type}}]
+      > **graph_review_9000** · {{C1.overall_framing}}
+
+      **At a glance**
+
+      | Pass | Area | Status |
+      |---|---|---|
+      {{#C1.passes}}| {{number}} | {{area}} | {{status_emoji}} {{status_label}} |
+      {{/C1.passes}}
+
+      🧵 {{E7.created_count}} new · {{G1.result.still_open_count}} open · {{G1.result.resolved_now_count}} resolved this run · {{G1.result.declined_now_count}} declined
+
+      {{#G1.result.threads}}{{#error}}> ⚠️ transition failed — **{{label}}**: `{{error}}`
+      {{/error}}{{/G1.result.threads}}
+      {{#C1.has_blockers}}
+      > [!CAUTION]
+      > **Would block merge — {{C1.blockers_count}} new finding(s)**
+      {{#E7.creates}}{{#is_blocker}}> {{blocker_ordinal}}. **{{label}}.** {{finding}}{{#url}} ([details]({{url}})){{/url}}
+      {{/is_blocker}}{{/E7.creates}}
+      {{/C1.has_blockers}}
+      {{#G1.result.has_transitions}}
+      <details>
+      <summary>🧵 <b>Thread updates ({{G1.result.transitions_count}})</b></summary>
+
+      {{#G1.result.threads}}{{#transitioned}}- **{{label}}** ({{file}}:{{line}}) → {{state}} — {{note}}
+      {{/transitioned}}{{/G1.result.threads}}
+      </details>
+      {{/G1.result.has_transitions}}
+      {{#C1.has_unverified}}
+      <details>
+      <summary>🟡 <b>Needs verification / intentional ({{C1.unverified_count}})</b></summary>
+
+      {{#C1.passes}}{{#is_unverified}}**{{area}}** — {{summary}}
+
+      {{/is_unverified}}{{/C1.passes}}
+      </details>
+      {{/C1.has_unverified}}
+      {{#C1.has_na_or_pass}}
+      <details>
+      <summary>⚪ <b>N/A · ✅ Pass</b></summary>
+
+      {{#C1.passes}}{{#is_na_or_pass}}**{{area}}** — {{summary}}
+
+      {{/is_na_or_pass}}{{/C1.passes}}
+      </details>
+      {{/C1.has_na_or_pass}}
+    marker: graph_review_9000:summary
+    pr: '{{input.pr}}'
+  reasoning: Final summary comment leading with the change-level framing alert, then the at-a-glance table of all eight passes ordered by severity, then the finding-lifecycle counts, then a blockers list linking to the inline comments posted in E7, then this run's thread transitions and the collapsible unverified and na/pass sections. Stable marker so repeated runs refresh this comment in place.

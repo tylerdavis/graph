@@ -164,6 +164,11 @@ pub fn validate(name_or_path: &str) -> Result<Outcome> {
     // time: a plan named by path may never have been through the catalog, and
     // a caller asking "is this valid?" deserves every layer's answer.
     let mut problems = authoring::static_problems(&doc);
+    for problem in authoring::model_kind_problems(&doc, &|role| runtime.model_kind_of(role)) {
+        if !problems.contains(&problem) {
+            problems.push(problem);
+        }
+    }
     let catalog = runtime.tool_catalog(&loaded.docs)?;
     let check = catalog::resolve_plan_tools_deep(&doc, &loaded.docs, &catalog);
     for problem in check.errors {

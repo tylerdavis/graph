@@ -5029,3 +5029,51 @@ fn static_validation_checks_the_decide_gate_shape() {
         "{problems:?}"
     );
 }
+
+#[test]
+fn model_kind_problems_flag_literal_roles_of_the_wrong_kind() {
+    let doc = crate::pipeline::doc::parse_plan_source(
+        r#"
+version: 2
+identifier: kinds
+name: Kinds
+description: Gates pointed at the wrong kind of model.
+steps:
+  - id: E0
+    tool_name: exit
+    input: { infer: "blocked?", model: fast_decider, status: error }
+  - id: E1
+    tool_name: exit
+    input: { decide: { question: "blocked?", model: default }, status: error }
+  - id: E2
+    tool_name: decide
+    input:
+      if: { value: 1, op: eq, to: 1 }
+      then:
+        - id: B0
+          tool_name: filter
+          input: { over: [1], decide: { question: "keep?", model: "{{input.role}}" } }
+  - id: E3
+    tool_name: exit
+    input: { infer: "blocked?", status: error }
+"#,
+        "kinds.yaml",
+    )
+    .unwrap();
+    let kind_of = |role: &str| match role {
+        "fast_decider" | "decider" => Some(graph_config::ModelKind::Decision),
+        "default" | "judge" => Some(graph_config::ModelKind::Chat),
+        _ => None,
+    };
+    let problems = crate::pipeline::authoring::model_kind_problems(&doc, &kind_of);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(problems[0].starts_with("step E0: `infer`"), "{problems:?}");
+    assert!(problems[1].starts_with("step E1: `decide`"), "{problems:?}");
+
+    let no_decider = |role: &str| (role != "decider").then_some(graph_config::ModelKind::Chat);
+    let problems = crate::pipeline::authoring::model_kind_problems(&doc, &no_decider);
+    assert!(
+        !problems.iter().any(|p| p.contains("none is configured")),
+        "a templated model is left to run time: {problems:?}"
+    );
+}
