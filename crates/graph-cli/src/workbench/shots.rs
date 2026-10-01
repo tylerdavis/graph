@@ -78,6 +78,8 @@ struct ShotSpec {
     /// interleave agent, solver, and planner responses in call order.
     #[serde(default)]
     llm: Vec<LlmScript>,
+    #[serde(default)]
+    answers: VecDeque<Value>,
     /// Scripted tool outcomes per namespaced tool name, consumed in call
     /// order. Every name must resolve in the real catalog; outcomes are
     /// validated against the tool's declared output schema.
@@ -421,11 +423,17 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         debug.clone(),
         tx.clone(),
     ));
+    let asking = Arc::new(
+        pipeline
+            .as_ref()
+            .clone()
+            .with_interlocutor(Arc::new(super::runner::UiInterlocutor::new(tx.clone()))),
+    );
     let toolbox: Arc<dyn ToolRegistry> = Arc::new(graph_core::ExcludingRegistry::new(
         Arc::new(graph_core::toolbox::AgentToolbox::new(
-            pipeline.registry.clone(),
-            pipeline.clone(),
-            pipeline.plans.as_ref().clone(),
+            asking.registry.clone(),
+            asking.clone(),
+            asking.plans.as_ref().clone(),
         )),
         vec!["plan_and_execute".to_string()],
     ));
@@ -437,7 +445,6 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         catalog: registry,
         pipeline: pipeline.clone(),
         events: Arc::new(ChannelSink::agent(tx.clone())),
-        // Fixed: the prompt's date must not vary between regenerations.
         session: BTreeMap::from([("date", "2026-07-19".to_string()), ("user", String::new())]),
         prompt_overrides: BTreeMap::new(),
         context: Some(super::agents::context_hook(draft.clone())),
@@ -475,6 +482,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
     // Drain engine messages through the reducer until the capture point.
     // Pauses before a `pause_at` target are answered with a real `c`
     // keypress — the user's continue — so the run steps to the target.
+    let mut answers = spec.answers;
     let mut context_loaded = false;
     let mut validated = spec.plan.is_none();
     let mut turn_done = spec.chat.is_none();
@@ -498,6 +506,20 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         };
         for effect in app::update(&mut app, msg) {
             run_effect(effect, &context);
+        }
+        if let Mode::Editing(editor) = &mut app.mode {
+            let asking = matches!(
+                &editor.context,
+                super::editor::EditorContext::InjectResult { prompt }
+                    if matches!(prompt.kind, app::GateKind::Ask { .. })
+            );
+            if asking {
+                if let Some(answer) = answers.pop_front() {
+                    editor.textarea = super::editor::json_textarea(&answer);
+                    feed_key(&mut app, KeyCode::F(2), &context);
+                    continue;
+                }
+            }
         }
         if let Some(target) = &spec.capture.pause_at {
             match &app.mode {

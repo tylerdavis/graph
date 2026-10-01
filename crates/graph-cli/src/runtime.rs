@@ -395,9 +395,17 @@ impl Runtime {
         store: &Arc<dyn Store>,
         events: Arc<dyn EventSink>,
     ) -> Result<Arc<AgentToolbox>> {
-        let pipeline = self
-            .pipeline_with(store, events, PipelineHooks::default())
-            .await?;
+        self.toolbox_with(store, events, PipelineHooks::default())
+            .await
+    }
+
+    pub async fn toolbox_with(
+        &self,
+        store: &Arc<dyn Store>,
+        events: Arc<dyn EventSink>,
+        hooks: PipelineHooks,
+    ) -> Result<Arc<AgentToolbox>> {
+        let pipeline = self.pipeline_with(store, events, hooks).await?;
         self.toolbox_over(store, &pipeline)
     }
 

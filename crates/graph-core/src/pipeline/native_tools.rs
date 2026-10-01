@@ -1,20 +1,34 @@
+use super::authoring;
+use super::doc::{parse_plan_source, PlanDoc};
 use super::drafting::{
     accept_step_tool_def, draft_context_tool_def, ACCEPT_STEP_TOOL, DRAFT_CONTEXT_TOOL,
 };
-use super::{prompts, Pipeline, Step};
+use super::{prompts, Draft, Pipeline, Step};
 use crate::tools::{ToolDef, ToolOutcome};
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 
 pub const CATALOG_OUTLINE_TOOL: &str = "builtin__catalog_outline";
 
 pub const VALIDATE_PLAN_TOOL: &str = "builtin__validate_plan";
 
-pub const NATIVE_TOOLS: [&str; 4] = [
+pub const OUTLINE_TOOL: &str = "builtin__outline";
+
+pub const PLAN_FROM_DRAFT_TOOL: &str = "builtin__plan_from_draft";
+
+pub const APPLY_EDITS_TOOL: &str = "builtin__apply_edits";
+
+pub const NATIVE_TOOLS: [&str; 7] = [
     CATALOG_OUTLINE_TOOL,
     DRAFT_CONTEXT_TOOL,
     ACCEPT_STEP_TOOL,
     VALIDATE_PLAN_TOOL,
+    OUTLINE_TOOL,
+    PLAN_FROM_DRAFT_TOOL,
+    APPLY_EDITS_TOOL,
 ];
+
+const CONTROL_TOOLS: &[&str] = &["exit", "decide", "filter", "map", "reduce", "agent", "ask"];
 
 pub fn is_native_tool(name: &str) -> bool {
     NATIVE_TOOLS.contains(&name)
@@ -41,22 +55,101 @@ pub fn native_tool_defs() -> Vec<ToolDef> {
         accept_step_tool_def(),
         ToolDef {
             name: VALIDATE_PLAN_TOOL.to_string(),
-            description: "Statically validates a list of plan steps: ids, references between \
-                          steps, control-step grammar and templates. Returns every problem found."
+            description: "Validates a plan: its own structure and templates, and every tool it \
+                          calls against the catalog. Returns every problem found, and the tools \
+                          it calls that aren't marked read-only (side_effects). Pass the whole \
+                          plan as `plan`, or just its `steps`."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
-                "required": ["steps"],
                 "properties": {
-                    "steps": {"type": "array", "items": {"type": "object"}, "description": "The plan's steps"}
+                    "plan": {"type": "object", "description": "A plan document"},
+                    "steps": {"type": "array", "items": {"type": "object"}, "description": "A plan's steps, when there is no whole plan"}
                 }
             }),
             output_schema: Some(json!({
                 "type": "object",
-                "required": ["valid", "problems"],
+                "required": ["valid", "problems", "side_effects"],
                 "properties": {
                     "valid": {"type": "boolean"},
+                    "problems": {"type": "array", "items": {"type": "string"}},
+                    "side_effects": {"type": "array", "items": {"type": "string"}}
+                }
+            })),
+            output_example: None,
+            read_only: Some(true),
+        },
+        ToolDef {
+            name: OUTLINE_TOOL.to_string(),
+            description: "Converts a plan outline between a list of entries and numbered text \
+                          with one entry per line. Pass `entries` or `text`; both come back."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "entries": {"type": "array", "items": {"type": "string"}, "description": "The outline entries, in order"},
+                    "text": {"type": "string", "description": "The outline, one entry per line"}
+                }
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "required": ["entries", "text"],
+                "properties": {
+                    "entries": {"type": "array", "items": {"type": "string"}},
+                    "text": {"type": "string"}
+                }
+            })),
+            output_example: None,
+            read_only: Some(true),
+        },
+        ToolDef {
+            name: PLAN_FROM_DRAFT_TOOL.to_string(),
+            description: "Turns what plan__draft_expand drafted into a plan document named \
+                          from the goal. When a step failed to draft, the valid steps before it \
+                          are kept and the problems are returned."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["goal", "draft"],
+                "properties": {
+                    "goal": {"type": "string", "description": "What the plan should accomplish"},
+                    "draft": {"type": "object", "description": "The result plan__draft_expand returned"}
+                }
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "required": ["plan", "problems"],
+                "properties": {
+                    "plan": {"type": "object"},
                     "problems": {"type": "array", "items": {"type": "string"}}
+                }
+            })),
+            output_example: None,
+            read_only: Some(true),
+        },
+        ToolDef {
+            name: APPLY_EDITS_TOOL.to_string(),
+            description: "Applies edits to a plan document, one at a time and in order. Each \
+                          edit is an object with `op` (update_metadata, add_step, update_step, \
+                          delete_step) and that operation's fields, the same as the workbench \
+                          editing tools. An edit that would introduce a new validation problem \
+                          is rejected and the plan is left as it was before it."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["plan", "edits"],
+                "properties": {
+                    "plan": {"type": "object", "description": "The plan document to edit"},
+                    "edits": {"type": "array", "items": {"type": "object"}, "description": "The edits, in order"}
+                }
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "required": ["plan", "applied", "rejected"],
+                "properties": {
+                    "plan": {"type": "object"},
+                    "applied": {"type": "array", "items": {"type": "object"}},
+                    "rejected": {"type": "array", "items": {"type": "object"}}
                 }
             })),
             output_example: None,
@@ -90,7 +183,10 @@ impl Pipeline {
             CATALOG_OUTLINE_TOOL => Ok(json!({ "text": self.catalog_outline().await })),
             DRAFT_CONTEXT_TOOL => self.draft_context(input).await,
             ACCEPT_STEP_TOOL => self.accept_step(input),
-            VALIDATE_PLAN_TOOL => self.validate_steps(input),
+            VALIDATE_PLAN_TOOL => self.validate_plan_input(input).await,
+            OUTLINE_TOOL => outline(input),
+            PLAN_FROM_DRAFT_TOOL => plan_from_draft(input),
+            APPLY_EDITS_TOOL => apply_edits(input),
             _ => Err(format!("unknown native tool '{name}'")),
         };
         match result {
@@ -102,17 +198,216 @@ impl Pipeline {
         }
     }
 
-    fn validate_steps(&self, input: Value) -> Result<Value, String> {
-        let steps: Vec<Step> = serde_json::from_value(input["steps"].clone())
-            .map_err(|e| format!("invalid steps: {e}"))?;
-        let problems = self.validate_plan(&steps).err().unwrap_or_default();
-        Ok(json!({ "valid": problems.is_empty(), "problems": problems }))
+    async fn validate_plan_input(&self, input: Value) -> Result<Value, String> {
+        let (problems, steps) = match input.get("plan") {
+            Some(plan) => {
+                let doc = plan_doc(plan)?;
+                let problems = authoring::plan_problems(&doc, &self.plans, self.catalog.as_deref());
+                (problems, json!(doc.steps))
+            }
+            None => {
+                let steps: Vec<Step> = serde_json::from_value(input["steps"].clone())
+                    .map_err(|e| format!("invalid steps: {e}"))?;
+                let problems = self.validate_plan(&steps).err().unwrap_or_default();
+                (problems, json!(steps))
+            }
+        };
+        let mut defs = self.registry.tools().await.unwrap_or_default();
+        defs.extend(self.callable_plan_defs());
+        let mut side_effects: Vec<String> = called_tools(&steps)
+            .into_iter()
+            .filter(|tool| !CONTROL_TOOLS.contains(&tool.as_str()))
+            .filter(|tool| {
+                defs.iter()
+                    .find(|def| &def.name == tool)
+                    .and_then(|def| def.read_only)
+                    != Some(true)
+            })
+            .collect();
+        side_effects.sort();
+        let valid = !problems.iter().any(|problem| !problem.starts_with("note:"));
+        Ok(json!({ "valid": valid, "problems": problems, "side_effects": side_effects }))
     }
+}
+
+pub fn plan_doc(value: &Value) -> Result<PlanDoc, String> {
+    let yaml = serde_yaml::to_string(value).map_err(|e| format!("invalid plan: {e}"))?;
+    parse_plan_source(&yaml, "plan").map_err(|e| e.to_string())
+}
+
+fn plan_json(doc: &PlanDoc) -> Result<Value, String> {
+    authoring::to_json(doc).map_err(|e| e.to_string())
+}
+
+fn called_tools(value: &Value) -> BTreeSet<String> {
+    let mut tools = BTreeSet::new();
+    let mut stack = vec![value];
+    while let Some(value) = stack.pop() {
+        match value {
+            Value::Object(map) => {
+                for key in ["tool_name", "toolName"] {
+                    if let Some(Value::String(name)) = map.get(key) {
+                        tools.insert(name.clone());
+                    }
+                }
+                stack.extend(map.values());
+            }
+            Value::Array(items) => stack.extend(items),
+            _ => {}
+        }
+    }
+    tools
+}
+
+fn outline(input: Value) -> Result<Value, String> {
+    let entries: Vec<String> = match (&input["entries"], &input["text"]) {
+        (Value::Array(items), _) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        (_, Value::String(text)) => text.lines().map(str::to_string).collect(),
+        _ => return Err("pass the outline as `entries` or `text`".to_string()),
+    };
+    let entries: Vec<String> = entries
+        .iter()
+        .map(|entry| {
+            entry
+                .trim()
+                .trim_start_matches(|c: char| {
+                    c.is_ascii_digit() || c == '.' || c == ')' || c == '-'
+                })
+                .trim()
+                .to_string()
+        })
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    let text: Vec<String> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| format!("{}. {entry}", index + 1))
+        .collect();
+    Ok(json!({ "entries": entries, "text": text.join("\n") }))
+}
+
+fn plan_from_draft(input: Value) -> Result<Value, String> {
+    let goal = input["goal"]
+        .as_str()
+        .ok_or("plan_from_draft requires a 'goal' string")?;
+    let draft = Draft::from_result(&input["draft"])?;
+    let mut problems = draft.problems;
+    if let Some(step) = &draft.failed_step {
+        problems.insert(
+            0,
+            format!("drafting stopped at step {step}; the steps before it are kept"),
+        );
+    }
+    let doc = authoring::merge_planner_output(None, goal, draft.output);
+    Ok(json!({ "plan": plan_json(&doc)?, "problems": problems }))
+}
+
+fn apply_edits(input: Value) -> Result<Value, String> {
+    let mut doc = plan_doc(&input["plan"])?;
+    let edits = input["edits"]
+        .as_array()
+        .ok_or("apply_edits requires an 'edits' list")?;
+    let mut applied = Vec::new();
+    let mut rejected = Vec::new();
+    for edit in edits {
+        let op = edit["op"].as_str().unwrap_or_default();
+        let mutate: fn(&mut PlanDoc, &Value) -> Result<Value, Value> = match op {
+            "update_metadata" => authoring::patch_metadata,
+            "add_step" => authoring::patch_add_step,
+            "update_step" => authoring::patch_update_step,
+            "delete_step" => authoring::patch_delete_step,
+            _ => {
+                rejected.push(json!({
+                    "edit": edit,
+                    "error": format!("unknown op '{op}' (use update_metadata, add_step, update_step or delete_step)"),
+                }));
+                continue;
+            }
+        };
+        match authoring::apply_edit(&doc, |doc| mutate(doc, edit)) {
+            Ok(accepted) => {
+                applied.push(json!({ "op": op, "summary": accepted.summary }));
+                doc = accepted.doc;
+            }
+            Err(rejection) => rejected.push(json!({ "edit": edit, "rejection": rejection.body })),
+        }
+    }
+    Ok(json!({ "plan": plan_json(&doc)?, "applied": applied, "rejected": rejected }))
 }
 
 pub(super) fn tool_error(message: String) -> ToolOutcome {
     ToolOutcome {
         result: json!({ "error": message }),
         is_error: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plan() -> Value {
+        json!({
+            "identifier": "demo",
+            "name": "Demo",
+            "description": "demo",
+            "steps": [
+                {"id": "E0", "tool_name": "t__search", "input": {"query": "x"}},
+                {"id": "E1", "tool_name": "t__report", "input": {"rows": "{{E0.values}}"}},
+            ],
+        })
+    }
+
+    #[test]
+    fn an_outline_round_trips_between_entries_and_numbered_text() {
+        let both = outline(json!({"entries": ["find it", "report it"]})).unwrap();
+        assert_eq!(both["text"], json!("1. find it\n2. report it"));
+        let parsed = outline(json!({"text": "1. find it\n\n 2) report it \n- tidy up"})).unwrap();
+        assert_eq!(
+            parsed["entries"],
+            json!(["find it", "report it", "tidy up"])
+        );
+        assert!(outline(json!({})).is_err());
+    }
+
+    #[test]
+    fn edits_apply_in_order_and_a_breaking_one_is_rejected() {
+        let result = apply_edits(json!({
+            "plan": plan(),
+            "edits": [
+                {"op": "update_step", "id": "E1", "reasoning": "the report"},
+                {"op": "delete_step", "id": "E0"},
+                {"op": "rename_everything"},
+            ],
+        }))
+        .unwrap();
+        assert_eq!(result["applied"].as_array().unwrap().len(), 1);
+        assert_eq!(result["rejected"].as_array().unwrap().len(), 2);
+        let steps = result["plan"]["steps"].as_array().unwrap();
+        assert_eq!(steps.len(), 2, "deleting E0 would orphan E1's reference");
+        assert_eq!(steps[1]["reasoning"], json!("the report"));
+    }
+
+    #[test]
+    fn a_failed_draft_keeps_its_valid_steps_and_says_where_it_stopped() {
+        let result = plan_from_draft(json!({
+            "goal": "report on x",
+            "draft": {
+                "steps": [{"id": "E0", "toolName": "t__search", "input": {"query": "x"}}],
+                "solver": null,
+                "done": false,
+                "failed": true,
+                "problems": ["E9 is not a step"],
+            },
+        }))
+        .unwrap();
+        assert_eq!(result["plan"]["steps"].as_array().unwrap().len(), 1);
+        let problems = result["problems"].as_array().unwrap();
+        assert!(problems[0].as_str().unwrap().contains("stopped at step E1"));
+        assert_eq!(problems[1], json!("E9 is not a step"));
     }
 }

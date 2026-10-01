@@ -162,21 +162,19 @@ mod tests {
             [
                 "chat",
                 "orchestrator",
-                "plan_author",
                 "plan_editor",
                 "plan_loader",
                 "plan_refiner",
-                "plan_verifier",
                 "search_bot"
             ]
         );
         assert_eq!(outcome.body["agents"][0]["source"], "built-in");
         assert_eq!(
-            outcome.body["agents"][7]["subagentIo"],
+            outcome.body["agents"][5]["subagentIo"],
             "{prompt} -> {result}"
         );
         assert_eq!(
-            outcome.body["agents"][6]["subagentIo"],
+            outcome.body["agents"][4]["subagentIo"],
             "typed input -> typed output"
         );
     }

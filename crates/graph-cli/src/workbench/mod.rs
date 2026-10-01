@@ -153,7 +153,13 @@ async fn run_plan_workbench(
 
     let agent_sink: Arc<dyn EventSink> =
         crate::telemetry::tee(Arc::new(chat::ChannelSink::agent(tx.clone())), exporter);
-    let toolbox = runtime.toolbox(&store, agent_sink.clone()).await?;
+    let hooks = crate::runtime::PipelineHooks {
+        interlocutor: Some(Arc::new(runner::UiInterlocutor::new(tx.clone()))),
+        ..Default::default()
+    };
+    let toolbox = runtime
+        .toolbox_with(&store, agent_sink.clone(), hooks)
+        .await?;
     // The workbench doesn't yet support open-ended sub-tasks, so hide
     // `plan_and_execute` from both the agents' tool lists and the
     // Context tab's catalog view without removing it from the shared catalog.

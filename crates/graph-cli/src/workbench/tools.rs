@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 
 pub const SET_DRAFT: &str = "workbench__set_draft";
+pub const DESCRIBE_TOOL: &str = "workbench__describe_tool";
 pub const GET_PLAN: &str = "workbench__get_plan";
 pub const LOAD_PLAN: &str = "workbench__load_plan";
 pub const LIST_PLANS: &str = "workbench__list_plans";
@@ -405,67 +406,94 @@ impl WorkbenchTools {
     }
 
     fn set_draft(&self, input: &Value) -> ToolOutcome {
-        let Some(goal) = input.get("goal").and_then(Value::as_str) else {
-            return error_outcome("set_draft requires a 'goal' string");
+        let doc = match graph_core::pipeline::plan_doc(&input["plan"]) {
+            Ok(doc) => doc,
+            Err(error) => return error_outcome(&format!("set_draft requires a 'plan': {error}")),
         };
-        let Some(drafted) = input.get("draft") else {
-            return error_outcome(
-                "set_draft requires the 'draft' that plan__draft_expand returned",
-            );
-        };
-        // fresh: the goal describes a NEW plan — ignore the current draft
-        // entirely, so an unrelated loaded plan isn't treated as the plan
-        // being drafted into (which would keep its identifier and metadata).
-        let fresh = input.get("fresh").and_then(Value::as_bool).unwrap_or(false);
-        let existing = if fresh { None } else { self.current() };
-        let draft = match graph_core::pipeline::Draft::from_result(drafted) {
-            Ok(draft) => draft,
-            Err(error) => return error_outcome(&error),
-        };
-        let output = match draft.failed_step {
-            None => draft.output,
-            // Drafting exhausted its retries: salvage the valid prefix so
-            // the agent finishes it with the edit tools instead of
-            // redrafting from scratch.
-            Some(step_id) => {
-                let problems = draft.problems;
-                let doc = authoring::merge_planner_output(existing, goal, draft.output);
-                let steps = doc.steps.len();
-                self.publish(doc, true);
+        let overwrite = input
+            .get("overwrite_draft")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let problems = plan_problems(&self.pipeline, &doc);
+        let summary = json!({
+            "identifier": doc.identifier,
+            "name": doc.name,
+            "steps": doc.steps.len(),
+            "validation": if problems.is_empty() { json!("ok") } else { json!(problems) },
+        });
+        {
+            let mut state = self.draft.lock().unwrap();
+            if state.dirty && !overwrite {
                 return ToolOutcome {
                     result: json!({
-                        "error": format!(
-                            "drafting could not produce a valid step \
-                             {step_id}; the valid partial draft \
-                             ({steps} steps) has been published"
-                        ),
-                        "failedStep": step_id,
-                        "problems": problems,
-                        "note": "finish the plan with the editing tools \
-                                 (workbench__add_step, workbench__update_step) \
-                                 instead of redrafting",
+                        "error": "the draft has unsaved changes — save them with \
+                                  workbench__save_plan, or pass overwrite_draft: true \
+                                  only after the user confirms discarding them",
+                        "dirtyDraft": state.doc.as_ref().map(|d| d.identifier.clone()),
                     }),
                     is_error: true,
                 };
             }
-        };
-
-        let doc = authoring::merge_planner_output(existing, goal, output);
-        let problems = plan_problems(&self.pipeline, &doc);
-        let mut summary = json!({
-            "identifier": doc.identifier,
-            "steps": doc.steps.len(),
-            "validation": if problems.is_empty() { json!("ok") } else { json!(problems) },
-        });
-        if !problems.is_empty() {
-            summary["note"] = json!(
-                "the draft has catalog problems — fix them with the \
-                 editing tools"
-            );
+            state.undo = state.doc.take().map(|old| (old, state.dirty));
+            state.doc = Some(doc.clone());
+            state.dirty = true;
         }
-        self.publish(doc, true);
+        let _ = self.tx.send(Msg::DraftReplaced {
+            doc: Box::new(doc),
+            dirty: true,
+        });
         ToolOutcome {
             result: summary,
+            is_error: false,
+        }
+    }
+
+    async fn describe_tool(&self, input: &Value) -> ToolOutcome {
+        let Some(name) = input.get("name").and_then(Value::as_str) else {
+            return error_outcome("describe_tool requires a 'name' string");
+        };
+        if let Some(identifier) = name.strip_prefix("plan__") {
+            if let Some(doc) = self
+                .pipeline
+                .plans
+                .iter()
+                .find(|d| d.identifier == identifier)
+            {
+                return ToolOutcome {
+                    result: json!({
+                        "name": name,
+                        "description": doc.tool_description(),
+                        "inputSchema": doc.tool_input_schema(),
+                        "readOnly": null,
+                    }),
+                    is_error: false,
+                };
+            }
+        }
+        let defs = self.pipeline.registry.tools().await.unwrap_or_default();
+        let Some(def) = defs.into_iter().find(|def| def.name == name) else {
+            return error_outcome(&format!("no tool named '{name}' in the plan catalog"));
+        };
+        let observed = match &self.pipeline.store {
+            Some(store) => store
+                .tool_shapes()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .find(|shape| shape.tool == name)
+                .map(|shape| json!({"schema": shape.schema, "example": shape.example})),
+            None => None,
+        };
+        ToolOutcome {
+            result: json!({
+                "name": def.name,
+                "description": def.description,
+                "inputSchema": def.input_schema,
+                "outputSchema": def.output_schema,
+                "outputExample": def.output_example,
+                "observedOutput": observed,
+                "readOnly": def.read_only,
+            }),
             is_error: false,
         }
     }
@@ -556,21 +584,17 @@ impl ToolRegistry for WorkbenchTools {
         let mut defs = vec![
             ToolDef {
                 name: SET_DRAFT.to_string(),
-                description: "Publish a drafted plan to the workbench pane: pass the user's \
-                              `goal` and the whole result plan__draft_expand (or plan__draft) \
-                              returned as `draft`. Pass fresh: true when the goal describes a NEW \
-                              plan — otherwise the current draft's identifier and metadata are \
-                              kept. This replaces every step of the draft. When drafting failed \
-                              on a step, the valid prefix is published and the problems are \
-                              returned so it can be finished with the editing tools."
+                description: "Make a plan document the workbench draft, replacing the current \
+                              one: pass the `plan` that plan__author_plan returned. Fails when the \
+                              current draft has unsaved changes; pass overwrite_draft: true only \
+                              after the user confirms discarding them."
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
-                    "required": ["goal", "draft"],
+                    "required": ["plan"],
                     "properties": {
-                        "goal": {"type": "string", "description": "What the plan should accomplish, self-contained."},
-                        "draft": {"type": "object", "description": "The result plan__draft_expand returned: steps, solver, done, failed, problems."},
-                        "fresh": {"type": "boolean", "description": "Publish as a NEW plan, ignoring the current draft (which otherwise keeps its identifier and metadata). Default false."}
+                        "plan": {"type": "object", "description": "The plan document to show in the pane"},
+                        "overwrite_draft": {"type": "boolean", "description": "Discard unsaved changes to the current draft. Only after the user confirms."}
                     }
                 }),
                 output_schema: None,
@@ -578,6 +602,24 @@ impl ToolRegistry for WorkbenchTools {
                     json!({"identifier": "sprint_report", "steps": 3, "validation": "ok"}),
                 ),
                 read_only: None,
+            },
+            ToolDef {
+                name: DESCRIBE_TOOL.to_string(),
+                description: "Describe one tool from the plan catalog without calling it: its \
+                              description, input schema, declared output schema, the output \
+                              shape observed in earlier runs, and whether it's read-only. Use it \
+                              to write a step's input and the templates that read its result."
+                    .to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": {
+                        "name": {"type": "string", "description": "The tool's full name, e.g. linear__list_issues or plan__project_status"}
+                    }
+                }),
+                output_schema: None,
+                output_example: None,
+                read_only: Some(true),
             },
             ToolDef {
                 name: LOAD_PLAN.to_string(),
@@ -832,8 +874,8 @@ impl ToolRegistry for WorkbenchTools {
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
         match name {
-            SET_DRAFT | GET_PLAN | LOAD_PLAN | LIST_PLANS | VALIDATE_PLAN | RUN_PLAN
-            | SAVE_PLAN | UPDATE_METADATA | ADD_STEP | UPDATE_STEP | DELETE_STEP
+            SET_DRAFT | DESCRIBE_TOOL | GET_PLAN | LOAD_PLAN | LIST_PLANS | VALIDATE_PLAN
+            | RUN_PLAN | SAVE_PLAN | UPDATE_METADATA | ADD_STEP | UPDATE_STEP | DELETE_STEP
             | RESTORE_DRAFT | SHOW_PLAN => {}
             // Not ours: stay silent, or the composite registry's fallthrough
             // (the fs tools are also workbench__*) double-logs the call.
@@ -847,6 +889,7 @@ impl ToolRegistry for WorkbenchTools {
         let started = std::time::Instant::now();
         let outcome = match name {
             SET_DRAFT => Ok(self.set_draft(&input)),
+            DESCRIBE_TOOL => Ok(self.describe_tool(&input).await),
             GET_PLAN => Ok(self.get_plan()),
             LOAD_PLAN => Ok(self.load_plan(&input)),
             LIST_PLANS => Ok(self.list_plans()),
@@ -1866,40 +1909,29 @@ steps:
         (tools, rx)
     }
 
-    fn outline_output() -> Value {
-        json!({"entries": ["search for x", "report on it"]})
+    fn report_plan() -> Value {
+        json!({
+            "identifier": "report_on_x",
+            "name": "Report on x",
+            "description": "report on x",
+            "steps": [
+                {"id": "E0", "tool_name": "t__search", "input": {"query": "x"}},
+            ],
+        })
     }
 
     #[tokio::test]
-    async fn a_drafted_plan_publishes_once_when_complete() {
-        let (pipeline, provider) = scripted_pipeline(vec![
-            outline_output(),
-            json!({"step": {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-                   "planComplete": false, "queryToAnswer": "report on x"}),
-            json!({"step": {"id": "E1", "toolName": "t__report",
-                            "input": {"rows": "{{E0.values}}"}},
-                   "planComplete": true}),
-        ]);
-        let (tools, mut rx) = draft_tools(pipeline.clone());
-
-        let drafted = pipeline
-            .call_plan("draft", json!({"goal": "report on x"}))
-            .await;
-        let outcome = tools.set_draft(&json!({"goal": "report on x", "draft": drafted.result}));
+    async fn set_draft_publishes_the_plan_once_as_unsaved() {
+        let (pipeline, _) = scripted_pipeline(Vec::new());
+        let (tools, mut rx) = draft_tools(pipeline);
+        let outcome = tools.set_draft(&json!({"plan": report_plan()}));
         assert!(!outcome.is_error, "{:?}", outcome.result);
-        assert_eq!(outcome.result["validation"], json!("ok"));
-        assert_eq!(outcome.result["steps"], json!(2));
-        assert_eq!(
-            provider.requests.lock().unwrap().len(),
-            3,
-            "outline + one call per step"
-        );
-        // Exactly one publish — partial plans never hit the shared doc.
+        assert_eq!(outcome.result["identifier"], json!("report_on_x"));
+        assert_eq!(outcome.result["steps"], json!(1));
         match rx.try_recv().unwrap() {
             Msg::DraftReplaced { doc, dirty } => {
                 assert!(dirty);
-                assert_eq!(doc.steps.len(), 2);
-                assert_eq!(doc.solver.as_ref().unwrap().query_to_answer, "report on x");
+                assert_eq!(doc.steps[0].id, "E0");
             }
             _ => panic!("expected DraftReplaced"),
         }
@@ -1907,49 +1939,22 @@ steps:
     }
 
     #[tokio::test]
-    async fn a_failed_draft_publishes_the_valid_prefix() {
-        let invalid_step = || {
-            json!({"step": {"id": "E1", "toolName": "t__report",
-                            "input": {"rows": "{{E9.values}}"}},
-                   "planComplete": false})
-        };
-        let (pipeline, _) = scripted_pipeline(vec![
-            outline_output(),
-            json!({"step": {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-                   "planComplete": false}),
-            invalid_step(),
-            invalid_step(),
-            invalid_step(),
-        ]);
-        let (tools, mut rx) = draft_tools(pipeline.clone());
+    async fn set_draft_refuses_to_discard_unsaved_changes_without_confirmation() {
+        let (pipeline, _) = scripted_pipeline(Vec::new());
+        let (tools, _rx) = draft_tools(pipeline);
+        assert!(!tools.set_draft(&json!({"plan": report_plan()})).is_error);
 
-        let drafted = pipeline
-            .call_plan("draft", json!({"goal": "report on x"}))
-            .await;
-        let outcome = tools.set_draft(&json!({"goal": "report on x", "draft": drafted.result}));
-        assert!(outcome.is_error);
-        assert_eq!(outcome.result["failedStep"], json!("E1"));
+        let refused = tools.set_draft(&json!({"plan": report_plan()}));
+        assert!(refused.is_error);
         assert!(
-            outcome.result["problems"].to_string().contains("E9"),
-            "{:?}",
-            outcome.result
-        );
-        assert!(
-            outcome.result["note"]
+            refused.result["error"]
                 .as_str()
                 .unwrap()
-                .contains("editing tools"),
+                .contains("unsaved changes"),
             "{:?}",
-            outcome.result
+            refused.result
         );
-        // The valid prefix was published (dirty) for the agent to finish.
-        match rx.try_recv().unwrap() {
-            Msg::DraftReplaced { doc, dirty } => {
-                assert!(dirty);
-                assert_eq!(doc.steps.len(), 1);
-                assert_eq!(doc.steps[0].id, "E0");
-            }
-            _ => panic!("expected DraftReplaced"),
-        }
+        let confirmed = tools.set_draft(&json!({"plan": report_plan(), "overwrite_draft": true}));
+        assert!(!confirmed.is_error, "{:?}", confirmed.result);
     }
 }

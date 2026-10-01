@@ -44,7 +44,7 @@ pub use gate::{ErrorDecision, ExecutionGate, GateContext, GateDecision, StepPath
 pub use interlocutor::{AskOutcome, AskRequest, Interlocutor};
 pub use iterate::{MAP_TOOL, REDUCE_TOOL};
 pub use named_agents::{named_agent_tool_def, SubagentRun, AGENT_TOOL_PREFIX, MAX_SUBAGENT_DEPTH};
-pub use native_tools::{is_native_tool, native_tool_defs, NATIVE_TOOLS};
+pub use native_tools::{is_native_tool, native_tool_defs, plan_doc, NATIVE_TOOLS};
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
 pub use prompts::{CONTROL_STEP_RULES, TEMPLATING_RULES};
 pub use state::{BusEntry, BusKind, RunState};

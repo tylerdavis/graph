@@ -8,35 +8,21 @@ grid: { cols: 120, rows: 36 }
 chat: "draft a plan that reviews a PR and posts findings as comments"
 
 llm:
-  # The orchestrator routes a new plan to plan_author, which outlines it
-  # and expands the outline with the built-in drafting plans.
-  - call: transfer_to_plan_author
-    input:
-      message: The user wants a new plan that reviews a PR and posts findings as comments.
-  - call: plan__draft_outline
+  # The orchestrator drafts the new plan with the built-in author_plan
+  # plan: the outliner's entries (structured), the review (answered
+  # below), then one structured step draft per stage — the capture fires
+  # while stage 3 is being drafted.
+  - call: plan__author_plan
     input:
       goal: >-
         Review a pull request against the repo rubric and post the
         findings as inline comments
-  # draft_outline's infer step: the outline entries (structured).
   - structured:
       entries:
         - Identify the pull request and the commits it spans
         - Collect the full change set for review
         - Review the changes against the repo rubric
         - Post each finding as an inline comment
-  - call: plan__draft_expand
-    input:
-      goal: >-
-        Review a pull request against the repo rubric and post the
-        findings as inline comments
-      outline:
-        - Identify the pull request and the commits it spans
-        - Collect the full change set for review
-        - Review the changes against the repo rubric
-        - Post each finding as an inline comment
-  # One structured step draft per stage — the capture fires while stage 3
-  # is being drafted.
   - structured:
       step:
         id: E0
@@ -56,6 +42,10 @@ llm:
           max_bytes: 200000
         reasoning: The full change, within token budget.
       planComplete: false
+
+# The outline review, approved as drafted.
+answers:
+  - { approve: true, changes: "" }
 
 capture:
   draft_step: 2
