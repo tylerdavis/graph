@@ -10,15 +10,18 @@
 use super::catalog::glob_matches;
 use super::gate::StepPath;
 use super::{ExecutionEnd, Pipeline, RunState, Step};
+use crate::agent::task::{run_task_agent, TaskError, TaskSpec, TaskTools};
 use crate::template::{render_str, RenderError, Roots};
 use crate::tools::{ToolDef, ToolRegistry};
 use crate::usage::CallSite;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
-use graph_llm::types::{ChatMessage, ChatRequest, ResponseSchema, StopReason, ToolCall, ToolSpec};
-use graph_llm::ModelRouter;
+use graph_llm::types::{ChatMessage, ToolCall, ToolSpec};
+
+pub use crate::agent::task::ToolCallEntry;
 
 /// Reserved step tool name.
 pub const AGENT_TOOL: &str = "agent";
@@ -61,13 +64,6 @@ pub struct AgentResult {
     pub final_: bool,
 }
 
-/// One tool call inside the agent loop, for the call log.
-#[derive(Debug, Clone, Serialize)]
-pub struct ToolCallEntry {
-    pub tool: String,
-    pub round: u32,
-}
-
 /// Everything the agent needs to know about *how it is being run*.
 ///
 /// This is the whole point of the `agent` step being turn-key: a plan author
@@ -84,16 +80,6 @@ const BUILTIN_SYSTEM_PROMPT: &str = include_str!("prompts/agent_system.md").trim
 /// Heading the step's `output_schema` is rendered under in the system prompt.
 const SCHEMA_HEADING: &str = "\n\n# Output schema\n\nYour final answer must be \
                               a JSON object matching this schema:\n\n";
-
-/// Appended as a user turn on the final round.
-///
-/// The agent is deliberately never told its round budget up front. Naming a
-/// number invites a model to treat it as an allowance to spend rather than a
-/// ceiling to stay under, and it competes with whatever the plan's own prompt
-/// says about how much ground to cover. "Accomplish the task efficiently" is
-/// the whole instruction; this notice is the backstop, and it arrives at the
-/// one moment the constraint is real.
-const FINAL_ROUND_NOTICE: &str = include_str!("prompts/final_round_notice.md").trim_ascii_end();
 
 /// The agent step as described to the planner.
 pub fn agent_tool_def() -> crate::tools::ToolDef {
@@ -438,12 +424,6 @@ impl Pipeline {
             .collect();
 
         let model_name = spec.model.as_deref().unwrap_or("chat");
-        let max_iterations = spec.max_iterations;
-        let output_schema = spec.output_schema;
-
-        let mut messages: Vec<ChatMessage> = vec![ChatMessage::User { content: prompt }];
-        let mut tools_called: Vec<ToolCallEntry> = Vec::new();
-        let mut round: u32 = 0;
 
         // Every round *and* every schema-repair pass this agent triggers bills
         // to this step. Repair is the easy one to lose: it is uncapped, runs
@@ -452,130 +432,40 @@ impl Pipeline {
             .at(path.to_string())
             .in_plans(&self.call_stack);
 
-        loop {
-            if round >= max_iterations {
-                // Unreachable in practice: the final round below withdraws
-                // tools and forces an answer, so the loop returns from there.
-                // Kept as a backstop for a final round that produced neither
-                // structured output nor text.
-                return Ok(AgentRun {
-                    result: envelope(json!({}), max_iterations, &tools_called, false),
-                    tool_calls: tools_called.len(),
-                });
-            }
-            round += 1;
-            // Same signal the ask/chat loop emits between rounds: a long
-            // agent step is otherwise silent between its step events.
-            if round > 1 {
-                self.events.iteration(round);
-            }
-
-            // The last round is the answer round. Withdrawing the tools and
-            // setting `response_schema` makes the provider *force* a
-            // conforming object (Anthropic does it with a synthetic tool and
-            // `tool_choice`), so a budget that runs out yields a partial
-            // answer instead of the empty result it used to. That forcing is
-            // also why tools cannot stay on: a forced tool_choice would make
-            // them unreachable anyway.
-            let final_round = round == max_iterations;
-            if final_round {
-                messages.push(ChatMessage::User {
-                    content: FINAL_ROUND_NOTICE.to_string(),
-                });
-            }
-
-            let request = ChatRequest {
-                model: model_name.to_string(),
-                system: system.clone(),
-                messages: messages.clone(),
-                tools: if final_round {
-                    Vec::new()
-                } else {
-                    tool_specs.clone()
-                },
-                response_schema: final_round.then(|| ResponseSchema {
-                    name: "agent_output".to_string(),
-                    schema: output_schema.clone(),
-                }),
-                ..Default::default()
-            };
-
-            // Retries and cross-provider failover live in graph-llm, under
-            // every provider call — transparent here, and they never
-            // consume a round.
-            let response = site
-                .clone()
-                .scope(self.router.chat_named(model_name, request))
-                .await
-                .map_err(|e| AgentFail::Failed(format!("LLM call failed: {e}")))?;
-
-            messages.push(ChatMessage::Assistant {
-                content: response.content.clone(),
-                tool_calls: response.tool_calls.clone(),
-                // Carried forward so the model keeps its own
-                // reasoning across rounds instead of re-deriving it.
-                thinking: response.thinking.clone(),
-            });
-
-            // The forced final round answers through `structured`, not text.
-            // It is already schema-validated by the provider, so there is
-            // nothing to parse and no repair pass to pay for.
-            if let Some(output) = response.structured {
-                return Ok(AgentRun {
-                    result: envelope(output, round, &tools_called, true),
-                    tool_calls: tools_called.len(),
-                });
-            }
-
-            if response.tool_calls.is_empty() {
-                let text = response.content.unwrap_or_default();
-                if text.trim().is_empty() {
-                    if response.stop_reason == StopReason::MaxTokens {
-                        return Err(AgentFail::Failed(
-                            "model hit output-token limit without producing text or tool calls"
-                                .into(),
-                        ));
-                    }
-                    messages.push(ChatMessage::User {
-                        content: "Provide your answer as JSON matching the output schema, \
-                                  or call tools to gather what you still need."
-                            .to_string(),
-                    });
-                    continue;
-                }
-
-                match site
-                    .clone()
-                    .scope(parse_and_validate_structured_output(
-                        &text,
-                        &output_schema,
-                        &self.router,
-                    ))
-                    .await
-                {
-                    Ok(output) => {
-                        return Ok(AgentRun {
-                            result: envelope(output, round, &tools_called, true),
-                            tool_calls: tools_called.len(),
-                        });
-                    }
-                    Err(problem) => {
-                        messages.push(ChatMessage::User {
-                            content: format!(
-                                "Your output did not match the required schema: {problem}\n\n\
-                                 Reply with corrected JSON only."
-                            ),
-                        });
-                        continue;
-                    }
-                }
-            }
-
-            let results = self
-                .execute_agent_tools(&response.tool_calls, path, round, scope, &mut tools_called)
-                .await?;
-            messages.extend(results);
-        }
+        let task = TaskSpec {
+            model: model_name.to_string(),
+            system,
+            prompt,
+            tools: tool_specs,
+            max_iterations: Some(spec.max_iterations),
+            output_schema: Some(spec.output_schema),
+        };
+        let step_tools = StepTools {
+            pipeline: self,
+            path,
+            scope,
+        };
+        let outcome = run_task_agent(
+            &task,
+            &self.router,
+            &site,
+            self.events.as_ref(),
+            &step_tools,
+        )
+        .await
+        .map_err(|error| match error {
+            TaskError::Failed(message) => AgentFail::Failed(message),
+            TaskError::Aborted(error) => AgentFail::Aborted(error),
+        })?;
+        Ok(AgentRun {
+            result: envelope(
+                outcome.output,
+                outcome.iterations,
+                &outcome.tools_called,
+                outcome.final_,
+            ),
+            tool_calls: outcome.tools_called.len(),
+        })
     }
 
     /// Run one round's tool calls in parallel through `Pipeline::dispatch`.
@@ -589,15 +479,7 @@ impl Pipeline {
         path: &StepPath,
         round: u32,
         scope: &Map<String, Value>,
-        tools_called: &mut Vec<ToolCallEntry>,
-    ) -> Result<Vec<ChatMessage>, AgentFail> {
-        for call in calls {
-            tools_called.push(ToolCallEntry {
-                tool: call.name.clone(),
-                round,
-            });
-        }
-
+    ) -> Result<Vec<ChatMessage>, TaskError> {
         let futures = calls.iter().map(|call| {
             // Nested, not rebuilt from the step id: an agent inside a map
             // body must keep its item segment (E1/do.2/agent.3/tool), or
@@ -651,9 +533,24 @@ impl Pipeline {
         }
 
         match abort {
-            Some(error) => Err(AgentFail::Aborted(error)),
+            Some(error) => Err(TaskError::Aborted(error)),
             None => Ok(messages),
         }
+    }
+}
+
+struct StepTools<'a> {
+    pipeline: &'a Pipeline,
+    path: &'a StepPath,
+    scope: &'a Map<String, Value>,
+}
+
+#[async_trait]
+impl TaskTools for StepTools<'_> {
+    async fn execute(&self, calls: &[ToolCall], round: u32) -> Result<Vec<ChatMessage>, TaskError> {
+        self.pipeline
+            .execute_agent_tools(calls, self.path, round, self.scope)
+            .await
     }
 }
 
@@ -666,95 +563,6 @@ fn envelope(output: Value, iterations: u32, tools_called: &[ToolCallEntry], fina
         final_,
     })
     .unwrap_or_else(|e| json!({ "error": format!("agent serialization failed: {e}") }))
-}
-
-/// Try to parse text as JSON and validate against the output schema.
-/// On failure, attempt one repair pass.
-/// Returns Ok(output) on success, Err(error_message) on failure.
-async fn parse_and_validate_structured_output(
-    text: &str,
-    schema: &Value,
-    router: &ModelRouter,
-) -> Result<Value, String> {
-    let json_value: Value = extract_json(text)
-        .ok_or_else(|| format!("output is not valid JSON: {}", truncate_for_error(text)))?;
-
-    // Validate against schema
-    let validator =
-        jsonschema::validator_for(schema).map_err(|e| format!("invalid output schema: {e}"))?;
-
-    let errors: Vec<String> = validator
-        .iter_errors(&json_value)
-        .map(|e| e.to_string())
-        .collect();
-    if errors.is_empty() {
-        return Ok(json_value);
-    }
-
-    // Attempt repair
-    let error_msg = errors.join("; ");
-    let repaired = router
-        .repair_structured(&json_value, schema, &error_msg)
-        .await
-        .map_err(|e| format!("output repair failed: {e}"))?;
-
-    // Re-validate repaired output
-    let remaining: Vec<String> = validator
-        .iter_errors(&repaired)
-        .map(|e| e.to_string())
-        .collect();
-    if remaining.is_empty() {
-        Ok(repaired)
-    } else {
-        Err(format!(
-            "output still does not match schema after repair: {}",
-            remaining.join("; ")
-        ))
-    }
-}
-
-/// Pull a JSON object out of a model's text answer.
-///
-/// Provider-native structured output is unavailable here: Anthropic
-/// enforces a schema by *forcing* a synthetic tool call, which would end
-/// the agent's loop on round one. So the schema is carried in the system
-/// prompt and the answer arrives as prose — which real models routinely
-/// wrap in a ```json fence or precede with a sentence. Tolerate both
-/// rather than burning an iteration on formatting.
-fn extract_json(text: &str) -> Option<Value> {
-    let trimmed = text.trim();
-    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-        return Some(value);
-    }
-
-    // Fenced block, with or without a language tag.
-    if let Some(rest) = trimmed.strip_prefix("```") {
-        let body = rest.split_once('\n').map(|(_tag, b)| b).unwrap_or(rest);
-        let body = body.strip_suffix("```").unwrap_or(body);
-        if let Ok(value) = serde_json::from_str::<Value>(body.trim()) {
-            return Some(value);
-        }
-    }
-
-    // Preamble/postamble around a bare object: take the outermost braces.
-    let start = trimmed.find('{')?;
-    let end = trimmed.rfind('}')?;
-    if end > start {
-        if let Ok(value) = serde_json::from_str::<Value>(&trimmed[start..=end]) {
-            return Some(value);
-        }
-    }
-    None
-}
-
-/// Model output is unbounded; keep it out of error messages at full length.
-fn truncate_for_error(text: &str) -> String {
-    let trimmed = text.trim();
-    if trimmed.chars().count() <= 200 {
-        return trimmed.to_string();
-    }
-    let cut: String = trimmed.chars().take(200).collect();
-    format!("{cut}…")
 }
 
 #[cfg(test)]
@@ -1272,42 +1080,6 @@ mod tests {
                 "snake_case `{name}` leaked into the prompt surface"
             );
         }
-    }
-
-    #[test]
-    fn extract_json_tolerates_what_real_models_actually_emit() {
-        let want = json!({"found": 1});
-
-        // Bare object.
-        assert_eq!(extract_json(r#"{"found": 1}"#), Some(want.clone()));
-        // Fenced with a language tag (the common Anthropic shape).
-        assert_eq!(
-            extract_json("```json\n{\"found\": 1}\n```"),
-            Some(want.clone())
-        );
-        // Fenced without a tag.
-        assert_eq!(extract_json("```\n{\"found\": 1}\n```"), Some(want.clone()));
-        // Conversational preamble.
-        assert_eq!(
-            extract_json("Here is the result:\n\n{\"found\": 1}"),
-            Some(want.clone())
-        );
-        // Preamble AND a fence AND a trailing remark.
-        assert_eq!(
-            extract_json("Sure!\n```json\n{\"found\": 1}\n```\nLet me know."),
-            Some(want)
-        );
-        // Genuinely not JSON stays a failure.
-        assert_eq!(extract_json("I could not complete the task."), None);
-        assert_eq!(extract_json(""), None);
-    }
-
-    #[test]
-    fn parse_failure_message_does_not_dump_the_whole_answer() {
-        let long = "x".repeat(5000);
-        let message = truncate_for_error(&long);
-        assert!(message.chars().count() <= 201, "{}", message.len());
-        assert!(message.ends_with('…'));
     }
 
     // ── Mock registry ──────────────────────────────────────────────────
