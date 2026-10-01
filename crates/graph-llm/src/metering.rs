@@ -19,6 +19,7 @@
 //! bill more than they meter. Fixing it would mean threading a meter through
 //! each provider's internal retry loop, which is not worth the coupling.
 
+use crate::decision::{DecisionProvider, DecisionRequest, DecisionResponse};
 use crate::types::{ChatRequest, ChatResponse, EventStream, StreamEvent, Usage};
 use crate::{ChatProvider, LlmError};
 use async_trait::async_trait;
@@ -140,6 +141,52 @@ impl ChatProvider for MeteredProvider {
                 }
             })
             .boxed())
+    }
+}
+
+pub struct MeteredDecider {
+    inner: Arc<dyn DecisionProvider>,
+    provider: String,
+    meter: Arc<dyn UsageMeter>,
+}
+
+impl MeteredDecider {
+    pub fn new(
+        inner: Arc<dyn DecisionProvider>,
+        provider: String,
+        meter: Arc<dyn UsageMeter>,
+    ) -> Self {
+        Self {
+            inner,
+            provider,
+            meter,
+        }
+    }
+}
+
+#[async_trait]
+impl DecisionProvider for MeteredDecider {
+    async fn decide(&self, req: DecisionRequest) -> Result<DecisionResponse, LlmError> {
+        let started = Instant::now();
+        let model = req.model.clone();
+        let input = self
+            .meter
+            .captures_content()
+            .then(|| crate::decision::request_content(&req));
+        let response = self.inner.decide(req).await?;
+        let output = input
+            .is_some()
+            .then(|| crate::decision::response_content(&response));
+        self.meter.record(ModelCall {
+            kind: ModelKind::Decision,
+            provider: self.provider.clone(),
+            model,
+            usage: response.usage,
+            elapsed: started.elapsed(),
+            input,
+            output,
+        });
+        Ok(response)
     }
 }
 
