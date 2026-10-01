@@ -30,7 +30,7 @@
 use super::catalog::{self, ToolCatalog};
 use super::doc::{validate_doc, PlanDoc};
 use super::plan::{self, Plan, PlannerOutput, SolverData, Step};
-use super::{AGENT_TOOL, ASK_TOOL, DECIDE_TOOL, MAP_TOOL, REDUCE_TOOL};
+use super::{AGENT_TOOL, ASK_TOOL, MAP_TOOL, REDUCE_TOOL, ROUTE_TOOL};
 use crate::template;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
@@ -74,7 +74,7 @@ pub fn validate_steps(plan: &Plan) -> Vec<String> {
             super::FILTER_TOOL => {
                 super::filter::validate_filter_input(&step.input, &seen, &step.id, &mut problems)
             }
-            super::DECIDE_TOOL => super::decision::validate_decide_input(
+            super::ROUTE_TOOL => super::route::validate_route_input(
                 &step.input,
                 &seen,
                 &all_ids,
@@ -113,6 +113,81 @@ pub fn validate_steps(plan: &Plan) -> Vec<String> {
 ///
 /// This is the basis of the [`apply_edit`] guard — see the module docs for
 /// why the catalog is deliberately excluded.
+pub fn model_kind_problems(
+    doc: &PlanDoc,
+    kind_of: &dyn Fn(&str) -> Option<graph_config::ModelKind>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    if let Ok(steps) = serde_json::to_value(&doc.steps) {
+        collect_model_kind_problems(&steps, kind_of, &mut problems);
+    }
+    problems
+}
+
+fn literal_role(value: Option<&serde_json::Value>, default: &'static str) -> Option<String> {
+    match value {
+        None => Some(default.to_string()),
+        Some(serde_json::Value::String(role)) if !role.contains("{{") => Some(role.clone()),
+        Some(_) => None,
+    }
+}
+
+fn collect_model_kind_problems(
+    value: &serde_json::Value,
+    kind_of: &dyn Fn(&str) -> Option<graph_config::ModelKind>,
+    problems: &mut Vec<String>,
+) {
+    use graph_config::ModelKind;
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_model_kind_problems(item, kind_of, problems);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            let tool = fields
+                .get("tool_name")
+                .or_else(|| fields.get("toolName"))
+                .and_then(serde_json::Value::as_str);
+            let input = fields.get("input").and_then(serde_json::Value::as_object);
+            if let (Some(tool), Some(input)) = (tool, input) {
+                if [super::EXIT_TOOL, super::ROUTE_TOOL, super::FILTER_TOOL].contains(&tool) {
+                    let id = fields
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("?");
+                    if input.contains_key("infer") {
+                        if let Some(role) = literal_role(input.get("model"), "judge") {
+                            if kind_of(&role) == Some(ModelKind::Decision) {
+                                problems.push(format!(
+                                    "step {id}: `infer` asks a chat model, but model role '{role}' is a decision model; use a `decide` gate for decision models"
+                                ));
+                            }
+                        }
+                    }
+                    if let Some(gate) = input.get("decide").and_then(serde_json::Value::as_object) {
+                        if let Some(role) = literal_role(gate.get("model"), "decider") {
+                            match kind_of(&role) {
+                                Some(ModelKind::Chat) => problems.push(format!(
+                                    "step {id}: `decide` asks a decision model, but model role '{role}' is a chat model; use an `infer` gate for chat models"
+                                )),
+                                None if role == "decider" => problems.push(format!(
+                                    "step {id}: `decide` needs a decision model, and none is configured: add [models.decider] on a provider with type = \"systemone\""
+                                )),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            for child in fields.values() {
+                collect_model_kind_problems(child, kind_of, problems);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn static_problems(doc: &PlanDoc) -> Vec<String> {
     let mut problems = validate_steps(&doc.steps);
     if let Err(problem) = validate_doc(doc) {
@@ -754,9 +829,14 @@ fn snake_case_step(step: &mut serde_yaml::Value) {
                 rename_key(input, planner, file);
             }
         }
-        Some(DECIDE_TOOL) => {
+        Some(ROUTE_TOOL) => {
             for side in ["then", "else"] {
                 if let Some(branch) = input.get_mut(side) {
+                    snake_case_body(branch);
+                }
+            }
+            if let Some(serde_yaml::Value::Mapping(cases)) = input.get_mut("cases") {
+                for (_, branch) in cases.iter_mut() {
                     snake_case_body(branch);
                 }
             }
@@ -1337,7 +1417,7 @@ name: Demo
 description: demo plan
 steps:
   - id: E1
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "{{E0.count}}", op: gt, to: 0 }
       then:
@@ -1440,8 +1520,12 @@ solver:
     #[test]
     fn a_canonical_file_round_trips_byte_for_byte() {
         // Editing one field must not churn the rest of a hand-authored file.
-        let original = "version: 1\nidentifier: demo\nname: Demo\ndescription: demo plan\nsteps:\n\
-                        - id: E1\n  tool_name: t__search\n  input:\n    query: x\n";
+        let original = format!(
+            "version: {}\nidentifier: demo\nname: Demo\ndescription: demo plan\nsteps:\n\
+             - id: E1\n  tool_name: t__search\n  input:\n    query: x\n",
+            crate::format::PLAN_FORMAT
+        );
+        let original = original.as_str();
         let parsed = super::super::doc::parse_plan_source(original, "demo.yaml").unwrap();
         assert_eq!(
             to_yaml(&parsed).unwrap(),

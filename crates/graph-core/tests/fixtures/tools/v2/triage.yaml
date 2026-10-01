@@ -1,0 +1,20 @@
+version: 2
+name: triage
+description: Route a support ticket and check whether it is urgent.
+kind: decision
+model: decider
+state: { ticket: "{{input.ticket}}" }
+questions:
+  team:
+    type: choice
+    instructions: Which team should handle this ticket?
+    criteria: { billing: Payments, technical: Bugs }
+  urgent:
+    type: likelihood
+    instructions: Does the ticket convey urgency?
+    criteria: { "true": Explicitly time-sensitive, "false": No urgency expressed }
+input_schema:
+  type: object
+  required: [ticket]
+  properties:
+    ticket: { type: string }

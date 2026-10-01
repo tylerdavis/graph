@@ -218,7 +218,7 @@ pub fn parse_plan_source(raw: &str, path: &str) -> Result<PlanDoc, DocError> {
             crate::format::FormatError::Invalid(message) => invalid(message),
         })?;
     check_step_keys(&value).map_err(invalid)?;
-    if upgrade.declared.is_none() {
+    if upgrade.declared.is_none() && !upgrade.migrated() {
         return serde_yaml::from_str(raw).map_err(|e| invalid(e.to_string()));
     }
     serde_yaml::from_value(value).map_err(|e| invalid(e.to_string()))
@@ -268,11 +268,20 @@ fn check_one_step_keys(step: &serde_yaml::Value, at: &str) -> Result<(), String>
         return Ok(());
     };
     match tool {
-        Some(super::DECIDE_TOOL) => ["then", "else"].iter().try_for_each(|side| {
-            input.get(side).map_or(Ok(()), |branch| {
-                check_body_keys(branch, &format!("{at}.input.{side}"))
+        Some(super::ROUTE_TOOL) => {
+            ["then", "else"].iter().try_for_each(|side| {
+                input.get(side).map_or(Ok(()), |branch| {
+                    check_body_keys(branch, &format!("{at}.input.{side}"))
+                })
+            })?;
+            let Some(cases) = input.get("cases").and_then(serde_yaml::Value::as_mapping) else {
+                return Ok(());
+            };
+            cases.iter().try_for_each(|(key, branch)| {
+                let key = key.as_str().unwrap_or("?");
+                check_body_keys(branch, &format!("{at}.input.cases.{key}"))
             })
-        }),
+        }
         Some(super::MAP_TOOL | super::REDUCE_TOOL) => input.get("do").map_or(Ok(()), |body| {
             check_body_keys(body, &format!("{at}.input.do"))
         }),
@@ -312,7 +321,7 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
             && step.tool_name != super::EXIT_TOOL
             && step.tool_name != super::AGENT_TOOL
             && step.tool_name != super::ASK_TOOL
-            && step.tool_name != super::DECIDE_TOOL
+            && step.tool_name != super::ROUTE_TOOL
             && step.tool_name != super::FILTER_TOOL
             && step.tool_name != super::MAP_TOOL
             && step.tool_name != super::REDUCE_TOOL
@@ -320,7 +329,7 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
             return Err(format!(
                 "step {} tool '{}' is not a namespaced tool name (like \
                  linear__list_issues) or one of the control steps: \
-                 exit, agent, ask, decide, filter, map, reduce, plan_and_execute",
+                 exit, agent, ask, route, filter, map, reduce, plan_and_execute",
                 step.id, step.tool_name
             ));
         }
@@ -335,7 +344,7 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
             name if name == super::ASK_TOOL => {
                 super::ask::validate_ask_input(&step.input, &seen, &step.id, &mut problems)
             }
-            name if name == super::DECIDE_TOOL => super::decision::validate_decide_input(
+            name if name == super::ROUTE_TOOL => super::route::validate_route_input(
                 &step.input,
                 &seen,
                 &all_ids,
@@ -538,7 +547,7 @@ solver:
             "{err}"
         );
 
-        let nested = "identifier: p\nname: P\ndescription: d\nsteps:\n  - id: E0\n    tool_name: decide\n    input:\n      if: { value: x, op: eq, to: x }\n      then:\n        - id: E1\n          tool_name: map\n          input:\n            over: \"{{input.items}}\"\n            do:\n              tool_name: t__y\n              input: {}\n              retries: 3\n";
+        let nested = "identifier: p\nname: P\ndescription: d\nsteps:\n  - id: E0\n    tool_name: route\n    input:\n      if: { value: x, op: eq, to: x }\n      then:\n        - id: E1\n          tool_name: map\n          input:\n            over: \"{{input.items}}\"\n            do:\n              tool_name: t__y\n              input: {}\n              retries: 3\n";
         let err = parse_plan_source(nested, "p.yaml").unwrap_err().to_string();
         assert!(
             err.contains("steps[0].input.then[0].input.do: unknown field `retries`"),
@@ -649,7 +658,7 @@ solver:
         let err = doc_from(&DOC.replace("linear__list_issues", "gate")).unwrap_err();
         assert!(err.contains("'gate'"), "{err}");
         assert!(
-            err.contains("exit, agent, ask, decide, filter, map, reduce, plan_and_execute"),
+            err.contains("exit, agent, ask, route, filter, map, reduce, plan_and_execute"),
             "{err}"
         );
     }

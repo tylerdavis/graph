@@ -1,0 +1,8 @@
+→ builtin__git_diff {"base":"f7f18af","exclude":"","head":"549b645","max_bytes":60000,"paths":":/crates/graph-config/src/model.rs :/crates/g
+✓ builtin__git_diff 23.2ms
+→ exit {"message":"no format model changed — format gate not applicable","output":{"format_bump_required":false,"reason":"no_mo
+✓ exit 26.8µs
+→ builtin__git_diff {"base":"f7f18af","exclude":"","head":"549b645","max_bytes":30000,"paths":":/crates/graph-config/src/format.rs :/crates/
+✓ builtin__git_diff 21.2ms
+→ exit {"infer":"Does this PR change a versioned file's schema WITHOUT bumping that\nfile's version? Decide it per file kind, t
+✓ exit 3.3s

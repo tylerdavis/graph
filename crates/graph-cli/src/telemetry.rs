@@ -1,5 +1,5 @@
 use graph_config::TelemetryConfig;
-use graph_core::usage::{LlmCallEvent, UsageReport};
+use graph_core::usage::{ModelCallEvent, UsageReport};
 use graph_core::{EventSink, RunStart, TeeSink};
 use opentelemetry::trace::{
     Span as _, SpanBuilder, SpanKind, Status, TraceContextExt, Tracer as _, TracerProvider as _,
@@ -534,12 +534,12 @@ fn qualify(call_stack: &[String], path: &str) -> String {
 fn is_control(tool: &str) -> bool {
     matches!(
         tool,
-        "exit" | "decide" | "filter" | "map" | "reduce" | "ask" | "plan_and_execute"
+        "exit" | "route" | "filter" | "map" | "reduce" | "ask" | "plan_and_execute"
     ) || tool.starts_with(graph_core::toolbox::PLAN_TOOL_PREFIX)
 }
 
 fn is_bare_control(tool: &str) -> bool {
-    matches!(tool, "exit" | "decide" | "filter" | "map" | "reduce")
+    matches!(tool, "exit" | "route" | "filter" | "map" | "reduce")
 }
 
 fn observation_type(tool: &str) -> &'static str {
@@ -649,7 +649,7 @@ impl EventSink for OtlpSink {
         span.end_with_timestamp(SystemTime::now());
     }
 
-    fn llm_call(&self, call: &LlmCallEvent) {
+    fn model_call(&self, call: &ModelCallEvent) {
         let now = SystemTime::now();
         let started = now.checked_sub(call.elapsed).unwrap_or(now);
         let mut state = self.state.lock().unwrap();
@@ -664,7 +664,7 @@ impl EventSink for OtlpSink {
         let mut attributes = self.attrs(&state);
         attributes.extend([
             KeyValue::new("langfuse.observation.type", "generation"),
-            KeyValue::new("gen_ai.operation.name", "chat"),
+            KeyValue::new("gen_ai.operation.name", call.kind.as_str()),
             KeyValue::new("gen_ai.system", call.provider.clone()),
             KeyValue::new("gen_ai.request.model", call.model.clone()),
             KeyValue::new("gen_ai.response.model", call.model.clone()),
@@ -852,8 +852,9 @@ mod tests {
         (sink, exporter, provider)
     }
 
-    fn call(site: &str, input: Option<Value>) -> LlmCallEvent {
-        LlmCallEvent {
+    fn call(site: &str, input: Option<Value>) -> ModelCallEvent {
+        ModelCallEvent {
+            kind: graph_config::ModelKind::Chat,
             site: site.into(),
             role: "solver".into(),
             provider: "anthropic".into(),
@@ -909,7 +910,7 @@ mod tests {
         sink.step_started(&none, "E1", "map", &json!({}));
         sink.tool_started("map", &json!({}));
         sink.step_started(&none, "E1/do.0/E5", "builtin__infer", &json!({}));
-        sink.llm_call(&call("E1/do.0/E5", None));
+        sink.model_call(&call("E1/do.0/E5", None));
         sink.step_finished(
             &none,
             "E1/do.0/E5",
@@ -940,7 +941,7 @@ mod tests {
             Duration::ZERO,
         );
 
-        sink.llm_call(&call("solver", None));
+        sink.model_call(&call("solver", None));
         sink.usage_summary(&UsageReport {
             calls: 2,
             cost_usd: Some(1.0),
@@ -1030,7 +1031,7 @@ mod tests {
                 false,
                 Duration::ZERO,
             );
-            sink.llm_call(&call("chat", Some(json!({"system": "s"}))));
+            sink.model_call(&call("chat", Some(json!({"system": "s"}))));
             drop(sink);
             provider.force_flush().unwrap();
 
@@ -1247,15 +1248,15 @@ mod tests {
             session_id: None,
             input: Some(json!("draft a plan")),
         });
-        let chat = || LlmCallEvent {
+        let chat = || ModelCallEvent {
             role: "chat".into(),
             ..call("chat", None)
         };
-        sink.llm_call(&chat());
+        sink.model_call(&chat());
         sink.tool_started("workbench__draft_plan", &json!({"goal": "g"}));
         sink.draft_outline(&json!(["list issues", "summarize"]));
         sink.draft_step_started(0, "list issues");
-        sink.llm_call(&LlmCallEvent {
+        sink.model_call(&ModelCallEvent {
             role: "planner".into(),
             site: "planner".into(),
             ..call("planner", None)
@@ -1263,7 +1264,7 @@ mod tests {
         sink.draft_step_finished(0, &Value::Null, &["bad tool".into()], 1);
         sink.draft_step_finished(0, &json!({"id": "E0"}), &[], 2);
         sink.tool_finished("workbench__draft_plan", Duration::ZERO, false);
-        sink.llm_call(&chat());
+        sink.model_call(&chat());
         sink.run_finished(&json!("done"), false);
         drop(sink);
         provider.force_flush().unwrap();
@@ -1303,5 +1304,63 @@ mod tests {
         let root = by_name(&spans, "plan draft");
         assert_eq!(root.events.len(), 1);
         assert_eq!(root.events[0].name, "planning");
+    }
+
+    #[test]
+    fn a_decision_call_is_a_decision_generation_with_its_question_and_answer() {
+        let (sink, exporter, provider) = harness(RunInfo::plan_run("docs_drift_decide"), true);
+        let none: Vec<String> = Vec::new();
+        sink.step_started(&none, "E5", "exit", &json!({}));
+        let mut decision = call(
+            "E5",
+            Some(json!({
+                "state": "+ fn a() {}",
+                "questions": {"gate": {"type": "likelihood", "instructions": "Does the diff need docs?"}}
+            })),
+        );
+        decision.kind = graph_config::ModelKind::Decision;
+        decision.role = "decider".into();
+        decision.provider = "typesafe".into();
+        decision.model = "jev-latest".into();
+        decision.output =
+            Some(json!({"answers": {"gate": {"type": "likelihood", "probability": 0.91}}}));
+        sink.model_call(&decision);
+        sink.model_call(&call("solver", None));
+        sink.step_finished(&none, "E5", "exit", &json!({}), false, Duration::ZERO);
+        provider.force_flush().unwrap();
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let generation = by_name(&spans, "decider");
+        assert_eq!(
+            attribute(generation, "gen_ai.operation.name"),
+            Some(&OtelValue::from("decision"))
+        );
+        assert_eq!(
+            attribute(generation, "gen_ai.system"),
+            Some(&OtelValue::from("typesafe"))
+        );
+        assert_eq!(
+            attribute(generation, "graph.site"),
+            Some(&OtelValue::from("E5"))
+        );
+        assert_eq!(
+            attribute(generation, "graph.cost_usd"),
+            Some(&OtelValue::F64(0.5))
+        );
+        let input = attribute(generation, "langfuse.observation.input")
+            .unwrap()
+            .to_string();
+        assert!(input.contains("Does the diff need docs?"), "{input}");
+        assert!(input.contains("+ fn a() {}"), "{input}");
+        let output = attribute(generation, "langfuse.observation.output")
+            .unwrap()
+            .to_string();
+        assert!(output.contains("0.91"), "{output}");
+
+        let chat = by_name(&spans, "solver");
+        assert_eq!(
+            attribute(chat, "gen_ai.operation.name"),
+            Some(&OtelValue::from("chat"))
+        );
     }
 }

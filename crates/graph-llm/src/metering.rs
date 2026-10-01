@@ -19,17 +19,20 @@
 //! bill more than they meter. Fixing it would mean threading a meter through
 //! each provider's internal retry loop, which is not worth the coupling.
 
+use crate::decision::{DecisionProvider, DecisionRequest, DecisionResponse};
 use crate::types::{ChatRequest, ChatResponse, EventStream, StreamEvent, Usage};
 use crate::{ChatProvider, LlmError};
 use async_trait::async_trait;
 use futures::StreamExt;
+use graph_config::ModelKind;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// One completed model call, as the meter sees it.
 #[derive(Debug, Clone)]
-pub struct LlmCall {
+pub struct ModelCall {
+    pub kind: ModelKind,
     /// Config name of the provider that served the call.
     pub provider: String,
     /// The model as sent on the wire — after any failover rewrite.
@@ -63,7 +66,7 @@ pub fn response_content(response: &ChatResponse) -> Value {
 /// Receives every metered call. Implementors aggregate; they must not fail —
 /// a bookkeeping problem never breaks an inference.
 pub trait UsageMeter: Send + Sync {
-    fn record(&self, call: LlmCall);
+    fn record(&self, call: ModelCall);
 
     fn captures_content(&self) -> bool {
         false
@@ -99,7 +102,8 @@ impl ChatProvider for MeteredProvider {
         let input = self.capture(&req);
         let response = self.inner.chat(req).await?;
         let output = input.is_some().then(|| response_content(&response));
-        self.meter.record(LlmCall {
+        self.meter.record(ModelCall {
+            kind: ModelKind::Chat,
             provider: self.provider.clone(),
             model,
             usage: response.usage,
@@ -125,7 +129,8 @@ impl ChatProvider for MeteredProvider {
         Ok(stream
             .inspect(move |event| {
                 if let Ok(StreamEvent::Completed(response)) = event {
-                    meter.record(LlmCall {
+                    meter.record(ModelCall {
+                        kind: ModelKind::Chat,
                         provider: provider.clone(),
                         model: model.clone(),
                         usage: response.usage,
@@ -139,6 +144,52 @@ impl ChatProvider for MeteredProvider {
     }
 }
 
+pub struct MeteredDecider {
+    inner: Arc<dyn DecisionProvider>,
+    provider: String,
+    meter: Arc<dyn UsageMeter>,
+}
+
+impl MeteredDecider {
+    pub fn new(
+        inner: Arc<dyn DecisionProvider>,
+        provider: String,
+        meter: Arc<dyn UsageMeter>,
+    ) -> Self {
+        Self {
+            inner,
+            provider,
+            meter,
+        }
+    }
+}
+
+#[async_trait]
+impl DecisionProvider for MeteredDecider {
+    async fn decide(&self, req: DecisionRequest) -> Result<DecisionResponse, LlmError> {
+        let started = Instant::now();
+        let model = req.model.clone();
+        let input = self
+            .meter
+            .captures_content()
+            .then(|| crate::decision::request_content(&req));
+        let response = self.inner.decide(req).await?;
+        let output = input
+            .is_some()
+            .then(|| crate::decision::response_content(&response));
+        self.meter.record(ModelCall {
+            kind: ModelKind::Decision,
+            provider: self.provider.clone(),
+            model,
+            usage: response.usage,
+            elapsed: started.elapsed(),
+            input,
+            output,
+        });
+        Ok(response)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,16 +197,16 @@ mod tests {
     use std::sync::Mutex;
 
     #[derive(Default)]
-    struct Recorder(Mutex<Vec<LlmCall>>);
+    struct Recorder(Mutex<Vec<ModelCall>>);
 
     impl Recorder {
-        fn calls(&self) -> Vec<LlmCall> {
+        fn calls(&self) -> Vec<ModelCall> {
             self.0.lock().unwrap().clone()
         }
     }
 
     impl UsageMeter for Recorder {
-        fn record(&self, call: LlmCall) {
+        fn record(&self, call: ModelCall) {
             self.0.lock().unwrap().push(call);
         }
     }
@@ -242,7 +293,7 @@ mod tests {
     struct ContentRecorder(Recorder);
 
     impl UsageMeter for ContentRecorder {
-        fn record(&self, call: LlmCall) {
+        fn record(&self, call: ModelCall) {
             self.0.record(call);
         }
 

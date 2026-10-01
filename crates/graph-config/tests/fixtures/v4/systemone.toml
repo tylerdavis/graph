@@ -1,0 +1,24 @@
+version = 4
+
+[providers.anthropic]
+type = "anthropic"
+api_key = "test-key"
+
+[providers.typesafe]
+type = "systemone"
+api_key = "test-key"
+
+[providers.openjev]
+type = "systemone"
+base_url = "http://127.0.0.1:8080"
+
+[models.default]
+provider = "anthropic"
+model = "claude-sonnet-5"
+
+[models.decider]
+provider = "typesafe"
+model = "jev-latest"
+description = "calibrated yes/no and pick-one decisions"
+context_window = 32000
+fallbacks = [{ provider = "openjev", model = "openjev-latest", context_window = 16000 }]

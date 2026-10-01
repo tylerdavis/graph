@@ -1,16 +1,19 @@
 //! Role → provider/model resolution from configuration.
 
-use crate::failover::{Candidate, FailoverProvider};
-use crate::metering::MeteredProvider;
-use crate::providers::{AnthropicProvider, OpenAiCompatProvider};
+use crate::decision::{check_context_window, DecisionProvider, DecisionRequest, DecisionResponse};
+use crate::failover::{Candidate, DecisionCandidate, FailoverDecider, FailoverProvider};
+use crate::metering::{MeteredDecider, MeteredProvider};
+use crate::providers::{AnthropicProvider, OpenAiCompatProvider, SystemOneProvider};
 use crate::types::{ChatRequest, ChatResponse, EventStream};
 use crate::{ChatProvider, LlmError, UsageMeter};
-use graph_config::{Config, ModelChoice, ProviderKind, Role};
+use graph_config::{Config, ModelChoice, ModelKind, ProviderKind, Role};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct ModelRouter {
     providers: HashMap<String, Arc<dyn ChatProvider>>,
+    deciders: HashMap<String, Arc<dyn DecisionProvider>>,
+    kinds: HashMap<String, ModelKind>,
     /// Providers that are configured but cannot be built as configured —
     /// an unset `${VAR}` behind a secret, an unsupported kind — keyed to
     /// the reason. Kept out of `providers` so resolving one errors with
@@ -29,12 +32,26 @@ impl ModelRouter {
         providers: HashMap<String, Arc<dyn ChatProvider>>,
         roles: graph_config::ModelRoles,
     ) -> Self {
+        let kinds = providers
+            .keys()
+            .map(|name| (name.clone(), ModelKind::Chat))
+            .collect();
         Self {
             providers,
+            deciders: HashMap::new(),
+            kinds,
             unavailable: HashMap::new(),
             roles,
             meter: None,
         }
+    }
+
+    pub fn with_deciders(mut self, deciders: HashMap<String, Arc<dyn DecisionProvider>>) -> Self {
+        for name in deciders.keys() {
+            self.kinds.insert(name.clone(), ModelKind::Decision);
+        }
+        self.deciders.extend(deciders);
+        self
     }
 
     /// Report every call this router resolves to `meter`.
@@ -49,7 +66,13 @@ impl ModelRouter {
 
     pub fn from_config(config: &Config) -> Result<Self, LlmError> {
         let mut providers: HashMap<String, Arc<dyn ChatProvider>> = HashMap::new();
+        let mut deciders: HashMap<String, Arc<dyn DecisionProvider>> = HashMap::new();
         let mut unavailable: HashMap<String, String> = HashMap::new();
+        let kinds: HashMap<String, ModelKind> = config
+            .providers
+            .iter()
+            .map(|(name, provider)| (name.clone(), provider.kind.model_kind()))
+            .collect();
         for (name, provider) in &config.providers {
             if !provider.missing_env.is_empty() {
                 unavailable.insert(
@@ -84,6 +107,16 @@ impl ModelRouter {
                         continue;
                     }
                 },
+                ProviderKind::Systemone => {
+                    deciders.insert(
+                        name.clone(),
+                        Arc::new(SystemOneProvider::new(
+                            provider.base_url.clone(),
+                            provider.api_key.clone(),
+                        )),
+                    );
+                    continue;
+                }
                 ProviderKind::Bedrock => {
                     unavailable.insert(
                         name.clone(),
@@ -96,6 +129,8 @@ impl ModelRouter {
         }
         let router = Self {
             providers,
+            deciders,
+            kinds,
             unavailable,
             roles: config.models.clone(),
             meter: None,
@@ -108,28 +143,175 @@ impl ModelRouter {
         for choice in router.roles.all_choices() {
             for fallback in &choice.fallbacks {
                 if !router.providers.contains_key(&fallback.provider)
+                    && !router.deciders.contains_key(&fallback.provider)
                     && !router.unavailable.contains_key(&fallback.provider)
                 {
                     return Err(LlmError::UnknownProvider(fallback.provider.clone()));
                 }
             }
         }
+        router.check_kinds()?;
         Ok(router)
+    }
+
+    fn kind_of(&self, provider: &str) -> Option<ModelKind> {
+        self.kinds.get(provider).copied()
+    }
+
+    fn check_kinds(&self) -> Result<(), LlmError> {
+        for role in Role::ALL {
+            let Some(choice) = self.roles.resolve_role(role) else {
+                continue;
+            };
+            if let Some(actual) = self.kind_of(&choice.provider) {
+                if actual != role.kind() {
+                    return Err(LlmError::WrongModelKind {
+                        role: role.to_string(),
+                        expected: role.kind(),
+                        actual,
+                    });
+                }
+            }
+        }
+        for (name, choice) in self.roles.iter() {
+            let Some(primary) = self.kind_of(&choice.provider) else {
+                continue;
+            };
+            for fallback in &choice.fallbacks {
+                if let Some(actual) = self.kind_of(&fallback.provider) {
+                    if actual != primary {
+                        return Err(LlmError::MixedFallbackKinds {
+                            role: name.to_string(),
+                            provider: fallback.provider.clone(),
+                            actual,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_chat(&self, role: &str, choice: &ModelChoice) -> Result<(), LlmError> {
+        match self.kind_of(&choice.provider) {
+            Some(ModelKind::Decision) => Err(LlmError::WrongModelKind {
+                role: role.to_string(),
+                expected: ModelKind::Chat,
+                actual: ModelKind::Decision,
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn has_decision_models(&self) -> bool {
+        self.roles
+            .iter()
+            .any(|(_, choice)| self.kind_of(&choice.provider) == Some(ModelKind::Decision))
+    }
+
+    pub fn kind_of_role(&self, name: &str) -> Option<ModelKind> {
+        let choice = self.roles.resolve(name)?;
+        self.kind_of(&choice.provider)
+    }
+
+    fn decider(&self, name: &str) -> Result<&Arc<dyn DecisionProvider>, LlmError> {
+        self.deciders.get(name).ok_or_else(|| self.missing(name))
+    }
+
+    fn metered_decider(
+        &self,
+        decider: Arc<dyn DecisionProvider>,
+        name: &str,
+    ) -> Arc<dyn DecisionProvider> {
+        match &self.meter {
+            Some(meter) => Arc::new(MeteredDecider::new(
+                decider,
+                name.to_string(),
+                Arc::clone(meter),
+            )),
+            None => decider,
+        }
+    }
+
+    pub fn resolve_decider(
+        &self,
+        name: Option<&str>,
+    ) -> Result<(Arc<dyn DecisionProvider>, &ModelChoice, String), LlmError> {
+        let role = name.unwrap_or(Role::Decider.as_str());
+        let choice = match self.roles.resolve(role) {
+            Some(choice) => choice,
+            None if name.is_none() || role == Role::Decider.as_str() => {
+                return Err(LlmError::NoDecider)
+            }
+            None => {
+                return Err(LlmError::UnknownModelName {
+                    name: role.to_string(),
+                    available: self.roles.known_names().join(", "),
+                })
+            }
+        };
+        if self.kind_of(&choice.provider) == Some(ModelKind::Chat) {
+            return Err(LlmError::WrongModelKind {
+                role: role.to_string(),
+                expected: ModelKind::Decision,
+                actual: ModelKind::Chat,
+            });
+        }
+        let primary = self.metered_decider(
+            Arc::clone(self.decider(&choice.provider)?),
+            &choice.provider,
+        );
+        if choice.fallbacks.is_empty() {
+            return Ok((primary, choice, role.to_string()));
+        }
+        let fallbacks = choice
+            .fallbacks
+            .iter()
+            .map(|fallback| {
+                Ok(DecisionCandidate {
+                    provider: self.metered_decider(
+                        Arc::clone(self.decider(&fallback.provider)?),
+                        &fallback.provider,
+                    ),
+                    provider_name: fallback.provider.clone(),
+                    model: fallback.model.clone(),
+                    context_window: fallback.context_window,
+                })
+            })
+            .collect::<Result<Vec<_>, LlmError>>()?;
+        let failover: Arc<dyn DecisionProvider> = Arc::new(FailoverDecider {
+            role: role.to_string(),
+            primary,
+            fallbacks,
+        });
+        Ok((failover, choice, role.to_string()))
+    }
+
+    pub async fn decide_named(
+        &self,
+        name: Option<&str>,
+        mut req: DecisionRequest,
+    ) -> Result<DecisionResponse, LlmError> {
+        let (decider, choice, role) = self.resolve_decider(name)?;
+        req.model = choice.model.clone();
+        check_context_window(&role, &choice.model, choice.context_window, &req)?;
+        decider.decide(req).await
     }
 
     /// The provider under this name, or why there isn't one: unavailable
     /// beats unknown, because "your key is unset" is actionable where
     /// "not configured" sends someone off to check spelling.
     fn provider(&self, name: &str) -> Result<&Arc<dyn ChatProvider>, LlmError> {
-        if let Some(provider) = self.providers.get(name) {
-            return Ok(provider);
-        }
+        self.providers.get(name).ok_or_else(|| self.missing(name))
+    }
+
+    fn missing(&self, name: &str) -> LlmError {
         match self.unavailable.get(name) {
-            Some(reason) => Err(LlmError::ProviderUnavailable {
+            Some(reason) => LlmError::ProviderUnavailable {
                 provider: name.to_string(),
                 reason: reason.clone(),
-            }),
-            None => Err(LlmError::UnknownProvider(name.to_string())),
+            },
+            None => LlmError::UnknownProvider(name.to_string()),
         }
     }
 
@@ -138,6 +320,7 @@ impl ModelRouter {
             .roles
             .resolve_role(role)
             .ok_or_else(|| LlmError::NoModelForRole(role.to_string()))?;
+        self.ensure_chat(role.as_str(), choice)?;
         let provider = self.provider(&choice.provider)?;
         Ok((self.with_failover(Arc::clone(provider), choice)?, choice))
     }
@@ -204,6 +387,7 @@ impl ModelRouter {
                 name: name.to_string(),
                 available: self.roles.known_names().join(", "),
             })?;
+        self.ensure_chat(name, choice)?;
         let provider = self.provider(&choice.provider)?;
         Ok((self.with_failover(Arc::clone(provider), choice)?, choice))
     }
@@ -298,6 +482,7 @@ mod tests {
             temperature: None,
             description: None,
             fallbacks,
+            context_window: None,
         }
     }
 
@@ -327,6 +512,7 @@ mod tests {
                     provider: "up".into(),
                     model: "backup-model".into(),
                     temperature: None,
+                    context_window: None,
                 }],
             ),
         )]);
@@ -342,9 +528,9 @@ mod tests {
     #[tokio::test]
     async fn metering_attributes_a_failed_over_call_to_the_model_that_served_it() {
         #[derive(Default)]
-        struct Recorder(std::sync::Mutex<Vec<crate::LlmCall>>);
+        struct Recorder(std::sync::Mutex<Vec<crate::ModelCall>>);
         impl UsageMeter for Recorder {
-            fn record(&self, call: crate::LlmCall) {
+            fn record(&self, call: crate::ModelCall) {
                 self.0.lock().unwrap().push(call);
             }
         }
@@ -373,6 +559,7 @@ mod tests {
                     provider: "up".into(),
                     model: "backup-model".into(),
                     temperature: None,
+                    context_window: None,
                 }],
             ),
         )]);
@@ -455,6 +642,7 @@ mod tests {
                     provider: "typo".into(),
                     model: "m2".into(),
                     temperature: None,
+                    context_window: None,
                 }],
             ),
         )]);
@@ -464,5 +652,345 @@ mod tests {
             Err(error) => error,
         };
         assert!(matches!(error, LlmError::UnknownProvider(name) if name == "typo"));
+    }
+
+    fn provider_config(kind: ProviderKind) -> graph_config::ProviderConfig {
+        graph_config::ProviderConfig {
+            kind,
+            api_key: Some("k".into()),
+            base_url: None,
+            region: None,
+            profile: None,
+            missing_env: Vec::new(),
+        }
+    }
+
+    fn mixed_config(models: &[(&str, ModelChoice)]) -> Config {
+        let mut config = Config::default();
+        config
+            .providers
+            .insert("anthropic".into(), provider_config(ProviderKind::Anthropic));
+        config
+            .providers
+            .insert("typesafe".into(), provider_config(ProviderKind::Systemone));
+        config
+            .providers
+            .insert("local".into(), provider_config(ProviderKind::Systemone));
+        config.models = graph_config::ModelRoles::new(
+            models
+                .iter()
+                .map(|(name, choice)| (name.to_string(), choice.clone()))
+                .collect(),
+        );
+        config
+    }
+
+    fn startup_error(config: &Config) -> LlmError {
+        match ModelRouter::from_config(config) {
+            Ok(_) => panic!("expected startup validation to fail"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn a_chat_role_on_a_decision_provider_fails_at_startup() {
+        let error = startup_error(&mixed_config(&[
+            ("default", choice("anthropic", "m", vec![])),
+            ("judge", choice("typesafe", "jev-latest", vec![])),
+        ]));
+        assert!(
+            matches!(&error, LlmError::WrongModelKind { role, expected: ModelKind::Chat, actual: ModelKind::Decision } if role == "judge"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("'judge'"), "{error}");
+    }
+
+    #[test]
+    fn a_decision_default_fails_at_startup_through_the_roles_that_fall_back_to_it() {
+        let error = startup_error(&mixed_config(&[(
+            "default",
+            choice("typesafe", "jev-latest", vec![]),
+        )]));
+        assert!(
+            matches!(&error, LlmError::WrongModelKind { role, .. } if role == "chat"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_decider_role_on_a_chat_provider_fails_at_startup() {
+        let error = startup_error(&mixed_config(&[
+            ("default", choice("anthropic", "m", vec![])),
+            ("decider", choice("anthropic", "m", vec![])),
+        ]));
+        assert!(
+            matches!(&error, LlmError::WrongModelKind { role, expected: ModelKind::Decision, actual: ModelKind::Chat } if role == "decider"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn fallbacks_may_not_mix_model_kinds() {
+        let fallback = FallbackChoice {
+            provider: "anthropic".into(),
+            model: "m".into(),
+            temperature: None,
+            context_window: None,
+        };
+        let error = startup_error(&mixed_config(&[
+            ("default", choice("anthropic", "m", vec![])),
+            ("decider", choice("typesafe", "jev-latest", vec![fallback])),
+        ]));
+        assert!(
+            matches!(&error, LlmError::MixedFallbackKinds { role, provider, .. } if role == "decider" && provider == "anthropic"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_valid_mixed_config_builds() {
+        let fallback = FallbackChoice {
+            provider: "local".into(),
+            model: "openjev-latest".into(),
+            temperature: None,
+            context_window: None,
+        };
+        let router = ModelRouter::from_config(&mixed_config(&[
+            ("default", choice("anthropic", "m", vec![])),
+            ("decider", choice("typesafe", "jev-latest", vec![fallback])),
+        ]))
+        .unwrap();
+        assert_eq!(router.kind_of_role("decider"), Some(ModelKind::Decision));
+        assert_eq!(router.kind_of_role("judge"), Some(ModelKind::Chat));
+    }
+
+    struct ScriptedDecider {
+        tag: &'static str,
+        healthy: bool,
+        seen: std::sync::Mutex<Vec<DecisionRequest>>,
+    }
+
+    impl ScriptedDecider {
+        fn new(tag: &'static str, healthy: bool) -> Arc<Self> {
+            Arc::new(Self {
+                tag,
+                healthy,
+                seen: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl DecisionProvider for ScriptedDecider {
+        async fn decide(&self, req: DecisionRequest) -> Result<DecisionResponse, LlmError> {
+            self.seen.lock().unwrap().push(req.clone());
+            if !self.healthy {
+                return Err(LlmError::Api {
+                    status: 529,
+                    body: "overloaded".into(),
+                    retry_after: None,
+                });
+            }
+            Ok(DecisionResponse {
+                model: format!("{}:{}", self.tag, req.model),
+                answers: std::collections::BTreeMap::from([(
+                    "q".to_string(),
+                    crate::decision::Answer::Likelihood { probability: 0.9 },
+                )]),
+                usage: Usage {
+                    input_tokens: 40,
+                    ..Default::default()
+                },
+            })
+        }
+    }
+
+    fn decision_request(state: serde_json::Value) -> DecisionRequest {
+        DecisionRequest {
+            model: String::new(),
+            state,
+            questions: std::collections::BTreeMap::from([(
+                "q".to_string(),
+                crate::decision::Question::Likelihood {
+                    instructions: "Is it?".into(),
+                    criteria: None,
+                },
+            )]),
+        }
+    }
+
+    fn decision_router(
+        decider: ModelChoice,
+        deciders: Vec<(&str, Arc<ScriptedDecider>)>,
+    ) -> ModelRouter {
+        let providers: HashMap<String, Arc<dyn ChatProvider>> = HashMap::from([(
+            "anthropic".to_string(),
+            Arc::new(TaggedProvider {
+                tag: "chat",
+                healthy: true,
+            }) as Arc<dyn ChatProvider>,
+        )]);
+        let roles = graph_config::ModelRoles::from([
+            ("default", choice("anthropic", "m", vec![])),
+            ("decider", decider),
+        ]);
+        ModelRouter::with_providers(providers, roles).with_deciders(
+            deciders
+                .into_iter()
+                .map(|(name, decider)| (name.to_string(), decider as Arc<dyn DecisionProvider>))
+                .collect(),
+        )
+    }
+
+    #[derive(Default)]
+    struct Recorded(std::sync::Mutex<Vec<crate::ModelCall>>);
+
+    impl UsageMeter for Recorded {
+        fn record(&self, call: crate::ModelCall) {
+            self.0.lock().unwrap().push(call);
+        }
+
+        fn captures_content(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn decide_named_defaults_to_the_decider_role_and_meters_a_decision_call() {
+        let primary = ScriptedDecider::new("ts", true);
+        let meter = Arc::new(Recorded::default());
+        let router = decision_router(
+            choice("typesafe", "jev-latest", vec![]),
+            vec![("typesafe", primary.clone())],
+        )
+        .with_meter(meter.clone());
+
+        let response = router
+            .decide_named(None, decision_request(serde_json::json!("state")))
+            .await
+            .unwrap();
+        assert_eq!(response.model, "ts:jev-latest");
+        assert_eq!(primary.seen.lock().unwrap()[0].model, "jev-latest");
+
+        let calls = meter.0.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].kind, ModelKind::Decision);
+        assert_eq!(calls[0].provider, "typesafe");
+        assert_eq!(calls[0].model, "jev-latest");
+        assert_eq!(calls[0].usage.input_tokens, 40);
+        assert_eq!(calls[0].input.as_ref().unwrap()["state"], "state");
+        assert_eq!(
+            calls[0].output.as_ref().unwrap()["answers"]["q"]["type"],
+            "likelihood"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_decider_fails_over_to_its_fallback_on_an_outage() {
+        let primary = ScriptedDecider::new("ts", false);
+        let local = ScriptedDecider::new("local", true);
+        let fallback = FallbackChoice {
+            provider: "local".into(),
+            model: "openjev-latest".into(),
+            temperature: None,
+            context_window: None,
+        };
+        let router = decision_router(
+            choice("typesafe", "jev-latest", vec![fallback]),
+            vec![("typesafe", primary.clone()), ("local", local.clone())],
+        );
+        let response = router
+            .decide_named(None, decision_request(serde_json::json!("state")))
+            .await
+            .unwrap();
+        assert_eq!(response.model, "local:openjev-latest");
+        assert_eq!(primary.seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn state_over_the_context_window_fails_before_any_call() {
+        let primary = ScriptedDecider::new("ts", true);
+        let mut decider = choice("typesafe", "jev-latest", vec![]);
+        decider.context_window = Some(10);
+        let router = decision_router(decider, vec![("typesafe", primary.clone())]);
+        let error = router
+            .decide_named(None, decision_request(serde_json::json!("x".repeat(400))))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, LlmError::ContextWindowExceeded { role, limit: 10, estimate: 100, .. } if role == "decider"),
+            "{error}"
+        );
+        assert!(primary.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_fallback_with_a_smaller_window_refuses_rather_than_truncates() {
+        let primary = ScriptedDecider::new("ts", false);
+        let local = ScriptedDecider::new("local", true);
+        let fallback = FallbackChoice {
+            provider: "local".into(),
+            model: "openjev-latest".into(),
+            temperature: None,
+            context_window: Some(10),
+        };
+        let router = decision_router(
+            choice("typesafe", "jev-latest", vec![fallback]),
+            vec![("typesafe", primary), ("local", local.clone())],
+        );
+        let error = router
+            .decide_named(None, decision_request(serde_json::json!("x".repeat(400))))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, LlmError::ContextWindowExceeded { model, .. } if model == "openjev-latest"),
+            "{error}"
+        );
+        assert!(local.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn roles_refuse_calls_of_the_wrong_kind() {
+        let router = decision_router(
+            choice("typesafe", "jev-latest", vec![]),
+            vec![("typesafe", ScriptedDecider::new("ts", true))],
+        );
+        let error = router
+            .chat_named("decider", ChatRequest::default())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, LlmError::WrongModelKind { role, expected: ModelKind::Chat, .. } if role == "decider"),
+            "{error}"
+        );
+        let error = router
+            .decide_named(Some("default"), decision_request(serde_json::json!("s")))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, LlmError::WrongModelKind { role, expected: ModelKind::Decision, .. } if role == "default"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_decider_says_how_to_configure_one() {
+        let router = ModelRouter::with_providers(
+            HashMap::new(),
+            graph_config::ModelRoles::from([("default", choice("anthropic", "m", vec![]))]),
+        );
+        let error = router
+            .decide_named(None, decision_request(serde_json::json!("s")))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, LlmError::NoDecider), "{error}");
+        let error = router
+            .decide_named(Some("nano"), decision_request(serde_json::json!("s")))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, LlmError::UnknownModelName { name, .. } if name == "nano"),
+            "{error}"
+        );
     }
 }

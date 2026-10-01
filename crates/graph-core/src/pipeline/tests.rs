@@ -139,6 +139,7 @@ fn pipeline_with_named(
             temperature: None,
             description: None,
             fallbacks: Vec::new(),
+            context_window: None,
         },
     );
     let roles = ModelRoles::new(entries);
@@ -369,7 +370,7 @@ fn validate_plan_rejects_workbench_tools_statically() {
     // The same guard applies inside control-step bodies.
     let body_plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "if": {"value": "{{E0.count}}", "op": "gt", "to": 0},
             "then": {"toolName": "workbench__read_file", "input": {}}
         }}
@@ -690,6 +691,7 @@ fn named_model(model: &str) -> std::collections::BTreeMap<String, ModelChoice> {
             temperature: None,
             description: None,
             fallbacks: Vec::new(),
+            context_window: None,
         },
     );
     named
@@ -734,7 +736,7 @@ async fn inferred_decide_model_override_selects_named_model() {
     );
     let plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "infer": "Is this urgent? {{E0.values}}",
             "model": "fast",
             "then": {"toolName": "t__search", "input": {"query": "y"}},
@@ -785,7 +787,7 @@ fn decide_plan(then: Value, else_branch: Option<Value>) -> Plan {
     }
     serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": input},
+        {"id": "E1", "toolName": "route", "input": input},
     ]))
     .unwrap()
 }
@@ -950,7 +952,7 @@ async fn inferred_decide_uses_judge_verdict() {
     );
     let plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "infer": "Is this urgent? {{E0.values}}",
             "then": {"toolName": "t__issues", "input": {"q": "escalate"}},
         }},
@@ -1039,7 +1041,7 @@ steps:
         panic!("expected StepFailed");
     };
     assert_eq!(step, "E1");
-    assert_eq!(tool, "decide");
+    assert_eq!(tool, "route");
     assert!(message.contains("inner assertion"), "{message}");
 }
 
@@ -1065,11 +1067,11 @@ async fn branch_failure_fails_the_decide_step_and_replans_in_planned_mode() {
     else {
         panic!("expected StepFailed");
     };
-    assert_eq!((step.as_str(), tool.as_str()), ("E1", "decide"));
+    assert_eq!((step.as_str(), tool.as_str()), ("E1", "route"));
     assert!(message.contains("`then` branch"), "{message}");
 
     // Planned mode: the failure lands on the bus and triggers a replan.
-    let decide_step = json!({"id": "E1", "toolName": "decide", "input": {
+    let decide_step = json!({"id": "E1", "toolName": "route", "input": {
         "if": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
         "then": {"toolName": "t__issues", "input": {"q": "x"}},
     }});
@@ -1110,7 +1112,7 @@ async fn empty_data_in_chosen_branch_degrades_normally() {
     let (pipeline, _) = pipeline(vec![], registry, 1);
     let plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "if": {"value": "{{E0.values.length}}", "op": "eq", "to": 0},
             "then": {"toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}},
         }},
@@ -1131,7 +1133,7 @@ async fn decide_validation_rejections() {
     let run = |input: Value| {
         let plan: Plan = serde_json::from_value(json!([
             {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-            {"id": "E1", "toolName": "decide", "input": input},
+            {"id": "E1", "toolName": "route", "input": input},
         ]))
         .unwrap();
         let pipeline = pipeline.clone();
@@ -1155,11 +1157,11 @@ async fn decide_validation_rejections() {
     assert!(message.contains("mutually exclusive"), "{message}");
 
     let message = run(json!({"then": call})).await;
-    assert!(message.contains("`if` or `infer`"), "{message}");
+    assert!(message.contains("`if`, `infer`, or `decide`"), "{message}");
 
     let message = run(json!({
         "if": {"value": 1, "op": "eq", "to": 1},
-        "then": {"toolName": "decide", "input": {}},
+        "then": {"toolName": "route", "input": {}},
     }))
     .await;
     assert!(message.contains("cannot nest"), "{message}");
@@ -1201,7 +1203,7 @@ async fn planner_gets_the_decide_tool_and_authored_decides_work() {
             structured(json!({
                 "plan": [
                     {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-                    {"id": "E1", "toolName": "decide", "input": {
+                    {"id": "E1", "toolName": "route", "input": {
                         "if": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
                         "then": {"toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}},
                     }},
@@ -1217,7 +1219,7 @@ async fn planner_gets_the_decide_tool_and_authored_decides_work() {
     assert_eq!(outcome.answer, "done");
     assert_eq!(outcome.state.results["E1"]["branch"], json!("then"));
     let requests = provider.requests.lock().unwrap();
-    assert!(requests[0].system.contains("\"name\":\"decide\""));
+    assert!(requests[0].system.contains("\"name\":\"route\""));
 }
 
 #[tokio::test]
@@ -1232,7 +1234,7 @@ steps:
     tool_name: t__search
     input: { query: "x" }
   - id: E1
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "{{E0.values.length}}", op: gt, to: 0 }
       then:
@@ -1269,7 +1271,7 @@ name: Ok
 description: exit in a branch
 steps:
   - id: E0
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: 1, op: eq, to: 1 }
       then:
@@ -1288,7 +1290,7 @@ name: Bad
 description: map nested in branch
 steps:
   - id: E0
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: 1, op: eq, to: 1 }
       then:
@@ -1652,7 +1654,7 @@ async fn filter_in_decide_branch_and_planner_catalog() {
     let (pipeline, _) = pipeline(vec![], registry, 1);
     let plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "if": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
             "then": {"toolName": "filter", "input": {
                 "over": "{{E0.values}}",
@@ -2027,10 +2029,10 @@ async fn iteration_validation_rejections() {
     .await;
     assert!(message.contains("concurrency"), "{message}");
 
-    // Control steps cannot nest: map inside a decide branch…
+    // Control steps cannot nest: map inside a route branch…
     let message = run(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "if": {"value": 1, "op": "eq", "to": 1},
             "then": {"toolName": "map", "input": {}},
         }},
@@ -2043,7 +2045,7 @@ async fn iteration_validation_rejections() {
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
         {"id": "E1", "toolName": "map", "input": {
             "over": "{{E0.values}}",
-            "do": {"toolName": "decide", "input": {}},
+            "do": {"toolName": "route", "input": {}},
         }},
     ]))
     .await;
@@ -2461,7 +2463,7 @@ async fn gate_fires_inside_decide_branch_and_map_body() {
     let gate = ScriptedGate::new(vec![]);
     let plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "if": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
             "then": {"toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}},
         }},
@@ -2481,7 +2483,7 @@ async fn gate_fires_inside_decide_branch_and_map_body() {
         vec!["E0", "E1/then", "E2/do.0/E10", "E2/do.1/E10"]
     );
     assert!(
-        gate.tools().iter().all(|t| t != "decide" && t != "map"),
+        gate.tools().iter().all(|t| t != "route" && t != "map"),
         "control steps are never gated"
     );
 }
@@ -2582,7 +2584,7 @@ async fn step_events_attribute_body_and_control_results() {
     assert_eq!(body.2, json!({"got": {"q": "team-1"}}));
     let decide = finished
         .iter()
-        .find(|(path, tool, ..)| path == "E1" && tool == "decide")
+        .find(|(path, tool, ..)| path == "E1" && tool == "route")
         .expect("decide aggregate event");
     assert_eq!(decide.2["branch"], json!("then"));
 }
@@ -2593,13 +2595,15 @@ async fn validate_plan_reports_all_problems() {
     let (pipeline, _) = pipeline(vec![], registry, 1);
     let plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "{{E5.values}}"}},
-        {"id": "E1", "toolName": "decide", "input": {"then": {"toolName": "t__issues", "input": {}}}},
+        {"id": "E1", "toolName": "route", "input": {"then": {"toolName": "t__issues", "input": {}}}},
     ]))
     .unwrap();
     let problems = pipeline.validate_plan(&plan).unwrap_err();
     assert!(problems.iter().any(|p| p.contains("E5")), "{problems:?}");
     assert!(
-        problems.iter().any(|p| p.contains("`if` or `infer`")),
+        problems
+            .iter()
+            .any(|p| p.contains("`if`, `infer`, or `decide`")),
         "{problems:?}"
     );
 }
@@ -3091,6 +3095,7 @@ async fn the_outline_call_resolves_the_outliner_role() {
             temperature: None,
             description: None,
             fallbacks: Vec::new(),
+            context_window: None,
         },
     );
     let (pipeline, provider) = pipeline_with_named(
@@ -4640,7 +4645,7 @@ fn every_control_step_is_described_in_the_catalog() {
         AGENT_TOOL,
         ASK_TOOL,
         EXIT_TOOL,
-        DECIDE_TOOL,
+        ROUTE_TOOL,
         FILTER_TOOL,
         MAP_TOOL,
         REDUCE_TOOL,
@@ -4703,7 +4708,7 @@ fn a_body_bearing_control_step_names_every_step_legal_in_its_body() {
     // reads. When `ask` landed they still said "may contain an agent
     // step", which is how a planner learns a legal step is illegal.
     for def in control_step_defs() {
-        if ![DECIDE_TOOL, MAP_TOOL, REDUCE_TOOL].contains(&def.name.as_str()) {
+        if ![ROUTE_TOOL, MAP_TOOL, REDUCE_TOOL].contains(&def.name.as_str()) {
             continue;
         }
         for legal in [AGENT_TOOL, ASK_TOOL, FILTER_TOOL] {
@@ -4714,4 +4719,681 @@ fn a_body_bearing_control_step_names_every_step_legal_in_its_body() {
             );
         }
     }
+}
+
+type Judge = Box<dyn Fn(&Value) -> f64 + Send + Sync>;
+
+struct MockDecider {
+    judge: Judge,
+    requests: Mutex<Vec<graph_llm::decision::DecisionRequest>>,
+}
+
+#[async_trait]
+impl graph_llm::DecisionProvider for MockDecider {
+    async fn decide(
+        &self,
+        req: graph_llm::decision::DecisionRequest,
+    ) -> Result<graph_llm::decision::DecisionResponse, LlmError> {
+        let probability = (self.judge)(&req.state);
+        self.requests.lock().unwrap().push(req.clone());
+        if probability < 0.0 {
+            return Err(LlmError::Api {
+                status: 400,
+                body: "refused".into(),
+                retry_after: None,
+            });
+        }
+        Ok(graph_llm::decision::DecisionResponse {
+            model: req.model.clone(),
+            answers: req
+                .questions
+                .iter()
+                .map(|(name, question)| {
+                    let answer = match question {
+                        graph_llm::decision::Question::Choice { criteria, .. } => {
+                            let choice = req.state["pick"]
+                                .as_str()
+                                .map(str::to_string)
+                                .unwrap_or_else(|| criteria.keys().next().unwrap().clone());
+                            graph_llm::decision::Answer::Choice {
+                                probabilities: criteria
+                                    .keys()
+                                    .map(|key| {
+                                        let p = if *key == choice { probability } else { 0.0 };
+                                        (key.clone(), p)
+                                    })
+                                    .collect(),
+                                choice,
+                                confidence: probability,
+                            }
+                        }
+                        _ => graph_llm::decision::Answer::Likelihood { probability },
+                    };
+                    (name.clone(), answer)
+                })
+                .collect(),
+            usage: Usage {
+                input_tokens: 30,
+                ..Default::default()
+            },
+        })
+    }
+}
+
+fn pipeline_with_decider(
+    responses: Vec<ChatResponse>,
+    registry: Arc<dyn ToolRegistry>,
+    judge: Judge,
+) -> (Pipeline, Arc<ScriptedProvider>, Arc<MockDecider>) {
+    let (mut pipeline, provider) =
+        pipeline_with_named(responses, registry, 1, std::collections::BTreeMap::new());
+    let decider = Arc::new(MockDecider {
+        judge,
+        requests: Mutex::new(Vec::new()),
+    });
+    let mut entries = std::collections::BTreeMap::new();
+    let choice = |provider: &str, model: &str| ModelChoice {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        temperature: None,
+        description: None,
+        fallbacks: Vec::new(),
+        context_window: None,
+    };
+    entries.insert("default".to_string(), choice("mock", "test"));
+    entries.insert("decider".to_string(), choice("typesafe", "jev-latest"));
+    entries.insert("other".to_string(), choice("typesafe", "jev-preview"));
+    let providers: std::collections::HashMap<String, Arc<dyn ChatProvider>> =
+        std::collections::HashMap::from([(
+            "mock".to_string(),
+            provider.clone() as Arc<dyn ChatProvider>,
+        )]);
+    let deciders: std::collections::HashMap<String, Arc<dyn graph_llm::DecisionProvider>> =
+        std::collections::HashMap::from([(
+            "typesafe".to_string(),
+            decider.clone() as Arc<dyn graph_llm::DecisionProvider>,
+        )]);
+    pipeline.router = Arc::new(
+        graph_llm::ModelRouter::with_providers(providers, ModelRoles::new(entries))
+            .with_deciders(deciders)
+            .with_meter(pipeline.usage.clone()),
+    );
+    (pipeline, provider, decider)
+}
+
+fn decide_exit_plan(gate: Value) -> Plan {
+    serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "exit", "input": {
+            "decide": gate,
+            "status": "error",
+            "message": "Blocked",
+        }},
+        {"id": "E2", "toolName": "t__search", "input": {"query": "after"}}
+    ]))
+    .unwrap()
+}
+
+async fn step_failure(pipeline: &Pipeline, plan: Plan) -> String {
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    let PipelineError::StepFailed { message, .. } = err else {
+        panic!("expected StepFailed, got {err:?}");
+    };
+    message
+}
+
+#[tokio::test]
+async fn a_decide_exit_fires_at_min_confidence_and_carries_the_probability() {
+    let registry = search_registry(json!({"values": [{"id": 1}]}));
+    let (pipeline, provider, decider) =
+        pipeline_with_decider(vec![], registry.clone(), Box::new(|_| 0.8));
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            decide_exit_plan(json!({
+                "question": "Is this blocked?",
+                "state": "{{E0.values}}",
+                "min_confidence": 0.8,
+            })),
+            Finish::Silent,
+            None,
+        )
+        .await
+        .unwrap();
+    let exit = outcome.exit.expect("exited");
+    assert_eq!(exit.message, "Blocked");
+    assert_eq!(exit.probability, Some(0.8));
+    assert_eq!(exit.reason, None);
+    assert_eq!(registry.invocations.lock().unwrap().len(), 1);
+    assert!(provider.requests.lock().unwrap().is_empty());
+
+    let requests = decider.requests.lock().unwrap();
+    assert_eq!(requests[0].model, "jev-latest");
+    assert_eq!(requests[0].state, json!([{"id": 1}]));
+    assert_eq!(
+        requests[0].questions["gate"],
+        graph_llm::decision::Question::Likelihood {
+            instructions: "Is this blocked?".into(),
+            criteria: None,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_decide_exit_below_min_confidence_passes_with_its_probability() {
+    let registry = search_registry(json!({"values": [{"id": 1}]}));
+    let (pipeline, _, decider) = pipeline_with_decider(vec![], registry.clone(), Box::new(|_| 0.3));
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            decide_exit_plan(json!({
+                "question": "Is this blocked?",
+                "model": "other",
+                "criteria": {"true": "work has stopped", "false": "work continues"},
+            })),
+            Finish::Silent,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(outcome.exit.is_none());
+    assert_eq!(
+        outcome.state.results["E1"],
+        json!({"passed": true, "verdict": false, "reason": null, "probability": 0.3})
+    );
+    assert_eq!(registry.invocations.lock().unwrap().len(), 2);
+    let requests = decider.requests.lock().unwrap();
+    assert_eq!(requests[0].model, "jev-preview");
+    assert_eq!(requests[0].state, Value::Null);
+}
+
+#[tokio::test]
+async fn a_decide_gate_refuses_a_chat_role() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, _) = pipeline_with_decider(vec![], registry, Box::new(|_| 0.9));
+    let message = step_failure(
+        &pipeline,
+        decide_exit_plan(json!({"question": "q?", "model": "default"})),
+    )
+    .await;
+    assert!(message.contains("'default' is a chat model"), "{message}");
+    assert!(message.contains("`infer`"), "{message}");
+}
+
+#[tokio::test]
+async fn an_infer_gate_refuses_a_decision_role() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, _) = pipeline_with_decider(vec![], registry, Box::new(|_| 0.9));
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "exit", "input": {
+            "infer": "Is this blocked?", "model": "decider", "status": "error",
+        }}
+    ]))
+    .unwrap();
+    let message = step_failure(&pipeline, plan).await;
+    assert!(
+        message.contains("'decider' is a decision model"),
+        "{message}"
+    );
+    assert!(message.contains("`decide`"), "{message}");
+}
+
+#[tokio::test]
+async fn gate_keys_are_mutually_exclusive_and_decide_rejects_what_it_does_not_support() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, _) = pipeline_with_decider(vec![], registry, Box::new(|_| 0.9));
+    let both: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "exit", "input": {
+            "infer": "q?", "decide": {"question": "q?"}, "status": "error",
+        }}
+    ]))
+    .unwrap();
+    let message = step_failure(&pipeline, both).await;
+    assert!(message.contains("mutually exclusive"), "{message}");
+
+    let message = step_failure(
+        &pipeline,
+        decide_exit_plan(json!({"question": "q?", "options": {"a": "A", "b": "B"}})),
+    )
+    .await;
+    assert!(message.contains("`route`"), "{message}");
+
+    let message = step_failure(
+        &pipeline,
+        decide_exit_plan(json!({"question": "q?", "min_confidence": 1.5})),
+    )
+    .await;
+    assert!(message.contains("between 0 and 1"), "{message}");
+
+    let stray_model: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "exit", "input": {
+            "decide": {"question": "q?"}, "model": "decider", "status": "error",
+        }}
+    ]))
+    .unwrap();
+    let message = step_failure(&pipeline, stray_model).await;
+    assert!(message.contains("inside the `decide` object"), "{message}");
+}
+
+#[tokio::test]
+async fn a_decide_gate_without_a_decider_says_how_to_configure_one() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let message = step_failure(&pipeline, decide_exit_plan(json!({"question": "q?"}))).await;
+    assert!(message.contains("[models.decider]"), "{message}");
+}
+
+#[tokio::test]
+async fn a_decide_gate_on_the_decide_step_picks_the_branch_and_reports_the_probability() {
+    for (probability, branch, ran) in [(0.9, "then", "t__issues"), (0.2, "else", "t__search")] {
+        let registry = search_registry(json!({"values": [{"id": 1}]}));
+        let (pipeline, _, decider) =
+            pipeline_with_decider(vec![], registry.clone(), Box::new(move |_| probability));
+        let plan: Plan = serde_json::from_value(json!([
+            {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+            {"id": "E1", "toolName": "route", "input": {
+                "decide": {"question": "Is it urgent?", "state": "{{E0.values}}", "min_confidence": 0.6},
+                "then": {"toolName": "t__issues", "input": {}},
+                "else": {"toolName": "t__search", "input": {"query": "else"}},
+            }}
+        ]))
+        .unwrap();
+        let outcome = pipeline
+            .run_explicit("q", plan, Finish::Silent, None)
+            .await
+            .unwrap();
+        let result = &outcome.state.results["E1"];
+        assert_eq!(result["branch"], json!(branch));
+        assert_eq!(result["probability"], json!(probability));
+        assert_eq!(result["reason"], Value::Null);
+        let invocations = registry.invocations.lock().unwrap();
+        assert_eq!(invocations.last().unwrap().0, ran);
+        assert_eq!(
+            decider.requests.lock().unwrap()[0].state,
+            json!([{"id": 1}])
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_filter_decide_gate_keeps_by_min_confidence_with_aligned_probabilities() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, decider) = pipeline_with_decider(
+        vec![],
+        registry,
+        Box::new(|state| state["id"].as_f64().unwrap() / 10.0),
+    );
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E1", "toolName": "filter", "input": {
+            "over": [{"id": 9}, {"id": 1}, {"id": 5}, {"id": 4}, {"id": 7}],
+            "decide": {"question": "Keep {{item.id}}?", "state": "{{item}}"},
+            "concurrency": 4,
+        }}
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    let result = &outcome.state.results["E1"];
+    assert_eq!(result["items"], json!([{"id": 9}, {"id": 5}, {"id": 7}]));
+    assert_eq!(result["dropped"], json!([{"id": 1}, {"id": 4}]));
+    assert_eq!(result["probabilities"], json!([0.9, 0.1, 0.5, 0.4, 0.7]));
+    let requests = decider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 5);
+    assert!(requests.iter().any(|r| matches!(
+        &r.questions["gate"],
+        graph_llm::decision::Question::Likelihood { instructions, .. } if instructions == "Keep 7?"
+    )));
+}
+
+#[tokio::test]
+async fn a_failing_filter_decision_names_the_item() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, _) = pipeline_with_decider(
+        vec![],
+        registry,
+        Box::new(|state| if state["id"] == json!(2) { -1.0 } else { 0.9 }),
+    );
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E1", "toolName": "filter", "input": {
+            "over": [{"id": 1}, {"id": 2}, {"id": 3}],
+            "decide": {"question": "Keep?", "state": "{{item}}"},
+        }}
+    ]))
+    .unwrap();
+    let message = step_failure(&pipeline, plan).await;
+    assert!(message.contains("item 1"), "{message}");
+    assert!(message.contains("decision failed"), "{message}");
+}
+
+#[test]
+fn static_validation_checks_the_decide_gate_shape() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "route", "input": {
+            "decide": {"question": "q?", "options": {"a": "A"}, "threshold": 0.5},
+            "model": "decider",
+            "then": {"toolName": "t__issues", "input": {}},
+        }},
+        {"id": "E2", "toolName": "filter", "input": {
+            "over": "{{E0.values}}",
+            "decide": {"question": "Keep {{item.id}}?", "state": "{{item}}", "min_confidence": 2},
+        }},
+        {"id": "E3", "toolName": "filter", "input": {
+            "over": "{{E0.values}}",
+            "decide": {"state": "{{nope.x}}"},
+        }}
+    ]))
+    .unwrap();
+    let problems = pipeline.validate_plan(&plan).unwrap_err();
+    let has = |needle: &str| problems.iter().any(|p| p.contains(needle));
+    assert!(has("step E1: `decide.options`"), "{problems:?}");
+    assert!(has("unknown field `decide.threshold`"), "{problems:?}");
+    assert!(
+        has("step E1: `model` sits inside the `decide` object"),
+        "{problems:?}"
+    );
+    assert!(
+        has("step E2: `decide.min_confidence` must be between 0 and 1"),
+        "{problems:?}"
+    );
+    assert!(
+        has("step E3: `decide` needs a `question` string"),
+        "{problems:?}"
+    );
+    assert!(has("nope"), "{problems:?}");
+    assert!(
+        !problems
+            .iter()
+            .any(|p| p.contains("step E2") && p.contains("item")),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn model_kind_problems_flag_literal_roles_of_the_wrong_kind() {
+    let doc = crate::pipeline::doc::parse_plan_source(
+        r#"
+version: 2
+identifier: kinds
+name: Kinds
+description: Gates pointed at the wrong kind of model.
+steps:
+  - id: E0
+    tool_name: exit
+    input: { infer: "blocked?", model: fast_decider, status: error }
+  - id: E1
+    tool_name: exit
+    input: { decide: { question: "blocked?", model: default }, status: error }
+  - id: E2
+    tool_name: route
+    input:
+      if: { value: 1, op: eq, to: 1 }
+      then:
+        - id: B0
+          tool_name: filter
+          input: { over: [1], decide: { question: "keep?", model: "{{input.role}}" } }
+  - id: E3
+    tool_name: exit
+    input: { infer: "blocked?", status: error }
+"#,
+        "kinds.yaml",
+    )
+    .unwrap();
+    let kind_of = |role: &str| match role {
+        "fast_decider" | "decider" => Some(graph_config::ModelKind::Decision),
+        "default" | "judge" => Some(graph_config::ModelKind::Chat),
+        _ => None,
+    };
+    let problems = crate::pipeline::authoring::model_kind_problems(&doc, &kind_of);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(problems[0].starts_with("step E0: `infer`"), "{problems:?}");
+    assert!(problems[1].starts_with("step E1: `decide`"), "{problems:?}");
+
+    let no_decider = |role: &str| (role != "decider").then_some(graph_config::ModelKind::Chat);
+    let problems = crate::pipeline::authoring::model_kind_problems(&doc, &no_decider);
+    assert!(
+        !problems.iter().any(|p| p.contains("none is configured")),
+        "a templated model is left to run time: {problems:?}"
+    );
+}
+
+fn cases_plan(min_confidence: Option<f64>, with_else: bool, pick: &str) -> Plan {
+    let mut gate = json!({
+        "question": "Which team handles this?",
+        "state": {"pick": pick},
+        "options": {"billing": "Payments", "technical": "Bugs"},
+    });
+    if let Some(min) = min_confidence {
+        gate["min_confidence"] = json!(min);
+    }
+    let mut input = json!({
+        "decide": gate,
+        "cases": {
+            "billing": [{"id": "B0", "toolName": "t__issues", "input": {}}],
+            "technical": {"toolName": "t__search", "input": {"query": "technical"}},
+        },
+    });
+    if with_else {
+        input["else"] = json!({"toolName": "t__search", "input": {"query": "unsure"}});
+    }
+    serde_json::from_value(json!([{"id": "E1", "toolName": "route", "input": input}])).unwrap()
+}
+
+#[tokio::test]
+async fn a_route_with_cases_runs_the_chosen_case() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, decider) = pipeline_with_decider(vec![], registry.clone(), Box::new(|_| 0.9));
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            cases_plan(Some(0.6), true, "billing"),
+            Finish::Silent,
+            None,
+        )
+        .await
+        .unwrap();
+    let result = &outcome.state.results["E1"];
+    assert_eq!(result["branch"], json!("billing"));
+    assert_eq!(result["choice"], json!("billing"));
+    assert_eq!(result["confidence"], json!(0.9));
+    assert_eq!(
+        result["probabilities"],
+        json!({"billing": 0.9, "technical": 0.0})
+    );
+    let invocations = registry.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(invocations[0].0, "t__issues");
+    assert!(
+        outcome
+            .state
+            .bus
+            .iter()
+            .any(|entry| entry.source.starts_with("E1/billing")),
+        "{:?}",
+        outcome
+            .state
+            .bus
+            .iter()
+            .map(|e| e.source.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(matches!(
+        &decider.requests.lock().unwrap()[0].questions["gate"],
+        graph_llm::decision::Question::Choice { criteria, .. } if criteria.len() == 2
+    ));
+}
+
+#[tokio::test]
+async fn a_route_below_min_confidence_takes_else_or_continues() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, _) = pipeline_with_decider(vec![], registry.clone(), Box::new(|_| 0.3));
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            cases_plan(Some(0.6), true, "technical"),
+            Finish::Silent,
+            None,
+        )
+        .await
+        .unwrap();
+    let result = &outcome.state.results["E1"];
+    assert_eq!(result["branch"], json!("else"));
+    assert_eq!(result["choice"], json!("technical"));
+    assert_eq!(
+        registry.invocations.lock().unwrap()[0].1["query"],
+        json!("unsure")
+    );
+
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, _) = pipeline_with_decider(vec![], registry.clone(), Box::new(|_| 0.3));
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            cases_plan(Some(0.6), false, "technical"),
+            Finish::Silent,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.state.results["E1"]["branch"], Value::Null);
+    assert_eq!(outcome.state.results["E1"]["result"], Value::Null);
+    assert!(registry.invocations.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_route_without_min_confidence_always_commits_to_the_choice() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, _) = pipeline_with_decider(vec![], registry.clone(), Box::new(|_| 0.05));
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            cases_plan(None, false, "technical"),
+            Finish::Silent,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.state.results["E1"]["branch"], json!("technical"));
+}
+
+#[test]
+fn static_validation_checks_cases_against_options() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let call = json!({"toolName": "t__issues", "input": {}});
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E1", "toolName": "route", "input": {
+            "decide": {"question": "q?", "options": {"a": "A", "b": "B"}},
+            "cases": {"a": call, "c": call},
+            "then": call,
+            "else": call,
+        }},
+        {"id": "E2", "toolName": "route", "input": {
+            "decide": {"question": "q?", "options": {"a": "A", "b": "B"}},
+        }},
+        {"id": "E3", "toolName": "route", "input": {
+            "decide": {"question": "q?"},
+            "cases": {"a": call},
+        }},
+        {"id": "E4", "toolName": "route", "input": {
+            "decide": {"question": "q?", "options": {"then": "A"}},
+            "cases": {"then": call},
+        }},
+        {"id": "E5", "toolName": "filter", "input": {
+            "over": [1, 2],
+            "decide": {"question": "q?", "options": {"a": "A", "b": "B"}},
+        }},
+        {"id": "E6", "toolName": "route", "input": {
+            "if": {"value": 1, "op": "eq", "to": 1},
+        }}
+    ]))
+    .unwrap();
+    let problems = pipeline.validate_plan(&plan).unwrap_err();
+    let has = |needle: &str| problems.iter().any(|p| p.contains(needle));
+    assert!(
+        has("step E1: a route with `cases` takes no `then`"),
+        "{problems:?}"
+    );
+    assert!(
+        has("step E1: `cases` is missing a branch for b"),
+        "{problems:?}"
+    );
+    assert!(has("step E1: `cases` has a branch for c"), "{problems:?}");
+    assert!(has("step E1: `else` can never run"), "{problems:?}");
+    assert!(
+        has("step E2: `decide.options` needs `cases`"),
+        "{problems:?}"
+    );
+    assert!(
+        has("step E3: `cases` needs `decide.options`"),
+        "{problems:?}"
+    );
+    assert!(
+        has("step E4: `decide.options` needs between 2 and 255"),
+        "{problems:?}"
+    );
+    assert!(has("step E4: case name `then`"), "{problems:?}");
+    assert!(
+        has("step E5: `decide.options` (named cases) only works on a `route` step"),
+        "{problems:?}"
+    );
+    assert!(has("step E6: route needs `then`"), "{problems:?}");
+}
+
+#[test]
+fn a_cases_route_round_trips_through_a_plan_file() {
+    let doc = crate::pipeline::doc::parse_plan_source(
+        r#"
+version: 2
+identifier: triage
+name: Triage
+description: Route a ticket to a team.
+steps:
+  - id: E1
+    tool_name: route
+    input:
+      decide:
+        question: Which team?
+        options: { billing: Payments, technical: Bugs }
+      cases:
+        billing:
+          - id: B0
+            tool_name: t__issues
+            input: {}
+        technical: { tool_name: t__search, input: { query: x } }
+"#,
+        "triage.yaml",
+    )
+    .unwrap();
+    assert_eq!(doc.steps[0].tool_name, "route");
+    let stray = crate::pipeline::doc::parse_plan_source(
+        r#"
+identifier: triage
+name: Triage
+description: d
+steps:
+  - id: E1
+    tool_name: route
+    input:
+      decide: { question: q, options: { a: A, b: B } }
+      cases:
+        a:
+          - id: B0
+            tool_name: t__issues
+            input: {}
+            retries: 3
+        b: { tool_name: t__search, input: {} }
+"#,
+        "stray.yaml",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(stray.contains("cases.a"), "{stray}");
 }

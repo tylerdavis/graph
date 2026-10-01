@@ -16,7 +16,7 @@ pub type Migration = fn(&mut DocumentMut) -> Result<Vec<String>, String>;
 const MIGRATIONS: &[Migration] = &[
     named_models_become_roles,
     telemetry_section_added,
-    mcp_description_added,
+    config_version_4_additions,
 ];
 
 const RETIRED_ROLES: &[&str] = &["embedder", "use_case_solver"];
@@ -66,7 +66,7 @@ fn telemetry_section_added(_doc: &mut DocumentMut) -> Result<Vec<String>, String
     Ok(Vec::new())
 }
 
-fn mcp_description_added(_doc: &mut DocumentMut) -> Result<Vec<String>, String> {
+fn config_version_4_additions(_doc: &mut DocumentMut) -> Result<Vec<String>, String> {
     Ok(Vec::new())
 }
 

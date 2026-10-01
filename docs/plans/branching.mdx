@@ -1,10 +1,10 @@
 ---
 title: "Branching"
-description: "Fork a plan into one of two branches with a decide step"
+description: "Fork a plan into one of its branches with a route step"
 icon: "code-branch"
 ---
 
-A `decide` step forks the plan: it evaluates a gate — the same gate grammar as an [exit gate](/plans/exit-gates), spelled `if`/`infer` — and runs the `then` branch when it holds, the `else` branch otherwise. Execution then rejoins the plan's normal step sequence. Where `exit` answers "should this plan stop?", `decide` answers "which action is correct next?" — update or create, escalate or summarize, notify or stay quiet.
+A `route` step forks the plan: it evaluates a gate — the same gate grammar as an [exit gate](/plans/exit-gates), spelled `if`/`infer` — and runs the `then` branch when it holds, the `else` branch otherwise. Execution then rejoins the plan's normal step sequence. Where `exit` answers "should this plan stop?", `route` answers "which action is correct next?" — update or create, escalate or summarize, notify or stay quiet.
 
 ```yaml
 steps:
@@ -13,7 +13,7 @@ steps:
     input: { priority: 1, limit: 50 }
 
   - id: E1
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "{{E0.issues.length}}", op: gt, to: 5 }
       then:                                  # single tool call — any tool, incl. plan__*
@@ -32,21 +32,21 @@ steps:
     input: { entry: "took {{E1.branch}}: {{E1.result}}" }
 ```
 
-In the [workbench](/workbench/plan-workbench), a decide step renders as a `⑂` junction — the chosen branch's steps run under its colored guide, the other stays untouched:
+In the [workbench](/workbench/plan-workbench), a route step renders as a `⑂` junction — the chosen branch's steps run under its colored guide, the other stays untouched:
 
-<Frame caption="A decide fork after a run down its then branch: the inline step list nests under the blue then head; the single-call else was never rendered.">
-  <img src="/images/workbench/branching-decide.svg" alt="A decide fork after a run down its then branch: the inline step list nests under the blue then head; the single-call else was never rendered." />
+<Frame caption="A route fork after a run down its then branch: the inline step list nests under the blue then head; the single-call else was never rendered.">
+  <img src="/images/workbench/branching-route.svg" alt="A route fork after a run down its then branch: the inline step list nests under the blue then head; the single-call else was never rendered." />
 </Frame>
 
 ## Gates
 
-Exactly one of `if` or `infer` is required — unlike `exit`, where omitting both means "unconditionally". The gate grammar is identical to [exit gates](/plans/exit-gates) — `decide` spells the logical gate `if` where `exit` spells it `when`, because `if … then … else` reads as the fork it is. `if` is a logical comparison (`eq ne gt lt gte lte empty not_empty contains`, with [typed splice](/plans/template-language#typed-splice) keeping numbers numeric); `infer` is a yes/no question judged by the `judge` model role. An `if` gate costs zero inference; an `infer` gate costs one cheap judgment call.
+Exactly one of `if`, `infer`, or `decide` is required — unlike `exit`, where omitting all three means "unconditionally". The gate grammar is identical to [exit gates](/plans/exit-gates) — `route` spells the logical gate `if` where `exit` spells it `when`, because `if … then … else` reads as the fork it is. `if` is a logical comparison (`eq ne gt lt gte lte empty not_empty contains`, with [typed splice](/plans/template-language#typed-splice) keeping numbers numeric); `infer` is a yes/no question judged by the `judge` model role. `decide` asks the same yes/no question of a [decision model](/models/models-and-providers#decision-models), with the data in `state` — see [decision gates](/plans/exit-gates#decision-gates-decide); `then` runs when the probability of yes reaches `min_confidence`, and the result adds `probability`. An `if` gate costs zero inference; an `infer` or `decide` gate costs one judgment call.
 
 An inferred fork routes on judgment where no single comparison would do — here, whether a status update reads as blocked:
 
 ```yaml
   - id: E2
-    tool_name: decide
+    tool_name: route
     input:
       infer: |
         Does this status update indicate the project is blocked?
@@ -60,7 +60,39 @@ An inferred fork routes on judgment where no single comparison would do — here
         input: { entry: "on track" }
 ```
 
-`then` runs only on a yes, and the model's reasoning is carried in the step result — `{{E2.reason}}` — for downstream steps and the finish to use. The verdict mechanics — the forced `{verdict, reason}` schema, the `judge` role, and the per-gate `model:` override (which on `decide` may itself be a template) — are exactly those of [inferred exit gates](/plans/exit-gates#inferred-gates-infer).
+`then` runs only on a yes, and the model's reasoning is carried in the step result — `{{E2.reason}}` — for downstream steps and the finish to use. The verdict mechanics — the forced `{verdict, reason}` schema, the `judge` role, and the per-gate `model:` override (which on `route` may itself be a template) — are exactly those of [inferred exit gates](/plans/exit-gates#inferred-gates-infer).
+
+## Named cases
+
+With a [decision model](/models/models-and-providers#decision-models) configured, a route can fork more than two ways. Give the `decide` gate `options` — case name → what that case means — and replace `then` with `cases`, one branch per option. The model picks one option and that case runs:
+
+```yaml
+  - id: E2
+    tool_name: route
+    input:
+      decide:
+        question: Which team should handle this ticket?
+        state: "{{E1.ticket}}"
+        options:
+          billing: Payments, invoicing, refunds
+          technical: Bugs, outages, errors
+        min_confidence: 0.6
+      cases:
+        billing: { tool_name: user__route_billing, input: { id: "{{E1.ticket.id}}" } }
+        technical:
+          - id: T0
+            tool_name: user__open_incident
+            input: { ticket: "{{E1.ticket}}" }
+      else: { tool_name: ask, input: { prompt: "Route this ticket?", output_schema: { type: object, properties: { team: { type: string } } } } }
+```
+
+- `cases` must have exactly the keys of `decide.options` — no missing, no extra — and there must be 2 to 255. Case names are letters, digits, and underscores, and cannot be `then`, `else`, or `do`.
+- `min_confidence` applies to the model's `confidence` in its choice. Below it, `else` runs; without `else`, the step continues with `branch: null`. Without `min_confidence` the route always commits to the choice, so an `else` there could never run and is reported at load.
+- The result names what happened: `{branch, choice, confidence, probabilities, result}` — `branch` is the case that ran, `else`, or `null`; `probabilities` gives every option's share. Case bodies follow the same grammar and scoping as `then`, and their steps appear under the case name (`E2/technical.0`).
+
+Named cases are a decision-model feature: `options` is refused on `exit` and `filter`, and an `infer` gate has no `options`.
+
+Plans written before `route` used the name `decide` for this step; a version 1 plan file is migrated on load (`graph plan migrate` rewrites it in place).
 
 ## Branches
 
@@ -73,17 +105,17 @@ Branches may contain [`exit`](/plans/exit-gates) steps — a fired exit ends the
 
 ## The step result
 
-The decide step's result — stored under its own id — is the only thing later steps see:
+The route step's result — stored under its own id — is the only thing later steps see:
 
 ```json
 { "branch": "then", "verdict": true, "reason": null, "result": { … } }
 ```
 
 - `branch` — which side ran (`null` when the gate was false and there was no `else`).
-- `verdict` — the gate outcome; `reason` — the judge's explanation, for `infer` gates.
+- `verdict` — the gate outcome; `reason` — the judge's explanation, for `infer` gates; `probability` — the decision model's probability of yes, for `decide` gates.
 - `result` — the branch's output: the single call's result, or the **last** branch step's result.
 
-Downstream references go through the decide id (`{{E1.result.…}}`, `{{E1.branch}}`), so the rejoined plan looks the same regardless of which branch ran. With no `else` and a false gate, `result` is `null` and the plan simply continues — like a passed exit gate.
+Downstream references go through the route id (`{{E1.result.…}}`, `{{E1.branch}}`), so the rejoined plan looks the same regardless of which branch ran. With no `else` and a false gate, `result` is `null` and the plan simply continues — like a passed exit gate.
 
 ## Only the chosen branch is rendered
 
@@ -104,22 +136,22 @@ If both branches rendered eagerly, `{{E0.issues.0.id}}` would raise `EmptyData` 
 
 ## Failure and replanning
 
-A failing branch call fails the decide step — attributed as `step E1 (decide)` with the branch and inner tool named in the message. Human-authored plans fail hard as always; planner-authored plans replan with that context.
+A failing branch call fails the route step — attributed as `step E1 (route)` with the branch and inner tool named in the message. Human-authored plans fail hard as always; planner-authored plans replan with that context.
 
 <Warning>
-Branch step results are scoped to the branch, so a replan past a decide failure re-runs the branch from its first step. Keep branch steps idempotent — see [the idempotency caveat](/plans/errors-and-replanning#plan_and_execute-replans).
+Branch step results are scoped to the branch, so a replan past a route failure re-runs the branch from its first step. Keep branch steps idempotent — see [the idempotency caveat](/plans/errors-and-replanning#plan_and_execute-replans).
 </Warning>
 
-Branch steps count in `steps_executed` — a decide with a two-step branch reports three executed steps (the decide plus two).
+Branch steps count in `steps_executed` — a route with a two-step branch reports three executed steps (the route plus two).
 
 ## Semantics summary
 
 | Surface | Behavior |
 |---|---|
 | gate false, no `else` | result `{branch: null, verdict: false, result: null}`, plan continues |
-| trace events | one `decide` tool event for the gate, then normal tool events for branch calls |
-| `steps_executed` / envelopes | decide counts as 1, plus 1 per branch call or branch step run |
-| branch tool fails | decide step fails: hard error (your plans) or replan (`plan_and_execute`) |
-| cost | `if`: 0 inference; `infer`: 1 judge call — plus whatever the branch calls |
+| trace events | one `route` tool event for the gate, then normal tool events for branch calls |
+| `steps_executed` / envelopes | route counts as 1, plus 1 per branch call or branch step run |
+| branch tool fails | route step fails: hard error (your plans) or replan (`plan_and_execute`) |
+| cost | `if`: 0 inference; `infer`: 1 judge call; `decide`: 1 decision call — plus whatever the branch calls |
 
-`plan_and_execute`'s planner also has the decide tool, so LLM-authored plans can fork on their own intermediate results.
+`plan_and_execute`'s planner also has the route tool, so LLM-authored plans can fork on their own intermediate results.

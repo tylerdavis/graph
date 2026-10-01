@@ -1,7 +1,7 @@
 //! Progress events emitted by the agent loop. Sinks render them for a TTY,
 //! as JSONL, or (later) into a TUI.
 
-use crate::usage::{LlmCallEvent, UsageReport};
+use crate::usage::{ModelCallEvent, UsageReport};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +16,7 @@ pub trait EventSink: Send + Sync {
     /// Emitted once per *billable* call, which is not the same as once per
     /// step: an agent step emits one per round plus one per schema repair,
     /// and a failed-over call reports the model that actually answered.
-    fn llm_call(&self, _call: &LlmCallEvent) {}
+    fn model_call(&self, _call: &ModelCallEvent) {}
     /// The run's totals, once, after the last step. Carries the same report
     /// `plan run --json` embeds.
     fn usage_summary(&self, _report: &UsageReport) {}
@@ -102,8 +102,8 @@ impl EventSink for TeeSink {
         self.sinks.iter().for_each(|s| s.text_delta(text));
     }
 
-    fn llm_call(&self, call: &LlmCallEvent) {
-        self.sinks.iter().for_each(|s| s.llm_call(call));
+    fn model_call(&self, call: &ModelCallEvent) {
+        self.sinks.iter().for_each(|s| s.model_call(call));
     }
 
     fn usage_summary(&self, report: &UsageReport) {

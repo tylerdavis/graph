@@ -59,7 +59,7 @@ Field names are snake_case, like every other part of a [plan file](/reference/pl
 
 `output_schema`'s *value* is yours: graph never rewrites the property names inside the schema, so an agent can be held to a camelCase contract if that is what its consumer expects.
 
-The whole input is checked at **load time**, wherever the step appears — top level or inside a `decide`/`map`/`reduce` body: unknown fields, a non-string prompt, `output_schema` that isn't valid object-typed JSON Schema, a `max_iterations` under 1, an empty `tools`, and template references that point forward or at nothing. A malformed agent step never reaches the run.
+The whole input is checked at **load time**, wherever the step appears — top level or inside a `route`/`map`/`reduce` body: unknown fields, a non-string prompt, `output_schema` that isn't valid object-typed JSON Schema, a `max_iterations` under 1, an empty `tools`, and template references that point forward or at nothing. A malformed agent step never reaches the run.
 
 ## Result
 
@@ -163,7 +163,7 @@ first. See [what a run spent](/reference/scripting-contract#what-a-run-spent).
 
 ## Inside control-step bodies
 
-`agent` is a legal body step for [`decide`](/plans/branching), [`map`, and `reduce`](/plans/iteration), and the body scope reaches its prompt:
+`agent` is a legal body step for [`route`](/plans/branching), [`map`, and `reduce`](/plans/iteration), and the body scope reaches its prompt:
 
 ```yaml
   - id: E1
@@ -184,7 +184,7 @@ first. See [what a run spent](/reference/scripting-contract#what-a-run-spent).
 
 `{{item}}`, `{{index}}`, and `{{accumulator}}` all resolve. Note the multiplier: this runs one agent *per item*.
 
-The other control steps (`exit`, `decide`, `map`, `reduce`) still cannot nest in a body — call a `plan__*` for that.
+The other control steps (`exit`, `route`, `map`, `reduce`) still cannot nest in a body — call a `plan__*` for that.
 
 ## Errors
 

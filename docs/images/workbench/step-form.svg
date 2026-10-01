@@ -207,10 +207,10 @@
 <text x="18.0" y="373.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="118.8" y="373.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="127.2" y="373.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">┌</text>
-<text x="144.0" y="373.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">infer</text>
-<text x="194.4" y="373.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
-<text x="211.2" y="373.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">text</text>
-<text x="253.2" y="373.5" textLength="655.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">─────────────────────────────────────────────────────────────────────────────┐</text>
+<text x="144.0" y="373.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">decide</text>
+<text x="202.8" y="373.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
+<text x="219.6" y="373.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">json</text>
+<text x="261.6" y="373.5" textLength="646.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">────────────────────────────────────────────────────────────────────────────┐</text>
 <text x="908.4" y="373.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">█</text>
 <text x="916.8" y="373.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="925.2" y="373.5" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">──────────┘</text>
@@ -233,19 +233,20 @@
 <text x="1017.6" y="409.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="18.0" y="427.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="118.8" y="427.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
-<text x="127.2" y="427.5" textLength="184.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">└─────────────────────</text>
-<text x="320.4" y="427.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">A</text>
-<text x="337.2" y="427.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">yes/no</text>
-<text x="396.0" y="427.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">question</text>
-<text x="471.6" y="427.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">about</text>
-<text x="522.0" y="427.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">prior</text>
-<text x="572.4" y="427.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">results;</text>
-<text x="648.0" y="427.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">exits</text>
-<text x="698.4" y="427.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">when</text>
-<text x="740.4" y="427.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">the</text>
-<text x="774.0" y="427.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">answer</text>
-<text x="832.8" y="427.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">is</text>
-<text x="858.0" y="427.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">yes.</text>
+<text x="127.2" y="427.5" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">└─────────────────</text>
+<text x="286.8" y="427.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">A</text>
+<text x="303.6" y="427.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">yes/no</text>
+<text x="362.4" y="427.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">question</text>
+<text x="438.0" y="427.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">answered</text>
+<text x="513.6" y="427.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">by</text>
+<text x="538.8" y="427.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">a</text>
+<text x="555.6" y="427.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">decision</text>
+<text x="631.2" y="427.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">model</text>
+<text x="681.6" y="427.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">(only</text>
+<text x="732.0" y="427.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">when</text>
+<text x="774.0" y="427.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">one</text>
+<text x="807.6" y="427.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">is</text>
+<text x="832.8" y="427.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">config…</text>
 <text x="900.0" y="427.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">┘</text>
 <text x="908.4" y="427.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">█</text>
 <text x="916.8" y="427.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
@@ -255,10 +256,10 @@
 <text x="18.0" y="445.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="118.8" y="445.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="127.2" y="445.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">┌</text>
-<text x="144.0" y="445.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">message</text>
-<text x="211.2" y="445.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
-<text x="228.0" y="445.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">text</text>
-<text x="270.0" y="445.5" textLength="638.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">───────────────────────────────────────────────────────────────────────────┐</text>
+<text x="144.0" y="445.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">infer</text>
+<text x="194.4" y="445.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
+<text x="211.2" y="445.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">text</text>
+<text x="253.2" y="445.5" textLength="655.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">─────────────────────────────────────────────────────────────────────────────┐</text>
 <text x="908.4" y="445.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">█</text>
 <text x="916.8" y="445.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="1009.2" y="445.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">█</text>
@@ -266,12 +267,6 @@
 <text x="18.0" y="463.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="118.8" y="463.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="127.2" y="463.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
-<text x="135.6" y="463.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">empty</text>
-<text x="186.0" y="463.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">diff</text>
-<text x="228.0" y="463.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">—</text>
-<text x="244.8" y="463.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">nothing</text>
-<text x="312.0" y="463.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">to</text>
-<text x="337.2" y="463.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">review</text>
 <text x="900.0" y="463.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="908.4" y="463.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">█</text>
 <text x="916.8" y="463.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
@@ -287,18 +282,19 @@
 <text x="1017.6" y="481.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="18.0" y="499.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="118.8" y="499.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
-<text x="127.2" y="499.5" textLength="235.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">└───────────────────────────</text>
-<text x="370.8" y="499.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">Shown</text>
-<text x="421.2" y="499.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">as</text>
-<text x="446.4" y="499.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">the</text>
-<text x="480.0" y="499.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">plan's</text>
-<text x="538.8" y="499.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">answer</text>
-<text x="597.6" y="499.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">/</text>
-<text x="614.4" y="499.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">error</text>
-<text x="664.8" y="499.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">message.</text>
-<text x="740.4" y="499.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">May</text>
-<text x="774.0" y="499.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">use</text>
-<text x="807.6" y="499.5" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">templates.</text>
+<text x="127.2" y="499.5" textLength="184.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">└─────────────────────</text>
+<text x="320.4" y="499.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">A</text>
+<text x="337.2" y="499.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">yes/no</text>
+<text x="396.0" y="499.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">question</text>
+<text x="471.6" y="499.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">about</text>
+<text x="522.0" y="499.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">prior</text>
+<text x="572.4" y="499.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">results;</text>
+<text x="648.0" y="499.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">exits</text>
+<text x="698.4" y="499.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">when</text>
+<text x="740.4" y="499.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">the</text>
+<text x="774.0" y="499.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">answer</text>
+<text x="832.8" y="499.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">is</text>
+<text x="858.0" y="499.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">yes.</text>
 <text x="900.0" y="499.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">┘</text>
 <text x="908.4" y="499.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">█</text>
 <text x="916.8" y="499.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
@@ -307,10 +303,10 @@
 <text x="18.0" y="517.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="118.8" y="517.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="127.2" y="517.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">┌</text>
-<text x="144.0" y="517.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">model</text>
-<text x="194.4" y="517.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
-<text x="211.2" y="517.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">text</text>
-<text x="253.2" y="517.5" textLength="655.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">─────────────────────────────────────────────────────────────────────────────┐</text>
+<text x="144.0" y="517.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">message</text>
+<text x="211.2" y="517.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
+<text x="228.0" y="517.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">text</text>
+<text x="270.0" y="517.5" textLength="638.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">───────────────────────────────────────────────────────────────────────────┐</text>
 <text x="908.4" y="517.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">█</text>
 <text x="916.8" y="517.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="1009.2" y="517.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">█</text>
@@ -318,8 +314,14 @@
 <text x="18.0" y="535.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="118.8" y="535.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="127.2" y="535.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
+<text x="135.6" y="535.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">empty</text>
+<text x="186.0" y="535.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">diff</text>
+<text x="228.0" y="535.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">—</text>
+<text x="244.8" y="535.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">nothing</text>
+<text x="312.0" y="535.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">to</text>
+<text x="337.2" y="535.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">review</text>
 <text x="900.0" y="535.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
-<text x="908.4" y="535.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">█</text>
+<text x="908.4" y="535.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">║</text>
 <text x="916.8" y="535.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="1009.2" y="535.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">█</text>
 <text x="1017.6" y="535.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
@@ -327,37 +329,36 @@
 <text x="118.8" y="553.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="127.2" y="553.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="900.0" y="553.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
-<text x="908.4" y="553.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">█</text>
+<text x="908.4" y="553.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">║</text>
 <text x="916.8" y="553.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="1009.2" y="553.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">█</text>
 <text x="1017.6" y="553.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="18.0" y="571.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="118.8" y="571.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
-<text x="127.2" y="571.5" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">└─────────────────</text>
-<text x="286.8" y="571.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">Model</text>
-<text x="337.2" y="571.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">role</text>
-<text x="379.2" y="571.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">for</text>
-<text x="412.8" y="571.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">the</text>
-<text x="446.4" y="571.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">`infer`</text>
-<text x="513.6" y="571.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">verdict</text>
-<text x="580.8" y="571.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">(any</text>
-<text x="622.8" y="571.5" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">configured</text>
-<text x="715.2" y="571.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">role,</text>
-<text x="765.6" y="571.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">standard</text>
-<text x="841.2" y="571.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">or</text>
-<text x="866.4" y="571.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">cu…</text>
+<text x="127.2" y="571.5" textLength="235.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">└───────────────────────────</text>
+<text x="370.8" y="571.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">Shown</text>
+<text x="421.2" y="571.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">as</text>
+<text x="446.4" y="571.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">the</text>
+<text x="480.0" y="571.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">plan's</text>
+<text x="538.8" y="571.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">answer</text>
+<text x="597.6" y="571.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">/</text>
+<text x="614.4" y="571.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">error</text>
+<text x="664.8" y="571.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">message.</text>
+<text x="740.4" y="571.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">May</text>
+<text x="774.0" y="571.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">use</text>
+<text x="807.6" y="571.5" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">templates.</text>
 <text x="900.0" y="571.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">┘</text>
-<text x="908.4" y="571.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">█</text>
+<text x="908.4" y="571.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">║</text>
 <text x="916.8" y="571.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="1009.2" y="571.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">║</text>
 <text x="1017.6" y="571.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="18.0" y="589.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="118.8" y="589.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="127.2" y="589.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">┌</text>
-<text x="144.0" y="589.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">when</text>
-<text x="186.0" y="589.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
-<text x="202.8" y="589.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">json</text>
-<text x="244.8" y="589.5" textLength="663.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">──────────────────────────────────────────────────────────────────────────────┐</text>
+<text x="144.0" y="589.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">model</text>
+<text x="194.4" y="589.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">·</text>
+<text x="211.2" y="589.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">text</text>
+<text x="253.2" y="589.5" textLength="655.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">─────────────────────────────────────────────────────────────────────────────┐</text>
 <text x="908.4" y="589.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">║</text>
 <text x="916.8" y="589.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="1009.2" y="589.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">║</text>
@@ -368,7 +369,6 @@
 <text x="102.0" y="607.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">se</text>
 <text x="118.8" y="607.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="127.2" y="607.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
-<text x="135.6" y="607.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">{</text>
 <text x="900.0" y="607.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="908.4" y="607.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">║</text>
 <text x="916.8" y="607.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
@@ -378,8 +378,6 @@
 <text x="34.8" y="625.5" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│describe</text>
 <text x="118.8" y="625.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>
 <text x="127.2" y="625.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
-<text x="152.4" y="625.5" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">"op":</text>
-<text x="202.8" y="625.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">"empty",</text>
 <text x="900.0" y="625.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">│</text>
 <text x="908.4" y="625.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3">▼</text>
 <text x="916.8" y="625.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">│</text>

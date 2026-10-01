@@ -15,7 +15,7 @@
 
 use graph_config::ModelPrice;
 use graph_llm::types::Usage;
-use graph_llm::{LlmCall, UsageMeter};
+use graph_llm::{ModelCall, UsageMeter};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -59,6 +59,12 @@ impl CallSite {
     /// is attributed here.
     pub async fn scope<F: std::future::Future>(self, future: F) -> F::Output {
         CALL_SITE.scope(self, future).await
+    }
+
+    pub async fn as_role<F: std::future::Future>(role: &str, future: F) -> F::Output {
+        let mut site = Self::current();
+        site.role = role.to_string();
+        CALL_SITE.scope(site, future).await
     }
 
     /// The current call site, or a bare `unknown` role outside any scope —
@@ -240,9 +246,10 @@ fn rank_model(model: &ModelUsage) -> f64 {
 }
 
 impl UsageMeter for UsageLedger {
-    fn record(&self, call: LlmCall) {
+    fn record(&self, call: ModelCall) {
         let site = CallSite::current();
-        let event = LlmCallEvent {
+        let event = ModelCallEvent {
+            kind: call.kind,
             site: site.group(),
             role: site.role.clone(),
             cost_usd: self.cost(&call.model, &call.usage),
@@ -263,7 +270,7 @@ impl UsageMeter for UsageLedger {
         // one that touched the ledger would deadlock on `calls`.
         let sink = self.events.lock().unwrap().clone();
         if let Some(sink) = sink {
-            sink.llm_call(&event);
+            sink.model_call(&event);
         }
     }
 
@@ -273,7 +280,8 @@ impl UsageMeter for UsageLedger {
 }
 
 #[derive(Debug, Clone)]
-pub struct LlmCallEvent {
+pub struct ModelCallEvent {
+    pub kind: graph_config::ModelKind,
     pub site: String,
     pub role: String,
     pub provider: String,
@@ -387,8 +395,9 @@ mod tests {
         ]))
     }
 
-    fn call(model: &str, usage: Usage) -> LlmCall {
-        LlmCall {
+    fn call(model: &str, usage: Usage) -> ModelCall {
+        ModelCall {
+            kind: graph_config::ModelKind::Chat,
             provider: "anthropic".into(),
             model: model.into(),
             usage,
@@ -399,16 +408,16 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct Captured(Mutex<Vec<LlmCallEvent>>);
+    struct Captured(Mutex<Vec<ModelCallEvent>>);
 
     impl crate::EventSink for Captured {
-        fn llm_call(&self, call: &LlmCallEvent) {
+        fn model_call(&self, call: &ModelCallEvent) {
             self.0.lock().unwrap().push(call.clone());
         }
     }
 
     #[tokio::test]
-    async fn the_llm_call_event_carries_attribution_price_and_content() {
+    async fn the_model_call_event_carries_attribution_price_and_content() {
         let ledger = Arc::new(priced_ledger().with_content_capture(true));
         let sink = Arc::new(Captured::default());
         ledger.attach_events(sink.clone());

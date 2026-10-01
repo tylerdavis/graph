@@ -1,9 +1,9 @@
 //! Plan workspace state: the draft document, per-step run status, the
 //! context catalog, and the run transcript. Rendering lives in `ui`.
 
-use graph_core::pipeline::body::{parse_branch, Branch};
+use graph_core::pipeline::body::{control_bodies, parse_branch, Branch};
 use graph_core::pipeline::doc::PlanDoc;
-use graph_core::pipeline::{DECIDE_TOOL, MAP_TOOL, MAX_STEP_ATTEMPTS, REDUCE_TOOL};
+use graph_core::pipeline::{MAX_STEP_ATTEMPTS, ROUTE_TOOL};
 use graph_core::{ToolDef, ToolShape};
 use serde_json::{Map, Value};
 use std::cell::Cell;
@@ -45,7 +45,7 @@ pub enum RowKey {
     Root,
     /// A top-level plan step; matches bare event paths ("E3").
     Step(String),
-    /// A named decide branch head ("then"/"else") over an inline step
+    /// A named route branch head ("then"/"else") over an inline step
     /// list — a structural node, never matched by run events.
     BranchHead { step: String, body: String },
     /// A call inside a control-step body. The map item index is stripped
@@ -581,20 +581,18 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
             Value::Object(step.input.clone()),
             RowKey::Step(step.id.clone()),
         ));
-        for body in body_keys(&step.tool_name) {
-            let Some(raw) = step.input.get(*body) else {
-                continue;
-            };
+        for (body, raw) in control_bodies(&step.tool_name, &step.input) {
+            let body = body.as_str();
             // Invalid bodies get no rows — validation reports them.
             match parse_branch(body, raw) {
                 Ok(Branch::Call(call)) => rows.push(row(
-                    (*body).to_string(),
+                    body.to_string(),
                     call.tool_name,
                     call.reasoning,
                     Value::Object(call.input),
                     RowKey::Body {
                         step: step.id.clone(),
-                        body: (*body).to_string(),
+                        body: body.to_string(),
                         body_step: None,
                     },
                 )),
@@ -602,15 +600,15 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
                     // Decide branches are named forks — the step list gets
                     // a branch-head node, like a directory in `tree`. Map
                     // and reduce have one anonymous body: no head.
-                    if step.tool_name == DECIDE_TOOL {
+                    if step.tool_name == ROUTE_TOOL {
                         rows.push(row(
-                            (*body).to_string(),
+                            body.to_string(),
                             String::new(),
                             None,
                             raw.clone(),
                             RowKey::BranchHead {
                                 step: step.id.clone(),
-                                body: (*body).to_string(),
+                                body: body.to_string(),
                             },
                         ));
                     }
@@ -622,7 +620,7 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
                             Value::Object(sub.input),
                             RowKey::Body {
                                 step: step.id.clone(),
-                                body: (*body).to_string(),
+                                body: body.to_string(),
                                 body_step: Some(sub.id),
                             },
                         ));
@@ -658,15 +656,6 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
         ));
     }
     rows
-}
-
-/// The body slots a control step carries; empty for real tool steps.
-fn body_keys(tool: &str) -> &'static [&'static str] {
-    match tool {
-        DECIDE_TOOL => &["then", "else"],
-        MAP_TOOL | REDUCE_TOOL => &["do"],
-        _ => &[],
-    }
 }
 
 /// Every string in a JSON value tree, for template scanning.
@@ -705,7 +694,7 @@ steps:
           tool_name: t__fetch
           input: { url: "{{item.url}}" }
   - id: E3
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "{{E0.count}}", greaterThan: 0 }
       then: { toolName: t__notify, input: { message: hit } }
@@ -744,7 +733,7 @@ solver:
                 ("E0", "t__search", false),
                 ("E1", "map", false),
                 ("E2", "t__fetch", true),
-                ("E3", "decide", false),
+                ("E3", "route", false),
                 ("then", "t__notify", true),
                 ("else", "t__log", true),
                 ("solver", "synthesizes the answer", false),
@@ -763,6 +752,60 @@ solver:
         assert_eq!(
             ws.steps[7].input_template["queryToAnswer"],
             json!("what happened?")
+        );
+    }
+
+    #[test]
+    fn a_route_with_cases_gets_one_arm_per_case_and_else() {
+        let doc = graph_core::pipeline::doc::parse_plan_source(
+            r#"
+version: 2
+identifier: triage
+name: Triage
+description: d
+steps:
+  - id: E0
+    tool_name: route
+    input:
+      decide:
+        question: Which team?
+        options: { billing: Payments, technical: Bugs }
+        min_confidence: 0.6
+      cases:
+        billing:
+          - id: B0
+            tool_name: t__refund
+            input: {}
+        technical: { tool_name: t__incident, input: {} }
+      else: { tool_name: t__ask, input: {} }
+"#,
+            "triage.yaml",
+        )
+        .unwrap();
+        let ws = workspace(doc);
+        let rows: Vec<(&str, &str)> = ws
+            .steps
+            .iter()
+            .map(|row| (row.id.as_str(), row.tool.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("triage", ""),
+                ("E0", "route"),
+                ("billing", ""),
+                ("B0", "t__refund"),
+                ("technical", "t__incident"),
+                ("else", "t__ask"),
+            ]
+        );
+        assert_eq!(
+            ws.steps[3].key,
+            RowKey::Body {
+                step: "E0".into(),
+                body: "billing".into(),
+                body_step: Some("B0".into()),
+            }
         );
     }
 
@@ -803,7 +846,7 @@ solver:
         // The owning map row is untouched by body events.
         assert_eq!(ws.steps[2].status, StepStatus::Pending);
 
-        // Single-call decide branch: the path has no body step id.
+        // Single-call route branch: the path has no body step id.
         ws.step_started("E3/then", json!({"message": "hit"}));
         assert_eq!(ws.steps[5].status, StepStatus::Running);
         ws.step_skipped("E3/then", json!({"sent": false}));

@@ -66,7 +66,7 @@ pub fn map_tool_def() -> crate::tools::ToolDef {
                       the list and {{Ex.count}} for how many ran. Set `concurrency` above \
                       1 only when the per-item calls are independent. The body may contain \
                       `agent`, `ask`, and `filter` steps (an `ask` is put to the user \
-                      once per item, always serialized), but never `exit`, `decide`, \
+                      once per item, always serialized), but never `exit`, `route`, \
                       `map`, or `reduce` — call a plan (plan__*) for nested control flow."
             .to_string(),
         input_schema: json!({
@@ -96,7 +96,7 @@ pub fn reduce_tool_def() -> crate::tools::ToolDef {
                       sequential — each iteration depends on the previous; for \
                       independent per-item work use `map` (optionally concurrent) and \
                       reduce over its results. The body may contain `agent`, `ask`, and \
-                      `filter` steps, but never `exit`, `decide`, `map`, or `reduce` — \
+                      `filter` steps, but never `exit`, `route`, `map`, or `reduce` — \
                       call a plan (plan__*) for nested control flow."
             .to_string(),
         input_schema: json!({

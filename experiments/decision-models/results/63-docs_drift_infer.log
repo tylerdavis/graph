@@ -1,0 +1,8 @@
+→ builtin__git_changed_files {"base":"22f4209","head":"ddeea53","prefix":"crates/"}
+✓ builtin__git_changed_files 24.5ms
+→ exit {"message":"no crate code changed — docs gate not applicable","output":{"docs_required":false,"reason":"no_crate_changes
+✓ exit 24.9µs
+→ builtin__git_diff {"base":"22f4209","exclude":"","head":"ddeea53","max_bytes":90000,"paths":":/crates/"}
+✓ builtin__git_diff 21.4ms
+→ exit {"infer":"Does this diff change user-visible behavior of the graph CLI — CLI\nsurface, plan or tool file formats, templa
+✓ exit 1.8s
