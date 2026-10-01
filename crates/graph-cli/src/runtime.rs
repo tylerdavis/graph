@@ -117,10 +117,14 @@ impl Runtime {
     /// Base tool catalog (MCP servers + builtin packs + user-defined
     /// tools), wrapped with shape recording.
     pub fn recording_registry(&self, store: &Arc<dyn Store>) -> Result<Arc<dyn ToolRegistry>> {
+        let docs = self.tool_docs()?;
         let base: Arc<dyn ToolRegistry> = Arc::new(CompositeRegistry::new(vec![
             self.registry.clone() as Arc<dyn ToolRegistry>,
-            self.builtin_tools()?,
-            self.user_tools()?,
+            Arc::new(UserToolRegistry::builtins(
+                docs.builtins,
+                self.router.clone(),
+            )),
+            Arc::new(UserToolRegistry::new(docs.user, self.router.clone())),
         ]));
         Ok(Arc::new(RecordingRegistry::new(base, store.clone())))
     }
@@ -150,21 +154,20 @@ impl Runtime {
             .collect()
     }
 
-    /// Bundled pack tools, served under `builtin__`.
-    pub fn builtin_tools(&self) -> Result<Arc<dyn ToolRegistry>> {
-        let docs = graph_core::user_tools::load_pack_tools(&self.pack_names())
+    pub fn tool_docs(&self) -> Result<graph_core::user_tools::ToolDocs> {
+        let dirs = self.tool_dirs();
+        let builtins = graph_core::user_tools::load_pack_tools(&self.pack_names())
             .map_err(anyhow::Error::msg)?;
-        Ok(Arc::new(UserToolRegistry::builtins(
-            docs,
-            self.router.clone(),
-        )))
-    }
-
-    /// User-defined tools from `[tools].paths`, served under `user__`.
-    pub fn user_tools(&self) -> Result<Arc<dyn ToolRegistry>> {
-        let docs = graph_core::user_tools::load_user_tools(&self.tool_dirs())
-            .map_err(anyhow::Error::msg)?;
-        Ok(Arc::new(UserToolRegistry::new(docs, self.router.clone())))
+        let overrides = graph_core::user_tools::load_user_tools(
+            &graph_core::user_tools::builtin_override_dirs(&dirs),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let user = graph_core::user_tools::load_user_tools(&dirs).map_err(anyhow::Error::msg)?;
+        Ok(graph_core::user_tools::ToolDocs {
+            builtins: graph_core::user_tools::apply_tool_overrides(builtins, overrides)
+                .map_err(anyhow::Error::msg)?,
+            user,
+        })
     }
 
     /// The loadable-tool catalog for catalog-aware plan validation: what a
@@ -174,8 +177,9 @@ impl Runtime {
         &self,
         plan_docs: &[graph_core::pipeline::doc::PlanDoc],
     ) -> Result<ToolCatalog> {
-        let builtin_tools = graph_core::user_tools::load_pack_tools(&self.pack_names())
-            .map_err(anyhow::Error::msg)?
+        let docs = self.tool_docs()?;
+        let builtin_tools = docs
+            .builtins
             .into_iter()
             .map(|doc| {
                 format!(
@@ -185,8 +189,8 @@ impl Runtime {
                 )
             })
             .collect();
-        let user_tools = graph_core::user_tools::load_user_tools(&self.tool_dirs())
-            .map_err(anyhow::Error::msg)?
+        let user_tools = docs
+            .user
             .into_iter()
             .map(|doc| format!("{}{}", graph_core::user_tools::USER_TOOL_PREFIX, doc.name))
             .collect();
@@ -270,6 +274,10 @@ impl Runtime {
             .map(|p| graph_config::expand_tilde(p))
             .collect();
         let mut loaded = graph_core::pipeline::doc::load_plan_docs(&dirs);
+        graph_core::pipeline::doc::add_builtin_plans(
+            &mut loaded,
+            graph_core::pipeline::doc::BUILTIN_PLANS,
+        );
         if !self
             .plans_warned
             .swap(true, std::sync::atomic::Ordering::Relaxed)
