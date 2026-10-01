@@ -144,7 +144,7 @@ Commands:
 **Acceptance criteria:**
 - [ ] Mock-decider tests cover:
   - the `min_confidence` boundary (equal counts as yes)
-  - `state` absent (sent as null) and present
+  - `state` absent (sent as an empty string, because the live API rejects null) and present
   - both mismatch errors
   - the three gate keys being mutually exclusive
 - [ ] Existing `infer` and `when` exit tests are unchanged and green.
