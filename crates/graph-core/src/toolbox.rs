@@ -174,6 +174,7 @@ mod tests {
                     temperature: None,
                     description: None,
                     fallbacks: Vec::new(),
+                    context_window: None,
                 },
             )]),
         ));
