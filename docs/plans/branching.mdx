@@ -40,7 +40,7 @@ In the [workbench](/workbench/plan-workbench), a decide step renders as a `⑂` 
 
 ## Gates
 
-Exactly one of `if` or `infer` is required — unlike `exit`, where omitting both means "unconditionally". The gate grammar is identical to [exit gates](/plans/exit-gates) — `decide` spells the logical gate `if` where `exit` spells it `when`, because `if … then … else` reads as the fork it is. `if` is a logical comparison (`eq ne gt lt gte lte empty not_empty contains`, with [typed splice](/plans/template-language#typed-splice) keeping numbers numeric); `infer` is a yes/no question judged by the `judge` model role. An `if` gate costs zero inference; an `infer` gate costs one cheap judgment call.
+Exactly one of `if`, `infer`, or `decide` is required — unlike `exit`, where omitting all three means "unconditionally". The gate grammar is identical to [exit gates](/plans/exit-gates) — `decide` spells the logical gate `if` where `exit` spells it `when`, because `if … then … else` reads as the fork it is. `if` is a logical comparison (`eq ne gt lt gte lte empty not_empty contains`, with [typed splice](/plans/template-language#typed-splice) keeping numbers numeric); `infer` is a yes/no question judged by the `judge` model role. `decide` asks the same yes/no question of a [decision model](/models/models-and-providers#decision-models), with the data in `state` — see [decision gates](/plans/exit-gates#decision-gates-decide); `then` runs when the probability of yes reaches `min_confidence`, and the result adds `probability`. An `if` gate costs zero inference; an `infer` or `decide` gate costs one judgment call.
 
 An inferred fork routes on judgment where no single comparison would do — here, whether a status update reads as blocked:
 
@@ -80,7 +80,7 @@ The decide step's result — stored under its own id — is the only thing later
 ```
 
 - `branch` — which side ran (`null` when the gate was false and there was no `else`).
-- `verdict` — the gate outcome; `reason` — the judge's explanation, for `infer` gates.
+- `verdict` — the gate outcome; `reason` — the judge's explanation, for `infer` gates; `probability` — the decision model's probability of yes, for `decide` gates.
 - `result` — the branch's output: the single call's result, or the **last** branch step's result.
 
 Downstream references go through the decide id (`{{E1.result.…}}`, `{{E1.branch}}`), so the rejoined plan looks the same regardless of which branch ran. With no `else` and a false gate, `result` is `null` and the plan simply continues — like a passed exit gate.
@@ -120,6 +120,6 @@ Branch steps count in `steps_executed` — a decide with a two-step branch repor
 | trace events | one `decide` tool event for the gate, then normal tool events for branch calls |
 | `steps_executed` / envelopes | decide counts as 1, plus 1 per branch call or branch step run |
 | branch tool fails | decide step fails: hard error (your plans) or replan (`plan_and_execute`) |
-| cost | `if`: 0 inference; `infer`: 1 judge call — plus whatever the branch calls |
+| cost | `if`: 0 inference; `infer`: 1 judge call; `decide`: 1 decision call — plus whatever the branch calls |
 
 `plan_and_execute`'s planner also has the decide tool, so LLM-authored plans can fork on their own intermediate results.

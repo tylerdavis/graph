@@ -47,7 +47,8 @@ The solver's report streams dim to stderr as progress; the agent's answer is the
 | --- | --- |
 | `plan run` (output / silent) | 0 |
 | `plan run` (solver) | 1 |
-| `exit` / `decide` gate | 0 (logical gate) or 1 judge call (`infer`) |
+| `exit` / `decide` gate | 0 (logical gate), 1 judge call (`infer`), or 1 decision call (`decide`) |
+| `filter` | 0 (`where`), or 1 judge or decision call per item (`infer` / `decide`) |
 | `map` / `reduce` | 0 — plus whatever the body calls |
 | `agent` | 1 per round (up to `max_iterations`) + its tool calls |
 | `ask` → direct tools | 1 + one per tool round |
@@ -58,7 +59,7 @@ Call counts are what you can reason about up front. For what a run actually spen
 
 ## Model roles
 
-Every inference site resolves through a `[models.<role>]` entry (the standard roles `chat`, `planner`, `solver`, `repair`, `judge` fall back to `default`), so cost tuning is pure config: strong model where judgment lives, fast model where volume lives. [Custom roles](/models/models-and-providers#custom-roles) use the same shape and are selectable at the point of use — per-step model routing without touching the standard assignments. Structured outputs (planner, prompt tools) get one automatic `repair`-role fix-up attempt before erroring into the replan loop. The full map of roles, providers, and failover is [Models & providers](/models/models-and-providers).
+Every inference site resolves through a `[models.<role>]` entry (the standard roles `chat`, `planner`, `solver`, `repair`, `judge` fall back to `default`; `decider`, the one decision-model role, does not), so cost tuning is pure config: strong model where judgment lives, fast model where volume lives. [Custom roles](/models/models-and-providers#custom-roles) use the same shape and are selectable at the point of use — per-step model routing without touching the standard assignments. Structured outputs (planner, prompt tools) get one automatic `repair`-role fix-up attempt before erroring into the replan loop. The full map of roles, providers, and failover is [Models & providers](/models/models-and-providers).
 
 ## Learning across turns
 

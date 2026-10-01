@@ -87,6 +87,32 @@ In the [workbench](/workbench/plan-workbench), a fired gate is visible at a glan
   <img src="/images/workbench/exit-gate.svg" alt="A fired success exit: the gate held, so the diff step and the solver never ran — and the pane says so." />
 </Frame>
 
+## Decision gates: `decide`
+
+The same yes/no judgment, asked of a [decision model](/models/models-and-providers#decision-models) instead of an LLM: faster, cheaper, and answered with a calibrated probability rather than a verdict and a reason. `decide` is an object, and the data to judge goes in `state`, apart from the question:
+
+```yaml
+  - id: E3
+    tool_name: exit
+    input:
+      decide:
+        question: Does this status update indicate the project is blocked?
+        state: "{{E2.statusUpdates.0.body}}"
+        min_confidence: 0.8
+      status: error
+      message: "Project appears blocked."
+```
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `question` | yes | the yes/no question |
+| `state` | no | the data to judge — any JSON, usually a template; sent as an empty string when omitted |
+| `criteria` | no | `{"true": …, "false": …}` — what counts as yes and as no |
+| `min_confidence` | no | the gate fires when the probability of yes reaches it; default 0.5 |
+| `model` | no | a decision role; defaults to the `decider` role |
+
+A fired exit carries the `probability` in its envelope; a gate that holds back leaves `{passed: true, verdict: false, reason: null, probability}` as the step result. `when`, `infer`, and `decide` are mutually exclusive, and each refuses the other kind of model: `infer` is for chat roles, `decide` for decision roles. Exactly one judgment call, only when the gate is reached.
+
 ## Exit semantics
 
 | Surface | success exit | error exit |
