@@ -1,0 +1,59 @@
+version: 1
+identifier: docs_drift_infer
+name: Docs drift gate (infer)
+description: >
+  Checks whether a PR changes crate behavior without a docs/ update. Exits
+  successfully (zero LLM calls) when no crate code changed; otherwise an inferred exit gate judges the crate diff and asserts
+  an error when documentation is required. Process exit code 4 on assertion.
+input_schema:
+  type: object
+  required: [base, head]
+  properties:
+    base: { type: string, description: Base ref or sha of the PR }
+    head: { type: string, description: Head ref or sha of the PR }
+steps:
+  - id: E0
+    tool_name: builtin__git_changed_files
+    input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "crates/" }
+    reasoning: Which crate source files changed?
+  - id: E1
+    tool_name: exit
+    input:
+      when: { value: "{{E0.count}}", op: eq, to: 0 }
+      status: success
+      message: no crate code changed — docs gate not applicable
+      output: { docs_required: false, reason: no_crate_changes }
+    reasoning: Docs-only or CI-only PRs pass immediately, no LLM.
+  - id: E4
+    tool_name: builtin__git_diff
+    input:
+      base: "{{input.base}}"
+      head: "{{input.head}}"
+      paths: ":/crates/"
+      exclude: ""
+      max_bytes: 90000
+    reasoning: >
+      Fetch the crate diff for the judge; a trailing marker flags
+      truncation when it exceeds the budget.
+  - id: E5
+    tool_name: exit
+    input:
+      infer: |
+        Does this diff change user-visible behavior of the graph CLI — CLI
+        surface, plan or tool file formats, template semantics, error
+        handling, exit codes, prompts the planner sees, or configuration —
+        such that the documentation under docs/ would need an update? Pure
+        refactors, comment-only changes, test-only changes, and internal
+        renames do not count. Answer yes only if the behavior a user or plan
+        author observes would change, and only from code you can see — the
+        diff may end with a truncation marker.
+
+        {{E4.text}}
+      status: error
+      message: >-
+        behavioral change without a docs/ update — CLAUDE.md requires docs
+        land in the same PR as the behavior change
+    reasoning: One judge call decides; error exit fails the CI check.
+output:
+  docs_required: false
+  reason: "{{E5.reason}}"

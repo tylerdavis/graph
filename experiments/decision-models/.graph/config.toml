@@ -1,0 +1,41 @@
+version = 4
+
+[providers.anthropic]
+type = "anthropic"
+api_key = "${ANTHROPIC_API_KEY}"
+
+[providers.typesafe]
+type = "systemone"
+api_key = "${TYPESAFE_API_KEY}"
+
+[models]
+default = { provider = "anthropic", model = "claude-sonnet-5" }
+judge   = { provider = "anthropic", model = "claude-haiku-4-5" }
+repair  = { provider = "anthropic", model = "claude-haiku-4-5" }
+
+[models.reviewer]
+provider = "anthropic"
+model = "claude-sonnet-5"
+
+[models.decider]
+provider = "typesafe"
+model = "jev-latest"
+context_window = 32000
+
+[plans]
+paths = ["./.graph/plans"]
+
+[tools]
+packs = ["github"]
+
+[pricing."claude-sonnet-5"]
+input = 3.00
+output = 15.00
+
+[pricing."claude-haiku-4-5"]
+input = 1.00
+output = 5.00
+
+[pricing."jev-latest"]
+input = 0.042
+output = 0.0
