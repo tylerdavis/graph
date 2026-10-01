@@ -2,12 +2,15 @@
 //! condition (`when`) or an inferred verdict (`infer`) answered by the
 //! `judge` model role.
 
-use graph_config::Role;
+use crate::usage::CallSite;
+use graph_config::{ModelKind, Role};
+use graph_llm::decision::{Answer, DecisionRequest, LikelihoodCriteria, Question};
 use graph_llm::types::ChatMessage;
 use graph_llm::ModelRouter;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,39 +43,170 @@ pub struct Verdict {
     pub reason: String,
 }
 
-/// Evaluate a gate: `(triggered, reason)`, the reason present for inferred
-/// gates. Callers enforce their own arity rules on top — `exit` treats
-/// neither gate as unconditional, `decide` requires exactly one. `model`
-/// overrides the model role used for an inferred verdict (any configured
-/// `[models.<role>]` or `default`); `None` uses the `judge` role.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecideGate {
+    pub question: String,
+    #[serde(default)]
+    pub state: Option<Value>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub criteria: Option<LikelihoodCriteria>,
+    #[serde(default)]
+    pub min_confidence: Option<f64>,
+    #[serde(default)]
+    pub options: Option<Value>,
+}
+
+pub const DEFAULT_MIN_CONFIDENCE: f64 = 0.5;
+
+pub enum Gate<'a> {
+    Logic(&'a Condition),
+    Infer {
+        question: &'a str,
+        model: Option<&'a str>,
+    },
+    Decide(&'a DecideGate),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GateOutcome {
+    pub triggered: bool,
+    pub reason: Option<String>,
+    pub probability: Option<f64>,
+}
+
+pub fn select_gate<'a>(
+    logic: Option<&'a Condition>,
+    infer: Option<&'a str>,
+    decide: Option<&'a DecideGate>,
+    model: Option<&'a str>,
+    logic_key: &str,
+) -> Result<Option<Gate<'a>>, String> {
+    match (logic, infer, decide) {
+        (None, None, None) => Ok(None),
+        (Some(condition), None, None) => Ok(Some(Gate::Logic(condition))),
+        (None, Some(question), None) => Ok(Some(Gate::Infer { question, model })),
+        (None, None, Some(gate)) => {
+            if model.is_some() {
+                return Err("`model` sits inside the `decide` object; move it there".to_string());
+            }
+            Ok(Some(Gate::Decide(gate)))
+        }
+        _ => Err(format!(
+            "`{logic_key}`, `infer`, and `decide` are mutually exclusive"
+        )),
+    }
+}
+
+pub async fn check_gate(gate: Gate<'_>, router: &ModelRouter) -> Result<GateOutcome, String> {
+    match gate {
+        Gate::Logic(condition) => Ok(GateOutcome {
+            triggered: eval_condition(condition)?,
+            reason: None,
+            probability: None,
+        }),
+        Gate::Infer { question, model } => infer_verdict(question, model, router).await,
+        Gate::Decide(gate) => decide_verdict(gate, router).await,
+    }
+}
+
+async fn infer_verdict(
+    question: &str,
+    model: Option<&str>,
+    router: &ModelRouter,
+) -> Result<GateOutcome, String> {
+    let role = model.unwrap_or(Role::Judge.as_str());
+    if router.kind_of_role(role) == Some(ModelKind::Decision) {
+        return Err(format!(
+            "`infer` asks a chat model, but model role '{role}' is a decision model; use a `decide` gate for decision models"
+        ));
+    }
+    let verdict: Verdict = CallSite::as_role(
+        role,
+        router.get_structured_named(
+            model,
+            Role::Judge,
+            "You answer a single yes/no question about the provided data, \
+             honestly and conservatively. Answer yes only when the data \
+             clearly supports it.",
+            vec![ChatMessage::User {
+                content: question.to_string(),
+            }],
+            "verdict",
+        ),
+    )
+    .await
+    .map_err(|e| format!("verdict failed: {e}"))?;
+    Ok(GateOutcome {
+        triggered: verdict.verdict,
+        reason: Some(verdict.reason),
+        probability: None,
+    })
+}
+
+async fn decide_verdict(gate: &DecideGate, router: &ModelRouter) -> Result<GateOutcome, String> {
+    if gate.options.is_some() {
+        return Err(
+            "`options` (named cases) is not supported yet; it arrives with the `route` step"
+                .to_string(),
+        );
+    }
+    let min_confidence = gate.min_confidence.unwrap_or(DEFAULT_MIN_CONFIDENCE);
+    if !(0.0..=1.0).contains(&min_confidence) {
+        return Err(format!(
+            "`min_confidence` must be between 0 and 1, got {min_confidence}"
+        ));
+    }
+    let role = gate.model.as_deref().unwrap_or(Role::Decider.as_str());
+    if router.kind_of_role(role) == Some(ModelKind::Chat) {
+        return Err(format!(
+            "`decide` asks a decision model, but model role '{role}' is a chat model; use an `infer` gate for chat models"
+        ));
+    }
+    let request = DecisionRequest {
+        model: String::new(),
+        state: gate.state.clone().unwrap_or(Value::Null),
+        questions: BTreeMap::from([(
+            GATE_QUESTION.to_string(),
+            Question::Likelihood {
+                instructions: gate.question.clone(),
+                criteria: gate.criteria.clone(),
+            },
+        )]),
+    };
+    let response = CallSite::as_role(role, router.decide_named(gate.model.as_deref(), request))
+        .await
+        .map_err(|e| format!("decision failed: {e}"))?;
+    let probability = match response.answers.get(GATE_QUESTION) {
+        Some(Answer::Likelihood { probability }) => *probability,
+        Some(other) => {
+            return Err(format!(
+                "decision failed: expected a likelihood answer, got {other:?}"
+            ))
+        }
+        None => return Err("decision failed: the model returned no answer".to_string()),
+    };
+    Ok(GateOutcome {
+        triggered: probability >= min_confidence,
+        reason: None,
+        probability: Some(probability),
+    })
+}
+
+const GATE_QUESTION: &str = "gate";
+
 pub async fn evaluate_gate(
     when: Option<&Condition>,
     infer: Option<&str>,
     model: Option<&str>,
     router: &ModelRouter,
 ) -> Result<(bool, Option<String>), String> {
-    match (when, infer) {
-        (Some(condition), None) => Ok((eval_condition(condition)?, None)),
-        (None, Some(question)) => {
-            let verdict: Verdict = router
-                .get_structured_named(
-                    model,
-                    Role::Judge,
-                    "You answer a single yes/no question about the provided data, \
-                     honestly and conservatively. Answer yes only when the data \
-                     clearly supports it.",
-                    vec![ChatMessage::User {
-                        content: question.to_string(),
-                    }],
-                    "verdict",
-                )
-                .await
-                .map_err(|e| format!("verdict failed: {e}"))?;
-            Ok((verdict.verdict, Some(verdict.reason)))
-        }
-        (Some(_), Some(_)) => Err("`when` and `infer` are mutually exclusive".to_string()),
-        (None, None) => Err("a gate needs `when` or `infer`".to_string()),
-    }
+    let gate = select_gate(when, infer, None, model, "when")?
+        .ok_or_else(|| "a gate needs `when` or `infer`".to_string())?;
+    let outcome = check_gate(gate, router).await?;
+    Ok((outcome.triggered, outcome.reason))
 }
 
 pub fn eval_condition(condition: &Condition) -> Result<bool, String> {

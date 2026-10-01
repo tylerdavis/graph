@@ -61,6 +61,12 @@ impl CallSite {
         CALL_SITE.scope(self, future).await
     }
 
+    pub async fn as_role<F: std::future::Future>(role: &str, future: F) -> F::Output {
+        let mut site = Self::current();
+        site.role = role.to_string();
+        CALL_SITE.scope(site, future).await
+    }
+
     /// The current call site, or a bare `unknown` role outside any scope —
     /// a bare test pipeline meters fine, it just cannot say where from.
     fn current() -> CallSite {

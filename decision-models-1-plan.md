@@ -35,7 +35,7 @@ This sub-PR adds a Jev-compatible decision provider, a `decider` role, Langfuse-
 - [ ] A live `jev-latest` call through the router meters correctly, and its span carries `operation=decision` plus the captured input and output.
 
 ### Phase 3: The gate
-- [ ] Task 6: `check_gate` with `DecideGate`, on `exit`
+- [x] Task 6: `check_gate` with `DecideGate`, on `exit`
 - [ ] Task 7: the gate on the `decide` step and on `filter` (`probabilities`)
 - [ ] Task 8: plan format v2, the fixture harness, and the `plan validate` kind check
 - [ ] Task 9: planner surface (tool defs, `control_step_rules.md`, steering tests)
