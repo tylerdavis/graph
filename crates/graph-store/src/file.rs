@@ -307,6 +307,14 @@ fn upgrade_legacy_log(dir: &Path, meta: &mut MetaFile) -> Result<(), StoreError>
     })
 }
 
+fn lock_existing_thread(dir: &Path, thread_id: &str) -> Result<(File, MetaFile), StoreError> {
+    let missing = || StoreError(format!("no thread {thread_id}"));
+    read_meta(dir)?.ok_or_else(missing)?;
+    let lock = lock_thread(dir)?;
+    let meta = read_meta(dir)?.ok_or_else(missing)?;
+    Ok((lock, meta))
+}
+
 fn scan_threads(threads_dir: &Path) -> Result<Vec<ThreadMeta>, StoreError> {
     let entries = match std::fs::read_dir(threads_dir) {
         Ok(entries) => entries,
@@ -414,10 +422,7 @@ impl Store for FileStore {
         let dir = self.thread_dir(&thread_id);
         let entries = entries.to_vec();
         self.blocking(move || {
-            read_meta(&dir)?.ok_or_else(|| StoreError(format!("no thread {thread_id}")))?;
-            let _lock = lock_thread(&dir)?;
-            let mut meta =
-                read_meta(&dir)?.ok_or_else(|| StoreError(format!("no thread {thread_id}")))?;
+            let (_lock, mut meta) = lock_existing_thread(&dir, &thread_id)?;
             upgrade_legacy_log(&dir, &mut meta)?;
             let at = now_ms();
             let numbered: Vec<ThreadEntry> = entries
@@ -466,10 +471,7 @@ impl Store for FileStore {
         let agent = agent.to_string();
         let dir = self.thread_dir(&thread_id);
         self.blocking(move || {
-            read_meta(&dir)?.ok_or_else(|| StoreError(format!("no thread {thread_id}")))?;
-            let _lock = lock_thread(&dir)?;
-            let mut meta =
-                read_meta(&dir)?.ok_or_else(|| StoreError(format!("no thread {thread_id}")))?;
+            let (_lock, mut meta) = lock_existing_thread(&dir, &thread_id)?;
             meta.active = agent;
             meta.updated_at = meta.updated_at.max(now_ms());
             write_meta(&dir, &meta)
