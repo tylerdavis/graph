@@ -92,10 +92,11 @@ pub fn native_tool_defs() -> Vec<ToolDef> {
             }),
             output_schema: Some(json!({
                 "type": "object",
-                "required": ["plan", "problems"],
+                "required": ["plan", "problems", "failed_step"],
                 "properties": {
                     "plan": {"type": "object"},
-                    "problems": {"type": "array", "items": {"type": "string"}}
+                    "problems": {"type": "array", "items": {"type": "string"}},
+                    "failed_step": {"type": ["string", "null"], "description": "The step drafting stopped at, when it failed"}
                 }
             })),
             output_example: None,
@@ -236,7 +237,7 @@ fn plan_from_draft(input: Value) -> Result<Value, String> {
     let goal = input["goal"]
         .as_str()
         .ok_or("plan_from_draft requires a 'goal' string")?;
-    let draft = Draft::from_result(&input["draft"])?;
+    let draft = Draft::from_expanded(&input["draft"])?;
     let mut problems = draft.problems;
     if let Some(step) = &draft.failed_step {
         problems.insert(
@@ -244,8 +245,12 @@ fn plan_from_draft(input: Value) -> Result<Value, String> {
             format!("drafting stopped at step {step}; the steps before it are kept"),
         );
     }
-    let doc = authoring::merge_planner_output(None, goal, draft.output);
-    Ok(json!({ "plan": plan_json(&doc)?, "problems": problems }))
+    let doc = authoring::merge_planner_output(None, goal, draft.output.clone());
+    Ok(json!({
+        "plan": plan_json(&doc)?,
+        "problems": problems,
+        "failed_step": draft.failed_step,
+    }))
 }
 
 fn apply_edits(input: Value) -> Result<Value, String> {

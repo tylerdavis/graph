@@ -3185,12 +3185,12 @@ fn with_drafting_builtins(mut pipeline: Pipeline) -> Pipeline {
 
 async fn draft(pipeline: &Pipeline, goal: &str) -> Result<super::Draft, String> {
     let call = pipeline
-        .call_plan(super::DRAFT_PLAN, super::draft_input(goal))
+        .call_plan(super::AUTHOR_PLAN, super::draft_input(goal))
         .await;
     if call.is_error {
         return Err(call.result.to_string());
     }
-    super::Draft::from_result(&call.result)
+    super::Draft::from_authored(&call.result)
 }
 
 async fn drafted(pipeline: &Pipeline, goal: &str) -> PlannerOutput {
