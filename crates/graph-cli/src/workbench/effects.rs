@@ -4,24 +4,23 @@
 use super::app::{Effect, Msg};
 use super::runner::{DebugControls, UiGate, UiInterlocutor};
 use super::tools::DraftState;
+use graph_core::agent::conversation::{Conversation, ConversationError};
 use graph_core::pipeline::authoring;
 use graph_core::pipeline::doc::PlanDoc;
 use graph_core::pipeline::Pipeline;
-use graph_core::{Agent, AgentError, Store, ToolRegistry};
-use graph_llm::types::ChatMessage;
+use graph_core::{AgentError, NewEntry, Store, ToolRegistry};
 use serde_json::Map;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub struct WorkbenchContext {
-    pub agent: Agent,
+    pub conversation: Conversation,
+    pub active: std::sync::Mutex<String>,
     /// The plan-run pipeline (its sink already feeds the UI channel);
     /// gated runs clone it and install a [`UiGate`].
     pub pipeline: Arc<Pipeline>,
-    /// Chat history — caller-owned per the `run_turn` contract, shared
-    /// with the turn task.
-    pub history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
+    pub history: Arc<tokio::sync::Mutex<Vec<NewEntry>>>,
     /// The draft plan, shared with [`super::tools::WorkbenchTools`].
     pub draft: Arc<std::sync::Mutex<DraftState>>,
     /// The agent's full catalog — the context pane shows what the planner
@@ -35,33 +34,6 @@ pub struct WorkbenchContext {
     pub tx: UnboundedSender<Msg>,
 }
 
-/// The system prompt for one turn: the base prompt plus the CURRENT draft,
-/// so the agent always sees what the plan pane shows — no read-back call
-/// needed when the user says "debug this plan".
-fn turn_system_prompt(base: &str, draft: &Option<PlanDoc>) -> String {
-    let mut prompt = base.to_string();
-    prompt.push_str("\n\n## Current draft\n");
-    match draft {
-        Some(doc) => {
-            prompt.push_str(&format!(
-                "The plan pane currently shows '{}' — this YAML is current as \
-                 of this turn, so do NOT call workbench__get_plan just to read \
-                 it (only to re-check after your own edits within this turn):\n",
-                doc.identifier
-            ));
-            match authoring::to_yaml(doc) {
-                Ok(yaml) => prompt.push_str(&yaml),
-                Err(_) => prompt.push_str("(unserializable draft — use workbench__get_plan)"),
-            }
-        }
-        None => prompt.push_str(
-            "(none yet — the pane is empty; draft one with workbench__draft_plan \
-             or load one with workbench__load_plan when asked)",
-        ),
-    }
-    prompt
-}
-
 pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
     let ctx = context.clone();
     match effect {
@@ -73,70 +45,92 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                     message.len()
                 );
                 let turn_started = std::time::Instant::now();
-                // Rebuild the agent with the draft baked into the system
-                // prompt (fields are Arcs and small strings — cheap).
-                let agent = Agent {
-                    provider: ctx.agent.provider.clone(),
-                    registry: ctx.agent.registry.clone(),
-                    events: ctx.agent.events.clone(),
-                    model: ctx.agent.model.clone(),
-                    temperature: ctx.agent.temperature,
-                    system_prompt: turn_system_prompt(&ctx.agent.system_prompt, &{
-                        ctx.draft.lock().unwrap().doc.clone()
-                    }),
-                    max_iterations: ctx.agent.max_iterations,
-                    // Reset the iteration budget on each successful edit, so a
-                    // long fix-forward loop (draft → validate → run → patch)
-                    // isn't cut off mid-repair the way a plain hard cap does.
-                    progress_tools: super::tools::progress_tools(),
-                    stop_tools: Vec::new(),
-                    call_site: graph_core::CallSite::role("chat"),
-                };
+                let events = ctx.conversation.events.clone();
+                let active = ctx.active.lock().unwrap().clone();
                 let mut history = ctx.history.lock().await;
-                let pre_len = history.len();
-                agent.events.run_started(&graph_core::RunStart {
+                events.run_started(&graph_core::RunStart {
                     name: "workbench".to_string(),
                     session_id: None,
                     input: Some(serde_json::Value::String(message.clone())),
                 });
-                history.push(ChatMessage::User { content: message });
-                let result = agent.run_turn(&mut history).await;
+                let result = ctx.conversation.run_turn(&history, &active, &message).await;
                 match &result {
-                    Ok(outcome) => agent
-                        .events
-                        .run_finished(&serde_json::Value::String(outcome.text.clone()), false),
-                    Err(error) => agent
-                        .events
-                        .run_finished(&serde_json::json!({"error": error.to_string()}), true),
-                }
-                if let Err(error) = &result {
-                    // Drop the failed turn's messages so a retry starts
-                    // clean — except when the turn hit the iteration cap:
-                    // that history is a valid prefix of real tool work,
-                    // and keeping it lets "continue" resume the turn.
-                    if !keep_partial_history(error) {
-                        history.truncate(pre_len);
+                    Ok(turn) => {
+                        events.run_finished(&serde_json::Value::String(turn.text.clone()), false)
+                    }
+                    Err(error) => {
+                        events.run_finished(&serde_json::json!({"error": error.to_string()}), true)
                     }
                 }
+                let result = match result {
+                    Ok(turn) => {
+                        history.extend(turn.entries);
+                        if turn.active != active {
+                            *ctx.active.lock().unwrap() = turn.active.clone();
+                            let _ = ctx.tx.send(Msg::ActiveAgent {
+                                name: turn.active.clone(),
+                                note: Some(format!("⇢ {active} handed off to {}", turn.active)),
+                            });
+                        }
+                        Ok(turn.text)
+                    }
+                    Err(ConversationError::Turn {
+                        source, partial, ..
+                    }) => {
+                        // MaxIterations is real progress — the history ends
+                        // cleanly in tool results, so "continue" can build on
+                        // it. Any other turn error is rolled back.
+                        if keep_partial_history(&source) {
+                            history.extend(partial);
+                        }
+                        Err(turn_failure_message(source))
+                    }
+                    Err(other) => Err(other.to_string()),
+                };
                 // Per turn, matching `graph chat`. The ledger is shared with
                 // the pipeline, so a turn that called a plan tool reports that
                 // plan's spend too.
                 let usage = ctx.pipeline.usage.take();
                 if !usage.is_empty() {
-                    agent.events.usage_summary(&usage);
+                    events.usage_summary(&usage);
                 }
                 tracing::debug!(
                     target: "workbench",
-                    "agent turn took {:.1}s ({} messages in history)",
+                    "agent turn took {:.1}s ({} entries in history)",
                     turn_started.elapsed().as_secs_f64(),
                     history.len()
                 );
-                let _ = ctx.tx.send(Msg::TurnFinished(
-                    result
-                        .map(|outcome| outcome.text)
-                        .map_err(turn_failure_message),
-                ));
+                let _ = ctx.tx.send(Msg::TurnFinished(result));
             });
+        }
+
+        Effect::Agent { name } => {
+            let msg = match name {
+                None => {
+                    let active = ctx.active.lock().unwrap().clone();
+                    let lines: Vec<String> = ctx
+                        .conversation
+                        .agents
+                        .iter()
+                        .map(|doc| {
+                            let marker = if doc.name == active { "*" } else { " " };
+                            format!("{marker} {} — {}", doc.name, doc.description)
+                        })
+                        .collect();
+                    Msg::AgentNotice(format!("talking with {active}\n{}", lines.join("\n")))
+                }
+                Some(name) => match ctx.conversation.agent(&name) {
+                    Ok(doc) => {
+                        *ctx.active.lock().unwrap() = doc.name.clone();
+                        Msg::ActiveAgent {
+                            name: doc.name.clone(),
+                            note: Some(format!("now talking with {}", doc.name)),
+                        }
+                    }
+                    Err(error) => Msg::AgentNotice(error.to_string()),
+                },
+            };
+            let _ = ctx.tx.send(msg);
         }
 
         Effect::StartRun { gated, input } => {
@@ -360,29 +354,6 @@ pub fn save_draft(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn turn_prompt_carries_the_current_draft() {
-        let doc: PlanDoc = serde_yaml::from_str(
-            r#"
-identifier: demo
-name: Demo
-description: demo plan
-steps:
-  - id: E0
-    tool_name: t__search
-    input: { query: x }
-"#,
-        )
-        .unwrap();
-        let prompt = turn_system_prompt("BASE", &Some(doc));
-        assert!(prompt.starts_with("BASE"));
-        assert!(prompt.contains("identifier: demo"));
-        assert!(prompt.contains("do NOT call workbench__get_plan"));
-
-        let empty = turn_system_prompt("BASE", &None);
-        assert!(empty.contains("none yet"));
-    }
 
     #[test]
     fn max_iterations_keeps_history_and_says_how_to_continue() {

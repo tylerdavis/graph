@@ -506,6 +506,16 @@ fn prompt_problems(prompt: &str, fragments: &[&str]) -> Vec<String> {
     }
 }
 
+pub fn input_problems(schema: &Value, input: &Value) -> Vec<String> {
+    match jsonschema::validator_for(schema) {
+        Ok(validator) => validator
+            .iter_errors(input)
+            .map(|e| e.to_string())
+            .collect(),
+        Err(error) => vec![error.to_string()],
+    }
+}
+
 pub fn render_system_prompt(
     doc: &AgentDoc,
     fragments: &BTreeMap<&str, &str>,
