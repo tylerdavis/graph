@@ -38,15 +38,15 @@ pub fn search_tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: SCORE_CANDIDATES_TOOL.to_string(),
-            description: "Scores candidates (each a `name` and `description`) for how well they \
-                          fit a task, independently, from 0 to 1. With a decision model \
-                          configured, each candidate is one likelihood question built from \
-                          `question` ({name} and {description} are filled in), sent in \
-                          requests of at most `chunk_size` candidates; otherwise, or \
-                          if that call fails, candidates are ranked by keyword overlap. Returns \
-                          every candidate highest score first, and `selected`: those at or \
-                          above `threshold`, topped up to `floor` with the best of the rest, \
-                          capped at `limit`."
+            description: "Scores candidates (each a `name` and `description`) for a task, from \
+                          0 to 1. With a decision model configured, the candidates are the \
+                          options of one choice question (`question`, then the task), whose \
+                          probabilities are the scores; more than `chunk_size` candidates are \
+                          split into choices sent together, and every candidate reaching \
+                          `threshold` in its own choice meets the others in a final choice. Otherwise, or if that call fails, candidates are ranked \
+                          by keyword overlap. Returns every candidate highest score first, and \
+                          `selected`: those at or above `threshold`, topped up to `floor` with \
+                          the best of the rest, capped at `limit`."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -54,12 +54,12 @@ pub fn search_tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "query": {"type": "string", "description": "The task the candidates are scored against"},
                     "candidates": {"type": "array", "items": {"type": "object"}, "description": "Objects with `name` and `description`"},
-                    "question": {"type": "string", "description": "The likelihood question per candidate, with {name} and {description} placeholders"},
+                    "question": {"type": "string", "description": "The choice question; the task follows it"},
                     "threshold": {"type": "number", "description": "Minimum score to be selected; default 0.5"},
                     "floor": {"type": "integer", "description": "Fewest candidates to select, taking the best below the threshold when needed; default 0"},
                     "limit": {"type": "integer", "description": "Most candidates to select"},
                     "model": {"type": "string", "description": "The decision model role; default decider"},
-                    "chunk_size": {"type": "integer", "description": "Most candidates per decision request; larger sets are split into requests sent together. Default 60"}
+                    "chunk_size": {"type": "integer", "description": "Most options per choice question, up to 255; larger sets are split into choices sent together, then a final choice among every candidate that reached the threshold. Default 250"}
                 }
             }),
             output_schema: Some(json!({
@@ -122,7 +122,15 @@ fn default_threshold() -> f64 {
 }
 
 fn default_chunk_size() -> usize {
-    60
+    250
+}
+
+const MAX_CHOICE_OPTIONS: usize = 255;
+
+fn balanced_chunks(indexes: &[usize], size: usize) -> Vec<Vec<usize>> {
+    let count = indexes.len().div_ceil(size);
+    let len = indexes.len().div_ceil(count);
+    indexes.chunks(len).map(<[usize]>::to_vec).collect()
 }
 
 #[derive(Debug, Clone)]
@@ -306,48 +314,89 @@ impl Pipeline {
         input: &ScoreInput,
         candidates: &[Candidate],
     ) -> Result<Vec<f64>, String> {
-        let size = input.chunk_size.max(1);
-        let requests = candidates.chunks(size).map(|chunk| async move {
-            let questions: BTreeMap<String, Question> = chunk
-                .iter()
-                .enumerate()
-                .map(|(index, candidate)| {
-                    let instructions = input
-                        .question
-                        .replace("{name}", &candidate.name)
-                        .replace("{description}", &candidate.description);
-                    (
-                        format!("c{index}"),
-                        Question::Likelihood {
-                            instructions,
-                            criteria: None,
-                        },
-                    )
-                })
-                .collect();
-            let request = DecisionRequest {
-                model: String::new(),
-                state: json!({ "task": input.query }),
-                questions,
-            };
-            let response = CallSite::as_role(role, self.router.decide_named(Some(role), request))
-                .await
-                .map_err(|e| format!("decision model '{role}' failed: {e}"))?;
-            (0..chunk.len())
-                .map(|index| match response.answers.get(&format!("c{index}")) {
-                    Some(Answer::Likelihood { probability }) => Ok(*probability),
-                    Some(_) => Err(format!(
-                        "decision model '{role}' answered c{index} with the wrong kind"
-                    )),
-                    None => Err(format!("decision model '{role}' did not answer c{index}")),
-                })
-                .collect::<Result<Vec<f64>, String>>()
-        });
-        let mut scores = Vec::with_capacity(candidates.len());
-        for chunk in futures::future::join_all(requests).await {
-            scores.extend(chunk?);
+        let instructions = format!("{}\n\n{}", input.question.trim(), input.query.trim());
+        let size = input.chunk_size.clamp(2, MAX_CHOICE_OPTIONS);
+        let indexes: Vec<usize> = (0..candidates.len()).collect();
+        if candidates.len() <= size {
+            return self.choose(role, &instructions, candidates, &indexes).await;
+        }
+        let chunks = balanced_chunks(&indexes, size);
+        let rounds = chunks
+            .iter()
+            .map(|chunk| self.choose(role, &instructions, candidates, chunk));
+        let mut first_round: Vec<(usize, f64)> = Vec::new();
+        for (chunk, probabilities) in chunks.iter().zip(futures::future::join_all(rounds).await) {
+            first_round.extend(chunk.iter().copied().zip(probabilities?));
+        }
+        let finalists: Vec<usize> = first_round
+            .iter()
+            .filter(|(_, probability)| *probability >= input.threshold)
+            .map(|(i, _)| *i)
+            .collect();
+        let mut scores = vec![0.0; candidates.len()];
+        if finalists.is_empty() {
+            for (index, probability) in first_round {
+                scores[index] = probability;
+            }
+            return Ok(scores);
+        }
+        let final_round = self
+            .choose(role, &instructions, candidates, &finalists)
+            .await?;
+        for (index, probability) in finalists.into_iter().zip(final_round) {
+            scores[index] = probability;
         }
         Ok(scores)
+    }
+
+    async fn choose(
+        &self,
+        role: &str,
+        instructions: &str,
+        candidates: &[Candidate],
+        indexes: &[usize],
+    ) -> Result<Vec<f64>, String> {
+        if indexes.len() == 1 {
+            return Ok(vec![1.0]);
+        }
+        let criteria: BTreeMap<String, String> = indexes
+            .iter()
+            .map(|&i| {
+                (
+                    candidates[i].name.clone(),
+                    prompts::summary_line(&candidates[i].description),
+                )
+            })
+            .collect();
+        let request = DecisionRequest {
+            model: String::new(),
+            state: Value::Null,
+            questions: BTreeMap::from([(
+                "tool".to_string(),
+                Question::Choice {
+                    instructions: instructions.to_string(),
+                    criteria,
+                },
+            )]),
+        };
+        let response = CallSite::as_role(role, self.router.decide_named(Some(role), request))
+            .await
+            .map_err(|e| format!("decision model '{role}' failed: {e}"))?;
+        match response.answers.get("tool") {
+            Some(Answer::Choice { probabilities, .. }) => Ok(indexes
+                .iter()
+                .map(|&i| {
+                    probabilities
+                        .get(&candidates[i].name)
+                        .copied()
+                        .unwrap_or(0.0)
+                })
+                .collect()),
+            Some(_) => Err(format!(
+                "decision model '{role}' answered with the wrong kind"
+            )),
+            None => Err(format!("decision model '{role}' did not answer")),
+        }
     }
 
     pub(super) async fn shapes(&self) -> HashMap<String, crate::store::ToolShape> {

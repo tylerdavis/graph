@@ -5634,20 +5634,37 @@ impl graph_llm::DecisionProvider for ScoringDecider {
         self.requests.lock().unwrap().push(req.clone());
         let mut answers = std::collections::BTreeMap::new();
         for (name, question) in &req.questions {
-            let graph_llm::decision::Question::Likelihood { instructions, .. } = question else {
-                panic!("search asks likelihood questions only");
+            let graph_llm::decision::Question::Choice { criteria, .. } = question else {
+                panic!("search asks one choice question");
             };
-            let probability = (self.scorer)(instructions);
-            if probability < 0.0 {
+            let weights: Vec<(String, f64)> = criteria
+                .keys()
+                .map(|option| (option.clone(), (self.scorer)(option)))
+                .collect();
+            if weights.iter().any(|(_, w)| *w < 0.0) {
                 return Err(LlmError::Api {
                     status: 503,
                     body: "unavailable".into(),
                     retry_after: None,
                 });
             }
+            let total: f64 = weights.iter().map(|(_, w)| w).sum();
+            let probabilities: std::collections::BTreeMap<String, f64> = weights
+                .into_iter()
+                .map(|(option, w)| (option, w / total))
+                .collect();
+            let (choice, confidence) = probabilities
+                .iter()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .map(|(c, p)| (c.clone(), *p))
+                .unwrap();
             answers.insert(
                 name.clone(),
-                graph_llm::decision::Answer::Likelihood { probability },
+                graph_llm::decision::Answer::Choice {
+                    choice,
+                    confidence,
+                    probabilities,
+                },
             );
         }
         Ok(graph_llm::decision::DecisionResponse {
@@ -5704,55 +5721,57 @@ fn tool_names(result: &Value) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn search_scores_every_tool_with_the_decision_model() {
-    let (pipeline, decider) = searching(Some(Box::new(|question: &str| {
-        if question.contains("tool 't__search:") {
-            0.95
-        } else if question.contains("tool 't__issues:") {
-            0.3
-        } else {
-            0.1
-        }
+async fn search_chooses_among_every_tool_with_the_decision_model() {
+    let (pipeline, decider) = searching(Some(Box::new(|option: &str| match option {
+        "t__search" => 0.95,
+        "t__issues" => 0.3,
+        _ => 0.01,
     })));
     let call = pipeline
-        .call_plan(
-            "search_tools",
-            json!({"query": "find issues", "min_tools": 2}),
-        )
+        .call_plan("search_tools", json!({"query": "find the open issues"}))
         .await;
     assert!(!call.is_error, "{}", call.result);
     assert_eq!(call.result["mode"], json!("decision"));
     assert_eq!(tool_names(&call.result), ["t__search", "t__issues"]);
     let tools = call.result["tools"].as_array().unwrap();
-    assert_eq!(tools[0]["score"], json!(0.95));
-    assert_eq!(tools[1]["below_threshold"], json!(true));
+    assert!(tools[0]["score"].as_f64() > tools[1]["score"].as_f64());
     assert!(tools[0].get("inputSchema").is_some(), "schemas by default");
 
     let requests = decider.unwrap().requests.lock().unwrap().clone();
     assert_eq!(
         requests.len(),
         1,
-        "one request for a catalog under the chunk size"
+        "one choice for a catalog under the chunk size"
     );
-    assert_eq!(requests[0].state, json!({"task": "find issues"}));
+    let graph_llm::decision::Question::Choice {
+        instructions,
+        criteria,
+    } = &requests[0].questions["tool"]
+    else {
+        panic!("a choice question");
+    };
+    assert_eq!(
+        instructions,
+        "What tool would best accomplish the following task?\n\nfind the open issues"
+    );
     let catalog = pipeline.searchable_tools().await.len();
     assert_eq!(
-        requests[0].questions.len(),
+        criteria.len(),
         catalog - 1,
-        "every catalog tool is scored except plan__search_tools itself"
+        "every catalog tool is an option except plan__search_tools itself"
     );
 }
 
 #[tokio::test]
-async fn large_candidate_sets_are_scored_in_chunks() {
-    let (pipeline, decider) = searching(Some(Box::new(|question: &str| {
-        if question.contains("t__search") {
+async fn large_candidate_sets_are_chosen_in_chunks_then_a_final_round() {
+    let (pipeline, decider) = searching(Some(Box::new(|option: &str| {
+        if option == "t__search" {
             0.9
         } else {
             0.1
         }
     })));
-    let candidates: Vec<Value> = (0..7)
+    let candidates: Vec<Value> = (0..24)
         .map(|n| json!({"name": format!("t__tool{n}"), "description": "a tool"}))
         .chain(std::iter::once(
             json!({"name": "t__search", "description": "searches"}),
@@ -5764,8 +5783,8 @@ async fn large_candidate_sets_are_scored_in_chunks() {
             json!({
                 "query": "search",
                 "candidates": candidates,
-                "question": "Is '{name}' needed?",
-                "chunk_size": 3,
+                "question": "Which tool?",
+                "chunk_size": 10,
                 "model": "decider",
             }),
         )
@@ -5774,14 +5793,48 @@ async fn large_candidate_sets_are_scored_in_chunks() {
     assert_eq!(outcome.result["mode"], json!("decision"));
     assert_eq!(outcome.result["scored"][0]["name"], json!("t__search"));
     let requests = decider.unwrap().requests.lock().unwrap().clone();
+    let mut sizes: Vec<usize> = requests
+        .iter()
+        .map(|r| match &r.questions["tool"] {
+            graph_llm::decision::Question::Choice { criteria, .. } => criteria.len(),
+            _ => panic!("a choice question"),
+        })
+        .collect();
+    sizes.sort();
     assert_eq!(
-        requests
-            .iter()
-            .map(|r| r.questions.len())
-            .collect::<Vec<_>>(),
-        [3, 3, 2],
-        "eight candidates in chunks of three"
+        sizes,
+        [7, 9, 9],
+        "25 options in three balanced chunks; only t__search reaches the threshold, so no final round"
     );
+}
+
+#[tokio::test]
+async fn nothing_is_returned_when_no_tool_fits() {
+    let (pipeline, _) = searching(Some(Box::new(|_: &str| 1.0)));
+    let candidates: Vec<Value> = (0..20)
+        .map(|n| json!({"name": format!("t__tool{n}"), "description": "a tool"}))
+        .collect();
+    for chunk_size in [250, 8] {
+        let outcome = pipeline
+            .call_native(
+                "builtin__score_candidates",
+                json!({
+                    "query": "route on the result",
+                    "candidates": candidates,
+                    "question": "Which tool?",
+                    "threshold": 0.1,
+                    "chunk_size": chunk_size,
+                    "model": "decider",
+                }),
+            )
+            .await;
+        assert!(!outcome.is_error, "{}", outcome.result);
+        assert_eq!(
+            outcome.result["selected"],
+            json!([]),
+            "an even spread over 20 tools leaves none at 0.1 (chunk size {chunk_size})"
+        );
+    }
 }
 
 #[tokio::test]

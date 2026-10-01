@@ -33,7 +33,11 @@ steps:
         ## Outline
         - Write an ordered list of entries, one per stage of the system, in the order the stages run.
         - Keep each entry to one or two plain sentences.
+        - Your outline should be terse and direct, without writing code.  This is a system design exercise, not a development exercise
+        - Bring precision where it counts: data flow, concurrent/parallel processing, using inference where appropriate
+        - inference is expensive.  llm tokens are expensive.  We should always try to optimize the context we pass into an inference step to ensure fast, affordable inference
         - Say where work fans out per item, runs in parallel, branches, or stops early.
+        - Describe what each stage does and which system or kind of capability it uses (for example Linear, GitHub, Slack, inference, or reshaping data).
 
         # Goal
         {{input.goal}}

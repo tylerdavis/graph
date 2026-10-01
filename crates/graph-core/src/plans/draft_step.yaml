@@ -25,17 +25,17 @@ steps:
   - id: found
     tool_name: route
     input:
-      if: { value: "{{input.state.done}}", op: eq, to: false }
+      if: { value: "{{input.entry}}", op: not_empty }
       then:
         tool_name: plan__search_tools
         input:
-          query: "{{input.goal}}\n\n{{input.entry}}"
+          query: "{{input.entry}}"
           schemas: false
       else:
         tool_name: builtin__reshape
         input:
           shape: { tools: [] }
-    reasoning: The tools this outline entry needs, so the step sees those instead of the whole catalog; skipped once the plan is done.
+    reasoning: The tools this outline entry needs, so the step sees those instead of the whole catalog; skipped for the closing step, which has no entry.
   - id: context
     tool_name: builtin__draft_context
     input:

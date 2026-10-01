@@ -41,9 +41,10 @@ pub fn native_tool_defs() -> Vec<ToolDef> {
     let mut defs = vec![
         ToolDef {
             name: CATALOG_OUTLINE_TOOL.to_string(),
-            description: "Summarizes what a plan can use, in sections: MCP servers with their \
-                          descriptions, tool packs, builtin tools, agents, user tools and plans. \
-                          Names and one-line summaries only, never schemas."
+            description: "Summarizes what a plan can use, in sections: MCP servers and tool \
+                          packs by name and description, then built-in capabilities, agents, \
+                          project tools and saved plans as one-line descriptions. Never tool \
+                          names or schemas."
                 .to_string(),
             input_schema: json!({"type": "object", "properties": {}}),
             output_schema: Some(json!({
@@ -143,22 +144,26 @@ pub fn native_tool_defs() -> Vec<ToolDef> {
 
 impl Pipeline {
     pub(super) async fn catalog_outline(&self) -> String {
-        let mut names: Vec<String> = self
+        let mut tools: Vec<(String, String)> = self
             .registry
             .tools()
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|tool| tool.name)
+            .map(|tool| (tool.name, tool.description))
             .collect();
-        names.extend(self.callable_plan_defs().into_iter().map(|tool| tool.name));
+        tools.extend(
+            self.callable_plan_defs()
+                .into_iter()
+                .map(|tool| (tool.name, tool.description)),
+        );
         let servers = self.registry.servers().await;
         let agents: Vec<(String, String)> = self
             .agents
             .iter()
             .map(|doc| (doc.name.clone(), doc.description.clone()))
             .collect();
-        prompts::outliner_catalog(&names, &servers, &agents)
+        prompts::outliner_catalog(&tools, &servers, &agents)
     }
 
     pub(super) async fn call_native(&self, name: &str, input: Value) -> ToolOutcome {

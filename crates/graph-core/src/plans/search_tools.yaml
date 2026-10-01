@@ -1,34 +1,30 @@
 version: 2
 identifier: search_tools
 name: Search tools
-description: Finds the catalog tools a task needs by scoring every tool against it — with a decision model when one is configured, otherwise by keywords — and returns them highest score first.
+description: Finds the catalog tools a task needs by asking which tool best accomplishes it — a decision model chooses among every tool when one is configured, otherwise keywords rank them — and returns the ones that fit, most likely first, or none when nothing fits.
 input_schema:
   type: object
   required: [query]
   properties:
     query:
       type: string
-      description: The task the tools are for
-    min_confidence:
+      description: The task the tools are for, as one step
+    min_probability:
       type: number
-      description: Minimum score for a tool to be returned
-      default: 0.6
+      description: Minimum probability for a tool to be returned
+      default: 0.1
     limit:
       type: integer
       description: Most tools to return
-      default: 20
-    min_tools:
-      type: integer
-      description: Fewest tools to return, taking the best below the threshold when needed
-      default: 5
+      default: 10
     model:
       type: string
-      description: The decision model role that scores the tools
+      description: The decision model role that chooses
       default: decider
     chunk_size:
       type: integer
-      description: Most tools per decision request; larger catalogs are split into requests sent together
-      default: 60
+      description: Most tools per choice question, up to 255; larger catalogs are split, then every tool reaching min_probability meets the others in a final choice
+      default: 250
     schemas:
       type: boolean
       description: Include each tool's input schema and output shape
@@ -43,13 +39,12 @@ steps:
     input:
       query: "{{input.query}}"
       candidates: "{{catalog.tools}}"
-      question: "Is the tool '{name}: {description}' needed for this task?"
-      threshold: "{{input.min_confidence}}"
-      floor: "{{input.min_tools}}"
+      question: "What tool would best accomplish the following task?"
+      threshold: "{{input.min_probability}}"
       limit: "{{input.limit}}"
       model: "{{input.model}}"
       chunk_size: "{{input.chunk_size}}"
-    reasoning: Each tool scored on its own; the ones that clear the threshold are returned, highest score first.
+    reasoning: One choice among every tool; its probabilities rank them.
   - id: described
     tool_name: builtin__describe_tools
     input:

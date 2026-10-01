@@ -8,17 +8,15 @@ A catalog with several MCP servers can hold hundreds of tools, and describing ev
 
 ## How a search works
 
-`search_tools` scores every tool in the catalog against the task, by its name and description: MCP, pack and user tools, plans, and agents. Tools at or above `min_confidence` are returned, **highest score first**.
+`search_tools` asks which tool would best accomplish the task, choosing among every tool in the catalog by its name and a one-sentence description: MCP, pack and user tools, plans, and agents. The choice's probabilities rank the tools; those at or above `min_probability` are returned, **most likely first**. When no tool reaches it, nothing is returned: no tool fits the task, which is right for a step that is only control flow.
 
-Each tool is scored on its own, from 0 to 1, so several relevant tools can all score high; they don't compete for a share. A search never comes back empty: when fewer than `min_tools` clear the threshold, the best of the rest are added and marked `below_threshold`.
-
-Scoring every tool rather than first picking servers or packs is deliberate: in testing, a first pass over groups skipped groups with thin descriptions, and their tools were never scored.
+Ask it about one step, not a whole goal. Drafting searches with each outline entry on its own: with the goal included, every step of a plan ranked the goal's main tool first.
 
 ### Two ways to score
 
 | Mode | When | How |
 |---|---|---|
-| `decision` | a [decision model](/models/models-and-providers) is configured for the `model` role (`decider` by default) | one likelihood question per tool, in requests of at most `chunk_size` (60) tools sent together |
+| `decision` | a [decision model](/models/models-and-providers) is configured for the `model` role (`decider` by default) | one choice question with every tool as an option. A catalog larger than `chunk_size` (250, at most 255) is split into choices sent together; every tool that reaches `min_probability` in its own choice then meets the others in a final choice, which sets the ranking; when none reaches it, nothing is returned |
 | `keyword` | otherwise, or when the decision call fails | keyword overlap ranking over names and descriptions, no model call |
 
 The result's `mode` says which ran; a failed decision call adds `fallback_reason`.
@@ -32,20 +30,19 @@ The result's `mode` says which ran; a failed decision call adds `fallback_reason
   tool_name: plan__search_tools
   input:
     query: "Review a pull request and post findings as comments"
-    min_confidence: 0.7
+    min_probability: 0.2
 ```
 
 | Input | Default | Meaning |
 |---|---|---|
-| `query` | required | the task the tools are for |
-| `min_confidence` | `0.6` | minimum score for a tool to be returned |
-| `limit` | `20` | most tools returned |
-| `min_tools` | `5` | fewest tools returned |
-| `model` | `decider` | the decision model role that scores |
-| `chunk_size` | `60` | most candidates per decision request |
+| `query` | required | the task the tools are for, as one step |
+| `min_probability` | `0.1` | minimum probability for a tool to be returned |
+| `limit` | `10` | most tools returned |
+| `model` | `decider` | the decision model role that chooses |
+| `chunk_size` | `250` | most tools per choice question, up to 255 |
 | `schemas` | `true` | include each tool's input schema and output shape |
 
-The result is `{mode, tools, always}`: the returned tools in score order, and the always-loaded tools.
+The result is `{mode, tools, always}`: the returned tools, most likely first, each with its probability as `score`, and the always-loaded tools.
 
 ## Tools that are always loaded
 
@@ -58,4 +55,4 @@ always_loaded = ["builtin__infer", "builtin__reshape", "linear__get_*"]
 
 ## Changing how it searches
 
-`search_tools` is a built-in plan, so `graph plan show search_tools` prints it, and a plan file with the identifier `search_tools` replaces it everywhere, including in drafting. Its steps are small native tools you can rearrange or reword: `builtin__catalog_tools`, `builtin__score_candidates` (its `question` is the wording each tool is scored with), and `builtin__describe_tools`.
+`search_tools` is a built-in plan, so `graph plan show search_tools` prints it, and a plan file with the identifier `search_tools` replaces it everywhere, including in drafting. Its steps are small native tools you can rearrange or reword: `builtin__catalog_tools`, `builtin__score_candidates` (its `question` is the choice the decision model is asked, followed by the task), and `builtin__describe_tools`.
