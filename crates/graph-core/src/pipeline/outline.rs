@@ -1,8 +1,9 @@
-//! Plan drafting: an outline call, then one structured LLM call per step,
-//! each statically validated before acceptance. The
-//! conversation is a transient scratchpad — the system prompt is built
-//! once and reused byte-identically across every call (prompt-cache
-//! invariant), and only accepted work persists as Assistant turns; failed
+//! Plan drafting: an isolated outline call (its own prompt, tool names
+//! only, the `outliner` role), then one structured LLM call per step, each
+//! statically validated before acceptance. The step conversation is a
+//! transient scratchpad — its system prompt is built once and reused
+//! byte-identically across every step call (prompt-cache invariant), and
+//! only accepted work persists as Assistant turns; failed
 //! attempts live in a retry tail discarded on acceptance.
 
 use super::plan::{self, Plan, PlannerOutput, SolverData, Step};
@@ -13,34 +14,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-/// The rough shape of the plan, produced before any real step. Field names
-/// are camelCase because they are prompt surface.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
 pub struct PlanOutline {
-    /// The plan's stages, in order: 2–8 one-sentence summaries. A control
-    /// step (decide, map, reduce) is one stage — its body nests inside
-    /// that step.
-    pub items: Vec<OutlineItem>,
-    /// The question the solver must answer; always includes the user's
-    /// original task. Omit it for a plan that finishes with an `output`
-    /// map or exists only for its side effects.
-    #[serde(default)]
-    pub query_to_answer: Option<String>,
-    /// Extra system-prompt guidance for the solver (optional).
-    #[serde(default)]
-    pub system_prompt: Option<String>,
-}
-
-/// One outline stage.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct OutlineItem {
-    /// One sentence: what this stage accomplishes.
-    pub summary: String,
-    /// The exact catalog tool name expected to accomplish it, when known.
-    #[serde(default)]
-    pub expected_tool: Option<String>,
+    #[schemars(
+        description = "The plan's stages in the order they run, each a one- or two-sentence brief on what that stage of the system is responsible for."
+    )]
+    pub entries: Vec<String>,
 }
 
 /// One step-drafting response.
@@ -56,6 +35,14 @@ pub struct StepDraft {
     /// (step null).
     #[serde(default)]
     pub plan_complete: bool,
+    #[schemars(
+        description = "The question the solver must answer; always includes the user's original task. Set it on the first step when the plan finishes with a solver; omit it for a plan that finishes with an `output` map or exists only for its side effects."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_to_answer: Option<String>,
+    #[schemars(description = "Extra system-prompt guidance for the solver (optional).")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
 }
 
 /// Per-step retry budget: attempts at producing a step that passes static
@@ -94,35 +81,35 @@ impl Pipeline {
         // Built once; every call in this session reuses it byte-identically.
         let system = self.drafting_system(draft.as_deref()).await;
 
-        let mut messages = vec![ChatMessage::User {
-            content: prompts::outline_request(query),
-        }];
-        let outline: PlanOutline = crate::usage::CallSite::role("planner")
+        let outline: PlanOutline = crate::usage::CallSite::role("outliner")
             .at("draft/outline")
             .scope(self.router.get_structured(
-                Role::Planner,
-                system.clone(),
-                messages.clone(),
+                Role::Outliner,
+                self.outliner_system().await,
+                vec![ChatMessage::User {
+                    content: prompts::outline_request(query),
+                }],
                 "plan_outline",
             ))
             .await?;
-        if outline.items.is_empty() {
-            return Err(PipelineError::InvalidPlan("outline has no items".into()));
+        let entries: Vec<String> = outline
+            .entries
+            .into_iter()
+            .map(|entry| entry.trim().to_string())
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        if entries.is_empty() {
+            return Err(PipelineError::InvalidPlan("outline has no entries".into()));
         }
-        self.events.draft_outline(&json!(outline.items));
-        messages.push(ChatMessage::Assistant {
-            content: Some(serde_json::to_string(&outline).unwrap_or_default()),
-            thinking: Vec::new(),
-            tool_calls: vec![],
-        });
+        self.events.draft_outline(&json!(entries));
 
-        // The outline is advisory, so the step budget is not its length:
-        // stages may split, but runaway drafting must still terminate.
-        let max_draft_steps = (2 * outline.items.len()).max(8);
+        let mut messages: Vec<ChatMessage> = Vec::new();
+        let mut brief = SolverBrief::default();
+        let max_draft_steps = (2 * entries.len()).max(8);
         let mut plan: Plan = Vec::new();
         let mut complete = false;
         'stages: for index in 0..max_draft_steps {
-            if index >= outline.items.len() + MAX_OVERFLOW_STEPS {
+            if index >= entries.len() + MAX_OVERFLOW_STEPS {
                 // Outline fully covered and the planner still hasn't signaled
                 // done; a covered plan is almost certainly complete — close it
                 // rather than fail the whole draft.
@@ -131,7 +118,7 @@ impl Pipeline {
             }
             // Once every outline stage has a step we stop re-feeding the last
             // stage's summary and instead apply closing pressure.
-            let closing = index >= outline.items.len();
+            let closing = index >= entries.len();
             let next_step_id = next_step_id(&plan);
             let (summary, request) = if closing {
                 (
@@ -141,13 +128,17 @@ impl Pipeline {
                     },
                 )
             } else {
-                let summary = outline.items[index].summary.as_str();
-                (
-                    summary,
-                    ChatMessage::User {
-                        content: prompts::step_request(&next_step_id, index + 1, summary),
-                    },
-                )
+                let entry = entries[index].as_str();
+                let request = prompts::step_request(&next_step_id, index + 1, entry);
+                let content = if index == 0 {
+                    format!(
+                        "{}\n\n{request}",
+                        prompts::drafting_preamble(query, &entries)
+                    )
+                } else {
+                    request
+                };
+                (entry, ChatMessage::User { content })
             };
             self.events.draft_step_started(index, summary);
 
@@ -172,6 +163,7 @@ impl Pipeline {
 
                 let Some(step) = step_draft.step.clone() else {
                     if step_draft.plan_complete && !plan.is_empty() {
+                        brief.absorb(&step_draft);
                         // Done early: the accepted steps already complete
                         // the plan. No accept event — nothing was drafted.
                         complete = true;
@@ -200,6 +192,7 @@ impl Pipeline {
                             tool_calls: vec![],
                         });
                         plan = candidate;
+                        brief.absorb(&step_draft);
                         if step_draft.plan_complete {
                             complete = true;
                             break 'stages;
@@ -220,7 +213,7 @@ impl Pipeline {
                     step_id: next_step_id,
                     attempts: MAX_STEP_ATTEMPTS,
                     problems: last_problems,
-                    partial: Box::new(assemble_output(&outline, plan)),
+                    partial: Box::new(assemble_output(&brief, plan)),
                 });
             }
         }
@@ -233,10 +226,10 @@ impl Pipeline {
                     "step budget exhausted: {max_draft_steps} steps drafted \
                      without the planner marking the plan complete"
                 )],
-                partial: Box::new(assemble_output(&outline, plan)),
+                partial: Box::new(assemble_output(&brief, plan)),
             });
         }
-        Ok(assemble_output(&outline, plan))
+        Ok(assemble_output(&brief, plan))
     }
 
     /// The system prompt for a drafting session — the same catalog/shape
@@ -288,21 +281,34 @@ fn push_correction(
     });
 }
 
-/// Solver data comes from the outline (no extra inference); `data`
-/// defaults to every step result.
-fn assemble_output(outline: &PlanOutline, plan: Plan) -> PlannerOutput {
-    let solver_data = outline
-        .query_to_answer
-        .as_deref()
-        .filter(|query| !query.trim().is_empty())
-        .map(|query| {
-            let mut solver_data = SolverData {
-                query_to_answer: query.to_string(),
-                system_prompt: outline.system_prompt.clone(),
-                data: Map::new(),
-            };
-            plan::default_solver_data(&plan, &mut solver_data.data);
-            solver_data
-        });
+#[derive(Default)]
+struct SolverBrief {
+    query_to_answer: Option<String>,
+    system_prompt: Option<String>,
+}
+
+impl SolverBrief {
+    fn absorb(&mut self, draft: &StepDraft) {
+        if let Some(query) = draft
+            .query_to_answer
+            .as_deref()
+            .filter(|query| !query.trim().is_empty())
+        {
+            self.query_to_answer = Some(query.to_string());
+            self.system_prompt = draft.system_prompt.clone();
+        }
+    }
+}
+
+fn assemble_output(brief: &SolverBrief, plan: Plan) -> PlannerOutput {
+    let solver_data = brief.query_to_answer.as_deref().map(|query| {
+        let mut solver_data = SolverData {
+            query_to_answer: query.to_string(),
+            system_prompt: brief.system_prompt.clone(),
+            data: Map::new(),
+        };
+        plan::default_solver_data(&plan, &mut solver_data.data);
+        solver_data
+    });
     PlannerOutput { plan, solver_data }
 }

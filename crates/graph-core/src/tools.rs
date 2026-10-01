@@ -38,6 +38,12 @@ pub enum ToolError {
     Transport(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolServer {
+    pub name: String,
+    pub description: Option<String>,
+}
+
 #[async_trait]
 pub trait ToolRegistry: Send + Sync {
     /// Every tool this registry exposes, already namespaced and filtered.
@@ -45,6 +51,10 @@ pub trait ToolRegistry: Send + Sync {
 
     /// Invoke a tool by its namespaced name.
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError>;
+
+    async fn servers(&self) -> Vec<ToolServer> {
+        Vec::new()
+    }
 }
 
 /// Merge several registries into one catalog. Invocation tries each in
@@ -78,6 +88,14 @@ impl ToolRegistry for CompositeRegistry {
         }
         Err(ToolError::Unknown(name.to_string()))
     }
+
+    async fn servers(&self) -> Vec<ToolServer> {
+        let mut all = Vec::new();
+        for registry in &self.registries {
+            all.extend(registry.servers().await);
+        }
+        all
+    }
 }
 
 /// Wraps a registry and hides a fixed set of tool names from `tools()`,
@@ -107,6 +125,9 @@ impl ToolRegistry for ExcludingRegistry {
             return Err(ToolError::Unknown(name.to_string()));
         }
         self.inner.invoke(name, input).await
+    }
+    async fn servers(&self) -> Vec<ToolServer> {
+        self.inner.servers().await
     }
 }
 

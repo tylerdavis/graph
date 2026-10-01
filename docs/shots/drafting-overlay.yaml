@@ -14,18 +14,14 @@ llm:
         Review a pull request against the repo rubric and post the
         findings as inline comments
       fresh: true
-  # The planner's outline (structured), then one structured step draft
+  # The outliner's entries (structured), then one structured step draft
   # per stage — the capture fires while stage 3 is being drafted.
   - structured:
-      items:
-        - summary: Fetch the PR metadata and shas
-          expectedTool: builtin__gh_pr_meta
-        - summary: Pull the full diff for review
-          expectedTool: builtin__git_diff
-        - summary: Review the diff against the repo rubric
-          expectedTool: user__review_graph_pr
-        - summary: Post findings as inline comments
-          expectedTool: builtin__gh_pr_inline_comments
+      entries:
+        - Identify the pull request and the commits it spans
+        - Collect the full change set for review
+        - Review the changes against the repo rubric
+        - Post each finding as an inline comment
   - structured:
       step:
         id: E0

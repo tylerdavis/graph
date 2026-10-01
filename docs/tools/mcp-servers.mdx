@@ -75,6 +75,16 @@ output_schema = { type = "object", properties = { text = { type = "string" } } }
 output_example = { text = "12" }     # optional worked example, shown to the planner
 ```
 
+## Describing a server
+
+```toml
+[mcp.linear]
+url = "https://mcp.linear.app/mcp"
+description = "Issue tracking: issues, projects, cycles, teams, and docs"
+```
+
+`description` is the one line the [draft outliner](/plans/the-planner#drafting-without-executing) sees for the server, in place of its tool list. When it's unset, graph uses the description the server reports when it connects, then the server's title, and otherwise shows just the name. Many servers report no description, so set one for any server you want considered when drafting.
+
 ## Result handling
 
 Tool results prefer MCP `structuredContent` when the server provides it; otherwise text content that parses as JSON is used as-is; otherwise the text is wrapped as `{"text": …}`. Server-side errors (`isError`) come back as structured tool errors — visible in traces, recoverable by the agent, and replan fuel for `plan_and_execute`.

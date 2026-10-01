@@ -2,7 +2,6 @@
 //! events into the workbench's message channel.
 
 use super::app::Msg;
-use super::plan_ws::OutlineRow;
 use graph_core::EventSink;
 use serde_json::Value;
 use std::time::Duration;
@@ -85,17 +84,8 @@ impl EventSink for ChannelSink {
                 .as_array()
                 .map(|list| {
                     list.iter()
-                        .map(|item| OutlineRow {
-                            summary: item
-                                .get("summary")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
-                            expected_tool: item
-                                .get("expectedTool")
-                                .and_then(Value::as_str)
-                                .map(str::to_string),
-                        })
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
                         .collect()
                 })
                 .unwrap_or_default();

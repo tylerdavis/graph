@@ -107,9 +107,8 @@ impl EventSink for TtySink {
         let count = items.as_array().map_or(0, Vec::len);
         self.line(&format!("✎ outline: {count} stages"));
         if let Some(items) = items.as_array() {
-            for item in items {
-                let summary = item.get("summary").and_then(Value::as_str).unwrap_or("…");
-                self.line(&format!("    {summary}"));
+            for entry in items.iter().filter_map(Value::as_str) {
+                self.line(&format!("    {entry}"));
             }
         }
     }

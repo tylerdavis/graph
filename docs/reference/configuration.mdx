@@ -81,9 +81,10 @@ description = "fast and cheap; small self-contained tasks like per-item map bodi
 
 | Standard role | Used for |
 | --- | --- |
-| `default` | what every standard role falls back to |
+| `default` | what every standard role falls back to (`outliner` tries `planner` first) |
 | `chat` | the agent loop (`ask`/`chat`) |
-| `planner` | `plan_and_execute` plan authoring |
+| `planner` | `plan_and_execute` plan authoring and draft step generation |
+| `outliner` | the coarse outline that starts a plan draft; falls back to `planner` |
 | `solver` | plan report synthesis |
 | `repair` | one-shot JSON repair when structured output fails to parse |
 | `judge` | yes/no verdicts for [inferred exit gates](/plans/exit-gates) |
@@ -113,6 +114,7 @@ See [MCP servers](/tools/mcp-servers) for full detail.
 
 ```toml
 [mcp.<name>]
+description = "…"        # optional one-liner the draft outliner sees for this server
 command = "…"            # stdio — XOR with url
 args = ["…"]
 env = { KEY = "${VAR}" }

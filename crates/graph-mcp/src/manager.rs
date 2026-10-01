@@ -1,7 +1,7 @@
 //! MCP server lifecycle: lazy connection, tool discovery, invocation.
 
 use graph_config::McpServerConfig;
-use graph_core::{ToolDef, ToolError, ToolOutcome, ToolRegistry};
+use graph_core::{ToolDef, ToolError, ToolOutcome, ToolRegistry, ToolServer};
 use rmcp::model::{CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation};
 use rmcp::service::{RoleClient, RunningService, ServiceExt};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -28,6 +28,7 @@ struct ServerHandle {
 struct Connection {
     client: Client,
     tools: Vec<ToolDef>,
+    description: Option<String>,
 }
 
 impl McpManager {
@@ -95,6 +96,20 @@ impl ToolRegistry for McpManager {
             }
         }
         Ok(all)
+    }
+
+    async fn servers(&self) -> Vec<ToolServer> {
+        let mut servers = Vec::new();
+        for handle in self.servers.values() {
+            if handle.tools().await.is_ok_and(|tools| !tools.is_empty()) {
+                let connection = handle.connection.lock().await;
+                servers.push(ToolServer {
+                    name: handle.name.clone(),
+                    description: connection.as_ref().and_then(|c| c.description.clone()),
+                });
+            }
+        }
+        servers
     }
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
@@ -249,7 +264,15 @@ impl ServerHandle {
             tools = tools.len(),
             "connected to MCP server"
         );
-        Ok(Connection { client, tools })
+        let description = describe_server(
+            self.config.description.as_deref(),
+            client.peer_info().as_deref().map(|info| &info.server_info),
+        );
+        Ok(Connection {
+            client,
+            tools,
+            description,
+        })
     }
 
     fn exposes(&self, tool: &str) -> bool {
@@ -273,6 +296,21 @@ fn extract_result(structured: Option<Value>, texts: Vec<String>) -> Value {
         1 => serde_json::from_str(&texts[0]).unwrap_or_else(|_| json!({ "text": texts[0] })),
         _ => json!({ "text": texts.join("\n") }),
     }
+}
+
+fn describe_server(configured: Option<&str>, reported: Option<&Implementation>) -> Option<String> {
+    let non_empty = |text: &str| {
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_string())
+    };
+    configured.and_then(non_empty).or_else(|| {
+        let reported = reported?;
+        reported
+            .description
+            .as_deref()
+            .and_then(non_empty)
+            .or_else(|| reported.title.as_deref().and_then(non_empty))
+    })
 }
 
 fn client_info() -> ClientInfo {
@@ -309,6 +347,7 @@ mod tests {
         // refusal must land here, before a child process is spawned with an
         // empty secret, and must say which variable to set.
         let config = McpServerConfig {
+            description: None,
             command: Some("true".into()),
             args: vec![],
             env: Default::default(),
@@ -332,8 +371,29 @@ mod tests {
     }
 
     #[test]
+    fn a_configured_description_wins_then_the_reported_description_then_the_title() {
+        let mut reported = Implementation::new("Linear MCP", "1.0.0");
+        reported.title = Some("Linear".into());
+        assert_eq!(
+            describe_server(Some("Issue tracking"), Some(&reported)).as_deref(),
+            Some("Issue tracking")
+        );
+        assert_eq!(
+            describe_server(Some("  "), Some(&reported)).as_deref(),
+            Some("Linear")
+        );
+        reported.description = Some("Linear's issue tracker".into());
+        assert_eq!(
+            describe_server(None, Some(&reported)).as_deref(),
+            Some("Linear's issue tracker")
+        );
+        assert_eq!(describe_server(None, None), None);
+    }
+
+    #[test]
     fn include_exclude_filters_apply() {
         let config = McpServerConfig {
+            description: None,
             command: Some("true".into()),
             args: vec![],
             env: Default::default(),

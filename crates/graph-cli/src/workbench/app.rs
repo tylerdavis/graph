@@ -5,7 +5,7 @@
 use super::edit::{EditTarget, PendingEdit, StepTarget};
 use super::editor::{EditorContext, EditorState, Resume};
 use super::form::{Form, FormAction, Verdict};
-use super::plan_ws::{OutlineRow, PlanWorkspace, RowKey, WsTab};
+use super::plan_ws::{PlanWorkspace, RowKey, WsTab};
 use super::runner::UiDecision;
 use super::ui::Regions;
 use crossterm::event::{
@@ -284,7 +284,7 @@ pub enum Msg {
     // Drafting progress (workbench__draft_plan: outline, then one step
     // per call); rendered as the plan tab's drafting overlay.
     DraftOutline {
-        items: Vec<OutlineRow>,
+        items: Vec<String>,
     },
     DraftStepStarted {
         index: usize,
@@ -2421,17 +2421,8 @@ steps:
         assert!(!app.wants_tick());
     }
 
-    fn outline_rows() -> Vec<OutlineRow> {
-        vec![
-            OutlineRow {
-                summary: "search for x".into(),
-                expected_tool: Some("t__search".into()),
-            },
-            OutlineRow {
-                summary: "report on it".into(),
-                expected_tool: None,
-            },
-        ]
+    fn outline_rows() -> Vec<String> {
+        vec!["search for x".into(), "report on it".into()]
     }
 
     #[test]
