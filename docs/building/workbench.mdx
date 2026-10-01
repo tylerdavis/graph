@@ -54,8 +54,7 @@ New plans come from the built-in `author_plan` plan, which `orchestrator` runs f
 
 1. **Outline.** [`draft_outline`](/plans/the-planner#drafting-without-executing) sketches the stages.
 2. **Full plan.** `draft_expand` drafts and validates one step per stage, live in the plan tab.
-3. **Refine.** The `plan_refiner` agent reviews the draft against your goal and proposes targeted edits; each is applied only if it doesn't add a problem.
-4. **Validate.** The plan is checked against the catalog, and the tools it calls that aren't marked read-only are listed.
+3. **Validate.** The plan is checked against the catalog, and the tools it calls that aren't marked read-only are listed.
 
 `orchestrator` then puts the plan in the pane with `set_draft` and hands you to `plan_editor`, which tells you what was built. When the plan has side effects, run it gated (`g`) to approve each step. `set_draft` won't discard unsaved changes to the current draft unless you confirm.
 
@@ -97,7 +96,7 @@ For changes to an existing draft, the agent prefers the precise editing tools ov
 
 `author_plan` drafts with [the planner's drafting plans](/plans/the-planner#drafting-without-executing), which see the full tool catalog and observed shapes. A goal that states a name ("named `the_goat`") sets the new draft's identifier and display name; otherwise both derive from the goal text. Every step is statically validated before drafting accepts it, so a published draft is statically valid; catalog problems (a tool name that doesn't resolve) are listed in the result and stay editable per the rules above. A new plan always gets its own identity; it never inherits the loaded plan's.
 
-Drafting articulates its progress live in the plan tab instead of a single planning spinner: the outline appears first as dimmed `○` placeholder rows, steps then materialize one at a time — a `◐` animated row for the step being drafted, turning into a `✓` row once it passes static validation, with a `(retry n/3)` suffix and the problems in the detail pane when it doesn't. The draft publishes exactly once, with `set_draft` after `author_plan` completes — and if a step exhausted its retries, the valid prefix is kept, refined, and published (marked unsaved) with the problems listed, to finish with the editing tools instead of redrafting.
+Drafting articulates its progress live in the plan tab instead of a single planning spinner: the outline appears first as dimmed `○` placeholder rows, steps then materialize one at a time — a `◐` animated row for the step being drafted, turning into a `✓` row once it passes static validation, with a `(retry n/3)` suffix and the problems in the detail pane when it doesn't. The draft publishes exactly once, with `set_draft` after `author_plan` completes — and if a step exhausted its retries, the valid prefix is published (marked unsaved) with the problems listed, to finish with the editing tools instead of redrafting.
 
 <Frame caption="Drafting mid-flight: two steps accepted, the third being drafted, the outline's last stage still pending.">
   ![Drafting mid-flight: two steps accepted, the third being drafted, the outline's last stage still pending.](/images/workbench/drafting-overlay.svg)
