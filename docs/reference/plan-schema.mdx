@@ -49,8 +49,9 @@ Seven reserved `tool_name`s are executor-intercepted, never dispatched to a regi
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `when` | no | logical gate (below); mutually exclusive with `infer`; **both omitted = unconditional exit** |
+| `when` | no | logical gate (below); mutually exclusive with `infer` and `decide`; **all omitted = unconditional exit** |
 | `infer` | no | yes/no question judged by the `judge` role |
+| `decide` | no | [decision gate](/plans/exit-gates#decision-gates-decide): `{question, state?, criteria?, min_confidence?, model?}`, answered by a decision model |
 | `model` | no | model for the `infer` verdict: any configured [role](/models/models-and-providers#roles), standard or custom, or `default`; ignored without `infer` |
 | `status` | yes | `success` \| `error` — error maps to exit code 4 on `plan run` |
 | `message` | no | shown as the plan's answer / error message; may use templates |
@@ -60,8 +61,9 @@ Seven reserved `tool_name`s are executor-intercepted, never dispatched to a regi
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `if` | exactly one of `if`/`infer` | logical gate (same grammar as `when`) |
+| `if` | exactly one of `if`/`infer`/`decide` | logical gate (same grammar as `when`) |
 | `infer` | 〃 | yes/no question judged by the `judge` role |
+| `decide` | 〃 | decision gate, as on `exit` |
 | `model` | no | as on `exit`; may itself be a template |
 | `then` | yes | body (below), run when the gate holds |
 | `else` | no | body, run otherwise |
@@ -71,10 +73,11 @@ Seven reserved `tool_name`s are executor-intercepted, never dispatched to a regi
 | Field | Required | Notes |
 | --- | --- | --- |
 | `over` | yes | template that must render to an array |
-| `where` | exactly one of `where`/`infer` | logical gate (same grammar as `when`), evaluated per element with `{{item}}`/`{{index}}` in scope |
+| `where` | exactly one of `where`/`infer`/`decide` | logical gate (same grammar as `when`), evaluated per element with `{{item}}`/`{{index}}` in scope |
 | `infer` | 〃 | yes/no question judged per element by the `judge` role |
+| `decide` | 〃 | decision gate, as on `exit`, rendered per element |
 | `model` | no | as on `exit`; applies to every `infer` verdict |
-| `concurrency` | no | max `infer` verdicts in flight; default 1; ignored for `where` |
+| `concurrency` | no | max `infer` or `decide` verdicts in flight; default 1; ignored for `where` |
 
 Legal everywhere, including inside `decide` branches and `map`/`reduce` bodies — the one nestable control step (it makes no tool call). Inside a body its `{{item}}`/`{{index}}` shadow the enclosing body's within the gate.
 
@@ -135,10 +138,10 @@ Bodies must not contain `decide`, `map`, or `reduce` (branches may contain `exit
 
 | Step | Result shape |
 | --- | --- |
-| `exit` (not fired) | `{passed: true, verdict?, reason?}` |
+| `exit` (not fired) | `{passed: true, verdict?, reason?, probability?}` — `probability` under a `decide` gate |
 | `agent` | `{output, iterations, tools_called, final}` — `output` conforms to `output_schema` when `final` is true; when the budget ran out first, `final` is `false` and `output` is `{}` |
 | `ask` | `{answer, answered, reason?}` — `answer` conforms to `output_schema`; `answered` is false when the `default` was used, and `reason` is then `"declined"` or `"unavailable"` |
-| `decide` | `{branch, verdict, reason, result}` — `result` is the branch's single-call result or its last step's result |
-| `filter` | `{count, items: […], dropped: […], dropped_count}` — both halves of the partition, input order |
+| `decide` | `{branch, verdict, reason, result, probability?}` — `result` is the branch's single-call result or its last step's result; `probability` under a `decide` gate |
+| `filter` | `{count, items: […], dropped: […], dropped_count, probabilities?}` — both halves of the partition, input order; `probabilities` (aligned with `over`) under a `decide` gate |
 | `map` | `{count, results: […]}` in input order |
 | `reduce` | `{count, result}` — the final accumulator |

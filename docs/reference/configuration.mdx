@@ -36,12 +36,17 @@ planning_attempts = 2               # plan_and_execute replan budget
 
 ```toml
 [providers.anthropic]
-type = "anthropic"                  # anthropic | openai | openai_compat | bedrock
+type = "anthropic"                  # anthropic | openai | openai_compat | systemone | bedrock
 api_key = "${ANTHROPIC_API_KEY}"
 
 [providers.local]
 type = "openai_compat"
 base_url = "http://localhost:11434/v1"    # Ollama, vLLM, LM Studio…
+
+[providers.typesafe]
+type = "systemone"                  # a decision model: TypeSafe's Jev or a compatible server
+api_key = "${TYPESAFE_API_KEY}"     # optional; local servers often need none
+# base_url = "http://127.0.0.1:8080"      # default https://api.typesafe.ai
 
 [providers.bedrock]                 # roadmap
 type = "bedrock"
@@ -49,7 +54,7 @@ region = "us-east-1"
 profile = "default"
 ```
 
-Provider behavior — structured-output mechanisms, retries, and the `bedrock` roadmap status — is covered in [Models & providers](/models/models-and-providers#providers).
+Provider behavior — structured-output mechanisms, retries, and the `bedrock` roadmap status — is covered in [Models & providers](/models/models-and-providers#providers); `systemone` providers serve [decision models](/models/models-and-providers#decision-models).
 
 ## `[models.<role>]` — model roles
 
@@ -78,6 +83,7 @@ description = "fast and cheap; small self-contained tasks like per-item map bodi
 | `temperature` | no | request temperature; provider default when unset |
 | `description` | no | what the role is good for — a planner-facing routing signal; a role with one is advertised to the planner |
 | `fallbacks` | no | ordered failover candidates, below |
+| `context_window` | no | decision models only: the token budget for a request's `state`. A request over it fails before it is sent; unset leaves the limit to the server |
 
 | Standard role | Used for |
 | --- | --- |
@@ -86,9 +92,10 @@ description = "fast and cheap; small self-contained tasks like per-item map bodi
 | `planner` | `plan_and_execute` plan authoring |
 | `solver` | plan report synthesis |
 | `repair` | one-shot JSON repair when structured output fails to parse |
-| `judge` | yes/no verdicts for [inferred exit gates](/plans/exit-gates) |
+| `judge` | yes/no verdicts for `infer` gates on [`exit`](/plans/exit-gates), [`decide`](/plans/branching), and [`filter`](/plans/selection) |
+| `decider` | `decide` gates — must be on a `systemone` provider, and never falls back to `default` |
 
-Custom roles are selectable by name from a [prompt tool](/tools/user-defined)'s `model` field, [`builtin__infer`](/tools/builtins#builtin-infer)'s `model` input, and an `infer` gate's `model` override; they never fall back. Where each role fires, the usual cost setup, and the selection rules are in [Models & providers](/models/models-and-providers#roles).
+Custom roles are selectable by name from a [prompt tool](/tools/user-defined)'s `model` field, [`builtin__infer`](/tools/builtins#builtin-infer)'s `model` input, an [`agent` step](/plans/agent-step)'s `model`, an `infer` gate's `model` override, and the `model` inside a `decide` gate; they never fall back. Where each role fires, the usual cost setup, and the selection rules are in [Models & providers](/models/models-and-providers#roles).
 
 ### `fallbacks` — provider failover
 
@@ -204,7 +211,7 @@ Authorization = "Basic ${LANGFUSE_AUTH}"   # base64 of "pk-lf-…:sk-lf-…"
 
 The environment variable wins over the file, so a CI job can point a checked-in config at a different collector without editing it.
 
-**What a trace contains.** Each `plan run`, `ask` turn, `chat` turn, MCP `plan_run` call, workbench plan run, workbench chat turn, and `plan draft` is one trace, named after the plan identifier or the command. Under the root: one span per plan step and body call (named `E3 user__git_log`, `E1/do.2/E5 builtin__infer`, keyed by the same bus path the workbench and `GRAPH_EVENTS=jsonl` use; a nested plan's steps sit under the step that called it; the tool call a step makes *is* that span), one span per tool call an `ask`/`chat`/workbench agent makes (a `plan__*` call there holds the plan's steps; a `workbench__draft_plan` call holds one `draft step N` span per drafted step, with each rejected attempt as an event on it), and one `generation` span per billable model call under the step that spent it, named after the model role (`chat`, `planner`, `solver`, a custom role) — the same attribution `by_step` reports. Every generation carries the standard `gen_ai.*` attributes: provider, model, input/output/cache token counts, and, when `[pricing]` prices the model, the cost. Errors mark their span and set its status. The `usage_summary` totals land on the root span, and so does the run's own input and output when `capture_content` is on: the plan input and its answer or output document (or the failure), the `ask` message and the reply.
+**What a trace contains.** Each `plan run`, `ask` turn, `chat` turn, MCP `plan_run` call, workbench plan run, workbench chat turn, and `plan draft` is one trace, named after the plan identifier or the command. Under the root: one span per plan step and body call (named `E3 user__git_log`, `E1/do.2/E5 builtin__infer`, keyed by the same bus path the workbench and `GRAPH_EVENTS=jsonl` use; a nested plan's steps sit under the step that called it; the tool call a step makes *is* that span), one span per tool call an `ask`/`chat`/workbench agent makes (a `plan__*` call there holds the plan's steps; a `workbench__draft_plan` call holds one `draft step N` span per drafted step, with each rejected attempt as an event on it), and one `generation` span per billable model call under the step that spent it, named after the model role (`chat`, `planner`, `solver`, `decider`, a custom role) — the same attribution `by_step` reports. Every generation carries the standard `gen_ai.*` attributes: provider, model, input/output/cache token counts, and, when `[pricing]` prices the model, the cost. `gen_ai.operation.name` is `chat` for an LLM call and `decision` for a [decision model](/models/models-and-providers#decision-models) call, whose captured content is the question, the `state`, and the answer. Errors mark their span and set its status. The `usage_summary` totals land on the root span, and so does the run's own input and output when `capture_content` is on: the plan input and its answer or output document (or the failure), the `ask` message and the reply.
 
 **Sessions.** Every span carries a `session.id` where one applies, so a backend that groups traces into sessions ([Langfuse does](https://langfuse.com/docs/observability/features/sessions)) shows a conversation or a workbench sitting as one session of many traces: for `ask` and `chat` the session is the thread id and each turn is a trace (a new thread is created before the first turn so its id is on every span, and removed again if that turn fails); for the workbench the session is a fresh id per launch and each plan run and each chat turn is a trace. `plan run` and `plan draft` have no session.
 

@@ -44,7 +44,7 @@ This sub-PR adds a Jev-compatible decision provider, a `decider` role, Langfuse-
 - [ ] All three steps accept `decide`. v1 plans still load and run unchanged.
 
 ### Phase 4: Docs, experiment, review
-- [ ] Task 10: docs parity
+- [x] Task 10: docs parity
 - [ ] Task 11: experiment harness, plus a one-PR smoke run to Langfuse
 - [ ] Task 12: review and open the sub-PR into `dev/decision-models` (ask first)
 - [ ] Task 13: the full drift experiment and its report
