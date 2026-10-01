@@ -1,0 +1,184 @@
+[
+  {
+    "gate": "docs_drift",
+    "rows": [
+      {
+        "pr": "115",
+        "infer_fired": true,
+        "decide_fired": true,
+        "p": 0.96,
+        "infer_cost": 0.03764675,
+        "decide_cost": 0.001034838,
+        "infer_ms": 2877,
+        "decide_ms": 510
+      },
+      {
+        "pr": "120",
+        "infer_fired": true,
+        "decide_fired": true,
+        "p": 0.93,
+        "infer_cost": 0.026338,
+        "decide_cost": 0.00073605,
+        "infer_ms": 2907,
+        "decide_ms": 397
+      },
+      {
+        "pr": "121",
+        "infer_fired": true,
+        "decide_fired": true,
+        "p": 0.97,
+        "infer_cost": 0.03915175,
+        "decide_cost": 0.0010441200000000002,
+        "infer_ms": 2508,
+        "decide_ms": 526
+      },
+      {
+        "pr": "125",
+        "infer_fired": true,
+        "decide_fired": true,
+        "p": 0.96,
+        "infer_cost": 0.0289255,
+        "decide_cost": 0.00079212,
+        "infer_ms": 2676,
+        "decide_ms": 460
+      },
+      {
+        "pr": "128",
+        "infer_fired": true,
+        "decide_fired": true,
+        "p": 0.92,
+        "infer_cost": 0.03829675,
+        "decide_cost": 0.001025892,
+        "infer_ms": 2580,
+        "decide_ms": 476
+      },
+      {
+        "pr": "129",
+        "infer_fired": true,
+        "decide_fired": true,
+        "p": 0.93,
+        "infer_cost": 0.0038213,
+        "decide_cost": 0.001042902,
+        "infer_ms": 2271,
+        "decide_ms": 491
+      },
+      {
+        "pr": "62",
+        "infer_fired": true,
+        "decide_fired": true,
+        "p": 0.86,
+        "infer_cost": 0.00299,
+        "decide_cost": 0.000056238000000000006,
+        "infer_ms": 2346,
+        "decide_ms": 256
+      },
+      {
+        "pr": "63",
+        "infer_fired": true,
+        "decide_fired": true,
+        "p": 0.69,
+        "infer_cost": 0.0058605,
+        "decide_cost": 0.00013167000000000002,
+        "infer_ms": 1953,
+        "decide_ms": 356
+      },
+      {
+        "pr": "64",
+        "infer_fired": true,
+        "decide_fired": true,
+        "p": 0.61,
+        "infer_cost": 0.002273,
+        "decide_cost": 0.00004326,
+        "infer_ms": 1748,
+        "decide_ms": 287
+      },
+      {
+        "pr": "67",
+        "infer_fired": true,
+        "decide_fired": true,
+        "p": 0.91,
+        "infer_cost": 0.01254425,
+        "decide_cost": 0.00031999800000000005,
+        "infer_ms": 2402,
+        "decide_ms": 322
+      }
+    ],
+    "n": 10,
+    "agree": 10,
+    "infer_cost": 0.1978478,
+    "decide_cost": 0.006227088,
+    "infer_ms": 2426.8,
+    "decide_ms": 408.1
+  },
+  {
+    "gate": "format_drift",
+    "rows": [
+      {
+        "pr": "115",
+        "infer_fired": true,
+        "decide_fired": true,
+        "p": 0.89,
+        "infer_cost": 0.0348585,
+        "decide_cost": 0.00022843800000000002,
+        "infer_ms": 2700,
+        "decide_ms": 296
+      },
+      {
+        "pr": "120",
+        "infer_fired": true,
+        "decide_fired": true,
+        "p": 0.91,
+        "infer_cost": 0.01490475,
+        "decide_cost": 0.00007971600000000001,
+        "infer_ms": 2536,
+        "decide_ms": 304
+      },
+      {
+        "pr": "121",
+        "infer_fired": false,
+        "decide_fired": true,
+        "p": 0.57,
+        "infer_cost": 0.0894915,
+        "decide_cost": 0.000576366,
+        "infer_ms": 5338,
+        "decide_ms": 409
+      },
+      {
+        "pr": "125",
+        "infer_fired": false,
+        "decide_fired": true,
+        "p": 0.6,
+        "infer_cost": 0.051141,
+        "decide_cost": 0.00034818,
+        "infer_ms": 2390,
+        "decide_ms": 332
+      },
+      {
+        "pr": "129",
+        "infer_fired": false,
+        "decide_fired": false,
+        "p": 0.21,
+        "infer_cost": 0.0058445,
+        "decide_cost": 0.000149268,
+        "infer_ms": 3516,
+        "decide_ms": 327
+      },
+      {
+        "pr": "67",
+        "infer_fired": true,
+        "decide_fired": true,
+        "p": 0.94,
+        "infer_cost": 0.01059975,
+        "decide_cost": 0.000053466,
+        "infer_ms": 2034,
+        "decide_ms": 294
+      }
+    ],
+    "n": 6,
+    "agree": 4,
+    "infer_cost": 0.20684,
+    "decide_cost": 0.0014354340000000002,
+    "infer_ms": 3085.6666666666665,
+    "decide_ms": 327
+  }
+]

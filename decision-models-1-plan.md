@@ -47,7 +47,7 @@ This sub-PR adds a Jev-compatible decision provider, a `decider` role, Langfuse-
 - [x] Task 10: docs parity
 - [x] Task 11: experiment harness, plus a one-PR smoke run to Langfuse
 - [ ] Task 12: review and open the sub-PR into `dev/decision-models` (ask first)
-- [ ] Task 13: the full drift experiment and its report
+- [x] Task 13: the full drift experiment and its report
 
 ### Checkpoint D (done)
 - [ ] All five spec success criteria are met. The report gives agreement, cost, and latency per gate.
