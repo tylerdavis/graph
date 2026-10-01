@@ -9,10 +9,6 @@ input_schema:
     goal:
       type: string
       description: What the plan should accomplish
-    revising:
-      type: string
-      description: A draft plan being revised, as YAML; every step is regenerated
-      default: ""
 steps:
   - id: outline
     tool_name: plan__draft_outline
@@ -23,7 +19,6 @@ steps:
     input:
       goal: "{{input.goal}}"
       outline: "{{outline.entries}}"
-      revising: "{{input.revising}}"
 output:
   outline: "{{outline.entries}}"
   steps: "{{plan.steps}}"

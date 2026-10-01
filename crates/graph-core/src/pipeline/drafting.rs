@@ -83,12 +83,8 @@ impl Draft {
     }
 }
 
-pub fn draft_input(goal: &str, existing: Option<&PlannerOutput>) -> Value {
-    let mut input = json!({ "goal": goal });
-    if let Some(existing) = existing {
-        input["revising"] = json!(serde_json::to_string_pretty(existing).unwrap_or_default());
-    }
-    input
+pub fn draft_input(goal: &str) -> Value {
+    json!({ "goal": goal })
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,8 +95,6 @@ struct DraftContextInput {
     entry: String,
     #[serde(default)]
     state: Option<DraftState>,
-    #[serde(default)]
-    revising: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,8 +120,7 @@ pub fn draft_context_tool_def() -> ToolDef {
                 "goal": {"type": "string", "description": "What the plan should accomplish"},
                 "outline": {"type": "array", "items": {"type": "string"}, "description": "The whole outline, in order"},
                 "entry": {"type": "string", "description": "The outline entry this step advances; empty to finish the plan"},
-                "state": {"type": "object", "description": "The drafting state so far"},
-                "revising": {"type": "string", "description": "A draft plan being revised, as YAML"}
+                "state": {"type": "object", "description": "The drafting state so far"}
             }
         }),
         output_schema: None,
@@ -198,7 +191,6 @@ impl Pipeline {
             "templating_rules": prompts::TEMPLATING_RULES,
             "planning_rules": prompts::PLANNING_RULES,
             "control_step_rules": prompts::CONTROL_STEP_RULES,
-            "revision": prompts::revision_section(input.revising.trim()),
         }))
     }
 
