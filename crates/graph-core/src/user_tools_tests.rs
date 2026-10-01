@@ -19,15 +19,18 @@ fn router() -> Arc<ModelRouter> {
                 .response_schema
                 .as_ref()
                 .map(|_| json!({"category": "bug"}));
+            let user = match &req.messages[0] {
+                graph_llm::types::ChatMessage::User { content } => content.clone(),
+                _ => String::new(),
+            };
+            let content = if req.system.is_empty() {
+                format!("echo: {user}")
+            } else {
+                format!("echo [{}]: {user}", req.system)
+            };
             Ok(ChatResponse {
                 thinking: Vec::new(),
-                content: Some(format!(
-                    "echo: {}",
-                    match &req.messages[0] {
-                        graph_llm::types::ChatMessage::User { content } => content.clone(),
-                        _ => String::new(),
-                    }
-                )),
+                content: Some(content),
                 tool_calls: vec![],
                 structured,
                 stop_reason: StopReason::EndTurn,
@@ -422,6 +425,23 @@ async fn llm_pack_infer_returns_text_or_caller_structured_output() {
         .unwrap();
     assert!(!outcome.is_error, "{:?}", outcome.result);
     assert_eq!(outcome.result, json!({"category": "bug"}));
+}
+
+#[tokio::test]
+async fn llm_pack_infer_sends_a_caller_system_prompt_as_the_system_prompt() {
+    let docs = load_pack_tools(&["llm".to_string()]).unwrap();
+    let registry = UserToolRegistry::builtins(docs, router());
+    let outcome = registry
+        .invoke(
+            "builtin__infer",
+            json!({"instruction": "Summarize X", "system": "You summarize."}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.result,
+        json!({"text": "echo [You summarize.]: Summarize X"})
+    );
 }
 
 // ── Reshape (data pack) ──────────────────────────────────────────────────

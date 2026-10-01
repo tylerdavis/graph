@@ -170,6 +170,7 @@ pub fn load_plan_docs(dirs: &[PathBuf]) -> LoadedPlans {
 
 pub const BUILTIN_PLANS: &[&str] = &[
     include_str!("../plans/draft_outline.yaml"),
+    include_str!("../plans/draft_step.yaml"),
     include_str!("../plans/draft_expand.yaml"),
     include_str!("../plans/draft.yaml"),
 ];

@@ -1,12 +1,13 @@
 use super::plan::{self, Plan, PlannerOutput, SolverData, Step};
 use super::{prompts, Pipeline};
-use graph_config::Role;
-use graph_llm::types::ChatMessage;
+use crate::tools::ToolDef;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-pub const DRAFT_STEP_TOOL: &str = "builtin__draft_step";
+pub const DRAFT_CONTEXT_TOOL: &str = "builtin__draft_context";
+
+pub const ACCEPT_STEP_TOOL: &str = "builtin__accept_step";
 
 pub const DRAFT_PLAN: &str = "draft";
 
@@ -58,6 +59,10 @@ pub struct DraftState {
     pub failed: bool,
     #[serde(default)]
     pub problems: Vec<String>,
+    #[serde(default)]
+    pub settled: bool,
+    #[serde(default)]
+    pub correction: String,
 }
 
 pub struct Draft {
@@ -87,7 +92,7 @@ pub fn draft_input(goal: &str, existing: Option<&PlannerOutput>) -> Value {
 }
 
 #[derive(Debug, Deserialize)]
-struct DraftStepInput {
+struct DraftContextInput {
     goal: String,
     outline: Vec<String>,
     #[serde(default)]
@@ -98,12 +103,21 @@ struct DraftStepInput {
     revising: String,
 }
 
-pub fn draft_step_tool_def() -> crate::tools::ToolDef {
-    crate::tools::ToolDef {
-        name: DRAFT_STEP_TOOL.to_string(),
-        description: "Drafts the next plan step advancing one outline entry, validates it against \
-                      the steps already accepted, and retries with the problems. Returns the \
-                      updated drafting state. An empty entry finishes the plan."
+#[derive(Debug, Deserialize)]
+struct AcceptStepInput {
+    state: DraftState,
+    draft: StepDraft,
+    attempt: u32,
+}
+
+pub fn draft_context_tool_def() -> ToolDef {
+    ToolDef {
+        name: DRAFT_CONTEXT_TOOL.to_string(),
+        description: "Prepares drafting the next plan step for one outline entry: the drafting \
+                      state for this entry, the step request, the attempt numbers, the step \
+                      response schema, and the catalog, rules and context the drafting prompt \
+                      is built from. Once the draft is done or failed, the state comes back \
+                      settled and no step is requested."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -112,7 +126,7 @@ pub fn draft_step_tool_def() -> crate::tools::ToolDef {
                 "goal": {"type": "string", "description": "What the plan should accomplish"},
                 "outline": {"type": "array", "items": {"type": "string"}, "description": "The whole outline, in order"},
                 "entry": {"type": "string", "description": "The outline entry this step advances; empty to finish the plan"},
-                "state": {"type": "object", "description": "The drafting state from the previous call"},
+                "state": {"type": "object", "description": "The drafting state so far"},
                 "revising": {"type": "string", "description": "A draft plan being revised, as YAML"}
             }
         }),
@@ -122,111 +136,137 @@ pub fn draft_step_tool_def() -> crate::tools::ToolDef {
     }
 }
 
+pub fn accept_step_tool_def() -> ToolDef {
+    ToolDef {
+        name: ACCEPT_STEP_TOOL.to_string(),
+        description: "Validates one drafted step against the steps already accepted. A valid step \
+                      is accepted and the state settles; an invalid one leaves the state \
+                      unsettled with its problems and a correction for the next attempt, and \
+                      fails the draft on the last attempt."
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "required": ["state", "draft", "attempt"],
+            "properties": {
+                "state": {"type": "object", "description": "The drafting state for this entry"},
+                "draft": {"type": "object", "description": "The step response: step, planComplete, queryToAnswer, systemPrompt"},
+                "attempt": {"type": "integer", "description": "This attempt's number, from 1"}
+            }
+        }),
+        output_schema: None,
+        output_example: None,
+        read_only: Some(true),
+    }
+}
+
 impl Pipeline {
-    pub(super) async fn draft_step(&self, input: Value) -> Result<Value, String> {
-        let input: DraftStepInput =
-            serde_json::from_value(input).map_err(|e| format!("invalid draft_step input: {e}"))?;
+    pub(super) async fn draft_context(&self, input: Value) -> Result<Value, String> {
+        let input: DraftContextInput = serde_json::from_value(input)
+            .map_err(|e| format!("invalid draft_context input: {e}"))?;
         if input.outline.iter().all(|entry| entry.trim().is_empty()) {
             return Err("the outline has no entries".to_string());
         }
         let mut state = input.state.unwrap_or_default();
-        if state.done || state.failed {
+        state.settled = state.done || state.failed;
+        state.correction = String::new();
+        let entry = input.entry.trim();
+        let next_step_id = next_step_id(&state.steps);
+        let (tools, step_schema) = if state.settled {
+            (String::new(), String::new())
+        } else {
+            let index = state.steps.len();
+            if index == 0 && input.outline.first().map(|first| first.trim()) == Some(entry) {
+                self.events.draft_outline(&json!(input.outline));
+            }
+            let summary = if entry.is_empty() {
+                "finalize the plan"
+            } else {
+                entry
+            };
+            self.events.draft_step_started(index, summary);
+            self.planner_catalog().await
+        };
+        Ok(json!({
+            "request": step_request_content(&input.goal, &input.outline, &state.steps, entry, &next_step_id),
+            "state": state,
+            "attempts": (1..=MAX_STEP_ATTEMPTS).collect::<Vec<_>>(),
+            "draft_schema": step_draft_schema(),
+            "tools": tools,
+            "step_schema": step_schema,
+            "date": self.current_date,
+            "user": self.user_context,
+            "templating_rules": prompts::TEMPLATING_RULES,
+            "planning_rules": prompts::PLANNING_RULES,
+            "control_step_rules": prompts::CONTROL_STEP_RULES,
+            "revision": prompts::revision_section(input.revising.trim()),
+        }))
+    }
+
+    pub(super) fn accept_step(&self, input: Value) -> Result<Value, String> {
+        let AcceptStepInput {
+            mut state,
+            draft,
+            attempt,
+        } = serde_json::from_value(input).map_err(|e| format!("invalid accept_step input: {e}"))?;
+        if state.settled {
             return Ok(json!(state));
         }
         let index = state.steps.len();
         let next_step_id = next_step_id(&state.steps);
-        let entry = input.entry.trim();
-        if state.steps.is_empty() && input.outline.first().map(|first| first.trim()) == Some(entry)
-        {
-            self.events.draft_outline(&json!(input.outline));
-        }
-        let summary = if entry.is_empty() {
-            "finalize the plan"
-        } else {
-            entry
-        };
-        self.events.draft_step_started(index, summary);
-
-        let revising = (!input.revising.trim().is_empty()).then_some(input.revising.as_str());
-        let system = self.drafting_system(revising).await;
-        let request = ChatMessage::User {
-            content: step_request_content(
-                &input.goal,
-                &input.outline,
-                &state.steps,
-                entry,
-                &next_step_id,
-            ),
-        };
-
-        let mut retry_tail: Vec<ChatMessage> = Vec::new();
-        let mut last_problems: Vec<String> = Vec::new();
-        for attempt in 1..=MAX_STEP_ATTEMPTS {
-            let mut messages = vec![request.clone()];
-            messages.extend(retry_tail.iter().cloned());
-            let step_draft: StepDraft = crate::usage::CallSite::role("planner")
-                .at(format!("draft/step.{index}"))
-                .scope(self.router.get_structured(
-                    Role::Planner,
-                    system.clone(),
-                    messages,
-                    "plan_step",
-                ))
-                .await
-                .map_err(|e| e.to_string())?;
-
-            let Some(step) = step_draft.step.clone() else {
-                if step_draft.plan_complete && !state.steps.is_empty() {
-                    absorb(&mut state, &step_draft);
-                    state.done = true;
-                    return Ok(json!(state));
-                }
+        let problems = match draft.step.clone() {
+            None if draft.plan_complete && !state.steps.is_empty() => {
+                absorb(&mut state, &draft);
+                state.done = true;
+                return Ok(json!(settle(state)));
+            }
+            None => {
                 let problems = vec!["produced no step for an incomplete plan".to_string()];
                 self.events
                     .draft_step_finished(index, &Value::Null, &problems, attempt);
-                push_correction(&mut retry_tail, &step_draft, &problems, &next_step_id);
-                last_problems = problems;
-                continue;
-            };
-
-            let mut candidate = state.steps.clone();
-            candidate.push(step.clone());
-            match self.validate_plan(&candidate) {
-                Ok(()) => {
-                    self.events
-                        .draft_step_finished(index, &json!(step), &[], attempt);
-                    state.steps = candidate;
-                    absorb(&mut state, &step_draft);
-                    state.done = step_draft.plan_complete;
-                    return Ok(json!(state));
-                }
-                Err(problems) => {
-                    self.events
-                        .draft_step_finished(index, &json!(step), &problems, attempt);
-                    push_correction(&mut retry_tail, &step_draft, &problems, &next_step_id);
-                    last_problems = problems;
+                problems
+            }
+            Some(step) => {
+                let mut candidate = state.steps.clone();
+                candidate.push(step.clone());
+                match self.validate_plan(&candidate) {
+                    Ok(()) => {
+                        self.events
+                            .draft_step_finished(index, &json!(step), &[], attempt);
+                        state.steps = candidate;
+                        absorb(&mut state, &draft);
+                        state.done = draft.plan_complete;
+                        return Ok(json!(settle(state)));
+                    }
+                    Err(problems) => {
+                        self.events
+                            .draft_step_finished(index, &json!(step), &problems, attempt);
+                        problems
+                    }
                 }
             }
+        };
+        state.correction = correction(&draft, &problems, &next_step_id);
+        state.problems = problems;
+        if attempt >= MAX_STEP_ATTEMPTS {
+            state.failed = true;
+            state.settled = true;
         }
-        state.failed = true;
-        state.problems = last_problems;
         Ok(json!(state))
     }
+}
 
-    /// The system prompt for a drafting session — the same catalog/shape
-    /// gathering as `planner_system` (the shape cache is read fresh here,
-    /// at drafting time), rendered through the drafting prompt.
-    async fn drafting_system(&self, draft: Option<&str>) -> String {
-        let (tools_text, step_schema) = self.planner_catalog().await;
+fn step_draft_schema() -> Value {
+    let mut schema = json!(schemars::schema_for!(StepDraft));
+    schema["required"] = json!(["step", "planComplete"]);
+    schema["additionalProperties"] = json!(false);
+    schema
+}
 
-        prompts::drafting_prompt(&prompts::DraftingPromptArgs {
-            current_date: &self.current_date,
-            tools: &tools_text,
-            user_context: &self.user_context,
-            step_schema: &step_schema,
-            draft,
-        })
-    }
+fn settle(mut state: DraftState) -> DraftState {
+    state.settled = true;
+    state.problems = Vec::new();
+    state.correction = String::new();
+    state
 }
 
 fn step_request_content(
@@ -266,25 +306,13 @@ fn next_step_id(plan: &Plan) -> String {
     format!("E{next}")
 }
 
-/// Append one failed attempt and its correction request to the retry tail.
-fn push_correction(
-    retry_tail: &mut Vec<ChatMessage>,
-    step_draft: &StepDraft,
-    problems: &[String],
-    next_step_id: &str,
-) {
-    retry_tail.push(ChatMessage::Assistant {
-        content: Some(serde_json::to_string(step_draft).unwrap_or_default()),
-        thinking: Vec::new(),
-        tool_calls: vec![],
-    });
-    retry_tail.push(ChatMessage::User {
-        content: format!(
-            "The step is invalid:\n- {}\nProduce a corrected step (id {next_step_id}) \
-             for the same stage; do not re-emit accepted steps.",
-            problems.join("\n- ")
-        ),
-    });
+fn correction(draft: &StepDraft, problems: &[String], next_step_id: &str) -> String {
+    format!(
+        "Your previous response was:\n{}\n\nThe step is invalid:\n- {}\nProduce a corrected step \
+         (id {next_step_id}) for the same stage; do not re-emit accepted steps.",
+        serde_json::to_string(draft).unwrap_or_default(),
+        problems.join("\n- ")
+    )
 }
 
 fn absorb(state: &mut DraftState, draft: &StepDraft) {

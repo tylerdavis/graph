@@ -83,6 +83,8 @@ pub enum ToolKind {
         /// `description` on the tool's input schema when this is set.
         #[serde(default)]
         caller_model: bool,
+        #[serde(default)]
+        caller_system: bool,
     },
     /// Project the input into a new JSON shape. The `shape` is a JSON tree
     /// whose leaf strings are templates rendered with the same typed-splice
@@ -322,6 +324,7 @@ const PROMPT_KEYS: &[&str] = &[
     "model",
     "caller_output_schema",
     "caller_model",
+    "caller_system",
 ];
 
 const RESHAPE_KEYS: &[&str] = &["shape", "caller_shape"];
@@ -498,6 +501,16 @@ impl UserToolRegistry {
             } => input.get("output_schema").cloned(),
             _ => None,
         };
+        let caller_system = match &doc.kind {
+            ToolKind::Prompt {
+                caller_system: true,
+                ..
+            } => input
+                .get("system")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            _ => None,
+        };
         let caller_model = match &doc.kind {
             ToolKind::Prompt {
                 caller_model: true, ..
@@ -555,7 +568,8 @@ impl UserToolRegistry {
             } => {
                 // Call-level model wins over the doc's pin.
                 let model = caller_model.as_deref().or(model.as_deref());
-                self.run_prompt(doc, prompt, system.as_deref(), model, caller_schema, &roots)
+                let system = caller_system.as_deref().or(system.as_deref());
+                self.run_prompt(doc, prompt, system, model, caller_schema, &roots)
                     .await
             }
             ToolKind::Reshape { caller_shape, .. } => {

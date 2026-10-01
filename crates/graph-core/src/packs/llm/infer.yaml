@@ -21,6 +21,7 @@ caller_output_schema: true
 # The call's `model` input picks the model role; the catalog advertises the
 # configured roles that carry a description on this tool's schema.
 caller_model: true
+caller_system: true
 input_schema:
   type: object
   required: [instruction]
@@ -31,6 +32,12 @@ input_schema:
         Complete, self-contained instruction, including the data to analyze
         (reference earlier step results with {{Ex...}} templates, or the
         current element with {{item}} inside a map body).
+    system:
+      type: string
+      description: >
+        Optional standing instructions sent as the system prompt instead of
+        in the instruction. Keep it identical across calls that share it —
+        across the items of a map, say — so the provider can cache it.
     output_schema:
       type: object
       description: >

@@ -3163,7 +3163,7 @@ system_prompt: You summarize.
 "#;
 
 fn with_drafting_builtins(mut pipeline: Pipeline) -> Pipeline {
-    let llm = crate::user_tools::load_pack_tools(&["llm".to_string()]).unwrap();
+    let llm = crate::user_tools::load_pack_tools(&["llm".to_string(), "data".to_string()]).unwrap();
     pipeline.registry = Arc::new(crate::tools::CompositeRegistry::new(vec![
         Arc::new(crate::user_tools::UserToolRegistry::builtins(
             llm,
@@ -3257,6 +3257,17 @@ async fn draft_generates_outline_then_steps() {
         "every step call must use the identical system prompt"
     );
     assert!(requests[1].system.contains("t__search"));
+    assert!(
+        requests[1].system.contains("### Drafting Protocol"),
+        "the step system prompt comes from the draft_step plan"
+    );
+    let schema = &requests[1]
+        .response_schema
+        .as_ref()
+        .expect("a step is a structured inference")
+        .schema;
+    assert_eq!(schema["required"], json!(["step", "planComplete"]));
+    assert_eq!(schema["additionalProperties"], json!(false));
     let first = user_turns(&requests[1]);
     assert!(
         first[0].contains("# Outline\n1. find the team\n2. fetch its issues"),
@@ -3323,17 +3334,20 @@ async fn draft_retries_invalid_step_with_errors_injected() {
 
     let requests = provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 5, "one retry for the invalid step");
-    let retry = &requests[3];
-    let assistants = assistant_turns(retry);
+    let retry = user_turns(&requests[3]);
+    assert_eq!(retry.len(), 1, "each attempt is one fresh request");
     assert!(
-        assistants.iter().any(|turn| turn.contains("E9")),
-        "the invalid StepDraft is in the retry tail: {assistants:?}"
+        retry[0].contains("Your previous response was") && retry[0].contains("E9.values"),
+        "the invalid StepDraft is quoted back: {retry:?}"
     );
     assert!(
-        user_turns(retry)
-            .iter()
-            .any(|turn| turn.contains("The step is invalid") && turn.contains("E9")),
-        "the validation problem is injected as feedback"
+        retry[0].contains("The step is invalid")
+            && retry[0].contains("Produce a corrected step (id E1)"),
+        "the validation problem is injected as feedback: {retry:?}"
+    );
+    assert_eq!(
+        requests[3].system, requests[1].system,
+        "a retry keeps the cached system prompt"
     );
     let after = user_turns(&requests[4]).join("\n") + &assistant_turns(&requests[4]).join("\n");
     assert!(

@@ -64,7 +64,7 @@ output_schema:               # optional → enforced structured output
     keywords: { type: array, items: { type: string } }
 ```
 
-With an `output_schema`, the result is validated JSON; without one, `{"text": …}`. Useful as a cheap sub-task inside plans — classify, extract, reword — with `model` controlling cost: any configured [role](/models/models-and-providers#roles) — a standard one like `chat` (the default, with the usual fallback to `default`) or a [custom one](/models/models-and-providers#custom-roles) like `nano`. An unknown name fails the call with the configured names listed.
+With an `output_schema`, the result is validated JSON; without one, `{"text": …}`. `system` adds a fixed system prompt. `caller_output_schema`, `caller_model`, and `caller_system` (each `true`/`false`, default `false`) let a call supply `output_schema`, `model`, or `system` in its input instead; `builtin__infer` sets all three. Useful as a cheap sub-task inside plans — classify, extract, reword — with `model` controlling cost: any configured [role](/models/models-and-providers#roles) — a standard one like `chat` (the default, with the usual fallback to `default`) or a [custom one](/models/models-and-providers#custom-roles) like `nano`. An unknown name fails the call with the configured names listed.
 
 ## Shared behavior
 

@@ -23,9 +23,9 @@ steps:
     tool_name: reduce
     input:
       over: "{{input.outline}}"
-      initial: { steps: [], solver: null, done: false, failed: false, problems: [] }
+      initial: { steps: [], solver: null, done: false, failed: false, problems: [], settled: false, correction: "" }
       do:
-        tool_name: builtin__draft_step
+        tool_name: plan__draft_step
         input:
           goal: "{{input.goal}}"
           outline: "{{input.outline}}"
@@ -34,7 +34,7 @@ steps:
           revising: "{{input.revising}}"
     reasoning: One validated step per outline entry; the state carries accepted steps forward.
   - id: close
-    tool_name: builtin__draft_step
+    tool_name: plan__draft_step
     input:
       goal: "{{input.goal}}"
       outline: "{{input.outline}}"
