@@ -57,7 +57,7 @@ graph loads agents in layers. A later layer replaces an earlier agent with the s
 2. **Global** agents in `~/.config/graph/agents/*.yaml`.
 3. **Project** agents in `./.graph/agents/*.yaml`.
 
-Two files with the same name in one directory are a load error. The built-in `chat` agent is graph's default general assistant. It can call any catalog tool and run copies of itself as subagents.
+Two files with the same name in one directory are a load error. The built-in `chat` agent is graph's default general assistant. It can call any catalog tool and run copies of itself as subagents. The [workbench](/workbench/plan-workbench#the-workbench-agents) adds six more built-ins (`orchestrator`, `plan_loader`, `plan_author`, `plan_editor`, `plan_refiner`, `plan_verifier`), which `graph agents` lists and shows like any other.
 
 ## Checks
 

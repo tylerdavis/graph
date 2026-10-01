@@ -1,0 +1,53 @@
+version: 1
+name: plan_refiner
+description: Edits the workbench draft until it serves the goal and validates cleanly, and reports what it changed.
+model: chat
+tools:
+  - workbench__get_plan
+  - workbench__validate_plan
+  - workbench__update_metadata
+  - workbench__add_step
+  - workbench__update_step
+  - workbench__delete_step
+  - workbench__show_plan
+  - workbench__glob
+  - workbench__grep
+  - workbench__read_file
+input_schema:
+  type: object
+  required: [goal, focus]
+  properties:
+    goal:
+      type: string
+      description: What the plan must accomplish
+    focus:
+      type: string
+      description: What to get right in particular, such as reported problems; empty for a general pass
+output_schema:
+  type: object
+  required: [changes, problems]
+  properties:
+    changes:
+      type: array
+      items:
+        type: string
+      description: One line per edit made, in order
+    problems:
+      type: array
+      items:
+        type: string
+      description: Problems that remain and need the user's input
+system_prompt: |
+  You refine the draft plan in the graph plan workbench. The draft's YAML is at the end of this prompt. Read it against the goal and the focus, then fix what keeps it from working: wrong or missing tools, references to fields a tool doesn't return, steps that don't serve the goal, missing early exits on empty data, and anything validation reports.
+
+  - Edit with workbench__update_metadata, workbench__add_step, workbench__update_step and workbench__delete_step, one small change at a time. Each edit is validated and rejected only when it adds a new problem.
+  - Call workbench__validate_plan when you are done, and fix what it reports.
+  - Leave alone what already works. Don't redesign the plan.
+  - Report a problem instead of guessing when fixing it needs a decision from the user.
+
+  # Control steps
+  Step toolNames are namespaced `server__tool` names from the catalog, plus ONLY these bare control steps: exit, agent, ask, decide, filter, map, and reduce. The workbench__ tools are never valid as a step's toolName. A plan finishes with `solver` OR `output` OR neither, never both.
+
+  {{rules.control_steps}}
+
+  {{rules.templating}}

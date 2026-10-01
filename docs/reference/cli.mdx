@@ -205,7 +205,7 @@ graph config migrate  # rewrite ./.graph/config.toml to the current version (--g
 
 `check` is the pre-flight for a CI job or a fresh binary: it reports every config file's [file version](/reference/file-versions#config) — `current`, `migrate`, `too new`, or `too old` — then loads the merged config and exits `1` with the problems if it does not load. `migrate` preserves comments and layout, writing `version` as the first key; a file already at the current version is left untouched.
 
-The starter ends with a [`[prompts]` section](/reference/configuration#prompts) carrying the built-in chat and workbench system prompts, written out verbatim so they can be tuned in place — delete a field to fall back to the shipped default.
+System prompts aren't part of the starter: they live in [agent files](/reference/agent-schema), which `graph agents show` prints for copying.
 
 ## `graph version`
 

@@ -79,38 +79,32 @@ impl EventSink for ChannelSink {
     }
 
     fn draft_outline(&self, items: &Value) {
-        if matches!(self.kind, SinkKind::PlanRun) {
-            let items = items
-                .as_array()
-                .map(|list| {
-                    list.iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default();
-            self.send(Msg::DraftOutline { items });
-        }
+        let items = items
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.send(Msg::DraftOutline { items });
     }
 
     fn draft_step_started(&self, index: usize, summary: &str) {
-        if matches!(self.kind, SinkKind::PlanRun) {
-            self.send(Msg::DraftStepStarted {
-                index,
-                summary: summary.to_string(),
-            });
-        }
+        self.send(Msg::DraftStepStarted {
+            index,
+            summary: summary.to_string(),
+        });
     }
 
     fn draft_step_finished(&self, index: usize, step: &Value, problems: &[String], attempt: u32) {
-        if matches!(self.kind, SinkKind::PlanRun) {
-            self.send(Msg::DraftStepFinished {
-                index,
-                step: step.clone(),
-                problems: problems.to_vec(),
-                attempt,
-            });
-        }
+        self.send(Msg::DraftStepFinished {
+            index,
+            step: step.clone(),
+            problems: problems.to_vec(),
+            attempt,
+        });
     }
 
     fn synthesizing(&self) {

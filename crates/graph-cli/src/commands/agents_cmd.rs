@@ -1,9 +1,7 @@
 use crate::cli::AgentsCommand;
 use crate::commands::outcome::{report, Outcome};
 use anyhow::{bail, Result};
-use graph_core::agent::doc::{
-    agent_dirs, global_fragments, load_agent_file, AgentDoc, AgentSet, BUILTINS,
-};
+use graph_core::agent::doc::{agent_dirs, global_fragments, load_agent_file, AgentDoc, AgentSet};
 use graph_core::format::{migrate_file, stamp, Kind};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -40,7 +38,7 @@ fn summary(doc: &AgentDoc) -> Value {
 }
 
 pub(crate) fn list(dirs: &[PathBuf]) -> Outcome {
-    let (set, errors) = AgentSet::load(BUILTINS, dirs);
+    let (set, errors) = AgentSet::load(&crate::workbench::agents::builtin_sources(), dirs);
     let agents: Vec<Value> = set.iter().map(summary).collect();
     let text: String = set
         .iter()
@@ -68,7 +66,7 @@ pub(crate) fn list(dirs: &[PathBuf]) -> Outcome {
 }
 
 pub(crate) fn show(dirs: &[PathBuf], name: &str) -> Result<Outcome> {
-    let (set, _) = AgentSet::load(BUILTINS, dirs);
+    let (set, _) = AgentSet::load(&crate::workbench::agents::builtin_sources(), dirs);
     let Some(doc) = set.get(name) else {
         let known: Vec<&str> = set.iter().map(|d| d.name.as_str()).collect();
         bail!("unknown agent '{name}' (defined: {})", known.join(", "));
@@ -85,7 +83,8 @@ pub(crate) fn show(dirs: &[PathBuf], name: &str) -> Result<Outcome> {
 }
 
 pub(crate) fn validate(dirs: &[PathBuf], path: Option<&Path>) -> Result<Outcome> {
-    let (mut set, mut problems) = AgentSet::load(BUILTINS, dirs);
+    let (mut set, mut problems) =
+        AgentSet::load(&crate::workbench::agents::builtin_sources(), dirs);
     let mut checked = "all agents".to_string();
     if let Some(path) = path {
         if !path.exists() {
@@ -158,11 +157,27 @@ mod tests {
             .iter()
             .map(|a| a["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["chat", "search_bot"]);
+        assert_eq!(
+            names,
+            [
+                "chat",
+                "orchestrator",
+                "plan_author",
+                "plan_editor",
+                "plan_loader",
+                "plan_refiner",
+                "plan_verifier",
+                "search_bot"
+            ]
+        );
         assert_eq!(outcome.body["agents"][0]["source"], "built-in");
         assert_eq!(
-            outcome.body["agents"][1]["subagentIo"],
+            outcome.body["agents"][7]["subagentIo"],
             "{prompt} -> {result}"
+        );
+        assert_eq!(
+            outcome.body["agents"][6]["subagentIo"],
+            "typed input -> typed output"
         );
     }
 
@@ -219,7 +234,7 @@ mod tests {
 
     #[test]
     fn builtin_sources_are_reported_as_built_in() {
-        let (set, _) = AgentSet::load(BUILTINS, &[]);
+        let (set, _) = AgentSet::load(&crate::workbench::agents::builtin_sources(), &[]);
         assert_eq!(set.get("chat").unwrap().source, AgentSource::Builtin);
     }
 }

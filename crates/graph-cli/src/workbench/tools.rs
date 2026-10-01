@@ -7,14 +7,14 @@ use super::runner::{DebugControls, UiGate, UiInterlocutor};
 use async_trait::async_trait;
 use graph_core::pipeline::authoring;
 use graph_core::pipeline::doc::{apply_schema_defaults, load_plan_doc, validate_input, PlanDoc};
-use graph_core::pipeline::{Pipeline, PlannerOutput};
+use graph_core::pipeline::Pipeline;
 use graph_core::{ToolDef, ToolError, ToolOutcome, ToolRegistry};
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 
-pub const DRAFT_PLAN: &str = "workbench__draft_plan";
+pub const SET_DRAFT: &str = "workbench__set_draft";
 pub const GET_PLAN: &str = "workbench__get_plan";
 pub const LOAD_PLAN: &str = "workbench__load_plan";
 pub const LIST_PLANS: &str = "workbench__list_plans";
@@ -34,7 +34,7 @@ pub const SHOW_PLAN: &str = "workbench__show_plan";
 /// run, repeat) isn't starved mid-repair.
 pub fn progress_tools() -> Vec<String> {
     [
-        DRAFT_PLAN,
+        SET_DRAFT,
         UPDATE_METADATA,
         ADD_STEP,
         UPDATE_STEP,
@@ -404,33 +404,21 @@ impl WorkbenchTools {
         }
     }
 
-    async fn draft_plan(&self, input: &Value) -> ToolOutcome {
+    fn set_draft(&self, input: &Value) -> ToolOutcome {
         let Some(goal) = input.get("goal").and_then(Value::as_str) else {
-            return error_outcome("draft_plan requires a 'goal' string");
+            return error_outcome("set_draft requires a 'goal' string");
+        };
+        let Some(drafted) = input.get("draft") else {
+            return error_outcome(
+                "set_draft requires the 'draft' that plan__draft_expand returned",
+            );
         };
         // fresh: the goal describes a NEW plan — ignore the current draft
         // entirely, so an unrelated loaded plan isn't treated as the plan
         // being drafted into (which would keep its identifier and metadata).
         let fresh = input.get("fresh").and_then(Value::as_bool).unwrap_or(false);
         let existing = if fresh { None } else { self.current() };
-        let existing_output = existing.as_ref().map(|doc| PlannerOutput {
-            plan: doc.steps.clone(),
-            solver_data: doc.solver.clone(),
-        });
-        // Drafting validates every step before accepting it, so a draft
-        // that comes back at all is statically valid; only catalog
-        // problems (reported below) can remain.
-        let drafted = self
-            .pipeline
-            .call_plan(
-                graph_core::pipeline::DRAFT_PLAN,
-                graph_core::pipeline::draft_input(goal, existing_output.as_ref()),
-            )
-            .await;
-        if drafted.is_error {
-            return error_outcome(&format!("drafting failed: {}", drafted.result));
-        }
-        let draft = match graph_core::pipeline::Draft::from_result(&drafted.result) {
+        let draft = match graph_core::pipeline::Draft::from_result(drafted) {
             Ok(draft) => draft,
             Err(error) => return error_outcome(&error),
         };
@@ -492,7 +480,7 @@ impl WorkbenchTools {
                 Err(error) => error_outcome(&error.to_string()),
             },
             None => ToolOutcome {
-                result: json!({"yaml": null, "note": "no draft yet — use workbench__draft_plan"}),
+                result: json!({"yaml": null, "note": "no draft yet"}),
                 is_error: false,
             },
         }
@@ -567,26 +555,22 @@ impl ToolRegistry for WorkbenchTools {
     async fn tools(&self) -> Result<Vec<ToolDef>, ToolError> {
         let mut defs = vec![
             ToolDef {
-                name: DRAFT_PLAN.to_string(),
-                description: "Draft the workbench's plan from a goal, when there is no draft \
-                              yet or the user asks to start over. The planner sees the full \
-                              tool catalog; pass the user's request as a self-contained \
-                              `goal`. Pass fresh: true when the goal describes a NEW plan — \
-                              otherwise the current draft's identifier and metadata are \
-                              kept and its steps are drafted again. This ALWAYS replaces \
-                              every step, so never call it to change a draft that already \
-                              has steps worth keeping: use workbench__update_step / \
-                              add_step / update_metadata, which apply one change each and \
-                              are rejected if they would break the plan. Each step is \
-                              validated as it is drafted; any remaining problems are \
-                              returned in `validation`."
+                name: SET_DRAFT.to_string(),
+                description: "Publish a drafted plan to the workbench pane: pass the user's \
+                              `goal` and the whole result plan__draft_expand (or plan__draft) \
+                              returned as `draft`. Pass fresh: true when the goal describes a NEW \
+                              plan — otherwise the current draft's identifier and metadata are \
+                              kept. This replaces every step of the draft. When drafting failed \
+                              on a step, the valid prefix is published and the problems are \
+                              returned so it can be finished with the editing tools."
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
-                    "required": ["goal"],
+                    "required": ["goal", "draft"],
                     "properties": {
                         "goal": {"type": "string", "description": "What the plan should accomplish, self-contained."},
-                        "fresh": {"type": "boolean", "description": "Draft a NEW plan from scratch, ignoring the current draft (which otherwise keeps its identifier and metadata). Default false."}
+                        "draft": {"type": "object", "description": "The result plan__draft_expand returned: steps, solver, done, failed, problems."},
+                        "fresh": {"type": "boolean", "description": "Publish as a NEW plan, ignoring the current draft (which otherwise keeps its identifier and metadata). Default false."}
                     }
                 }),
                 output_schema: None,
@@ -848,7 +832,7 @@ impl ToolRegistry for WorkbenchTools {
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
         match name {
-            DRAFT_PLAN | GET_PLAN | LOAD_PLAN | LIST_PLANS | VALIDATE_PLAN | RUN_PLAN
+            SET_DRAFT | GET_PLAN | LOAD_PLAN | LIST_PLANS | VALIDATE_PLAN | RUN_PLAN
             | SAVE_PLAN | UPDATE_METADATA | ADD_STEP | UPDATE_STEP | DELETE_STEP
             | RESTORE_DRAFT | SHOW_PLAN => {}
             // Not ours: stay silent, or the composite registry's fallthrough
@@ -862,7 +846,7 @@ impl ToolRegistry for WorkbenchTools {
         );
         let started = std::time::Instant::now();
         let outcome = match name {
-            DRAFT_PLAN => Ok(self.draft_plan(&input).await),
+            SET_DRAFT => Ok(self.set_draft(&input)),
             GET_PLAN => Ok(self.get_plan()),
             LOAD_PLAN => Ok(self.load_plan(&input)),
             LIST_PLANS => Ok(self.list_plans()),
@@ -1887,7 +1871,7 @@ steps:
     }
 
     #[tokio::test]
-    async fn draft_publishes_once_when_complete() {
+    async fn a_drafted_plan_publishes_once_when_complete() {
         let (pipeline, provider) = scripted_pipeline(vec![
             outline_output(),
             json!({"step": {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
@@ -1896,9 +1880,12 @@ steps:
                             "input": {"rows": "{{E0.values}}"}},
                    "planComplete": true}),
         ]);
-        let (tools, mut rx) = draft_tools(pipeline);
+        let (tools, mut rx) = draft_tools(pipeline.clone());
 
-        let outcome = tools.draft_plan(&json!({"goal": "report on x"})).await;
+        let drafted = pipeline
+            .call_plan("draft", json!({"goal": "report on x"}))
+            .await;
+        let outcome = tools.set_draft(&json!({"goal": "report on x", "draft": drafted.result}));
         assert!(!outcome.is_error, "{:?}", outcome.result);
         assert_eq!(outcome.result["validation"], json!("ok"));
         assert_eq!(outcome.result["steps"], json!(2));
@@ -1920,7 +1907,7 @@ steps:
     }
 
     #[tokio::test]
-    async fn draft_exhaustion_salvages_the_valid_prefix() {
+    async fn a_failed_draft_publishes_the_valid_prefix() {
         let invalid_step = || {
             json!({"step": {"id": "E1", "toolName": "t__report",
                             "input": {"rows": "{{E9.values}}"}},
@@ -1934,9 +1921,12 @@ steps:
             invalid_step(),
             invalid_step(),
         ]);
-        let (tools, mut rx) = draft_tools(pipeline);
+        let (tools, mut rx) = draft_tools(pipeline.clone());
 
-        let outcome = tools.draft_plan(&json!({"goal": "report on x"})).await;
+        let drafted = pipeline
+            .call_plan("draft", json!({"goal": "report on x"}))
+            .await;
+        let outcome = tools.set_draft(&json!({"goal": "report on x", "draft": drafted.result}));
         assert!(outcome.is_error);
         assert_eq!(outcome.result["failedStep"], json!("E1"));
         assert!(

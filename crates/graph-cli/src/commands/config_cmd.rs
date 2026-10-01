@@ -92,31 +92,11 @@ model = "claude-sonnet-5"
 [user]
 # name = "Your Name"
 # context = "Role, primary repos, teams — injected into prompts."
-
-# System prompts, written out so they are visible and editable. Each field
-# replaces the built-in text wholesale; delete a field to fall back to the
-# built-in default (which may improve across releases).
 "#;
 
-/// The starter file: the format stamp, the commented skeleton, then a
-/// `[prompts]` section carrying the built-in system prompts, serialized
-/// from the real constants so the starter can never drift from the shipped
-/// defaults.
 fn starter_config() -> Result<String> {
-    let mut prompts = toml::Table::new();
-    prompts.insert(
-        "chat".into(),
-        toml::Value::String(graph_core::prompts::DEFAULT_CHAT_PROMPT.into()),
-    );
-    prompts.insert(
-        "workbench".into(),
-        toml::Value::String(crate::workbench::WORKBENCH_SYSTEM_PROMPT.into()),
-    );
-    let mut root = toml::Table::new();
-    root.insert("prompts".into(), toml::Value::Table(prompts));
-    let rendered = toml::to_string_pretty(&root).context("serializing default prompts")?;
     Ok(format!(
-        "{FORMAT_KEY} = {CONFIG_FORMAT}\n\n{STARTER_CONFIG}{rendered}"
+        "{FORMAT_KEY} = {CONFIG_FORMAT}\n\n{STARTER_CONFIG}"
     ))
 }
 
@@ -341,7 +321,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn starter_parses_and_carries_the_builtin_prompts() {
+    fn starter_parses_and_leaves_prompts_to_the_agent_files() {
         let starter = starter_config().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -349,14 +329,8 @@ mod tests {
         // deny_unknown_fields on the model makes this catch skeleton drift.
         let loaded = graph_config::load_from(&[path]).unwrap();
         let config = loaded.config;
-        assert_eq!(
-            config.prompts.chat.as_deref(),
-            Some(graph_core::prompts::DEFAULT_CHAT_PROMPT)
-        );
-        assert_eq!(
-            config.prompts.workbench.as_deref(),
-            Some(crate::workbench::WORKBENCH_SYSTEM_PROMPT)
-        );
+        assert_eq!(config.prompts.chat, None);
+        assert_eq!(config.prompts.workbench, None);
         assert_eq!(loaded.layers[0].declared, Some(CONFIG_FORMAT));
         assert!(starter.starts_with(&format!("{FORMAT_KEY} = {CONFIG_FORMAT}\n")));
     }
