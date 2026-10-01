@@ -1,4 +1,4 @@
-//! The `decide` fork: a step that routes execution into one of two
+//! The `route` fork: a step that routes execution into one of two
 //! branches (`then`/`else`), gated like an `exit` step by a logical
 //! condition (`if`) or an inferred verdict (`infer`). Intercepted by
 //! the executor — never dispatched to a tool registry. Only the chosen
@@ -15,14 +15,14 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 /// Reserved step tool name.
-pub const DECIDE_TOOL: &str = "decide";
+pub const ROUTE_TOOL: &str = "route";
 
-/// The decide step's input, parsed from the RAW (unrendered) step input:
+/// The route step's input, parsed from the RAW (unrendered) step input:
 /// the condition and branches stay as plain values so rendering can be
 /// deferred until the gate has picked a side.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DecideSpec {
+pub struct RouteSpec {
     /// Logical gate. Exactly one of `if`/`infer` is required.
     #[serde(rename = "if", default)]
     pub if_: Option<Value>,
@@ -42,11 +42,11 @@ pub struct DecideSpec {
     pub else_: Option<Value>,
 }
 
-/// The decide step as described to the planner.
-pub fn decide_tool_def() -> crate::tools::ToolDef {
+/// The route step as described to the planner.
+pub fn route_tool_def() -> crate::tools::ToolDef {
     let branch_schema = body_schema(true);
     crate::tools::ToolDef {
-        name: DECIDE_TOOL.to_string(),
+        name: ROUTE_TOOL.to_string(),
         description: "Fork the plan on a condition: run `then` when it holds, otherwise \
                       `else` (or continue if `else` is omitted). Use it when the correct \
                       next call depends on a prior result — e.g. update an existing record \
@@ -55,7 +55,7 @@ pub fn decide_tool_def() -> crate::tools::ToolDef {
                       results), or `decide` (that question asked of a decision model, when \
                       one is configured). A branch is a single tool call or a list of steps; \
                       branches may contain `exit`, `agent`, `ask`, and `filter` steps (a \
-                      fired exit ends the WHOLE plan) but never `decide`, `map`, or \
+                      fired exit ends the WHOLE plan) but never `route`, `map`, or \
                       `reduce` — call a plan (plan__*) for nested control flow. Later \
                       steps reference this \
                       step's id: {{Ex.result}} is the chosen branch's output, \
@@ -95,21 +95,21 @@ pub fn decide_tool_def() -> crate::tools::ToolDef {
     }
 }
 
-/// Static validation of a decide step's raw input: gate arity, branch
+/// Static validation of a route step's raw input: gate arity, branch
 /// shape, branch tool names, branch-step ids, and template reference
 /// ordering. `seen` is the ids available before this step (including
 /// `input`); `all_plan_ids` is every top-level id, for collision checks.
-pub fn validate_decide_input(
+pub fn validate_route_input(
     input: &Map<String, Value>,
     seen: &[&str],
     all_plan_ids: &[&str],
     step_id: &str,
     problems: &mut Vec<String>,
 ) {
-    let spec: DecideSpec = match serde_json::from_value(Value::Object(input.clone())) {
+    let spec: RouteSpec = match serde_json::from_value(Value::Object(input.clone())) {
         Ok(spec) => spec,
         Err(e) => {
-            problems.push(format!("step {step_id}: invalid decide input: {e}"));
+            problems.push(format!("step {step_id}: invalid route input: {e}"));
             return;
         }
     };
@@ -119,7 +119,7 @@ pub fn validate_decide_input(
         .count()
     {
         0 => problems.push(format!(
-            "step {step_id}: decide needs `if`, `infer`, or `decide` — an unconditional decide is just steps"
+            "step {step_id}: route needs `if`, `infer`, or `decide` — an unconditional route is just steps"
         )),
         1 => {}
         _ => problems.push(format!(
@@ -169,17 +169,17 @@ pub fn validate_decide_input(
 }
 
 impl Pipeline {
-    /// Execute a decide step: render only the condition, evaluate the
+    /// Execute a route step: render only the condition, evaluate the
     /// gate, then render and run just the chosen branch. Ok carries the
-    /// value to store under the decide step's id.
-    pub(super) async fn run_decide(
+    /// value to store under the route step's id.
+    pub(super) async fn run_route(
         &self,
         step: &Step,
         state: &mut RunState,
     ) -> Result<Value, ExecutionEnd> {
         let failed = |message: String| ExecutionEnd::Failed {
             step: step.id.clone(),
-            tool: DECIDE_TOOL.to_string(),
+            tool: ROUTE_TOOL.to_string(),
             message,
         };
         let render_end = |e: RenderError| match e {
@@ -189,13 +189,13 @@ impl Pipeline {
             },
             e => ExecutionEnd::Failed {
                 step: step.id.clone(),
-                tool: DECIDE_TOOL.to_string(),
+                tool: ROUTE_TOOL.to_string(),
                 message: e.to_string(),
             },
         };
 
-        let spec: DecideSpec = serde_json::from_value(Value::Object(step.input.clone()))
-            .map_err(|e| failed(format!("invalid decide step input: {e}")))?;
+        let spec: RouteSpec = serde_json::from_value(Value::Object(step.input.clone()))
+            .map_err(|e| failed(format!("invalid route step input: {e}")))?;
 
         // Render only the condition; the branches wait until the gate has
         // picked a side.
@@ -207,7 +207,7 @@ impl Pipeline {
                 gate_payload.insert("if".to_string(), rendered.clone());
                 Some(
                     serde_json::from_value::<Condition>(rendered)
-                        .map_err(|e| failed(format!("invalid decide condition: {e}")))?,
+                        .map_err(|e| failed(format!("invalid route condition: {e}")))?,
                 )
             }
             None => None,
@@ -241,7 +241,7 @@ impl Pipeline {
         };
 
         self.events
-            .tool_started(DECIDE_TOOL, &Value::Object(gate_payload));
+            .tool_started(ROUTE_TOOL, &Value::Object(gate_payload));
         let started = std::time::Instant::now();
         let eval = crate::usage::CallSite::role("judge")
             .at(&step.id)
@@ -254,13 +254,13 @@ impl Pipeline {
                     model.as_deref(),
                     "if",
                 )?
-                .ok_or_else(|| "a decide step needs `if`, `infer`, or `decide`".to_string())?;
+                .ok_or_else(|| "a route step needs `if`, `infer`, or `decide`".to_string())?;
                 check_gate(gate, &self.router).await
             })
             .await;
         self.events
-            .tool_finished(DECIDE_TOOL, started.elapsed(), eval.is_err());
-        let outcome = eval.map_err(|e| failed(format!("decide step: {e}")))?;
+            .tool_finished(ROUTE_TOOL, started.elapsed(), eval.is_err());
+        let outcome = eval.map_err(|e| failed(format!("route step: {e}")))?;
         let (triggered, reason, probability) =
             (outcome.triggered, outcome.reason, outcome.probability);
 
@@ -318,7 +318,7 @@ impl Pipeline {
                 });
             }
         };
-        state.push_bus(&step.id, BusKind::Info, format!("decide → {branch_name}"));
+        state.push_bus(&step.id, BusKind::Info, format!("route → {branch_name}"));
         Ok(with_probability(
             json!({
                 "branch": branch_name,
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn spec_rejects_unknown_fields() {
-        let err = serde_json::from_value::<DecideSpec>(json!({
+        let err = serde_json::from_value::<RouteSpec>(json!({
             "then": {"toolName": "t__x", "input": {}},
             "otherwise": {"toolName": "t__y", "input": {}},
         }))
@@ -352,7 +352,7 @@ mod tests {
         }))
         .unwrap();
         let mut problems = Vec::new();
-        validate_decide_input(&input, &["input"], &["E0"], "E0", &mut problems);
+        validate_route_input(&input, &["input"], &["E0"], "E0", &mut problems);
         assert!(problems
             .iter()
             .any(|p| p.contains("`if`, `infer`, or `decide`")));
@@ -370,7 +370,7 @@ mod tests {
         }))
         .unwrap();
         let mut problems = Vec::new();
-        validate_decide_input(&input, &["input"], &["E0"], "E0", &mut problems);
+        validate_route_input(&input, &["input"], &["E0"], "E0", &mut problems);
         assert!(problems.is_empty(), "{problems:?}");
     }
 }

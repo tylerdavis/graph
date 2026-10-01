@@ -220,7 +220,7 @@ pub fn authoring_tools() -> Vec<Tool> {
             "graph_tools_show",
             "Show one tool's or control step's description and schemas. `inputSchema` is \
              what a plan step's input object must satisfy — call this before writing any \
-             step, including `exit`, `ask`, `agent`, `decide`, `map`, and `reduce`, whose \
+             step, including `exit`, `ask`, `agent`, `route`, `map`, and `reduce`, whose \
              grammar is only described here. Every key is always present, null when absent.",
             json!({
                 "type": "object",

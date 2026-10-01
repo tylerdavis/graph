@@ -32,7 +32,7 @@ steps:
       infer: "Is {{item.title}} urgent?"
       concurrency: 4
   - id: E4
-    tool_name: decide
+    tool_name: route
     input:
       infer: "Should these be escalated? {{E3.items}}"
       then: { tool_name: user__escalate, input: { items: "{{E3.items}}" } }

@@ -5,7 +5,7 @@
 //! executor — never dispatched to a tool registry, and (like every
 //! control step's evaluation) never consulted with the execution gate:
 //! selection makes no tool call. That is also why, unlike its siblings,
-//! `filter` may nest inside `decide`/`map`/`reduce` bodies — inside a
+//! `filter` may nest inside `route`/`map`/`reduce` bodies — inside a
 //! body its `where`/`infer` see their own `item`/`index`, shadowing the
 //! enclosing body's. Both halves of the partition are returned (`items`
 //! and `dropped`): selection narrows what runs next, never what is
@@ -74,7 +74,7 @@ pub fn filter_tool_def() -> crate::tools::ToolDef {
                       entries a later call cannot handle. `infer` costs one judge call \
                       per item (set `concurrency` to run them in parallel); prefer \
                       `where` whenever a field comparison can decide. Unlike other \
-                      control steps, `filter` may appear inside `decide`/`map`/`reduce` \
+                      control steps, `filter` may appear inside `route`/`map`/`reduce` \
                       bodies; its {{item}}/{{index}} shadow the enclosing body's inside \
                       the gate."
             .to_string(),
@@ -235,7 +235,7 @@ impl Pipeline {
     }
 
     /// Filter, evaluated against an arbitrary scope so it works
-    /// identically at the top level and inside a `decide`/`map`/`reduce`
+    /// identically at the top level and inside a `route`/`map`/`reduce`
     /// body. Per-item evaluation layers `item`/`index` over `scope`,
     /// shadowing an enclosing body's.
     pub(super) async fn run_filter_scoped(

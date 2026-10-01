@@ -30,7 +30,7 @@ steps:
         model: decider
       concurrency: 8
   - id: E2
-    tool_name: decide
+    tool_name: route
     input:
       decide:
         question: Should these be escalated?

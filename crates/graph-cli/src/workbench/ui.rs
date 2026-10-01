@@ -8,7 +8,7 @@ use super::plan_ws::{
     DraftingProgress, PlanWorkspace, RowKey, RunLine, StepRow, StepStatus, WsTab,
 };
 use graph_core::pipeline::{
-    AGENT_TOOL, DECIDE_TOOL, EXIT_TOOL, FILTER_TOOL, MAP_TOOL, MAX_STEP_ATTEMPTS, REDUCE_TOOL,
+    AGENT_TOOL, EXIT_TOOL, FILTER_TOOL, MAP_TOOL, MAX_STEP_ATTEMPTS, REDUCE_TOOL, ROUTE_TOOL,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
@@ -209,7 +209,7 @@ fn branch_color(body: &str) -> Color {
 /// takes the color of what flows out of it.
 fn control_icon(tool: &str) -> Option<(&'static str, Color)> {
     match tool {
-        DECIDE_TOOL => Some(("⑂", Color::Blue)),
+        ROUTE_TOOL => Some(("⑂", Color::Blue)),
         FILTER_TOOL => Some(("▽", Color::Cyan)),
         MAP_TOOL => Some(("⟳", Color::Cyan)),
         REDUCE_TOOL => Some(("∑", Color::Cyan)),
@@ -1767,7 +1767,7 @@ steps:
     tool_name: t__search
     input: { query: x }
   - id: E1
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: 1, op: gt, to: 0 }
       then:

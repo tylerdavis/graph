@@ -370,7 +370,7 @@ fn validate_plan_rejects_workbench_tools_statically() {
     // The same guard applies inside control-step bodies.
     let body_plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "if": {"value": "{{E0.count}}", "op": "gt", "to": 0},
             "then": {"toolName": "workbench__read_file", "input": {}}
         }}
@@ -736,7 +736,7 @@ async fn inferred_decide_model_override_selects_named_model() {
     );
     let plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "infer": "Is this urgent? {{E0.values}}",
             "model": "fast",
             "then": {"toolName": "t__search", "input": {"query": "y"}},
@@ -787,7 +787,7 @@ fn decide_plan(then: Value, else_branch: Option<Value>) -> Plan {
     }
     serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": input},
+        {"id": "E1", "toolName": "route", "input": input},
     ]))
     .unwrap()
 }
@@ -952,7 +952,7 @@ async fn inferred_decide_uses_judge_verdict() {
     );
     let plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "infer": "Is this urgent? {{E0.values}}",
             "then": {"toolName": "t__issues", "input": {"q": "escalate"}},
         }},
@@ -1041,7 +1041,7 @@ steps:
         panic!("expected StepFailed");
     };
     assert_eq!(step, "E1");
-    assert_eq!(tool, "decide");
+    assert_eq!(tool, "route");
     assert!(message.contains("inner assertion"), "{message}");
 }
 
@@ -1067,11 +1067,11 @@ async fn branch_failure_fails_the_decide_step_and_replans_in_planned_mode() {
     else {
         panic!("expected StepFailed");
     };
-    assert_eq!((step.as_str(), tool.as_str()), ("E1", "decide"));
+    assert_eq!((step.as_str(), tool.as_str()), ("E1", "route"));
     assert!(message.contains("`then` branch"), "{message}");
 
     // Planned mode: the failure lands on the bus and triggers a replan.
-    let decide_step = json!({"id": "E1", "toolName": "decide", "input": {
+    let decide_step = json!({"id": "E1", "toolName": "route", "input": {
         "if": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
         "then": {"toolName": "t__issues", "input": {"q": "x"}},
     }});
@@ -1112,7 +1112,7 @@ async fn empty_data_in_chosen_branch_degrades_normally() {
     let (pipeline, _) = pipeline(vec![], registry, 1);
     let plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "if": {"value": "{{E0.values.length}}", "op": "eq", "to": 0},
             "then": {"toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}},
         }},
@@ -1133,7 +1133,7 @@ async fn decide_validation_rejections() {
     let run = |input: Value| {
         let plan: Plan = serde_json::from_value(json!([
             {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-            {"id": "E1", "toolName": "decide", "input": input},
+            {"id": "E1", "toolName": "route", "input": input},
         ]))
         .unwrap();
         let pipeline = pipeline.clone();
@@ -1161,7 +1161,7 @@ async fn decide_validation_rejections() {
 
     let message = run(json!({
         "if": {"value": 1, "op": "eq", "to": 1},
-        "then": {"toolName": "decide", "input": {}},
+        "then": {"toolName": "route", "input": {}},
     }))
     .await;
     assert!(message.contains("cannot nest"), "{message}");
@@ -1203,7 +1203,7 @@ async fn planner_gets_the_decide_tool_and_authored_decides_work() {
             structured(json!({
                 "plan": [
                     {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-                    {"id": "E1", "toolName": "decide", "input": {
+                    {"id": "E1", "toolName": "route", "input": {
                         "if": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
                         "then": {"toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}},
                     }},
@@ -1219,7 +1219,7 @@ async fn planner_gets_the_decide_tool_and_authored_decides_work() {
     assert_eq!(outcome.answer, "done");
     assert_eq!(outcome.state.results["E1"]["branch"], json!("then"));
     let requests = provider.requests.lock().unwrap();
-    assert!(requests[0].system.contains("\"name\":\"decide\""));
+    assert!(requests[0].system.contains("\"name\":\"route\""));
 }
 
 #[tokio::test]
@@ -1234,7 +1234,7 @@ steps:
     tool_name: t__search
     input: { query: "x" }
   - id: E1
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "{{E0.values.length}}", op: gt, to: 0 }
       then:
@@ -1271,7 +1271,7 @@ name: Ok
 description: exit in a branch
 steps:
   - id: E0
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: 1, op: eq, to: 1 }
       then:
@@ -1290,7 +1290,7 @@ name: Bad
 description: map nested in branch
 steps:
   - id: E0
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: 1, op: eq, to: 1 }
       then:
@@ -1654,7 +1654,7 @@ async fn filter_in_decide_branch_and_planner_catalog() {
     let (pipeline, _) = pipeline(vec![], registry, 1);
     let plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "if": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
             "then": {"toolName": "filter", "input": {
                 "over": "{{E0.values}}",
@@ -2029,10 +2029,10 @@ async fn iteration_validation_rejections() {
     .await;
     assert!(message.contains("concurrency"), "{message}");
 
-    // Control steps cannot nest: map inside a decide branch…
+    // Control steps cannot nest: map inside a route branch…
     let message = run(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "if": {"value": 1, "op": "eq", "to": 1},
             "then": {"toolName": "map", "input": {}},
         }},
@@ -2045,7 +2045,7 @@ async fn iteration_validation_rejections() {
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
         {"id": "E1", "toolName": "map", "input": {
             "over": "{{E0.values}}",
-            "do": {"toolName": "decide", "input": {}},
+            "do": {"toolName": "route", "input": {}},
         }},
     ]))
     .await;
@@ -2463,7 +2463,7 @@ async fn gate_fires_inside_decide_branch_and_map_body() {
     let gate = ScriptedGate::new(vec![]);
     let plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "if": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
             "then": {"toolName": "t__issues", "input": {"q": "{{E0.values.0.id}}"}},
         }},
@@ -2483,7 +2483,7 @@ async fn gate_fires_inside_decide_branch_and_map_body() {
         vec!["E0", "E1/then", "E2/do.0/E10", "E2/do.1/E10"]
     );
     assert!(
-        gate.tools().iter().all(|t| t != "decide" && t != "map"),
+        gate.tools().iter().all(|t| t != "route" && t != "map"),
         "control steps are never gated"
     );
 }
@@ -2584,7 +2584,7 @@ async fn step_events_attribute_body_and_control_results() {
     assert_eq!(body.2, json!({"got": {"q": "team-1"}}));
     let decide = finished
         .iter()
-        .find(|(path, tool, ..)| path == "E1" && tool == "decide")
+        .find(|(path, tool, ..)| path == "E1" && tool == "route")
         .expect("decide aggregate event");
     assert_eq!(decide.2["branch"], json!("then"));
 }
@@ -2595,7 +2595,7 @@ async fn validate_plan_reports_all_problems() {
     let (pipeline, _) = pipeline(vec![], registry, 1);
     let plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "{{E5.values}}"}},
-        {"id": "E1", "toolName": "decide", "input": {"then": {"toolName": "t__issues", "input": {}}}},
+        {"id": "E1", "toolName": "route", "input": {"then": {"toolName": "t__issues", "input": {}}}},
     ]))
     .unwrap();
     let problems = pipeline.validate_plan(&plan).unwrap_err();
@@ -4576,7 +4576,7 @@ fn every_control_step_is_described_in_the_catalog() {
         AGENT_TOOL,
         ASK_TOOL,
         EXIT_TOOL,
-        DECIDE_TOOL,
+        ROUTE_TOOL,
         FILTER_TOOL,
         MAP_TOOL,
         REDUCE_TOOL,
@@ -4639,7 +4639,7 @@ fn a_body_bearing_control_step_names_every_step_legal_in_its_body() {
     // reads. When `ask` landed they still said "may contain an agent
     // step", which is how a planner learns a legal step is illegal.
     for def in control_step_defs() {
-        if ![DECIDE_TOOL, MAP_TOOL, REDUCE_TOOL].contains(&def.name.as_str()) {
+        if ![ROUTE_TOOL, MAP_TOOL, REDUCE_TOOL].contains(&def.name.as_str()) {
             continue;
         }
         for legal in [AGENT_TOOL, ASK_TOOL, FILTER_TOOL] {
@@ -4908,7 +4908,7 @@ async fn a_decide_gate_on_the_decide_step_picks_the_branch_and_reports_the_proba
             pipeline_with_decider(vec![], registry.clone(), Box::new(move |_| probability));
         let plan: Plan = serde_json::from_value(json!([
             {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-            {"id": "E1", "toolName": "decide", "input": {
+            {"id": "E1", "toolName": "route", "input": {
                 "decide": {"question": "Is it urgent?", "state": "{{E0.values}}", "min_confidence": 0.6},
                 "then": {"toolName": "t__issues", "input": {}},
                 "else": {"toolName": "t__search", "input": {"query": "else"}},
@@ -4990,7 +4990,7 @@ fn static_validation_checks_the_decide_gate_shape() {
     let (pipeline, _) = pipeline(vec![], registry, 1);
     let plan: Plan = serde_json::from_value(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-        {"id": "E1", "toolName": "decide", "input": {
+        {"id": "E1", "toolName": "route", "input": {
             "decide": {"question": "q?", "options": {"a": "A"}, "threshold": 0.5},
             "model": "decider",
             "then": {"toolName": "t__issues", "input": {}},
@@ -5046,7 +5046,7 @@ steps:
     tool_name: exit
     input: { decide: { question: "blocked?", model: default }, status: error }
   - id: E2
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: 1, op: eq, to: 1 }
       then:

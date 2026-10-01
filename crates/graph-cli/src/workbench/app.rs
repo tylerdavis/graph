@@ -2826,7 +2826,7 @@ steps:
           tool_name: t__fetch
           input: { url: "{{item.url}}" }
   - id: E3
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "{{E0.count}}", op: gt, to: 0 }
       then: { tool_name: t__notify, input: { message: hit } }

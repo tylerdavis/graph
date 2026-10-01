@@ -362,7 +362,7 @@ impl Pipeline {
     }
 
     /// The agent loop, rendered against an arbitrary scope so it works
-    /// identically at the top level and inside a `decide`/`map`/`reduce`
+    /// identically at the top level and inside a `route`/`map`/`reduce`
     /// body (where the scope carries `item`/`index`/`accumulator`).
     ///
     /// The agent step itself is never gated — it is a control step, and

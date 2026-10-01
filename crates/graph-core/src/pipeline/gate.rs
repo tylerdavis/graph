@@ -1,6 +1,6 @@
 //! Execution gating: an optional hook consulted before every real tool
 //! dispatch — registry tools, `plan__*` steps, `plan_and_execute`, and
-//! every call inside decide branches and map/reduce bodies, at any plan
+//! every call inside route branches and map/reduce bodies, at any plan
 //! nesting depth. It lets an interactive caller (the workbench) pause a
 //! run for confirmation, skip a call by injecting its result, or abort.
 //!
