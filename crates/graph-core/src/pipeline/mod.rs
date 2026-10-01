@@ -1221,9 +1221,34 @@ impl Pipeline {
 /// references to roots that are not available at this point in the plan —
 /// `available` carries `input`, every earlier step id, and (inside
 /// control-step bodies) the pseudo-roots and earlier same-body ids.
-const DECIDE_GATE_KEYS: &[&str] = &["question", "state", "model", "criteria", "min_confidence"];
+const DECIDE_GATE_KEYS: &[&str] = &[
+    "question",
+    "state",
+    "model",
+    "criteria",
+    "min_confidence",
+    "options",
+];
 
-fn check_decide_gate_shape(gate: &Value, step_id: &str, problems: &mut Vec<String>) {
+const MAX_OPTIONS: usize = 255;
+
+const RESERVED_CASE_KEYS: &[&str] = &["then", "else", "do"];
+
+fn is_case_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !RESERVED_CASE_KEYS.contains(&key)
+}
+
+fn check_decide_gate_shape(
+    gate: &Value,
+    allow_options: bool,
+    step_id: &str,
+    problems: &mut Vec<String>,
+) {
     let Some(fields) = gate.as_object() else {
         problems.push(format!(
             "step {step_id}: `decide` must be an object with at least a `question`"
@@ -1236,11 +1261,7 @@ fn check_decide_gate_shape(gate: &Value, step_id: &str, problems: &mut Vec<Strin
         ));
     }
     for key in fields.keys() {
-        if key == "options" {
-            problems.push(format!(
-                "step {step_id}: `decide.options` (named cases) is not supported yet; it arrives with the `route` step"
-            ));
-        } else if !DECIDE_GATE_KEYS.contains(&key.as_str()) {
+        if !DECIDE_GATE_KEYS.contains(&key.as_str()) {
             problems.push(format!(
                 "step {step_id}: unknown field `decide.{key}`, expected one of {}",
                 DECIDE_GATE_KEYS
@@ -1251,10 +1272,51 @@ fn check_decide_gate_shape(gate: &Value, step_id: &str, problems: &mut Vec<Strin
             ));
         }
     }
+    if let Some(options) = fields.get("options") {
+        check_decide_options(options, allow_options, step_id, problems);
+    }
     if let Some(min) = fields.get("min_confidence").and_then(Value::as_f64) {
         if !(0.0..=1.0).contains(&min) {
             problems.push(format!(
                 "step {step_id}: `decide.min_confidence` must be between 0 and 1, got {min}"
+            ));
+        }
+    }
+}
+
+fn check_decide_options(
+    options: &Value,
+    allow_options: bool,
+    step_id: &str,
+    problems: &mut Vec<String>,
+) {
+    if !allow_options {
+        problems.push(format!(
+            "step {step_id}: `decide.options` (named cases) only works on a `route` step, which runs one case per option"
+        ));
+        return;
+    }
+    let Some(options) = options.as_object() else {
+        problems.push(format!(
+            "step {step_id}: `decide.options` must map each case name to a description"
+        ));
+        return;
+    };
+    if !(2..=MAX_OPTIONS).contains(&options.len()) {
+        problems.push(format!(
+            "step {step_id}: `decide.options` needs between 2 and {MAX_OPTIONS} cases, got {}",
+            options.len()
+        ));
+    }
+    for (key, description) in options {
+        if !is_case_key(key) {
+            problems.push(format!(
+                "step {step_id}: case name `{key}` must be an identifier (letters, digits, underscores) and not then, else, or do"
+            ));
+        }
+        if !description.is_string() {
+            problems.push(format!(
+                "step {step_id}: `decide.options.{key}` must be a description string"
             ));
         }
     }

@@ -6,7 +6,7 @@ Decisions carried in:
 - **`else` keeps one meaning:** "the decision did not commit to a named branch". There is no separate `fallback` key.
 - **Named cases are `decide`-only.** `infer` gets no `options`, because an LLM has no calibrated confidence to put behind `min_confidence`.
 
-## Task 1: Rename the `decide` step to `route`
+## [x] Task 1: Rename the `decide` step to `route`
 - **Change:**
   - `DECIDE_TOOL` becomes `ROUTE_TOOL = "route"`, and `decision.rs` becomes `route.rs`.
   - The tool def, messages, and bus/trace names follow.
@@ -19,7 +19,7 @@ Decisions carried in:
   - The reserved-name lists say `route`.
 - **Verify:** `mise run test`, and `plan validate` on the repo's `.graph/plans`.
 
-## Task 2: Named cases
+## [x] Task 2: Named cases
 - **Change:**
   - `decide.options` (`{key: description}`, 2–255 identifier keys) turns the gate into a choice.
   - `route` takes `cases: {key: body}`, and its keys must equal the `options` keys. `else` runs below `min_confidence` on `confidence`.

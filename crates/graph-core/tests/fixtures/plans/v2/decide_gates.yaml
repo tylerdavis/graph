@@ -36,3 +36,20 @@ steps:
         question: Should these be escalated?
         state: "{{E1.items}}"
       then: { tool_name: user__escalate, input: { items: "{{E1.items}}" } }
+  - id: E3
+    tool_name: route
+    input:
+      decide:
+        question: Which team should handle this ticket?
+        state: "{{input.diff}}"
+        options:
+          billing: Payments, invoicing, refunds
+          technical: Bugs, outages, errors
+        min_confidence: 0.6
+      cases:
+        billing: { tool_name: user__route_billing, input: {} }
+        technical:
+          - id: T0
+            tool_name: user__open_incident
+            input: {}
+      else: { tool_name: ask, input: { prompt: "Route this ticket?", output_schema: { type: object, properties: { team: { type: string } } } } }

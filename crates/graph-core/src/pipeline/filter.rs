@@ -171,7 +171,7 @@ pub fn validate_filter_input(
         super::check_templates(&Value::String(model.clone()), seen, step_id, problems);
     }
     if let Some(gate) = &spec.decide {
-        super::check_decide_gate_shape(gate, step_id, problems);
+        super::check_decide_gate_shape(gate, false, step_id, problems);
         super::check_templates(gate, &gate_avail, step_id, problems);
     }
 

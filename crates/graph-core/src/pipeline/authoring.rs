@@ -835,6 +835,11 @@ fn snake_case_step(step: &mut serde_yaml::Value) {
                     snake_case_body(branch);
                 }
             }
+            if let Some(serde_yaml::Value::Mapping(cases)) = input.get_mut("cases") {
+                for (_, branch) in cases.iter_mut() {
+                    snake_case_body(branch);
+                }
+            }
         }
         Some(MAP_TOOL | REDUCE_TOOL) => {
             if let Some(body) = input.get_mut("do") {

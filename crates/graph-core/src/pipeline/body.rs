@@ -39,6 +39,29 @@ pub struct BranchCall {
 /// Parse a body value: an array is an inline step list, an object is a
 /// single call. Explicit rather than serde-untagged so authors get a
 /// pointed error instead of "did not match any variant".
+pub fn control_bodies<'a>(tool: &str, input: &'a Map<String, Value>) -> Vec<(String, &'a Value)> {
+    let mut bodies = Vec::new();
+    let mut push = |key: &str, value: Option<&'a Value>| {
+        if let Some(value) = value {
+            bodies.push((key.to_string(), value));
+        }
+    };
+    match tool {
+        super::ROUTE_TOOL => {
+            push("then", input.get("then"));
+            if let Some(cases) = input.get("cases").and_then(Value::as_object) {
+                for (key, body) in cases {
+                    push(key, Some(body));
+                }
+            }
+            push("else", input.get("else"));
+        }
+        super::MAP_TOOL | super::REDUCE_TOOL => push("do", input.get("do")),
+        _ => {}
+    }
+    bodies
+}
+
 pub fn parse_branch(name: &str, raw: &Value) -> Result<Branch, String> {
     match raw {
         Value::Array(_) => {

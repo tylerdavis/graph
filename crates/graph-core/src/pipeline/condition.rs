@@ -56,7 +56,15 @@ pub struct DecideGate {
     #[serde(default)]
     pub min_confidence: Option<f64>,
     #[serde(default)]
-    pub options: Option<Value>,
+    pub options: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChoiceOutcome {
+    pub choice: String,
+    pub confidence: f64,
+    pub probabilities: BTreeMap<String, f64>,
+    pub committed: bool,
 }
 
 pub const DEFAULT_MIN_CONFIDENCE: f64 = 0.5;
@@ -164,16 +172,81 @@ async fn infer_verdict(
 async fn decide_verdict(gate: &DecideGate, router: &ModelRouter) -> Result<GateOutcome, String> {
     if gate.options.is_some() {
         return Err(
-            "`options` (named cases) is not supported yet; it arrives with the `route` step"
+            "`options` (named cases) only works on a `route` step, which runs one case per option"
                 .to_string(),
         );
     }
-    let min_confidence = gate.min_confidence.unwrap_or(DEFAULT_MIN_CONFIDENCE);
+    let min_confidence = min_confidence(gate, DEFAULT_MIN_CONFIDENCE)?;
+    let question = Question::Likelihood {
+        instructions: gate.question.clone(),
+        criteria: gate.criteria.clone(),
+    };
+    let probability = match ask_decision_model(gate, question, router).await? {
+        Answer::Likelihood { probability } => probability,
+        other => {
+            return Err(format!(
+                "decision failed: expected a likelihood answer, got {other:?}"
+            ))
+        }
+    };
+    Ok(GateOutcome {
+        triggered: probability >= min_confidence,
+        reason: None,
+        probability: Some(probability),
+    })
+}
+
+pub async fn decide_choice(
+    gate: &DecideGate,
+    router: &ModelRouter,
+) -> Result<ChoiceOutcome, String> {
+    let Some(options) = &gate.options else {
+        return Err("a choice needs `options`".to_string());
+    };
+    let min_confidence = min_confidence(gate, 0.0)?;
+    let question = Question::Choice {
+        instructions: gate.question.clone(),
+        criteria: options.clone(),
+    };
+    match ask_decision_model(gate, question, router).await? {
+        Answer::Choice {
+            choice,
+            confidence,
+            probabilities,
+        } => {
+            if !options.contains_key(&choice) {
+                return Err(format!(
+                    "decision failed: the model chose '{choice}', which is not one of the options"
+                ));
+            }
+            Ok(ChoiceOutcome {
+                committed: confidence >= min_confidence,
+                choice,
+                confidence,
+                probabilities,
+            })
+        }
+        other => Err(format!(
+            "decision failed: expected a choice answer, got {other:?}"
+        )),
+    }
+}
+
+fn min_confidence(gate: &DecideGate, default: f64) -> Result<f64, String> {
+    let min_confidence = gate.min_confidence.unwrap_or(default);
     if !(0.0..=1.0).contains(&min_confidence) {
         return Err(format!(
             "`min_confidence` must be between 0 and 1, got {min_confidence}"
         ));
     }
+    Ok(min_confidence)
+}
+
+async fn ask_decision_model(
+    gate: &DecideGate,
+    question: Question,
+    router: &ModelRouter,
+) -> Result<Answer, String> {
     let role = gate.model.as_deref().unwrap_or(Role::Decider.as_str());
     if router.kind_of_role(role) == Some(ModelKind::Chat) {
         return Err(format!(
@@ -183,31 +256,16 @@ async fn decide_verdict(gate: &DecideGate, router: &ModelRouter) -> Result<GateO
     let request = DecisionRequest {
         model: String::new(),
         state: gate.state.clone().unwrap_or(Value::Null),
-        questions: BTreeMap::from([(
-            GATE_QUESTION.to_string(),
-            Question::Likelihood {
-                instructions: gate.question.clone(),
-                criteria: gate.criteria.clone(),
-            },
-        )]),
+        questions: BTreeMap::from([(GATE_QUESTION.to_string(), question)]),
     };
     let response = CallSite::as_role(role, router.decide_named(gate.model.as_deref(), request))
         .await
         .map_err(|e| format!("decision failed: {e}"))?;
-    let probability = match response.answers.get(GATE_QUESTION) {
-        Some(Answer::Likelihood { probability }) => *probability,
-        Some(other) => {
-            return Err(format!(
-                "decision failed: expected a likelihood answer, got {other:?}"
-            ))
-        }
-        None => return Err("decision failed: the model returned no answer".to_string()),
-    };
-    Ok(GateOutcome {
-        triggered: probability >= min_confidence,
-        reason: None,
-        probability: Some(probability),
-    })
+    response
+        .answers
+        .get(GATE_QUESTION)
+        .cloned()
+        .ok_or_else(|| "decision failed: the model returned no answer".to_string())
 }
 
 const GATE_QUESTION: &str = "gate";
