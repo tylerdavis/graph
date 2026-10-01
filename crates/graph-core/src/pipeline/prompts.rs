@@ -17,7 +17,7 @@ pub const CONTROL_STEP_RULES: &str = include_str!("prompts/control_step_rules.md
 
 /// Planning rules shared verbatim by the planner and drafting
 /// prompts, which differ only in how they are called.
-const PLANNING_RULES: &str = include_str!("prompts/planning_rules.md").trim_ascii_end();
+pub(super) const PLANNING_RULES: &str = include_str!("prompts/planning_rules.md").trim_ascii_end();
 
 const BUILTIN_SUMMARIES: &[(&str, &str)] = &[
     (
@@ -132,41 +132,16 @@ pub fn planner_prompt(args: &PlannerPromptArgs) -> String {
     )
 }
 
-pub struct DraftingPromptArgs<'a> {
-    pub current_date: &'a str,
-    pub tools: &'a str,
-    pub user_context: &'a str,
-    pub step_schema: &'a str,
-    /// A draft plan under revision (workbench). Nothing in it has
-    /// executed: every step is mutable, and the revision regenerates the
-    /// plan in full — outline first, then steps.
-    pub draft: Option<&'a str>,
-}
-
-/// The system prompt for plan drafting. Built once per drafting session
-/// and reused byte-identically for the outline call and every step call,
-/// so the provider's prompt-cache prefix stays stable.
-pub fn drafting_prompt(args: &DraftingPromptArgs) -> String {
-    let draft_section = match args.draft {
-        Some(draft) => format!(
-            "### Draft Under Revision\nThe following draft plan has NOT been executed. \
-             Revise it according to the user's request — you may modify, reorder, \
-             remove, or replace any step. Output the COMPLETE revised plan, not a diff: \
-             every step, starting from the first.\n\
-             <draft_plan>\n{draft}\n</draft_plan>\n\n"
-        ),
-        None => String::new(),
-    };
+pub fn revision_section(draft: &str) -> String {
+    if draft.is_empty() {
+        return String::new();
+    }
     format!(
-        include_str!("prompts/drafting.md"),
-        current_date = args.current_date,
-        tools = args.tools,
-        templating_rules = TEMPLATING_RULES,
-        user_context = args.user_context,
-        draft_section = draft_section,
-        step_schema = args.step_schema,
-        planning_rules = PLANNING_RULES,
-        control_step_rules = CONTROL_STEP_RULES,
+        "### Draft Under Revision\nThe following draft plan has NOT been executed. \
+         Revise it according to the user's request — you may modify, reorder, \
+         remove, or replace any step. Output the COMPLETE revised plan, not a diff: \
+         every step, starting from the first.\n\
+         <draft_plan>\n{draft}\n</draft_plan>\n\n"
     )
 }
 
@@ -269,51 +244,12 @@ mod tests {
         assert!(prompt.contains(PLANNING_RULES));
     }
 
-    fn drafting_prompt_for(draft: Option<&str>) -> String {
-        drafting_prompt(&DraftingPromptArgs {
-            current_date: "2026-01-01",
-            tools: "(no tools available)",
-            user_context: "(none)",
-            step_schema: "{}",
-            draft,
-        })
-    }
-
     #[test]
-    fn drafting_prompt_carries_the_shared_sections() {
-        let prompt = drafting_prompt_for(None);
-        assert!(prompt.contains(CONTROL_STEP_RULES));
-        assert!(prompt.contains(PLANNING_RULES));
-        assert!(prompt.contains(TEMPLATING_RULES));
-        assert!(!prompt.contains("Draft Under Revision"));
-    }
-
-    #[test]
-    fn drafting_prompt_teaches_the_drafting_protocol() {
-        let prompt = drafting_prompt_for(None);
-        assert!(
-            prompt.contains("is ONE step"),
-            "a control step must be exactly one step"
-        );
-        assert!(
-            prompt.contains("on your FIRST step response"),
-            "the solver brief rides on the first step draft"
-        );
-        assert!(
-            prompt.contains("`step: null` with `planComplete: true`"),
-            "the done-early convention must be taught"
-        );
-        assert!(
-            prompt.contains("Never re-emit accepted steps"),
-            "the correction protocol must be taught"
-        );
-    }
-
-    #[test]
-    fn drafting_prompt_revision_slot_carries_the_draft() {
-        let prompt = drafting_prompt_for(Some("{\"plan\": []}"));
-        assert!(prompt.contains("Draft Under Revision"));
-        assert!(prompt.contains("{\"plan\": []}"));
+    fn the_revision_section_carries_the_draft_only_when_revising() {
+        assert_eq!(revision_section(""), "");
+        let section = revision_section("{\"plan\": []}");
+        assert!(section.contains("Draft Under Revision"));
+        assert!(section.contains("{\"plan\": []}"));
     }
 
     #[test]

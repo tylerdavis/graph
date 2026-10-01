@@ -117,7 +117,7 @@ graph plan run my_plan --json | jq '.usage.by_step[]
   | {path, cache_read_input_tokens, cache_creation_input_tokens}'
 ```
 
-A step that makes several calls and shows writes on every one with zero reads has a prefix that changes between calls. The usual causes: a timestamp or generated id near the front of the prompt, or a shared-prefix/varying-suffix shape where the varying part isn't last. The second is worth knowing about for plan authoring — a `builtin__infer` under a `map` interpolates `{{item}}` into its `instruction`, so if the item lands in the middle of the prompt every item writes its own entry and none are ever read. Put the stable instruction first and `{{item}}` at the end.
+A step that makes several calls and shows writes on every one with zero reads has a prefix that changes between calls. The usual causes: a timestamp or generated id near the front of the prompt, or a shared-prefix/varying-suffix shape where the varying part isn't last. The second is worth knowing about for plan authoring — a `builtin__infer` under a `map` interpolates `{{item}}` into its `instruction`, so if the item lands in the middle of the prompt every item writes its own entry and none are ever read. Put the stable instruction first and `{{item}}` at the end, or pass the stable part as `builtin__infer`'s `system` input, which is sent as the system prompt and cached on its own.
 
 Three limits to keep in mind: the minimum cacheable prefix is model-dependent (1024 tokens on `claude-sonnet-5`); a breakpoint looks back at most 20 content blocks, which a round making many tool calls can exceed; and caches are **model-scoped**, so [failing over](#provider-failover) to another model starts cold by design.
 

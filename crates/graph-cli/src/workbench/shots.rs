@@ -378,7 +378,8 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
     });
 
     let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
-    let llm = graph_core::user_tools::load_pack_tools(&["llm".to_string()]).unwrap();
+    let llm =
+        graph_core::user_tools::load_pack_tools(&["llm".to_string(), "data".to_string()]).unwrap();
     let pipeline = Arc::new(Pipeline {
         registry: Arc::new(graph_core::CompositeRegistry::new(vec![
             Arc::new(graph_core::user_tools::UserToolRegistry::builtins(
