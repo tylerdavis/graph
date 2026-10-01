@@ -63,8 +63,9 @@ pub fn filter_tool_def() -> crate::tools::ToolDef {
         name: FILTER_TOOL.to_string(),
         description: "Partition a list with a per-item gate. `over` must produce an array \
                       (usually a template like {{E0.issues}}); the gate — exactly one of \
-                      `where` (a logical condition) or `infer` (a yes/no question judged \
-                      per item) — is evaluated once per element with {{item}} and \
+                      `where` (a logical condition), `infer` (a yes/no question judged \
+                      per item), or `decide` (that question asked of a decision model, \
+                      when one is configured, with state: {{item}}) — is evaluated once per element with {{item}} and \
                       {{index}} available. Later steps reference {{Ex.items}} (elements \
                       that passed, input order) with {{Ex.count}}, and {{Ex.dropped}} \
                       (elements that did not) with {{Ex.dropped_count}}. Use it to select \
@@ -92,6 +93,18 @@ pub fn filter_tool_def() -> crate::tools::ToolDef {
                     }
                 },
                 "infer": {"type": "string", "description": "A yes/no question about {{item}}; the element is kept on yes. One judge call per item."},
+                "decide": {
+                    "type": "object",
+                    "required": ["question"],
+                    "description": "A per-item yes/no question answered by a decision model (only when one is configured); keeps the element when its probability reaches min_confidence. Results add `probabilities`, aligned with `over`.",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "state": {"description": "The data to judge, usually {{item}}"},
+                        "criteria": {"type": "object", "properties": {"true": {"type": "string"}, "false": {"type": "string"}}},
+                        "min_confidence": {"type": "number", "description": "0 to 1; default 0.5"},
+                        "model": {"type": "string", "description": "A decision model role; defaults to decider"}
+                    }
+                },
                 "model": {"type": "string", "description": "Model role for `infer` verdicts (any configured role, standard or custom); defaults to the judge role."},
                 "concurrency": {"type": "integer", "minimum": 1, "description": "Maximum `infer` verdicts in flight; 1 (default) evaluates one at a time."}
             }

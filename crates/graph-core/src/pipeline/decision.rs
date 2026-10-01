@@ -51,8 +51,9 @@ pub fn decide_tool_def() -> crate::tools::ToolDef {
                       `else` (or continue if `else` is omitted). Use it when the correct \
                       next call depends on a prior result — e.g. update an existing record \
                       vs. create a new one. Gate it with exactly one of `if` (a logical \
-                      comparison) or `infer` (a yes/no question judged against prior \
-                      results). A branch is a single tool call or a list of steps; \
+                      comparison), `infer` (a yes/no question judged against prior \
+                      results), or `decide` (that question asked of a decision model, when \
+                      one is configured). A branch is a single tool call or a list of steps; \
                       branches may contain `exit`, `agent`, `ask`, and `filter` steps (a \
                       fired exit ends the WHOLE plan) but never `decide`, `map`, or \
                       `reduce` — call a plan (plan__*) for nested control flow. Later \
@@ -74,6 +75,18 @@ pub fn decide_tool_def() -> crate::tools::ToolDef {
                     }
                 },
                 "infer": {"type": "string", "description": "A yes/no question about prior results; runs `then` on yes."},
+                "decide": {
+                    "type": "object",
+                    "required": ["question"],
+                    "description": "A yes/no question answered by a decision model (only when one is configured); fires when its probability reaches min_confidence.",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "state": {"description": "The data to judge, usually a template like {{E2.text}}"},
+                        "criteria": {"type": "object", "properties": {"true": {"type": "string"}, "false": {"type": "string"}}},
+                        "min_confidence": {"type": "number", "description": "0 to 1; default 0.5"},
+                        "model": {"type": "string", "description": "A decision model role; defaults to decider"}
+                    }
+                },
                 "model": {"type": "string", "description": "Model role for the `infer` verdict (any configured role, standard or custom); defaults to the judge role."},
                 "then": branch_schema.clone(),
                 "else": branch_schema
