@@ -21,10 +21,6 @@ input_schema:
     state:
       type: object
       description: The drafting state so far
-    revising:
-      type: string
-      description: A draft plan being revised, as YAML; every step is regenerated
-      default: ""
 steps:
   - id: context
     tool_name: builtin__draft_context
@@ -33,7 +29,6 @@ steps:
       outline: "{{input.outline}}"
       entry: "{{input.entry}}"
       state: "{{input.state}}"
-      revising: "{{input.revising}}"
     reasoning: The step request, the attempt numbers, the step-response schema, and the catalog and rules the drafting prompt is built from.
   - id: prompt
     tool_name: builtin__reshape
@@ -60,7 +55,7 @@ steps:
           </current_user_context>
 
           ## Plan Structure
-          {{context.revision}}### Step Schema
+          ### Step Schema
           Each step must conform to:
           <step>
           {{context.step_schema}}

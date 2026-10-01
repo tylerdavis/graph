@@ -3183,13 +3183,9 @@ fn with_drafting_builtins(mut pipeline: Pipeline) -> Pipeline {
     pipeline
 }
 
-async fn draft(
-    pipeline: &Pipeline,
-    goal: &str,
-    existing: Option<&PlannerOutput>,
-) -> Result<super::Draft, String> {
+async fn draft(pipeline: &Pipeline, goal: &str) -> Result<super::Draft, String> {
     let call = pipeline
-        .call_plan(super::DRAFT_PLAN, super::draft_input(goal, existing))
+        .call_plan(super::DRAFT_PLAN, super::draft_input(goal))
         .await;
     if call.is_error {
         return Err(call.result.to_string());
@@ -3198,7 +3194,7 @@ async fn draft(
 }
 
 async fn drafted(pipeline: &Pipeline, goal: &str) -> PlannerOutput {
-    let draft = draft(pipeline, goal, None).await.unwrap();
+    let draft = draft(pipeline, goal).await.unwrap();
     assert_eq!(draft.failed_step, None, "{:?}", draft.problems);
     draft.output
 }
@@ -3373,7 +3369,7 @@ async fn draft_exhausted_retries_returns_valid_partial() {
         ],
         registry,
     );
-    let draft = draft(&pipeline, "sprint status", None).await.unwrap();
+    let draft = draft(&pipeline, "sprint status").await.unwrap();
     assert_eq!(draft.failed_step.as_deref(), Some("E1"));
     let problems = &draft.problems;
     assert!(problems.iter().any(|p| p.contains("E7")), "{problems:?}");
@@ -3387,31 +3383,6 @@ async fn draft_exhausted_retries_returns_valid_partial() {
             .expect("the valid prefix keeps its solver brief")
             .query_to_answer,
         "how is the sprint going"
-    );
-}
-
-#[tokio::test]
-async fn drafting_into_an_existing_plan_carries_it_in_the_system_prompt() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, provider) = drafting(
-        vec![outline_response(), step_draft(search_step("E0"), true)],
-        registry,
-    );
-    let existing: PlannerOutput = serde_json::from_value(two_step_plan("E0.values.0.id")).unwrap();
-    draft(&pipeline, "also fetch comments", Some(&existing))
-        .await
-        .unwrap();
-    let requests = provider.requests.lock().unwrap();
-    assert!(
-        !requests[0].system.contains("Draft Under Revision"),
-        "the outliner stays isolated from the draft"
-    );
-    let system = &requests[1].system;
-    assert!(system.contains("Draft Under Revision"), "revision section");
-    assert!(system.contains("t__search"), "serialized draft in prompt");
-    assert!(
-        !system.contains("Last Error"),
-        "the drafting prompt has no last-error slot: {system}"
     );
 }
 
@@ -3551,7 +3522,7 @@ async fn a_closing_call_runs_once_when_the_planner_never_signals_done() {
 async fn draft_rejects_an_empty_outline() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, _) = drafting(vec![structured(json!({"entries": ["  ", ""]}))], registry);
-    let err = draft(&pipeline, "sprint status", None).await.err().unwrap();
+    let err = draft(&pipeline, "sprint status").await.err().unwrap();
     assert!(err.contains("the outline has no entries"), "{err}");
 }
 
