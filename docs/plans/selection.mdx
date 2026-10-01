@@ -52,7 +52,7 @@ An empty `over` array is not an error — `{count: 0, items: [], dropped: [], dr
 
 ## Inside bodies
 
-Unlike `exit`, `decide`, `map`, and `reduce`, a `filter` may appear **inside** a `decide` branch or a `map`/`reduce` body — it is pure selection: no tool dispatch, no [execution-gate](/workbench/plan-workbench#the-debugger) consultation, no body of its own, so the reasons control steps stay out of bodies do not apply to it.
+Unlike `exit`, `route`, `map`, and `reduce`, a `filter` may appear **inside** a `route` branch or a `map`/`reduce` body — it is pure selection: no tool dispatch, no [execution-gate](/workbench/plan-workbench#the-debugger) consultation, no body of its own, so the reasons control steps stay out of bodies do not apply to it.
 
 Inside a body, the filter's own `{{item}}`/`{{index}}` shadow the enclosing body's within the gate — innermost wins. Reference the outer element in `over`, where the filter's pseudo-roots do not yet exist:
 

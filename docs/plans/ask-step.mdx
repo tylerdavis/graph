@@ -63,7 +63,7 @@ Later steps reference `{{E0.answer.channel}}`. `answered` is `false` when the fa
 - `"declined"` — a person saw the question and chose not to answer.
 - `"unavailable"` — nobody could be asked at all.
 
-Because the answer is ordinary step data, the rest of the plan language already works over it. Branch on whether a human was involved with an [`exit` gate](/plans/exit-gates) or a [`decide` step](/plans/branching):
+Because the answer is ordinary step data, the rest of the plan language already works over it. Branch on whether a human was involved with an [`exit` gate](/plans/exit-gates) or a [`route` step](/plans/branching):
 
 ```yaml
   - id: E1
@@ -112,7 +112,7 @@ An answer is validated against `output_schema` before it becomes a result, whate
 
 ## Where `ask` can appear
 
-Top level, and inside a [`decide`](/plans/branching) branch or a [`map`/`reduce`](/plans/iteration) body, where the question can reference `{{item}}`, `{{index}}`, and `{{accumulator}}`:
+Top level, and inside a [`route`](/plans/branching) branch or a [`map`/`reduce`](/plans/iteration) body, where the question can reference `{{item}}`, `{{index}}`, and `{{accumulator}}`:
 
 ```yaml
   - id: E1
