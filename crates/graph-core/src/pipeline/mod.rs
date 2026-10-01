@@ -1221,6 +1221,45 @@ impl Pipeline {
 /// references to roots that are not available at this point in the plan —
 /// `available` carries `input`, every earlier step id, and (inside
 /// control-step bodies) the pseudo-roots and earlier same-body ids.
+const DECIDE_GATE_KEYS: &[&str] = &["question", "state", "model", "criteria", "min_confidence"];
+
+fn check_decide_gate_shape(gate: &Value, step_id: &str, problems: &mut Vec<String>) {
+    let Some(fields) = gate.as_object() else {
+        problems.push(format!(
+            "step {step_id}: `decide` must be an object with at least a `question`"
+        ));
+        return;
+    };
+    if !fields.get("question").is_some_and(Value::is_string) {
+        problems.push(format!(
+            "step {step_id}: `decide` needs a `question` string"
+        ));
+    }
+    for key in fields.keys() {
+        if key == "options" {
+            problems.push(format!(
+                "step {step_id}: `decide.options` (named cases) is not supported yet; it arrives with the `route` step"
+            ));
+        } else if !DECIDE_GATE_KEYS.contains(&key.as_str()) {
+            problems.push(format!(
+                "step {step_id}: unknown field `decide.{key}`, expected one of {}",
+                DECIDE_GATE_KEYS
+                    .iter()
+                    .map(|key| format!("`{key}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    if let Some(min) = fields.get("min_confidence").and_then(Value::as_f64) {
+        if !(0.0..=1.0).contains(&min) {
+            problems.push(format!(
+                "step {step_id}: `decide.min_confidence` must be between 0 and 1, got {min}"
+            ));
+        }
+    }
+}
+
 fn check_templates(value: &Value, available: &[&str], step_id: &str, problems: &mut Vec<String>) {
     match value {
         Value::String(s) => {
