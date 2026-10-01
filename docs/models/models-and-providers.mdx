@@ -67,7 +67,7 @@ Any other name under `[models]` is a custom role. It is written exactly like a s
 2. [`builtin__infer`](/tools/builtins#builtin-infer)'s `model` input
 3. an [`agent` step](/plans/agent-step)'s `model`
 4. the `model:` override on an `infer` gate (`exit`/`route`/`filter`)
-5. the `model` inside a `decide` gate — decision roles only
+5. the `model` inside a `decide` gate, a [`decision` tool](/tools/user-defined#decision--typed-questions-for-a-decision-model)'s `model`, and [`builtin__decide`](/untitled-page#builtin__decide)'s `model` input — decision roles only
 
 Standard roles resolve in those same places, with their usual fallback to `default`. A custom role never falls back: an unknown name fails the call listing what is configured — never a silent substitution.
 
@@ -100,7 +100,7 @@ context_window = 32000
 fallbacks = [{ provider = "local_decider", model = "openjev-latest" }]
 ```
 
-Plans use them through a [`decide` gate](/plans/exit-gates#decision-gates-decide) on `exit`, `route`, or `filter`. A decision model is never a chat model, and graph keeps the two apart rather than substituting one for the other:
+Plans use them through a [`decide` gate](/plans/exit-gates#decision-gates-decide) on `exit`, `route`, or `filter`, and through [`decision` tools](/tools/user-defined#decision--typed-questions-for-a-decision-model) such as [`builtin__decide`](/untitled-page#builtin__decide). A decision model is never a chat model, and graph keeps the two apart rather than substituting one for the other:
 
 - At startup, `chat`, `planner`, `solver`, `repair`, and `judge` — and a `default` they fall back to — must be chat models, `decider` must be a decision model, and a role's `fallbacks` must all be the same kind as its primary. A violation fails before anything runs, naming the role.
 - At the point of use, an `infer` gate pointed at a decision role, or a `decide` gate pointed at a chat role, fails the step. `graph plan validate` reports both when the `model` is written literally.
