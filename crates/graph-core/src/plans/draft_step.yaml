@@ -22,6 +22,20 @@ input_schema:
       type: object
       description: The drafting state so far
 steps:
+  - id: found
+    tool_name: route
+    input:
+      if: { value: "{{input.state.done}}", op: eq, to: false }
+      then:
+        tool_name: plan__search_tools
+        input:
+          query: "{{input.goal}}\n\n{{input.entry}}"
+          schemas: false
+      else:
+        tool_name: builtin__reshape
+        input:
+          shape: { tools: [] }
+    reasoning: The tools this outline entry needs, so the step sees those instead of the whole catalog; skipped once the plan is done.
   - id: context
     tool_name: builtin__draft_context
     input:
@@ -29,7 +43,8 @@ steps:
       outline: "{{input.outline}}"
       entry: "{{input.entry}}"
       state: "{{input.state}}"
-    reasoning: The step request, the attempt numbers, the step-response schema, and the catalog and rules the drafting prompt is built from.
+      tools: "{{found.result.tools}}"
+    reasoning: The step request, the attempt numbers, the step-response schema, and the searched tools and rules the drafting prompt is built from.
   - id: prompt
     tool_name: builtin__reshape
     input:
@@ -44,7 +59,7 @@ steps:
           - Current Date: {{context.date}}
 
           ## Tools Available
-          {{context.tools}}
+          Each request lists the tools available for that step, with their schemas. Use only those tools and the control steps.
 
           ## Template Rules
           {{context.templating_rules}}
@@ -98,7 +113,7 @@ steps:
                 input:
                   model: planner
                   system: "{{prompt.system}}"
-                  instruction: "{{context.request}}\n\n{{accumulator.correction}}"
+                  instruction: "{{context.request}}\n\n## Tools for this step\n{{context.tools}}\n\n{{accumulator.correction}}"
                   output_schema: "{{context.draft_schema}}"
               - id: accepted
                 tool_name: builtin__accept_step

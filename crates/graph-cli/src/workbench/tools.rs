@@ -941,6 +941,7 @@ mod tests {
             usage: std::sync::Arc::new(graph_core::usage::UsageLedger::unpriced()),
             agents: Arc::new(graph_core::agent::doc::AgentSet::default()),
             agent_depth: 0,
+            always_loaded: Default::default(),
         })
     }
 
@@ -1892,6 +1893,7 @@ steps:
             usage: std::sync::Arc::new(graph_core::usage::UsageLedger::unpriced()),
             agents: Arc::new(graph_core::agent::doc::AgentSet::default()),
             agent_depth: 0,
+            always_loaded: Default::default(),
         });
         (pipeline, provider)
     }

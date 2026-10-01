@@ -413,6 +413,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         usage: std::sync::Arc::new(graph_core::usage::UsageLedger::unpriced()),
         agents: agent_set.clone(),
         agent_depth: 0,
+        always_loaded: Default::default(),
     });
 
     let debug = Arc::new(DebugControls::default());

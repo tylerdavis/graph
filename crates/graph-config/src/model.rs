@@ -590,6 +590,7 @@ pub struct ToolPaths {
     /// the binary and load like user tools; a user tool with the same name
     /// shadows the pack version.
     pub packs: Vec<String>,
+    pub always_loaded: Vec<String>,
 }
 
 impl Default for ToolPaths {
@@ -600,6 +601,7 @@ impl Default for ToolPaths {
                 PathBuf::from("~/.config/graph/tools"),
             ],
             packs: Vec::new(),
+            always_loaded: Vec::new(),
         }
     }
 }

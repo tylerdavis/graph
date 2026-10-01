@@ -28,6 +28,7 @@ mod native_tools;
 pub mod plan;
 mod prompts;
 pub mod route;
+mod search;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -111,6 +112,7 @@ pub struct Pipeline {
     pub usage: Arc<crate::usage::UsageLedger>,
     pub agents: Arc<crate::agent::doc::AgentSet>,
     pub agent_depth: usize,
+    pub always_loaded: Arc<Vec<String>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -622,21 +624,26 @@ impl Pipeline {
     /// each planning attempt sees the latest observed shapes). Returns the
     /// described-tools text and the pretty-printed step schema.
     async fn planner_catalog(&self) -> (String, String) {
+        self.planner_catalog_for(None).await
+    }
+
+    async fn planner_catalog_for(
+        &self,
+        scope: Option<&std::collections::BTreeSet<String>>,
+    ) -> (String, String) {
         let mut tools = self.registry.tools().await.unwrap_or_default();
-        tools.extend(control_step_defs());
         tools.extend(self.callable_plan_defs());
         tools.extend(self.agent_tool_defs());
-        let shapes: HashMap<String, ToolShape> = match &self.store {
-            Some(store) => store
-                .tool_shapes()
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|shape| (shape.tool.clone(), shape))
-                .collect(),
-            None => HashMap::new(),
-        };
-        let tools_text = prompts::describe_tools(&tools, &shapes);
+        if let Some(scope) = scope {
+            tools.retain(|tool| {
+                scope.contains(&tool.name)
+                    || search::is_always_loaded(&self.always_loaded, &tool.name)
+            });
+        }
+        let mut described = control_step_defs();
+        described.extend(tools);
+        let shapes: HashMap<String, ToolShape> = self.shapes().await;
+        let tools_text = prompts::describe_tools(&described, &shapes);
         let step_schema = serde_json::to_string_pretty(
             &serde_json::to_value(schemars::schema_for!(Step)).unwrap_or_default(),
         )

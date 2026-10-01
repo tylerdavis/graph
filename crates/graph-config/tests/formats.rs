@@ -128,3 +128,13 @@ fn the_version_key_never_reaches_the_typed_config() {
     let rendered = toml::to_string(&load_from(&[path]).unwrap().config).unwrap();
     assert!(!rendered.contains("version"), "{rendered}");
 }
+
+#[test]
+fn always_loaded_tools_parse_as_names_and_globs() {
+    let path = fixture_dir(CONFIG_FORMAT).join("always_loaded.toml");
+    let config = load_from(std::slice::from_ref(&path)).unwrap().config;
+    assert_eq!(
+        config.tools.always_loaded,
+        ["builtin__infer", "builtin__reshape", "linear__get_*"]
+    );
+}

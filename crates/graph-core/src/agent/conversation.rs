@@ -608,6 +608,7 @@ mod tests {
             usage: Arc::new(crate::usage::UsageLedger::unpriced()),
             agents: agents.clone(),
             agent_depth: 0,
+            always_loaded: Default::default(),
         });
         let conversation = Conversation {
             agents,

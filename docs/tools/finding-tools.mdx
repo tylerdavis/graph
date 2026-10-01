@@ -1,0 +1,63 @@
+---
+title: "Finding tools"
+description: "How graph picks the tools a task needs instead of sending the whole catalog"
+icon: "magnifying-glass"
+---
+
+A catalog with several MCP servers can hold hundreds of tools, and describing every one of them to a model costs tokens on every call and makes the right tool harder to pick. graph narrows the catalog first with the built-in `search_tools` plan, and [plan drafting](/plans/the-planner#drafting-without-executing) uses it for every step it drafts.
+
+## How a search works
+
+`search_tools` works like a routing tree, in two stages:
+
+1. **Groups.** Every group in the catalog is scored against the task: each MCP server (by its [`description`](/tools/mcp-servers#describing-a-server)), each tool pack, your user tools, your plans, and your agents. Groups at or above `group_threshold` move on.
+2. **Tools.** Every tool inside those groups is scored by its name and description. Tools at or above `min_confidence` are returned, **highest score first**.
+
+Each candidate is scored on its own, from 0 to 1, so two relevant groups can both score high; they don't compete for a share. Neither stage comes back empty: when too few candidates clear the threshold, the best of the rest are added up to `min_groups` and `min_tools`, marked `below_threshold`.
+
+### Two ways to score
+
+| Mode | When | How |
+|---|---|---|
+| `decision` | a [decision model](/models/models-and-providers) is configured for the `model` role (`decider` by default) | one request per stage, with one likelihood question per candidate |
+| `keyword` | otherwise, or when the decision call fails | keyword overlap ranking over names and descriptions, no model call |
+
+The result's `mode` says which ran; a failed decision call adds `fallback_reason`.
+
+## Calling it
+
+`search_tools` is an ordinary plan, so a plan step or an agent calls it as `plan__search_tools`:
+
+```yaml
+- id: E0
+  tool_name: plan__search_tools
+  input:
+    query: "Review a pull request and post findings as comments"
+    min_confidence: 0.7
+```
+
+| Input | Default | Meaning |
+|---|---|---|
+| `query` | required | the task the tools are for |
+| `group_threshold` | `0.5` | minimum score for a group to be searched |
+| `min_confidence` | `0.6` | minimum score for a tool to be returned |
+| `limit` | `20` | most tools returned |
+| `min_groups` | `1` | fewest groups searched |
+| `min_tools` | `5` | fewest tools returned |
+| `model` | `decider` | the decision model role that scores |
+| `schemas` | `true` | include each tool's input schema and output shape |
+
+The result is `{mode, groups, tools, always}`: every group with its score and whether it was searched, the returned tools in score order, and the always-loaded tools.
+
+## Tools that are always loaded
+
+Every tool is searched for, the built-in packs included; only the control steps (`exit`, `route`, `filter`, `map`, `reduce`, `agent`, `ask`) are always offered, because they are the plan grammar. To keep a tool out of the search and always offer it, list it in [`[tools].always_loaded`](/reference/configuration#plans-and-tools), by name or with `*` globs:
+
+```toml
+[tools]
+always_loaded = ["builtin__infer", "builtin__reshape", "linear__get_*"]
+```
+
+## Changing how it searches
+
+`search_tools` is a built-in plan, so `graph plan show search_tools` prints it, and a plan file with the identifier `search_tools` replaces it everywhere, including in drafting. Its steps are small native tools you can rearrange or reword: `builtin__tool_groups`, `builtin__score_candidates` (its `question` is the wording each candidate is scored with), `builtin__group_tools`, and `builtin__describe_tools`.

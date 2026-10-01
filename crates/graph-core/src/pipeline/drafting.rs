@@ -108,6 +108,8 @@ struct DraftContextInput {
     entry: String,
     #[serde(default)]
     state: Option<DraftState>,
+    #[serde(default)]
+    tools: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,7 +135,8 @@ pub fn draft_context_tool_def() -> ToolDef {
                 "goal": {"type": "string", "description": "What the plan should accomplish"},
                 "outline": {"type": "array", "items": {"type": "string"}, "description": "The whole outline, in order"},
                 "entry": {"type": "string", "description": "The outline entry this step advances; empty to finish the plan"},
-                "state": {"type": "object", "description": "The drafting state so far"}
+                "state": {"type": "object", "description": "The drafting state so far"},
+                "tools": {"type": "array", "description": "The tools to offer this step, as names or the `tools` builtin__search_tools returned; omitted means the whole catalog. Control steps, always-loaded tools and tools earlier steps used are always offered"}
             }
         }),
         output_schema: None,
@@ -190,7 +193,15 @@ impl Pipeline {
                 entry
             };
             self.events.draft_step_started(index, summary);
-            self.planner_catalog().await
+            match &input.tools {
+                Some(tools) => {
+                    let mut scope: std::collections::BTreeSet<String> =
+                        super::search::names_of(tools).into_iter().collect();
+                    scope.extend(super::native_tools::called_tools(&json!(state.steps)));
+                    self.planner_catalog_for(Some(&scope)).await
+                }
+                None => self.planner_catalog().await,
+            }
         };
         Ok(json!({
             "request": step_request_content(&input.goal, &input.outline, &state.steps, entry, &next_step_id),

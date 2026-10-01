@@ -195,6 +195,14 @@ const PACK_SUMMARIES: &[(&str, &str)] = &[
         "local git history, diffs, file contents, and grep, plus GitHub pull requests, review threads, comments, and releases.",
     ),
     ("slack", "posts messages and threaded replies to Slack channels."),
+    (
+        "llm",
+        "model calls inside a plan: structured inference with a chosen model, and decision-model questions answered with calibrated probabilities.",
+    ),
+    (
+        "data",
+        "reshapes JSON: builds new objects and lists from earlier results with templates, no model call.",
+    ),
 ];
 
 pub fn pack_summary(pack: &str) -> Option<&'static str> {

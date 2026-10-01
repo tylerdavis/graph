@@ -194,6 +194,7 @@ mod tests {
             usage: std::sync::Arc::new(crate::usage::UsageLedger::unpriced()),
             agents: Arc::new(crate::agent::doc::AgentSet::default()),
             agent_depth: 0,
+            always_loaded: Default::default(),
         });
         (AgentToolbox::new(base.clone(), pipeline, vec![doc]), base)
     }
