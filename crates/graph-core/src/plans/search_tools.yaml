@@ -1,7 +1,7 @@
 version: 2
 identifier: search_tools
 name: Search tools
-description: Finds the catalog tools a task needs, in two stages — the groups (MCP servers, packs, user tools, plans, agents), then the tools inside the groups that fit — scored by a decision model when one is configured, otherwise by keywords. Returns the tools highest score first.
+description: Finds the catalog tools a task needs by scoring every tool against it — with a decision model when one is configured, otherwise by keywords — and returns them highest score first.
 input_schema:
   type: object
   required: [query]
@@ -9,10 +9,6 @@ input_schema:
     query:
       type: string
       description: The task the tools are for
-    group_threshold:
-      type: number
-      description: Minimum score for a group to be searched
-      default: 0.5
     min_confidence:
       type: number
       description: Minimum score for a tool to be returned
@@ -21,52 +17,32 @@ input_schema:
       type: integer
       description: Most tools to return
       default: 20
-    min_groups:
-      type: integer
-      description: Fewest groups to search, taking the best below the threshold when needed
-      default: 1
     min_tools:
       type: integer
       description: Fewest tools to return, taking the best below the threshold when needed
       default: 5
     model:
       type: string
-      description: The decision model role that scores the candidates
+      description: The decision model role that scores the tools
       default: decider
     chunk_size:
       type: integer
-      description: Most candidates per decision request; larger sets are split into requests sent together
+      description: Most tools per decision request; larger catalogs are split into requests sent together
       default: 60
     schemas:
       type: boolean
       description: Include each tool's input schema and output shape
       default: true
 steps:
-  - id: groups
-    tool_name: builtin__tool_groups
+  - id: catalog
+    tool_name: builtin__catalog_tools
     input: {}
-    reasoning: Every group in the catalog with its description and tools; always-loaded tools are left out.
-  - id: picked_groups
+    reasoning: Every tool in the catalog with its description; always-loaded tools are left out.
+  - id: picked
     tool_name: builtin__score_candidates
     input:
       query: "{{input.query}}"
-      candidates: "{{groups.groups}}"
-      question: "Does the group '{name}: {description}' contain tools needed for this task?"
-      threshold: "{{input.group_threshold}}"
-      floor: "{{input.min_groups}}"
-      model: "{{input.model}}"
-      chunk_size: "{{input.chunk_size}}"
-    reasoning: Each group scored on its own; the ones that clear the threshold are searched.
-  - id: candidates
-    tool_name: builtin__group_tools
-    input:
-      groups: "{{picked_groups.selected}}"
-    reasoning: The tools inside the chosen groups.
-  - id: picked_tools
-    tool_name: builtin__score_candidates
-    input:
-      query: "{{input.query}}"
-      candidates: "{{candidates.tools}}"
+      candidates: "{{catalog.tools}}"
       question: "Is the tool '{name}: {description}' needed for this task?"
       threshold: "{{input.min_confidence}}"
       floor: "{{input.min_tools}}"
@@ -77,11 +53,10 @@ steps:
   - id: described
     tool_name: builtin__describe_tools
     input:
-      tools: "{{picked_tools.selected}}"
+      tools: "{{picked.selected}}"
       schemas: "{{input.schemas}}"
     reasoning: The returned tools with their scores and, when asked, their schemas.
 output:
-  mode: "{{picked_tools.mode}}"
-  groups: "{{picked_groups.scored}}"
+  mode: "{{picked.mode}}"
   tools: "{{described.tools}}"
-  always: "{{groups.always}}"
+  always: "{{catalog.always}}"

@@ -4,8 +4,7 @@ use super::drafting::{
     accept_step_tool_def, draft_context_tool_def, ACCEPT_STEP_TOOL, DRAFT_CONTEXT_TOOL,
 };
 use super::search::{
-    search_tool_defs, DESCRIBE_TOOLS_TOOL, GROUP_TOOLS_TOOL, SCORE_CANDIDATES_TOOL,
-    TOOL_GROUPS_TOOL,
+    search_tool_defs, CATALOG_TOOLS_TOOL, DESCRIBE_TOOLS_TOOL, SCORE_CANDIDATES_TOOL,
 };
 use super::{prompts, Draft, Pipeline, Step};
 use crate::tools::{ToolDef, ToolOutcome};
@@ -20,16 +19,15 @@ pub const PLAN_FROM_DRAFT_TOOL: &str = "builtin__plan_from_draft";
 
 pub const APPLY_EDITS_TOOL: &str = "builtin__apply_edits";
 
-pub const NATIVE_TOOLS: [&str; 10] = [
+pub const NATIVE_TOOLS: [&str; 9] = [
     CATALOG_OUTLINE_TOOL,
     DRAFT_CONTEXT_TOOL,
     ACCEPT_STEP_TOOL,
     VALIDATE_PLAN_TOOL,
     PLAN_FROM_DRAFT_TOOL,
     APPLY_EDITS_TOOL,
-    TOOL_GROUPS_TOOL,
+    CATALOG_TOOLS_TOOL,
     SCORE_CANDIDATES_TOOL,
-    GROUP_TOOLS_TOOL,
     DESCRIBE_TOOLS_TOOL,
 ];
 
@@ -171,9 +169,8 @@ impl Pipeline {
             VALIDATE_PLAN_TOOL => self.validate_plan_input(input).await,
             PLAN_FROM_DRAFT_TOOL => plan_from_draft(input),
             APPLY_EDITS_TOOL => apply_edits(input),
-            TOOL_GROUPS_TOOL => self.tool_groups_value().await,
+            CATALOG_TOOLS_TOOL => self.catalog_tools().await,
             SCORE_CANDIDATES_TOOL => self.score_candidates(input).await,
-            GROUP_TOOLS_TOOL => self.group_tools(input).await,
             DESCRIBE_TOOLS_TOOL => self.describe_tools(input).await,
             _ => Err(format!("unknown native tool '{name}'")),
         };

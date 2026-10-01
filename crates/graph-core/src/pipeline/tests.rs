@@ -5704,11 +5704,9 @@ fn tool_names(result: &Value) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn search_scores_groups_then_their_tools_with_the_decision_model() {
+async fn search_scores_every_tool_with_the_decision_model() {
     let (pipeline, decider) = searching(Some(Box::new(|question: &str| {
-        if question.contains("group 't:") {
-            0.9
-        } else if question.contains("tool 't__search:") {
+        if question.contains("tool 't__search:") {
             0.95
         } else if question.contains("tool 't__issues:") {
             0.3
@@ -5729,22 +5727,19 @@ async fn search_scores_groups_then_their_tools_with_the_decision_model() {
     assert_eq!(tools[0]["score"], json!(0.95));
     assert_eq!(tools[1]["below_threshold"], json!(true));
     assert!(tools[0].get("inputSchema").is_some(), "schemas by default");
-    let selected: Vec<&Value> = call.result["groups"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|group| group["selected"] == json!(true))
-        .collect();
-    assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0]["name"], json!("t"));
 
     let requests = decider.unwrap().requests.lock().unwrap().clone();
-    assert_eq!(requests.len(), 2, "one request per stage");
-    assert_eq!(requests[0].state, json!({"task": "find issues"}));
     assert_eq!(
-        requests[1].questions.len(),
-        2,
-        "stage two only asks about the chosen group's tools"
+        requests.len(),
+        1,
+        "one request for a catalog under the chunk size"
+    );
+    assert_eq!(requests[0].state, json!({"task": "find issues"}));
+    let catalog = pipeline.searchable_tools().await.len();
+    assert_eq!(
+        requests[0].questions.len(),
+        catalog - 1,
+        "every catalog tool is scored except plan__search_tools itself"
     );
 }
 
@@ -5838,6 +5833,7 @@ async fn each_draft_step_sees_only_its_searched_tools() {
         registry,
     );
     drafted(&pipeline, "sprint status").await;
+    let whole = pipeline.planner_catalog().await.0.lines().count();
     let requests = provider.requests.lock().unwrap();
     let second = user_turns(&requests[2]).join("\n");
     assert!(second.contains("## Tools for this step"), "{second}");
@@ -5846,9 +5842,10 @@ async fn each_draft_step_sees_only_its_searched_tools() {
         "control steps are always offered"
     );
     assert!(second.contains("t__issues") && second.contains("t__search"));
+    let offered = second.matches("\"inputSchema\"").count();
     assert!(
-        !second.contains("\"name\":\"builtin__infer\""),
-        "builtins are deferred unless the search picks them: {second}"
+        offered < whole,
+        "a step sees fewer tools than the whole catalog ({offered} of {whole})"
     );
     assert!(
         requests[1..].iter().all(|r| r.system == requests[1].system),

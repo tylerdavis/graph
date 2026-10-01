@@ -8,18 +8,17 @@ A catalog with several MCP servers can hold hundreds of tools, and describing ev
 
 ## How a search works
 
-`search_tools` works like a routing tree, in two stages:
+`search_tools` scores every tool in the catalog against the task, by its name and description: MCP, pack and user tools, plans, and agents. Tools at or above `min_confidence` are returned, **highest score first**.
 
-1. **Groups.** Every group in the catalog is scored against the task: each MCP server (by its [`description`](/tools/mcp-servers#describing-a-server)), each tool pack, your user tools, your plans, and your agents. Groups at or above `group_threshold` move on.
-2. **Tools.** Every tool inside those groups is scored by its name and description. Tools at or above `min_confidence` are returned, **highest score first**.
+Each tool is scored on its own, from 0 to 1, so several relevant tools can all score high; they don't compete for a share. A search never comes back empty: when fewer than `min_tools` clear the threshold, the best of the rest are added and marked `below_threshold`.
 
-Each candidate is scored on its own, from 0 to 1, so two relevant groups can both score high; they don't compete for a share. Neither stage comes back empty: when too few candidates clear the threshold, the best of the rest are added up to `min_groups` and `min_tools`, marked `below_threshold`.
+Scoring every tool rather than first picking servers or packs is deliberate: in testing, a first pass over groups skipped groups with thin descriptions, and their tools were never scored.
 
 ### Two ways to score
 
 | Mode | When | How |
 |---|---|---|
-| `decision` | a [decision model](/models/models-and-providers) is configured for the `model` role (`decider` by default) | one likelihood question per candidate, in requests of at most `chunk_size` (60) candidates sent together |
+| `decision` | a [decision model](/models/models-and-providers) is configured for the `model` role (`decider` by default) | one likelihood question per tool, in requests of at most `chunk_size` (60) tools sent together |
 | `keyword` | otherwise, or when the decision call fails | keyword overlap ranking over names and descriptions, no model call |
 
 The result's `mode` says which ran; a failed decision call adds `fallback_reason`.
@@ -39,16 +38,14 @@ The result's `mode` says which ran; a failed decision call adds `fallback_reason
 | Input | Default | Meaning |
 |---|---|---|
 | `query` | required | the task the tools are for |
-| `group_threshold` | `0.5` | minimum score for a group to be searched |
 | `min_confidence` | `0.6` | minimum score for a tool to be returned |
 | `limit` | `20` | most tools returned |
-| `min_groups` | `1` | fewest groups searched |
 | `min_tools` | `5` | fewest tools returned |
 | `model` | `decider` | the decision model role that scores |
 | `chunk_size` | `60` | most candidates per decision request |
 | `schemas` | `true` | include each tool's input schema and output shape |
 
-The result is `{mode, groups, tools, always}`: every group with its score and whether it was searched, the returned tools in score order, and the always-loaded tools.
+The result is `{mode, tools, always}`: the returned tools in score order, and the always-loaded tools.
 
 ## Tools that are always loaded
 
@@ -61,4 +58,4 @@ always_loaded = ["builtin__infer", "builtin__reshape", "linear__get_*"]
 
 ## Changing how it searches
 
-`search_tools` is a built-in plan, so `graph plan show search_tools` prints it, and a plan file with the identifier `search_tools` replaces it everywhere, including in drafting. Its steps are small native tools you can rearrange or reword: `builtin__tool_groups`, `builtin__score_candidates` (its `question` is the wording each candidate is scored with), `builtin__group_tools`, and `builtin__describe_tools`.
+`search_tools` is a built-in plan, so `graph plan show search_tools` prints it, and a plan file with the identifier `search_tools` replaces it everywhere, including in drafting. Its steps are small native tools you can rearrange or reword: `builtin__catalog_tools`, `builtin__score_candidates` (its `question` is the wording each tool is scored with), and `builtin__describe_tools`.

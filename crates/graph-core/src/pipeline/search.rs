@@ -2,18 +2,15 @@ use super::catalog::glob_matches;
 use super::{prompts, Pipeline};
 use crate::tools::ToolDef;
 use crate::usage::CallSite;
-use crate::user_tools::{pack_of, pack_summary};
 use graph_config::ModelKind;
 use graph_llm::decision::{Answer, DecisionRequest, Question};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-pub const TOOL_GROUPS_TOOL: &str = "builtin__tool_groups";
+pub const CATALOG_TOOLS_TOOL: &str = "builtin__catalog_tools";
 
 pub const SCORE_CANDIDATES_TOOL: &str = "builtin__score_candidates";
-
-pub const GROUP_TOOLS_TOOL: &str = "builtin__group_tools";
 
 pub const DESCRIBE_TOOLS_TOOL: &str = "builtin__describe_tools";
 
@@ -22,18 +19,17 @@ pub const DEFAULT_DECISION_ROLE: &str = "decider";
 pub fn search_tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
-            name: TOOL_GROUPS_TOOL.to_string(),
-            description: "Lists the catalog's tool groups for searching: each MCP server, each \
-                          tool pack, user tools, plans and agents, with a description and the \
-                          tools in it. Tools on the always-loaded list are left out and \
-                          returned separately."
+            name: CATALOG_TOOLS_TOOL.to_string(),
+            description: "Lists every tool in the catalog for searching, with its description: \
+                          MCP, pack and user tools, plans and agents. Tools on the \
+                          always-loaded list are left out and returned separately."
                 .to_string(),
             input_schema: json!({"type": "object", "properties": {}}),
             output_schema: Some(json!({
                 "type": "object",
-                "required": ["groups", "always"],
+                "required": ["tools", "always"],
                 "properties": {
-                    "groups": {"type": "array", "items": {"type": "object"}},
+                    "tools": {"type": "array", "items": {"type": "object"}},
                     "always": {"type": "array", "items": {"type": "string"}}
                 }
             })),
@@ -80,27 +76,6 @@ pub fn search_tool_defs() -> Vec<ToolDef> {
             read_only: Some(true),
         },
         ToolDef {
-            name: GROUP_TOOLS_TOOL.to_string(),
-            description: "Lists the tools in the given groups (names, or the `selected` \
-                          entries builtin__score_candidates returned), each with its group and \
-                          description, ready to score."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "required": ["groups"],
-                "properties": {
-                    "groups": {"type": "array", "description": "Group names, or objects with a `name`"}
-                }
-            }),
-            output_schema: Some(json!({
-                "type": "object",
-                "required": ["tools"],
-                "properties": {"tools": {"type": "array", "items": {"type": "object"}}}
-            })),
-            output_example: None,
-            read_only: Some(true),
-        },
-        ToolDef {
             name: DESCRIBE_TOOLS_TOOL.to_string(),
             description: "Describes tools in the order given: name, description and score, and \
                           with `schemas` (the default) the input schema and the declared or \
@@ -123,14 +98,6 @@ pub fn search_tool_defs() -> Vec<ToolDef> {
             read_only: Some(true),
         },
     ]
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct Group {
-    pub name: String,
-    pub kind: &'static str,
-    pub description: String,
-    pub tools: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,25 +132,6 @@ struct Candidate {
     description: String,
 }
 
-pub(super) fn group_of(tool: &str) -> (String, &'static str) {
-    if tool.starts_with("plan__") {
-        return ("plans".to_string(), "plans");
-    }
-    if tool.starts_with("agent__") {
-        return ("agents".to_string(), "agents");
-    }
-    if tool.starts_with("user__") {
-        return ("user".to_string(), "user");
-    }
-    if let Some(bare) = tool.strip_prefix("builtin__") {
-        return (pack_of(bare).unwrap_or("builtin").to_string(), "pack");
-    }
-    match tool.split_once("__") {
-        Some((server, _)) => (server.to_string(), "mcp"),
-        None => (tool.to_string(), "mcp"),
-    }
-}
-
 pub(super) fn is_always_loaded(patterns: &[String], tool: &str) -> bool {
     patterns.iter().any(|pattern| glob_matches(pattern, tool))
 }
@@ -214,84 +162,18 @@ impl Pipeline {
         tools
     }
 
-    pub(super) async fn tool_groups(&self) -> (Vec<Group>, Vec<String>) {
-        let servers: HashMap<String, Option<String>> = self
-            .registry
-            .servers()
-            .await
-            .into_iter()
-            .map(|server| (server.name, server.description))
-            .collect();
-        let mut groups: BTreeMap<String, Group> = BTreeMap::new();
+    pub(super) async fn catalog_tools(&self) -> Result<Value, String> {
+        let mut tools = Vec::new();
         let mut always = Vec::new();
         for tool in self.searchable_tools().await {
             if is_always_loaded(&self.always_loaded, &tool.name) {
                 always.push(tool.name);
-                continue;
+            } else {
+                tools.push(json!({"name": tool.name, "description": tool.description}));
             }
-            let (name, kind) = group_of(&tool.name);
-            groups
-                .entry(name.clone())
-                .or_insert_with(|| Group {
-                    name: name.clone(),
-                    kind,
-                    description: String::new(),
-                    tools: Vec::new(),
-                })
-                .tools
-                .push(tool.name);
-        }
-        for group in groups.values_mut() {
-            let described = match group.kind {
-                "mcp" => servers.get(&group.name).cloned().flatten(),
-                "pack" => pack_summary(&group.name).map(str::to_string),
-                "user" => Some("Tools defined in this project or your config.".to_string()),
-                "plans" => Some("Saved plans that can run as a single step.".to_string()),
-                "agents" => Some("Named agents that take a task and return a result.".to_string()),
-                _ => None,
-            };
-            group.description = match described {
-                Some(text) if !text.trim().is_empty() => {
-                    format!("{} Tools: {}.", text.trim(), group.tools.join(", "))
-                }
-                _ => format!("Tools: {}.", group.tools.join(", ")),
-            };
         }
         always.sort();
-        (groups.into_values().collect(), always)
-    }
-
-    pub(super) async fn tool_groups_value(&self) -> Result<Value, String> {
-        let (groups, always) = self.tool_groups().await;
-        Ok(json!({
-            "groups": groups
-                .iter()
-                .map(|group| json!({
-                    "name": group.name,
-                    "kind": group.kind,
-                    "description": group.description,
-                    "tools": group.tools,
-                }))
-                .collect::<Vec<_>>(),
-            "always": always,
-        }))
-    }
-
-    pub(super) async fn group_tools(&self, input: Value) -> Result<Value, String> {
-        let wanted: BTreeSet<String> = names_of(&input["groups"]).into_iter().collect();
-        let tools: Vec<Value> = self
-            .searchable_tools()
-            .await
-            .into_iter()
-            .filter(|tool| !is_always_loaded(&self.always_loaded, &tool.name))
-            .filter_map(|tool| {
-                let (group, _) = group_of(&tool.name);
-                wanted.contains(&group).then(
-                    || json!({"name": tool.name, "group": group, "description": tool.description}),
-                )
-            })
-            .collect();
-        Ok(json!({ "tools": tools }))
+        Ok(json!({ "tools": tools, "always": always }))
     }
 
     pub(super) async fn describe_tools(&self, input: Value) -> Result<Value, String> {
@@ -542,22 +424,6 @@ mod tests {
     }
 
     #[test]
-    fn tools_group_by_namespace_and_pack() {
-        assert_eq!(
-            group_of("linear__list_issues"),
-            ("linear".to_string(), "mcp")
-        );
-        assert_eq!(
-            group_of("builtin__git_diff"),
-            ("github".to_string(), "pack")
-        );
-        assert_eq!(group_of("builtin__infer"), ("llm".to_string(), "pack"));
-        assert_eq!(group_of("user__repo_grep"), ("user".to_string(), "user"));
-        assert_eq!(group_of("plan__sprint"), ("plans".to_string(), "plans"));
-        assert_eq!(group_of("agent__chat"), ("agents".to_string(), "agents"));
-    }
-
-    #[test]
     fn always_loaded_patterns_match_names_and_globs() {
         let patterns = vec!["builtin__infer".to_string(), "linear__get_*".to_string()];
         assert!(is_always_loaded(&patterns, "builtin__infer"));
@@ -582,7 +448,10 @@ mod tests {
     #[test]
     fn every_pack_has_a_summary() {
         for pack in crate::user_tools::available_packs() {
-            assert!(pack_summary(pack).is_some(), "{pack} has no summary");
+            assert!(
+                crate::user_tools::pack_summary(pack).is_some(),
+                "{pack} has no summary"
+            );
         }
     }
 }
