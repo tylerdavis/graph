@@ -4,7 +4,10 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-pub const BUILTINS: &[&str] = &[include_str!("../agents/chat.yaml")];
+pub const BUILTINS: &[&str] = &[
+    include_str!("../agents/chat.yaml"),
+    include_str!("../agents/plan_refiner.yaml"),
+];
 
 pub const CHAT_AGENT: &str = "chat";
 

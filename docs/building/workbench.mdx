@@ -38,29 +38,27 @@ The plan tab renders the whole plan as a `tree`-style flowchart: live status gly
 
 ## The workbench agents
 
-The workbench runs six built-in [agents](/reference/agent-schema), each with the tools and context its job needs. They hand the conversation to each other and run each other as subagents:
+The workbench runs three built-in [agents](/reference/agent-schema). Each has an explicit list of tools; none of them can call the tools your plans call (MCP servers, packs, user tools) — running a plan is how those get called, and you control that.
 
-| Agent | Does | Gets |
+| Agent | Does | Can use |
 | --- | --- | --- |
-| `orchestrator` | starts an empty workbench: routes you to drafting a new plan or to an existing one | a one-line summary of the draft |
-| `plan_loader` | finds a plan in the catalog and loads it (run as a subagent) | the catalog tools |
-| `plan_author` | drafts a new plan with you in four stages, below | the drafting plans, the current draft |
-| `plan_editor` | starts the workbench when you open a plan; reads, edits, validates, runs and saves it with you | every tool, the current draft |
-| `plan_refiner` | edits the draft until it serves the goal and validates (run as a subagent) | the editing tools, the current draft |
-| `plan_verifier` | validates the draft and runs it when every step only reads (run as a subagent) | validate and run, the current draft |
+| `orchestrator` | starts an empty workbench; drafts new plans with you and routes you to existing ones | `plan__author_plan`, `set_draft`, and `plan_loader` as a subagent |
+| `plan_loader` | finds a plan in the catalog and loads it (run as a subagent) | `list_plans`, `show_plan`, `load_plan` |
+| `plan_editor` | starts the workbench when you open a plan; edits, validates, runs and saves it with you, one targeted change at a time | the editing tools, `validate_plan`, `run_plan`, `save_plan`, `describe_tool`, and the project file tools |
 
-`/agent` lists the agents and marks the one you're talking to; `/agent <name>` switches. When an agent hands off, the chat shows `⇢ <from> handed off to <to>`. Each agent is a file you can inspect with `graph agents show <name>` and replace with one of the same name in `./.graph/agents/` or `~/.config/graph/agents/`.
+`plan_editor` never replaces the whole plan. When you ask for a new plan, to start over, or to open a different one, it hands the conversation back to `orchestrator`. `/agent` lists the agents and marks the one you're talking to; `/agent <name>` switches. When an agent hands off, the chat shows `⇢ <from> handed off to <to>`. Each agent is a file you can inspect with `graph agents show <name>` and replace with one of the same name in `./.graph/agents/` or `~/.config/graph/agents/`.
 
 ### Drafting a new plan
 
-`plan_author` drafts in four stages, with you in the loop:
+New plans come from the built-in `author_plan` plan, which `orchestrator` runs for you. It's a plan, not an agent's habit, so the steps always happen in this order:
 
-1. **Outline.** It runs [`plan__draft_outline`](/plans/the-planner#drafting-without-executing), shows you the outline, and revises it with you.
-2. **Full plan.** It runs `plan__draft_expand` on the agreed outline and publishes the result to the pane with `workbench__set_draft`.
-3. **Refine.** It runs `plan_refiner` against your goal.
-4. **Verify.** It runs `plan_verifier`. A plan with side effects isn't run for you; you're asked to run it gated (`g`) and approve each step.
+1. **Outline.** [`draft_outline`](/plans/the-planner#drafting-without-executing) sketches the stages.
+2. **Review.** The outline opens in the answer editor: approve it, or describe what to change and the revised outline comes back for another look, up to three rounds.
+3. **Full plan.** `draft_expand` drafts and validates one step per agreed stage, live in the plan tab.
+4. **Refine.** The `plan_refiner` agent reviews the draft against your goal and proposes targeted edits; each is applied only if it doesn't add a problem.
+5. **Validate.** The plan is checked against the catalog, and the tools it calls that aren't marked read-only are listed.
 
-Then it hands you to `plan_editor` to keep working.
+`orchestrator` then puts the plan in the pane with `set_draft` and hands you to `plan_editor`, which tells you what was built. When the plan has side effects, run it gated (`g`) to approve each step. `set_draft` won't discard unsaved changes to the current draft unless you confirm.
 
 ## Driving it from chat
 
@@ -70,7 +68,8 @@ Every action maps to a `workbench__` tool the agents call on your behalf:
 | --- | --- |
 | browsing the catalog | `list_plans`, `show_plan` — read any plan's YAML **without touching the draft** |
 | loading a plan | `load_plan` — by identifier or file path; replaces the draft (guarded, below) |
-| publishing a draft | `set_draft` — publishes what `plan__draft_expand` drafted, replacing the draft's steps |
+| publishing a draft | `set_draft` — puts a plan document (what `plan__author_plan` returns) in the pane; `orchestrator` only |
+| learning about a tool | `describe_tool` — its schemas, observed output shape, and whether it's read-only, without calling it |
 | precise edits | `update_metadata`, `add_step`, `update_step`, `delete_step` |
 | re-reading the draft | `get_plan` — rarely needed: the current draft is always in the agent's context |
 | validating | `validate_plan` |
@@ -93,13 +92,13 @@ For changes to an existing draft, the agent prefers the precise editing tools ov
 - `update_step` patches a step's tool, input, or reasoning; its `newId` renames the step **and rewrites every downstream `{{id.*}}` reference** — templates keep working.
 - An edit is rejected — with the draft untouched — **only when it would introduce new validation problems** (duplicate id, forward reference, deleting a step others still read). Problems the plan already had never block an edit: an already-invalid draft stays editable, each successful edit reports the remaining pre-existing problems, and rejections list the problems the edit introduced separately from the pre-existing ones.
 - These edit top-level steps; `decide`/`map`/`reduce` body steps live inside the control step's input, so update that step.
-- There is no whole-plan replace tool — reshape the draft with the editing tools, or ask for a redraft, which `plan_author` does.
+- `plan_editor` has no whole-plan replace tool — reshape the draft with the editing tools, or ask for a new plan, which `orchestrator` drafts.
 
 ### Drafting from a goal
 
-`plan_author` drafts with [the planner's drafting plans](/plans/the-planner#drafting-without-executing), which see the full tool catalog and observed shapes, and publishes the result with `set_draft`. A goal that states a name ("named `the_goat`") sets the new draft's identifier and display name; otherwise both derive from the goal text. Every step is statically validated before drafting accepts it, so a published draft is statically valid; catalog problems (a tool name that doesn't resolve) are listed in the result and stay editable per the rules above. Publishing a new plan while an unrelated one is loaded passes `fresh: true`, so the result doesn't inherit the loaded plan's identity.
+`author_plan` drafts with [the planner's drafting plans](/plans/the-planner#drafting-without-executing), which see the full tool catalog and observed shapes. A goal that states a name ("named `the_goat`") sets the new draft's identifier and display name; otherwise both derive from the goal text. Every step is statically validated before drafting accepts it, so a published draft is statically valid; catalog problems (a tool name that doesn't resolve) are listed in the result and stay editable per the rules above. A new plan always gets its own identity; it never inherits the loaded plan's.
 
-Drafting articulates its progress live in the plan tab instead of a single planning spinner: the outline appears first as dimmed `○` placeholder rows, steps then materialize one at a time — a `◐` animated row for the step being drafted, turning into a `✓` row once it passes static validation, with a `(retry n/3)` suffix and the problems in the detail pane when it doesn't. The draft publishes exactly once, with `set_draft` after drafting completes — and if a step exhausted its retries, the valid prefix is published (marked unsaved) and the agent is told to finish it with the editing tools instead of redrafting.
+Drafting articulates its progress live in the plan tab instead of a single planning spinner: the outline appears first as dimmed `○` placeholder rows, steps then materialize one at a time — a `◐` animated row for the step being drafted, turning into a `✓` row once it passes static validation, with a `(retry n/3)` suffix and the problems in the detail pane when it doesn't. The draft publishes exactly once, with `set_draft` after `author_plan` completes — and if a step exhausted its retries, the valid prefix is kept, refined, and published (marked unsaved) with the problems listed, to finish with the editing tools instead of redrafting.
 
 <Frame caption="Drafting mid-flight: two steps accepted, the third being drafted, the outline's last stage still pending.">
   ![Drafting mid-flight: two steps accepted, the third being drafted, the outline's last stage still pending.](/images/workbench/drafting-overlay.svg)

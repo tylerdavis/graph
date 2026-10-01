@@ -7,10 +7,7 @@ use std::sync::{Arc, Mutex};
 pub const WORKBENCH_AGENTS: &[&str] = &[
     include_str!("orchestrator.yaml"),
     include_str!("plan_loader.yaml"),
-    include_str!("plan_author.yaml"),
     include_str!("plan_editor.yaml"),
-    include_str!("plan_refiner.yaml"),
-    include_str!("plan_verifier.yaml"),
 ];
 
 pub const ORCHESTRATOR: &str = "orchestrator";
@@ -39,9 +36,7 @@ enum Section {
 
 fn sections(agent: &str) -> &'static [Section] {
     match agent {
-        "plan_editor" | "plan_refiner" | "plan_verifier" | "plan_author" => {
-            &[Section::CurrentDraft]
-        }
+        "plan_editor" => &[Section::CurrentDraft],
         "orchestrator" => &[Section::DraftSummary],
         _ => &[],
     }
@@ -104,14 +99,7 @@ mod tests {
         let fragments: Vec<&str> = global_fragments().into_keys().collect();
         let problems = set.validate(&fragments);
         assert!(problems.is_empty(), "{problems:?}");
-        for name in [
-            "orchestrator",
-            "plan_loader",
-            "plan_author",
-            "plan_editor",
-            "plan_refiner",
-            "plan_verifier",
-        ] {
+        for name in ["orchestrator", "plan_loader", "plan_editor", "plan_refiner"] {
             assert!(set.get(name).is_some(), "{name}");
         }
     }

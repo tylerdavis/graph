@@ -77,9 +77,6 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                     Err(ConversationError::Turn {
                         source, partial, ..
                     }) => {
-                        // MaxIterations is real progress — the history ends
-                        // cleanly in tool results, so "continue" can build on
-                        // it. Any other turn error is rolled back.
                         if keep_partial_history(&source) {
                             history.extend(partial);
                         }
