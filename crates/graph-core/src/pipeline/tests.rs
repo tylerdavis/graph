@@ -5749,6 +5749,47 @@ async fn search_scores_groups_then_their_tools_with_the_decision_model() {
 }
 
 #[tokio::test]
+async fn large_candidate_sets_are_scored_in_chunks() {
+    let (pipeline, decider) = searching(Some(Box::new(|question: &str| {
+        if question.contains("t__search") {
+            0.9
+        } else {
+            0.1
+        }
+    })));
+    let candidates: Vec<Value> = (0..7)
+        .map(|n| json!({"name": format!("t__tool{n}"), "description": "a tool"}))
+        .chain(std::iter::once(
+            json!({"name": "t__search", "description": "searches"}),
+        ))
+        .collect();
+    let outcome = pipeline
+        .call_native(
+            "builtin__score_candidates",
+            json!({
+                "query": "search",
+                "candidates": candidates,
+                "question": "Is '{name}' needed?",
+                "chunk_size": 3,
+                "model": "decider",
+            }),
+        )
+        .await;
+    assert!(!outcome.is_error, "{}", outcome.result);
+    assert_eq!(outcome.result["mode"], json!("decision"));
+    assert_eq!(outcome.result["scored"][0]["name"], json!("t__search"));
+    let requests = decider.unwrap().requests.lock().unwrap().clone();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|r| r.questions.len())
+            .collect::<Vec<_>>(),
+        [3, 3, 2],
+        "eight candidates in chunks of three"
+    );
+}
+
+#[tokio::test]
 async fn search_falls_back_to_keywords_without_a_decision_model_or_when_it_fails() {
     let (pipeline, _) = searching(None);
     let call = pipeline

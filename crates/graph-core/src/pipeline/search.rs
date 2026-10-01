@@ -45,7 +45,8 @@ pub fn search_tool_defs() -> Vec<ToolDef> {
             description: "Scores candidates (each a `name` and `description`) for how well they \
                           fit a task, independently, from 0 to 1. With a decision model \
                           configured, each candidate is one likelihood question built from \
-                          `question` ({name} and {description} are filled in); otherwise, or \
+                          `question` ({name} and {description} are filled in), sent in \
+                          requests of at most `chunk_size` candidates; otherwise, or \
                           if that call fails, candidates are ranked by keyword overlap. Returns \
                           every candidate highest score first, and `selected`: those at or \
                           above `threshold`, topped up to `floor` with the best of the rest, \
@@ -61,7 +62,8 @@ pub fn search_tool_defs() -> Vec<ToolDef> {
                     "threshold": {"type": "number", "description": "Minimum score to be selected; default 0.5"},
                     "floor": {"type": "integer", "description": "Fewest candidates to select, taking the best below the threshold when needed; default 0"},
                     "limit": {"type": "integer", "description": "Most candidates to select"},
-                    "model": {"type": "string", "description": "The decision model role; default decider"}
+                    "model": {"type": "string", "description": "The decision model role; default decider"},
+                    "chunk_size": {"type": "integer", "description": "Most candidates per decision request; larger sets are split into requests sent together. Default 60"}
                 }
             }),
             output_schema: Some(json!({
@@ -144,10 +146,16 @@ struct ScoreInput {
     limit: Option<usize>,
     #[serde(default)]
     model: Option<String>,
+    #[serde(default = "default_chunk_size")]
+    chunk_size: usize,
 }
 
 fn default_threshold() -> f64 {
     0.5
+}
+
+fn default_chunk_size() -> usize {
+    60
 }
 
 #[derive(Debug, Clone)]
@@ -416,40 +424,48 @@ impl Pipeline {
         input: &ScoreInput,
         candidates: &[Candidate],
     ) -> Result<Vec<f64>, String> {
-        let questions: BTreeMap<String, Question> = candidates
-            .iter()
-            .enumerate()
-            .map(|(index, candidate)| {
-                let instructions = input
-                    .question
-                    .replace("{name}", &candidate.name)
-                    .replace("{description}", &candidate.description);
-                (
-                    format!("c{index}"),
-                    Question::Likelihood {
-                        instructions,
-                        criteria: None,
-                    },
-                )
-            })
-            .collect();
-        let request = DecisionRequest {
-            model: String::new(),
-            state: json!({ "task": input.query }),
-            questions,
-        };
-        let response = CallSite::as_role(role, self.router.decide_named(Some(role), request))
-            .await
-            .map_err(|e| format!("decision model '{role}' failed: {e}"))?;
-        (0..candidates.len())
-            .map(|index| match response.answers.get(&format!("c{index}")) {
-                Some(Answer::Likelihood { probability }) => Ok(*probability),
-                Some(_) => Err(format!(
-                    "decision model '{role}' answered c{index} with the wrong kind"
-                )),
-                None => Err(format!("decision model '{role}' did not answer c{index}")),
-            })
-            .collect()
+        let size = input.chunk_size.max(1);
+        let requests = candidates.chunks(size).map(|chunk| async move {
+            let questions: BTreeMap<String, Question> = chunk
+                .iter()
+                .enumerate()
+                .map(|(index, candidate)| {
+                    let instructions = input
+                        .question
+                        .replace("{name}", &candidate.name)
+                        .replace("{description}", &candidate.description);
+                    (
+                        format!("c{index}"),
+                        Question::Likelihood {
+                            instructions,
+                            criteria: None,
+                        },
+                    )
+                })
+                .collect();
+            let request = DecisionRequest {
+                model: String::new(),
+                state: json!({ "task": input.query }),
+                questions,
+            };
+            let response = CallSite::as_role(role, self.router.decide_named(Some(role), request))
+                .await
+                .map_err(|e| format!("decision model '{role}' failed: {e}"))?;
+            (0..chunk.len())
+                .map(|index| match response.answers.get(&format!("c{index}")) {
+                    Some(Answer::Likelihood { probability }) => Ok(*probability),
+                    Some(_) => Err(format!(
+                        "decision model '{role}' answered c{index} with the wrong kind"
+                    )),
+                    None => Err(format!("decision model '{role}' did not answer c{index}")),
+                })
+                .collect::<Result<Vec<f64>, String>>()
+        });
+        let mut scores = Vec::with_capacity(candidates.len());
+        for chunk in futures::future::join_all(requests).await {
+            scores.extend(chunk?);
+        }
+        Ok(scores)
     }
 
     pub(super) async fn shapes(&self) -> HashMap<String, crate::store::ToolShape> {

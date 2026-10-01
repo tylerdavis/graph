@@ -33,6 +33,10 @@ input_schema:
       type: string
       description: The decision model role that scores the candidates
       default: decider
+    chunk_size:
+      type: integer
+      description: Most candidates per decision request; larger sets are split into requests sent together
+      default: 60
     schemas:
       type: boolean
       description: Include each tool's input schema and output shape
@@ -51,6 +55,7 @@ steps:
       threshold: "{{input.group_threshold}}"
       floor: "{{input.min_groups}}"
       model: "{{input.model}}"
+      chunk_size: "{{input.chunk_size}}"
     reasoning: Each group scored on its own; the ones that clear the threshold are searched.
   - id: candidates
     tool_name: builtin__group_tools
@@ -67,6 +72,7 @@ steps:
       floor: "{{input.min_tools}}"
       limit: "{{input.limit}}"
       model: "{{input.model}}"
+      chunk_size: "{{input.chunk_size}}"
     reasoning: Each tool scored on its own; the ones that clear the threshold are returned, highest score first.
   - id: described
     tool_name: builtin__describe_tools

@@ -19,7 +19,7 @@ Each candidate is scored on its own, from 0 to 1, so two relevant groups can bot
 
 | Mode | When | How |
 |---|---|---|
-| `decision` | a [decision model](/models/models-and-providers) is configured for the `model` role (`decider` by default) | one request per stage, with one likelihood question per candidate |
+| `decision` | a [decision model](/models/models-and-providers) is configured for the `model` role (`decider` by default) | one likelihood question per candidate, in requests of at most `chunk_size` (60) candidates sent together |
 | `keyword` | otherwise, or when the decision call fails | keyword overlap ranking over names and descriptions, no model call |
 
 The result's `mode` says which ran; a failed decision call adds `fallback_reason`.
@@ -45,6 +45,7 @@ The result's `mode` says which ran; a failed decision call adds `fallback_reason
 | `min_groups` | `1` | fewest groups searched |
 | `min_tools` | `5` | fewest tools returned |
 | `model` | `decider` | the decision model role that scores |
+| `chunk_size` | `60` | most candidates per decision request |
 | `schemas` | `true` | include each tool's input schema and output shape |
 
 The result is `{mode, groups, tools, always}`: every group with its score and whether it was searched, the returned tools in score order, and the always-loaded tools.
