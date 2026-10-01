@@ -9,9 +9,8 @@ chat: "draft a plan that reviews a PR and posts findings as comments"
 
 llm:
   # The orchestrator drafts the new plan with the built-in author_plan
-  # plan: the outliner's entries (structured), the review (answered
-  # below), then one structured step draft per stage — the capture fires
-  # while stage 3 is being drafted.
+  # plan: the outliner's entries (structured), then one structured step
+  # draft per stage — the capture fires while stage 3 is being drafted.
   - call: plan__author_plan
     input:
       goal: >-
@@ -42,10 +41,6 @@ llm:
           max_bytes: 200000
         reasoning: The full change, within token budget.
       planComplete: false
-
-# The outline review, approved as drafted.
-answers:
-  - { approve: true, changes: "" }
 
 capture:
   draft_step: 2

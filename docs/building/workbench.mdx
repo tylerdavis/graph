@@ -53,10 +53,9 @@ The workbench runs three built-in [agents](/reference/agent-schema). Each has an
 New plans come from the built-in `author_plan` plan, which `orchestrator` runs for you. It's a plan, not an agent's habit, so the steps always happen in this order:
 
 1. **Outline.** [`draft_outline`](/plans/the-planner#drafting-without-executing) sketches the stages.
-2. **Review.** The outline opens in the answer editor: approve it, or describe what to change and the revised outline comes back for another look, up to three rounds.
-3. **Full plan.** `draft_expand` drafts and validates one step per agreed stage, live in the plan tab.
-4. **Refine.** The `plan_refiner` agent reviews the draft against your goal and proposes targeted edits; each is applied only if it doesn't add a problem.
-5. **Validate.** The plan is checked against the catalog, and the tools it calls that aren't marked read-only are listed.
+2. **Full plan.** `draft_expand` drafts and validates one step per stage, live in the plan tab.
+3. **Refine.** The `plan_refiner` agent reviews the draft against your goal and proposes targeted edits; each is applied only if it doesn't add a problem.
+4. **Validate.** The plan is checked against the catalog, and the tools it calls that aren't marked read-only are listed.
 
 `orchestrator` then puts the plan in the pane with `set_draft` and hands you to `plan_editor`, which tells you what was built. When the plan has side effects, run it gated (`g`) to approve each step. `set_draft` won't discard unsaved changes to the current draft unless you confirm.
 

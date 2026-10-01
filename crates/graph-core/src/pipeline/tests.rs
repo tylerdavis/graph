@@ -4554,11 +4554,10 @@ impl Interlocutor for ScriptedHuman {
 }
 
 #[tokio::test]
-async fn author_plan_reviews_the_outline_with_the_user_then_drafts_refines_and_validates() {
+async fn author_plan_outlines_drafts_refines_and_validates_without_running_anything() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, provider) = drafting(
         vec![
-            structured(json!({"entries": ["find the team"]})),
             structured(json!({"entries": ["find the team", "fetch its issues"]})),
             briefed_step_draft(search_step("E0")),
             step_draft(issues_step("E1", "E0.values.0.id"), true),
@@ -4568,11 +4567,6 @@ async fn author_plan_reviews_the_outline_with_the_user_then_drafts_refines_and_v
     );
     let mut pipeline = pipeline;
     pipeline.agents = Arc::new(crate::agent::doc::AgentSet::builtin());
-    let human = ScriptedHuman::new(vec![
-        AskOutcome::Answered(json!({"approve": false, "changes": "also fetch its issues"})),
-        AskOutcome::Answered(json!({"approve": true, "changes": ""})),
-    ]);
-    let pipeline = pipeline.with_interlocutor(human.clone());
 
     let call = pipeline
         .call_plan("author_plan", json!({"goal": "sprint status"}))
@@ -4593,20 +4587,11 @@ async fn author_plan_reviews_the_outline_with_the_user_then_drafts_refines_and_v
         json!([]),
         "both test tools are read-only"
     );
-
-    let prompts = human.prompts();
-    assert_eq!(prompts.len(), 2, "one revision round, then approval");
-    assert!(prompts[0].contains("1. find the team"), "{}", prompts[0]);
-    assert!(prompts[1].contains("2. fetch its issues"), "{}", prompts[1]);
     assert!(
         registry.invocations.lock().unwrap().is_empty(),
         "authoring never runs the plan's tools"
     );
-    let requests = provider.requests.lock().unwrap();
-    assert_eq!(requests.len(), 5);
-    assert!(user_turns(&requests[1])
-        .join("")
-        .contains("also fetch its issues"));
+    assert_eq!(provider.requests.lock().unwrap().len(), 4);
 }
 
 const ASK_SCHEMA: fn() -> Value = || {
