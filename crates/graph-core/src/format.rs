@@ -8,7 +8,7 @@ pub const PLAN_FORMAT: u32 = 2;
 
 pub const PLAN_FORMAT_OLDEST: u32 = 1;
 
-pub const TOOL_FORMAT: u32 = 1;
+pub const TOOL_FORMAT: u32 = 2;
 
 pub const TOOL_FORMAT_OLDEST: u32 = 1;
 
@@ -42,7 +42,11 @@ fn decide_step_becomes_route(value: &mut Value) -> Result<Vec<String>, String> {
     })
 }
 
-const TOOL_MIGRATIONS: &[Migration] = &[];
+const TOOL_MIGRATIONS: &[Migration] = &[decision_kind_added];
+
+fn decision_kind_added(_value: &mut Value) -> Result<Vec<String>, String> {
+    Ok(Vec::new())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -374,10 +378,12 @@ mod tests {
         );
         let text = err.to_string();
         assert!(text.contains("is tool version"), "{text}");
-        assert!(
-            text.contains(&format!("reads tool version {TOOL_FORMAT}")),
-            "{text}"
-        );
+        let window = if TOOL_FORMAT_OLDEST == TOOL_FORMAT {
+            format!("reads tool version {TOOL_FORMAT}")
+        } else {
+            format!("reads tool versions {TOOL_FORMAT_OLDEST} to {TOOL_FORMAT}")
+        };
+        assert!(text.contains(&window), "{text}");
         assert!(text.contains(FORMATS_DOC), "{text}");
     }
 
