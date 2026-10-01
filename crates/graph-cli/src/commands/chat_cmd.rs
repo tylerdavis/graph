@@ -1,6 +1,8 @@
 //! `graph chat` — interactive REPL with persistent threads.
 
-use crate::runtime::{resolve_thread, starting_agent, title_from, Runtime};
+use crate::runtime::{
+    load_history, persist_turn, resolve_thread, starting_agent, title_from, Runtime,
+};
 use anyhow::{bail, Result};
 use graph_core::agent::conversation::{view, Conversation};
 use graph_core::{NewEntry, Store, ThreadMeta};
@@ -41,12 +43,7 @@ pub async fn run(agent: Option<String>, thread: Option<Option<String>>) -> Resul
                 "continuing thread {} — {} (with {active})",
                 meta.id, meta.title
             );
-            store
-                .load_entries(&meta.id)
-                .await?
-                .into_iter()
-                .map(NewEntry::from)
-                .collect()
+            load_history(store.as_ref(), &meta.id).await?
         }
         None => Vec::new(),
     };
@@ -154,19 +151,6 @@ fn prompt_label(active: &str) -> String {
     } else {
         format!("graph:{active}")
     }
-}
-
-pub async fn persist_turn(
-    store: &dyn Store,
-    meta: &ThreadMeta,
-    active: &str,
-    turn: &graph_core::agent::conversation::ConversationTurn,
-) -> Result<()> {
-    store.append_entries(&meta.id, &turn.entries).await?;
-    if turn.active != active {
-        store.set_active_agent(&meta.id, &turn.active).await?;
-    }
-    Ok(())
 }
 
 struct Session<'a> {

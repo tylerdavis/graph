@@ -1,12 +1,12 @@
 //! Shared wiring: config → providers → MCP registry → store → agent.
 
 use anyhow::{Context, Result};
-use graph_core::agent::conversation::Conversation;
+use graph_core::agent::conversation::{Conversation, ConversationTurn};
 use graph_core::pipeline::{doc::LoadedPlans, ExecutionGate, Interlocutor, Pipeline, ToolCatalog};
 use graph_core::toolbox::AgentToolbox;
 use graph_core::usage::UsageLedger;
 use graph_core::user_tools::UserToolRegistry;
-use graph_core::{Agent, CompositeRegistry, EventSink, Store, ThreadMeta, ToolRegistry};
+use graph_core::{Agent, CompositeRegistry, EventSink, NewEntry, Store, ThreadMeta, ToolRegistry};
 use graph_llm::ModelRouter;
 use graph_mcp::McpManager;
 use graph_store::{FileStore, MemoryStore, RecordingRegistry};
@@ -379,11 +379,8 @@ impl Runtime {
         events: Arc<dyn EventSink>,
         hooks: PipelineHooks,
     ) -> Result<Conversation> {
-        let base = self.recording_registry(store)?;
         let pipeline = self.pipeline_with(store, events.clone(), hooks).await?;
-        let plans = pipeline.plans.as_ref().clone();
-        let catalog: Arc<dyn ToolRegistry> =
-            Arc::new(AgentToolbox::new(base, pipeline.clone(), plans));
+        let catalog: Arc<dyn ToolRegistry> = self.toolbox_over(store, &pipeline)?;
         let now = chrono::Local::now()
             .format("%A, %B %e %Y, %H:%M %Z")
             .to_string();
@@ -416,23 +413,20 @@ impl Runtime {
         store: &Arc<dyn Store>,
         events: Arc<dyn EventSink>,
     ) -> Result<Arc<AgentToolbox>> {
-        self.toolbox_with(store, events, PipelineHooks::default())
-            .await
+        let pipeline = self
+            .pipeline_with(store, events, PipelineHooks::default())
+            .await?;
+        self.toolbox_over(store, &pipeline)
     }
 
-    /// The agent's tool catalog over a hooked pipeline — so a plan called
-    /// as `plan__*` from a conversation can still reach the human who is
-    /// already sitting there.
-    pub async fn toolbox_with(
+    fn toolbox_over(
         &self,
         store: &Arc<dyn Store>,
-        events: Arc<dyn EventSink>,
-        hooks: PipelineHooks,
+        pipeline: &Arc<Pipeline>,
     ) -> Result<Arc<AgentToolbox>> {
         let base = self.recording_registry(store)?;
-        let pipeline = self.pipeline_with(store, events, hooks).await?;
         let plans = pipeline.plans.as_ref().clone();
-        Ok(Arc::new(AgentToolbox::new(base, pipeline, plans)))
+        Ok(Arc::new(AgentToolbox::new(base, pipeline.clone(), plans)))
     }
 }
 
@@ -490,6 +484,28 @@ pub async fn resolve_thread(
         }
         Some(None) => Ok(store.latest_thread().await?),
     }
+}
+
+pub async fn load_history(store: &dyn Store, thread_id: &str) -> Result<Vec<NewEntry>> {
+    Ok(store
+        .load_entries(thread_id)
+        .await?
+        .into_iter()
+        .map(NewEntry::from)
+        .collect())
+}
+
+pub async fn persist_turn(
+    store: &dyn Store,
+    meta: &ThreadMeta,
+    active: &str,
+    turn: &ConversationTurn,
+) -> Result<()> {
+    store.append_entries(&meta.id, &turn.entries).await?;
+    if turn.active != active {
+        store.set_active_agent(&meta.id, &turn.active).await?;
+    }
+    Ok(())
 }
 
 pub fn starting_agent(thread: Option<&ThreadMeta>, requested: Option<&str>) -> Result<String> {
