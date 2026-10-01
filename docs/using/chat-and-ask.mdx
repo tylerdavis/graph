@@ -49,7 +49,8 @@ Put `--thread` **after** the message. It takes an optional value, so `graph ask 
 ## Interactive: `graph chat`
 
 ```bash
-graph chat                      # new thread
+graph chat                      # new thread with the default chat agent
+graph chat search_bot           # new thread with a named agent
 graph chat --thread             # resume the most recent
 graph chat --thread <id>        # resume a specific one
 ```
@@ -58,8 +59,10 @@ Slash commands inside the REPL:
 
 | Command | Effect |
 |---|---|
-| `/thread` | show the current thread id and title |
-| `/state` | dump the conversation (including tool calls) as JSON |
+| `/agent` | list the agents, marking the one you're talking to |
+| `/agent <name>` | switch to another agent for the rest of the conversation |
+| `/thread` | show the current thread id, title, and owner |
+| `/state` | dump the active agent's view of the conversation (including tool calls) as JSON |
 | `/quit`, `/exit`, `/q` | leave (Ctrl-D also works) |
 
 Each completed turn prints a dim one-line usage summary to stderr — calls,
@@ -71,6 +74,17 @@ A failed turn keeps the session alive and rolls the conversation back so a retry
 ```
 resume with `graph chat --thread 8d36b7003df9`
 ```
+
+## Agents
+
+`chat` and `ask` run the built-in [`chat` agent](/reference/agent-schema) unless you name another one (`graph chat <agent>`, `graph ask --agent <agent>`). An agent can work with others in two ways, declared in its file:
+
+- **Subagents** (`subagents`): the agent calls `agent__<name>` and another agent runs the request in its own fresh context, then returns its answer. The run is kept in the thread but never shown to the caller, which sees only the answer.
+- **Handoffs** (`handoffs`): the agent calls `transfer_to_<name>` and the other agent takes over the conversation, picking up the current turn with a note on what is needed. The thread remembers who is active, so a resumed thread continues with the agent that last had the conversation.
+
+Each agent sees your messages, what the other agents said, the handoffs, and its own tool calls, but not other agents' tool traffic. A turn hands off at most 4 times; after that, whoever holds the conversation answers.
+
+A thread belongs to the agent it was started with. `graph chat <agent> --thread <id>` is refused when `<agent>` isn't that owner. Leave the agent out to resume, or switch with `/agent <name>` inside the REPL.
 
 ## Reading the output
 

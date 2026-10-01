@@ -6,7 +6,7 @@ icon: "clock-rotate-left"
 
 Every successful `ask` and `chat` turn persists to a thread — the full message history including tool calls and their results. Threads live as plain files under the data directory and survive across processes.
 
-A thread is a log of entries, each with an author: `user` for what you typed, and the agent's name for what it said and the tools it called. A thread also records its **owner** (the agent it was started with, `chat` today) and its **active** agent, plus two other kinds of entry for agents working together: a **handoff** (one agent passing the conversation to another) and a **subagent run** (an agent's full, isolated run on another agent's behalf).
+A thread is a log of entries, each with an author: `user` for what you typed, and the agent's name for what it said and the tools it called. A thread also records its **owner** (the agent it was started with) and its **active** agent (the one that last had the conversation, which a resumed thread continues with), plus two other kinds of entry for agents working together: a **handoff** (one agent passing the conversation to another) and a **subagent run** (an agent's full, isolated run on another agent's behalf).
 
 ## Managing threads
 
