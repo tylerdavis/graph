@@ -19,12 +19,6 @@ pub const CONTROL_STEP_RULES: &str = include_str!("prompts/control_step_rules.md
 /// prompts, which differ only in how they are called.
 const PLANNING_RULES: &str = include_str!("prompts/planning_rules.md").trim_ascii_end();
 
-pub fn outliner_prompt(tools: &str) -> String {
-    format!(include_str!("prompts/outliner.md"), tools = tools)
-        .trim_ascii_end()
-        .to_string()
-}
-
 const BUILTIN_SUMMARIES: &[(&str, &str)] = &[
     (
         "builtin__infer",
@@ -43,7 +37,11 @@ fn described(name: &str, description: Option<&str>) -> String {
     }
 }
 
-pub fn outliner_catalog(names: &[String], servers: &[crate::tools::ToolServer]) -> String {
+pub fn outliner_catalog(
+    names: &[String],
+    servers: &[crate::tools::ToolServer],
+    agents: &[(String, String)],
+) -> String {
     let mut mcp: Vec<String> = Vec::new();
     let mut packs: Vec<String> = Vec::new();
     let mut builtins: Vec<String> = Vec::new();
@@ -85,6 +83,15 @@ pub fn outliner_catalog(names: &[String], servers: &[crate::tools::ToolServer]) 
         ("MCP Servers", mcp),
         ("Tool packs", packs),
         ("Builtin tools", builtins),
+        (
+            "Agents",
+            agents
+                .iter()
+                .map(|(name, description)| {
+                    described(&format!("agent__{name}"), Some(description.as_str()))
+                })
+                .collect(),
+        ),
         ("User tools", user),
         ("Plans", plans),
     ]
@@ -161,11 +168,6 @@ pub fn drafting_prompt(args: &DraftingPromptArgs) -> String {
         planning_rules = PLANNING_RULES,
         control_step_rules = CONTROL_STEP_RULES,
     )
-}
-
-/// The outliner's only turn: the task, nothing else.
-pub fn outline_request(query: &str) -> String {
-    format!("# Task\n{query}")
 }
 
 pub fn drafting_preamble(query: &str, entries: &[String]) -> String {
@@ -316,7 +318,6 @@ mod tests {
 
     #[test]
     fn request_helpers_name_ids_and_entries() {
-        assert_eq!(outline_request("do the thing"), "# Task\ndo the thing");
         let request = step_request("E2", 3, "fetch the issues");
         assert!(request.contains("step E2"));
         assert!(request.contains("outline entry 3:\nfetch the issues"));
@@ -333,23 +334,6 @@ mod tests {
             preamble,
             "# Task\nreport on x\n\n# Outline\n1. gather x\n2. summarize it"
         );
-    }
-
-    #[test]
-    fn the_outliner_prompt_carries_names_but_no_schemas() {
-        let tools = outliner_catalog(&["builtin__git_log".to_string()], &[]);
-        let prompt = outliner_prompt(&tools);
-        assert!(prompt.contains("## Tool packs\n- github: "), "{prompt}");
-        assert!(prompt.contains("principal engineer"));
-        for step in ["exit", "decide", "filter", "map", "reduce", "agent", "ask"] {
-            assert!(
-                prompt.contains(&format!("- `{step}`: ")),
-                "{step} is described"
-            );
-            assert!(super::super::is_control_step(step));
-        }
-        assert!(!prompt.contains("inputSchema"));
-        assert!(!prompt.contains("templating_rules"));
     }
 
     #[test]
@@ -378,7 +362,8 @@ mod tests {
                 description: None,
             },
         ];
-        let catalog = outliner_catalog(&names, &servers);
+        let agents = [("outliner".to_string(), "Writes outlines".to_string())];
+        let catalog = outliner_catalog(&names, &servers, &agents);
         let sections: Vec<&str> = catalog.split("\n\n").collect();
         assert_eq!(
             sections[0],
@@ -401,16 +386,17 @@ mod tests {
             sections[2].contains("\n- builtin__reshape: deterministically"),
             "{catalog}"
         );
-        assert_eq!(sections[3], "## User tools\n- user__summarize");
-        assert_eq!(sections[4], "## Plans\n- plan__sprint_analysis");
-        assert_eq!(sections.len(), 5);
+        assert_eq!(sections[3], "## Agents\n- agent__outliner: Writes outlines");
+        assert_eq!(sections[4], "## User tools\n- user__summarize");
+        assert_eq!(sections[5], "## Plans\n- plan__sprint_analysis");
+        assert_eq!(sections.len(), 6);
         assert!(
             !catalog.contains("list_issues"),
             "MCP tool lists are dropped"
         );
         assert!(!catalog.contains("git_diff"), "pack tool lists are dropped");
         assert_eq!(
-            outliner_catalog(&[], &[]),
+            outliner_catalog(&[], &[], &[]),
             "## Tools\nNo tools are configured."
         );
     }

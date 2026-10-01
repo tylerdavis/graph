@@ -219,7 +219,12 @@ fn plan_list_reports_broken_and_valid_plans_separately() {
     let envelope = run.json();
 
     // A plan the catalog rejects is reported, not silently dropped...
-    let plans = envelope["plans"].as_array().expect("plans array");
+    let plans: Vec<&serde_json::Value> = envelope["plans"]
+        .as_array()
+        .expect("plans array")
+        .iter()
+        .filter(|plan| !plan["path"].is_null())
+        .collect();
     assert_eq!(plans.len(), 1, "only the valid plan is in the catalog");
     assert_eq!(plans[0]["identifier"], serde_json::json!("echo_ok"));
     assert_eq!(plans[0]["steps"], serde_json::json!(1));

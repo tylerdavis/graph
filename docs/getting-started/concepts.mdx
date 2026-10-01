@@ -38,6 +38,7 @@ Everything a plan step or the agent can do is a **tool**, and every tool lives i
 | `user__` | [User-defined tools](/tools/user-defined) (exec / prompt / reshape YAML) | `user__git_log` |
 | `builtin__` | [Bundled tool packs](/tools/builtins) compiled into the binary | `builtin__infer` |
 | `plan__` | One per [plan document](/plans/overview) | `plan__project_status` |
+| `agent__` | One per [named agent](/reference/agent-schema), callable from plan steps | `agent__search_bot` |
 | — | [`plan_and_execute`](/plans/the-planner): on-the-fly planning for novel multi-step tasks |  |
 
 This is what makes plans composable: authoring a plan _adds a tool to the catalog_, and a plan's steps draw from that same catalog — including other plans. The [composition rules](/tools/overview#composition-rules) and the commands for inspecting and invoking the catalog live in [The tool catalog](/tools/overview).
