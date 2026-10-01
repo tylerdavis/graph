@@ -46,9 +46,7 @@ A chat turn through `plan_and_execute` is 4+ inference calls: the agent (decidin
 
 ## Drafting without executing
 
-The same planner also powers **draft-only** planning: `graph plan draft`, and the built-in `author_plan` plan the [workbench](/workbench/plan-workbench) runs for new plans, produce a plan for you to review instead of executing it. `author_plan` adds a final validation that also lists the tools the plan calls that aren't marked read-only.
-
-A draft is the built-in plan `draft`, so `graph plan draft` and the workbench run the same plan, and each stage can be inspected with `graph plan show` and replaced by a plan file with the same identifier. `draft` runs two plans and returns the outline with the drafted `steps`, the `solver` brief, and `done`, `failed`, and `problems`:
+The same planner also powers **draft-only** planning, which produces a plan for you to review instead of executing it. A draft is the built-in plan `author_plan`, so `graph plan draft`, MCP `graph_plan_draft`, and the [workbench](/workbench/plan-workbench) run the same plan, and each stage can be inspected with `graph plan show` and replaced by a plan file with the same identifier. `author_plan` runs two plans, turns their result into a plan document named from the goal with `builtin__plan_from_draft`, and validates it with `builtin__validate_plan`, which also lists the tools the plan calls that aren't marked read-only:
 
 - `draft_outline` renders the condensed catalog with `builtin__catalog_outline`, then makes one `builtin__infer` call on the [`outliner` role](/models/models-and-providers#standard-roles) with the outline prompt, the goal, and that catalog.
 - `draft_expand` folds the outline with a `reduce` step whose body runs `plan__draft_step` once per entry, then runs it once more to close the plan.

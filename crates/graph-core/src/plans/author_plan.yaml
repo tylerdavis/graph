@@ -38,3 +38,5 @@ output:
   valid: "{{verified.valid}}"
   problems: "{{verified.problems}}"
   side_effects: "{{verified.side_effects}}"
+  drafting_problems: "{{drafted.problems}}"
+  failed_step: "{{drafted.failed_step}}"

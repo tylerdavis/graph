@@ -9,7 +9,7 @@ pub const DRAFT_CONTEXT_TOOL: &str = "builtin__draft_context";
 
 pub const ACCEPT_STEP_TOOL: &str = "builtin__accept_step";
 
-pub const DRAFT_PLAN: &str = "draft";
+pub const AUTHOR_PLAN: &str = "author_plan";
 
 /// One step-drafting response.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -72,7 +72,20 @@ pub struct Draft {
 }
 
 impl Draft {
-    pub fn from_result(result: &Value) -> Result<Self, String> {
+    pub fn from_authored(result: &Value) -> Result<Self, String> {
+        let doc = super::native_tools::plan_doc(&result["plan"])?;
+        Ok(Self {
+            output: PlannerOutput {
+                plan: doc.steps,
+                solver_data: doc.solver,
+            },
+            failed_step: result["failed_step"].as_str().map(str::to_string),
+            problems: serde_json::from_value(result["drafting_problems"].clone())
+                .unwrap_or_default(),
+        })
+    }
+
+    pub fn from_expanded(result: &Value) -> Result<Self, String> {
         let state: DraftState = serde_json::from_value(result.clone())
             .map_err(|e| format!("the draft plan returned an unexpected shape: {e}"))?;
         Ok(Self {
