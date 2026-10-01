@@ -62,6 +62,28 @@ pub fn control_bodies<'a>(tool: &str, input: &'a Map<String, Value>) -> Vec<(Str
     bodies
 }
 
+pub fn control_body<'a>(input: &'a Map<String, Value>, name: &str) -> Option<&'a Value> {
+    input.get(name).or_else(|| {
+        input
+            .get("cases")
+            .and_then(Value::as_object)
+            .and_then(|cases| cases.get(name))
+    })
+}
+
+pub fn control_body_mut<'a>(
+    input: &'a mut Map<String, Value>,
+    name: &str,
+) -> Option<&'a mut Value> {
+    if input.contains_key(name) {
+        return input.get_mut(name);
+    }
+    input
+        .get_mut("cases")
+        .and_then(Value::as_object_mut)
+        .and_then(|cases| cases.get_mut(name))
+}
+
 pub fn parse_branch(name: &str, raw: &Value) -> Result<Branch, String> {
     match raw {
         Value::Array(_) => {

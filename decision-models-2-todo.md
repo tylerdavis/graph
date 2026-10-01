@@ -31,7 +31,7 @@ Decisions carried in:
   - Validation reports mismatched keys, mixing `then`/`else` with `cases`, an unreachable `else`, and fewer than 2 or more than 255 options.
 - **Verify:** pipeline tests with a mock choice decider.
 
-## Task 3: Workbench N-way junction
+## [x] Task 3: Workbench N-way junction
 - **Change:** a route with `cases` renders one arm per case plus `else`, wherever `then`/`else` render today. That covers the plan tab, step form, and bus paths.
 - **Verify:** the workbench tests, and a screenshot for a `cases` route.
 
