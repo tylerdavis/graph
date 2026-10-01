@@ -33,7 +33,7 @@ args:
       context=$(git-cliff -c cliff.toml --context)
     fi
     jq '
-      def file_kinds: ["config", "plan", "tool", "store"];
+      def file_kinds: ["config", "plan", "tool", "agent", "store"];
       def strip: gsub("^\\s+|\\s+$"; "");
       def mdx: gsub("<"; "&lt;") | gsub("\\{"; "&#123;");
       def subject: (.message | split("\n")[0] | strip);
@@ -106,7 +106,7 @@ output_schema:
           ident:   { type: ["string", "null"], description: MDX-component-safe version, e.g. V0_10_0 or config_v2 }
           snippet: { type: ["string", "null"], description: 'The entry''s snippet directory under docs/snippets/changelog/: "graph/v0.13.0" for the binary, "<kind>/v<N>" for a file version; null for unreleased commits' }
           date:    { type: ["string", "null"] }
-          kind:    { type: string, enum: [binary, config, plan, tool, store] }
+          kind:    { type: string, enum: [binary, config, plan, tool, agent, store] }
           module:  { type: string, description: 'The module name as shown to readers — Graph, Config, Plan, Tool, Store' }
           intro:
             type: ["object", "null"]

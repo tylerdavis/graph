@@ -12,6 +12,10 @@ pub const TOOL_FORMAT: u32 = 1;
 
 pub const TOOL_FORMAT_OLDEST: u32 = 1;
 
+pub const AGENT_FORMAT: u32 = 1;
+
+pub const AGENT_FORMAT_OLDEST: u32 = 1;
+
 pub const FORMAT_KEY: &str = "version";
 
 pub type Migration = fn(&mut Value) -> Result<Vec<String>, String>;
@@ -20,10 +24,13 @@ const PLAN_MIGRATIONS: &[Migration] = &[];
 
 const TOOL_MIGRATIONS: &[Migration] = &[];
 
+const AGENT_MIGRATIONS: &[Migration] = &[];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Plan,
     Tool,
+    Agent,
 }
 
 impl Kind {
@@ -31,6 +38,7 @@ impl Kind {
         match self {
             Kind::Plan => "plan",
             Kind::Tool => "tool",
+            Kind::Agent => "agent",
         }
     }
 
@@ -38,6 +46,7 @@ impl Kind {
         match self {
             Kind::Plan => PLAN_FORMAT,
             Kind::Tool => TOOL_FORMAT,
+            Kind::Agent => AGENT_FORMAT,
         }
     }
 
@@ -45,6 +54,7 @@ impl Kind {
         match self {
             Kind::Plan => PLAN_FORMAT_OLDEST,
             Kind::Tool => TOOL_FORMAT_OLDEST,
+            Kind::Agent => AGENT_FORMAT_OLDEST,
         }
     }
 
@@ -52,6 +62,7 @@ impl Kind {
         match self {
             Kind::Plan => PLAN_MIGRATIONS,
             Kind::Tool => TOOL_MIGRATIONS,
+            Kind::Agent => AGENT_MIGRATIONS,
         }
     }
 }
@@ -314,6 +325,10 @@ mod tests {
         assert_eq!(
             TOOL_MIGRATIONS.len() as u32,
             TOOL_FORMAT - TOOL_FORMAT_OLDEST
+        );
+        assert_eq!(
+            AGENT_MIGRATIONS.len() as u32,
+            AGENT_FORMAT - AGENT_FORMAT_OLDEST
         );
     }
 

@@ -1,3 +1,4 @@
+pub mod agents_cmd;
 pub mod ask;
 pub mod chat_cmd;
 pub mod config_cmd;

@@ -36,7 +36,7 @@ args:
       context=$(git-cliff -c cliff.toml --tag "$version" --context)
     fi
     text=$(jq -r --arg v "$version" '
-      def file_kinds: ["config", "plan", "tool", "store"];
+      def file_kinds: ["config", "plan", "tool", "agent", "store"];
       def strip: gsub("^\\s+|\\s+$"; "");
       def subject: (.message | split("\n")[0] | strip);
       def line:

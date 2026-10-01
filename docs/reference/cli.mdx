@@ -46,7 +46,7 @@ graph plan migrate <name|path> [--json]
 graph plan run <name> [<json>|@file|-] [--input k=v]... [--json]
 ```
 
-`migrate` rewrites one plan file to the current [file version](/reference/file-versions#plans-and-tools), resolving a path or an identifier the same lenient way `validate` does. A file already at the current version is left untouched.
+`migrate` rewrites one plan file to the current [file version](/reference/file-versions#plans-tools-and-agents), resolving a path or an identifier the same lenient way `validate` does. A file already at the current version is left untouched.
 
 `validate` checks structure (templates, references, ids) and resolves every step tool against the loadable catalog — packs, user tools, plans (composition followed transitively), and configured MCP servers (server-level; MCP tool names are only verifiable by connecting). Problems exit `1`; a file whose `requires_servers` declares an unconfigured server validates with a note (portable, just not runnable here). `run` performs the same resolution and refuses to start when it fails. Naming a plan hidden by unconfigured `requires_servers` errors with the missing servers.
 
@@ -119,6 +119,22 @@ Changing `identifier` writes a _new_ file (`<plans dir>/<new>.yaml`) and leaves 
 
 An edit reserializes the whole file, so cosmetic YAML is normalized: flow mappings (`input: { a: b }`) become block mappings, folded scalars (`>`) become literal ones (`|`), and comments are dropped. The plan itself is unchanged — commentary belongs in `description` and each step's `reasoning`, which are real fields the agent also reads.
 
+## `graph agents`
+
+```text
+graph agents list [--json]
+graph agents show <name> [--json]
+graph agents validate [<path>] [--json]
+graph agents migrate <path> [--json]
+```
+
+Agents come from three layers: built-in, `~/.config/graph/agents/`, then `./.graph/agents/`, with a later layer replacing an agent of the same name. See [Agent files](/reference/agent-schema).
+
+- `list` prints `name`, source (`built-in` or the file path) and description, one agent per line. `--json` adds each agent's model, subagents, handoffs, how it's called as a subagent (`subagentIo`), and any files that failed to load (`loadErrors`).
+- `show` prints the agent's effective file, stamped with the current `version`, and names its source on stderr. It's the file to copy when customizing a built-in.
+- `validate` checks every agent, or one file in the context of the others. Problems exit `1`, and `--json` returns them under `problems`.
+- `migrate` rewrites one agent file to the current [file version](/reference/file-versions#plans-tools-and-agents).
+
 ## `graph tools`
 
 ```text
@@ -128,7 +144,7 @@ graph tools test <name> [<json>|@file|-] [--input k=v]...
 graph tools migrate <path> [--json]
 ```
 
-`migrate` rewrites one user tool file to the current [file version](/reference/file-versions#plans-and-tools). It takes a path rather than a catalog name, since a file the catalog refuses is the one most likely to need it, and it never starts the tool catalog (no MCP connections).
+`migrate` rewrites one user tool file to the current [file version](/reference/file-versions#plans-tools-and-agents). It takes a path rather than a catalog name, since a file the catalog refuses is the one most likely to need it, and it never starts the tool catalog (no MCP connections).
 
 Operates on the full catalog: MCP (`server__`), user (`user__`), bundled packs (`builtin__`), plan (`plan__`), and `plan_and_execute`. `list` groups the catalog by source — names and one-line descriptions, `plan_and_execute` under `(core)`.
 
