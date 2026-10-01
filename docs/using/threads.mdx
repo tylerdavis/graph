@@ -6,6 +6,8 @@ icon: "clock-rotate-left"
 
 Every successful `ask` and `chat` turn persists to a thread — the full message history including tool calls and their results. Threads live as plain files under the data directory and survive across processes.
 
+A thread is a log of entries, each with an author: `user` for what you typed, and the agent's name for what it said and the tools it called. A thread also records its **owner** (the agent it was started with, `chat` today) and its **active** agent, plus two other kinds of entry for agents working together: a **handoff** (one agent passing the conversation to another) and a **subagent run** (an agent's full, isolated run on another agent's behalf).
+
 ## Managing threads
 
 ```bash
@@ -14,7 +16,7 @@ graph threads list
 # f14a6899c585  2026-07-09 13:07   4 msgs  Run the sum_report plan…
 
 graph threads show 62dac762e251            # rendered transcript with tool traces
-graph threads show 62dac762e251 --state    # raw JSON (every message, every tool call)
+graph threads show 62dac762e251 --state    # raw JSON (every entry: messages, handoffs, subagent runs)
 graph threads rm 62dac762e251
 ```
 
@@ -24,8 +26,10 @@ graph threads rm 62dac762e251
 user> run plan project_status "New Relic to AWS Migration"
   → plan__project_status {"project":"New Relic to AWS Migration"}
   ✓ {"answer":"# New Relic to AWS Migration: ✅ ON TRACK…"}
-assistant> ## New Relic to AWS Migration — ✅ ON TRACK …
+chat> ## New Relic to AWS Migration — ✅ ON TRACK …
 ```
+
+Each line is labeled with its author. A handoff renders as `⇢ <from> hands off to <to>: <message>` and a subagent run as `↳ <caller> ran <agent> (<n> messages)`. With `--json`, `show` returns the thread's `owner`, `active`, and `entries`.
 
 This is the primary audit surface: when you want to know *whether the agent used a plan or improvised*, the transcript shows the exact tool calls.
 

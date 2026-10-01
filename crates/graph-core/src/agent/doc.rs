@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 pub const BUILTINS: &[&str] = &[include_str!("../agents/chat.yaml")];
 
+pub const CHAT_AGENT: &str = "chat";
+
 pub const RESERVED_TOOL_NAMES: &[&str] = &[
     "plan_and_execute",
     "exit",

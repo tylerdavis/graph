@@ -2,6 +2,7 @@
 
 use crate::runtime::{resolve_thread, title_from, Runtime};
 use anyhow::{bail, Result};
+use graph_core::agent::doc::CHAT_AGENT;
 use graph_core::{Store, ThreadMeta};
 use graph_llm::types::ChatMessage;
 use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
@@ -33,7 +34,7 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
     let mut messages: Vec<ChatMessage> = match &thread {
         Some(meta) => {
             eprintln!("continuing thread {} — {}", meta.id, meta.title);
-            store.load_messages(&meta.id).await?
+            graph_core::conversation(&store.load_entries(&meta.id).await?)
         }
         None => Vec::new(),
     };
@@ -61,7 +62,7 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
                 let pre_len = messages.len();
                 let created = thread.is_none();
                 if created {
-                    match store.create_thread(&title_from(&line)).await {
+                    match store.create_thread(&title_from(&line), CHAT_AGENT).await {
                         Ok(meta) => thread = Some(meta),
                         Err(e) => eprintln!("warning: failed to create thread: {e}"),
                     }
@@ -130,10 +131,19 @@ async fn persist_turn(
     new_messages: &[ChatMessage],
 ) -> Result<()> {
     if thread.is_none() {
-        *thread = Some(store.create_thread(&title_from(first_message)).await?);
+        *thread = Some(
+            store
+                .create_thread(&title_from(first_message), CHAT_AGENT)
+                .await?,
+        );
     }
     let meta = thread.as_ref().unwrap();
-    store.append_messages(&meta.id, new_messages).await?;
+    store
+        .append_entries(
+            &meta.id,
+            &graph_core::message_entries(CHAT_AGENT, new_messages),
+        )
+        .await?;
     Ok(())
 }
 
