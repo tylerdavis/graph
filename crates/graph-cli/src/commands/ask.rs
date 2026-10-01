@@ -1,8 +1,10 @@
 //! `graph ask` — one agent turn, persisted to a thread.
 
-use crate::runtime::{resolve_thread, starting_agent, title_from, Runtime};
+use crate::runtime::{
+    load_history, persist_turn, resolve_thread, starting_agent, title_from, Runtime,
+};
 use anyhow::{bail, Result};
-use graph_core::{NewEntry, NullSink};
+use graph_core::NullSink;
 use std::io::{IsTerminal, Read};
 use std::sync::Arc;
 
@@ -50,16 +52,7 @@ pub async fn run(args: AskArgs) -> Result<()> {
     runtime.usage.attach_events(events.clone());
     let conversation = runtime.conversation(&store, events.clone(), hooks).await?;
 
-    let history: Vec<NewEntry> = if created {
-        Vec::new()
-    } else {
-        store
-            .load_entries(&thread.id)
-            .await?
-            .into_iter()
-            .map(NewEntry::from)
-            .collect()
-    };
+    let history = load_history(store.as_ref(), &thread.id).await?;
 
     let result = conversation.run_turn(&history, &active, &message).await;
     runtime.shutdown().await;
@@ -79,7 +72,7 @@ pub async fn run(args: AskArgs) -> Result<()> {
     }
     let outcome = result?;
 
-    crate::commands::chat_cmd::persist_turn(store.as_ref(), &thread, &active, &outcome).await?;
+    persist_turn(store.as_ref(), &thread, &active, &outcome).await?;
 
     if args.json {
         let envelope = serde_json::json!({
