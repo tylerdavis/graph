@@ -166,6 +166,7 @@ fn pipeline_with_named(
             usage,
             agents: Arc::new(crate::agent::doc::AgentSet::default()),
             agent_depth: 0,
+            always_loaded: Default::default(),
         },
         provider,
     )
@@ -3102,16 +3103,23 @@ fn outline_response() -> ChatResponse {
     structured(json!({"entries": ["find the team", "fetch its issues"]}))
 }
 
+fn flat_draft(step: Value, extra: Value) -> Value {
+    let mut draft = step;
+    for (key, value) in extra.as_object().unwrap() {
+        draft[key] = value.clone();
+    }
+    draft
+}
+
 fn step_draft(step: Value, plan_complete: bool) -> ChatResponse {
-    structured(json!({"step": step, "planComplete": plan_complete}))
+    structured(flat_draft(step, json!({"planComplete": plan_complete})))
 }
 
 fn briefed_step_draft(step: Value) -> ChatResponse {
-    structured(json!({
-        "step": step,
-        "planComplete": false,
-        "queryToAnswer": "how is the sprint going",
-    }))
+    structured(flat_draft(
+        step,
+        json!({"planComplete": false, "queryToAnswer": "how is the sprint going"}),
+    ))
 }
 
 fn user_turns(request: &ChatRequest) -> Vec<String> {
@@ -3267,7 +3275,13 @@ async fn draft_generates_outline_then_steps() {
         requests[1..].iter().all(|r| r.system == requests[1].system),
         "every step call must use the identical system prompt"
     );
-    assert!(requests[1].system.contains("t__search"));
+    assert!(
+        !requests[1].system.contains("t__search"),
+        "the step's tools travel in the request, not the cached system prompt"
+    );
+    assert!(user_turns(&requests[1])
+        .join("\n")
+        .contains("## Further tools for this step"));
     assert!(
         requests[1].system.contains("### Drafting Protocol"),
         "the step system prompt comes from the draft_step plan"
@@ -3277,7 +3291,14 @@ async fn draft_generates_outline_then_steps() {
         .as_ref()
         .expect("a step is a structured inference")
         .schema;
-    assert_eq!(schema["required"], json!(["step", "planComplete"]));
+    assert_eq!(
+        schema["required"],
+        json!(["id", "toolName", "input", "planComplete"])
+    );
+    assert!(
+        schema.get("definitions").is_none(),
+        "the step is flat, not nested"
+    );
     assert_eq!(schema["additionalProperties"], json!(false));
     let first = user_turns(&requests[1]);
     assert!(
@@ -3369,6 +3390,165 @@ async fn draft_retries_invalid_step_with_errors_injected() {
 }
 
 #[tokio::test]
+async fn draft_retries_a_step_whose_tool_is_not_in_the_catalog() {
+    let registry = search_registry(json!({"values": []}));
+    let (mut pipeline, provider) = drafting(
+        vec![
+            outline_response(),
+            step_draft(
+                json!({"id": "E0", "toolName": "ghost__scan", "input": {}}),
+                false,
+            ),
+            step_draft(search_step("E0"), false),
+            step_draft(issues_step("E1", "E0.values.0.id"), true),
+        ],
+        registry,
+    );
+    pipeline.catalog = Some(Arc::new(catalog::ToolCatalog {
+        mcp_servers: std::collections::BTreeSet::from(["t".to_string()]),
+        plans: pipeline
+            .plans
+            .iter()
+            .map(|doc| doc.identifier.clone())
+            .collect(),
+        builtin_tools: ["builtin__infer", "builtin__reshape"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        ..Default::default()
+    }));
+    let output = drafted(&pipeline, "sprint status").await;
+    let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["E0", "E1"]);
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 4, "one retry for the unknown tool");
+    let retry = user_turns(&requests[2]).join("\n");
+    assert!(
+        retry.contains("ghost"),
+        "the catalog problem is fed back: {retry}"
+    );
+}
+
+#[tokio::test]
+async fn the_cached_drafting_prompt_carries_no_observed_shapes() {
+    let registry = search_registry(json!({"values": []}));
+    let (mut pipeline, provider) = drafting(
+        vec![
+            outline_response(),
+            step_draft(search_step("E0"), false),
+            step_draft(issues_step("E1", "E0.values.0.id"), true),
+        ],
+        registry,
+    );
+    let store = Arc::new(ShapeOnlyStore {
+        shapes: Mutex::new(Vec::new()),
+    });
+    store
+        .record_tool_shape(
+            "t__issues",
+            &json!({"type": "object"}),
+            &json!({"values": []}),
+        )
+        .await
+        .unwrap();
+    pipeline.store = Some(store);
+    pipeline.always_loaded = Arc::new(vec!["t__issues".to_string()]);
+    drafted(&pipeline, "sprint status").await;
+    let requests = provider.requests.lock().unwrap();
+    assert!(requests[1].system.contains("t__issues"));
+    assert!(
+        !requests[1].system.contains("observedOutputShape"),
+        "shapes change as drafting runs tools, so the cached prompt leaves them out"
+    );
+}
+
+#[tokio::test]
+async fn the_chat_agent_is_never_offered_to_or_accepted_from_the_planner() {
+    let registry = search_registry(json!({"values": []}));
+    let (mut pipeline, provider) = drafting(
+        vec![
+            outline_response(),
+            step_draft(
+                json!({"id": "E0", "toolName": "agent__chat", "input": {"prompt": "find the team"}}),
+                false,
+            ),
+            step_draft(search_step("E0"), false),
+            step_draft(issues_step("E1", "E0.values.0.id"), true),
+        ],
+        registry,
+    );
+    pipeline.agents = Arc::new(crate::agent::doc::AgentSet::layered(
+        crate::agent::doc::builtin_agents(crate::agent::doc::BUILTINS),
+        Vec::new(),
+    ));
+    assert!(pipeline.agents.get("chat").is_some());
+    assert!(!pipeline.planner_catalog().await.0.contains("agent__chat"));
+    assert!(!pipeline
+        .searchable_tools()
+        .await
+        .iter()
+        .any(|tool| tool.name == "agent__chat"));
+    let output = drafted(&pipeline, "sprint status").await;
+    assert_eq!(output.plan[0].tool_name, "t__search");
+    let requests = provider.requests.lock().unwrap();
+    let retry = user_turns(&requests[2]).join("\n");
+    assert!(retry.contains("not available to plans"), "{retry}");
+}
+
+#[tokio::test]
+async fn an_unrepairable_step_draft_is_retried_not_fatal() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = drafting(
+        vec![
+            outline_response(),
+            structured(json!({"thoughts": "a step goes here"})),
+            structured(json!({"thoughts": "still a step"})),
+            step_draft(search_step("E0"), false),
+            step_draft(issues_step("E1", "E0.values.0.id"), true),
+        ],
+        registry,
+    );
+    let output = drafted(&pipeline, "sprint status").await;
+    let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["E0", "E1"]);
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 5, "the draft, its repair, then a retry");
+    let retry = user_turns(&requests[3]).join("\n");
+    assert!(
+        retry.contains("does not match the response schema"),
+        "the mismatch is fed back as a correction: {retry}"
+    );
+}
+
+#[tokio::test]
+async fn malformed_step_drafts_are_fixed_without_a_repair_call() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = drafting(
+        vec![
+            outline_response(),
+            structured(search_step("E0")),
+            structured(json!({
+                "$PARAMETER_VALUE": {
+                    "id": "E1",
+                    "toolName": "t__issues",
+                    "input": "{\"teamId\": \"{{E0.values.0.id}}\"}",
+                    "planComplete": true,
+                }
+            })),
+        ],
+        registry,
+    );
+    let output = drafted(&pipeline, "sprint status").await;
+    let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["E0", "E1"]);
+    assert_eq!(
+        provider.requests.lock().unwrap().len(),
+        3,
+        "a missing planComplete, a wrapper key, and an input sent as a JSON string need no repair call"
+    );
+}
+
+#[tokio::test]
 async fn draft_exhausted_retries_returns_valid_partial() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, _) = drafting(
@@ -3405,7 +3585,7 @@ async fn draft_accepts_done_early_without_a_step() {
         vec![
             outline_response(),
             step_draft(search_step("E0"), false),
-            structured(json!({"step": null, "planComplete": true})),
+            structured(json!({"id": null, "toolName": null, "input": null, "planComplete": true})),
         ],
         registry.clone(),
     );
@@ -3417,7 +3597,7 @@ async fn draft_accepts_done_early_without_a_step() {
     let (empty_pipeline, provider) = drafting(
         vec![
             outline_response(),
-            structured(json!({"step": null, "planComplete": true})),
+            structured(json!({"id": null, "toolName": null, "input": null, "planComplete": true})),
             step_draft(search_step("E0"), true),
         ],
         registry,
@@ -5609,4 +5789,337 @@ steps:
     .unwrap_err()
     .to_string();
     assert!(stray.contains("cases.a"), "{stray}");
+}
+
+type Scorer = Box<dyn Fn(&str) -> f64 + Send + Sync>;
+
+struct ScoringDecider {
+    scorer: Scorer,
+    requests: Mutex<Vec<graph_llm::decision::DecisionRequest>>,
+}
+
+#[async_trait]
+impl graph_llm::DecisionProvider for ScoringDecider {
+    async fn decide(
+        &self,
+        req: graph_llm::decision::DecisionRequest,
+    ) -> Result<graph_llm::decision::DecisionResponse, LlmError> {
+        self.requests.lock().unwrap().push(req.clone());
+        let mut answers = std::collections::BTreeMap::new();
+        for (name, question) in &req.questions {
+            let graph_llm::decision::Question::Choice { criteria, .. } = question else {
+                panic!("search asks one choice question");
+            };
+            let weights: Vec<(String, f64)> = criteria
+                .keys()
+                .map(|option| (option.clone(), (self.scorer)(option)))
+                .collect();
+            if weights.iter().any(|(_, w)| *w < 0.0) {
+                return Err(LlmError::Api {
+                    status: 503,
+                    body: "unavailable".into(),
+                    retry_after: None,
+                });
+            }
+            let total: f64 = weights.iter().map(|(_, w)| w).sum();
+            let probabilities: std::collections::BTreeMap<String, f64> = weights
+                .into_iter()
+                .map(|(option, w)| (option, w / total))
+                .collect();
+            let (choice, confidence) = probabilities
+                .iter()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .map(|(c, p)| (c.clone(), *p))
+                .unwrap();
+            answers.insert(
+                name.clone(),
+                graph_llm::decision::Answer::Choice {
+                    choice,
+                    confidence,
+                    probabilities,
+                },
+            );
+        }
+        Ok(graph_llm::decision::DecisionResponse {
+            model: req.model.clone(),
+            answers,
+            usage: Usage::default(),
+        })
+    }
+}
+
+fn searching(scorer: Option<Scorer>) -> (Pipeline, Option<Arc<ScoringDecider>>) {
+    let (pipeline, provider) = drafting(Vec::new(), search_registry(json!({"values": []})));
+    let Some(scorer) = scorer else {
+        return (pipeline, None);
+    };
+    let decider = Arc::new(ScoringDecider {
+        scorer,
+        requests: Mutex::new(Vec::new()),
+    });
+    let choice = |provider: &str, model: &str| ModelChoice {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        temperature: None,
+        description: None,
+        fallbacks: Vec::new(),
+        context_window: None,
+    };
+    let mut entries = std::collections::BTreeMap::new();
+    entries.insert("default".to_string(), choice("mock", "test"));
+    entries.insert("decider".to_string(), choice("typesafe", "jev-latest"));
+    let providers: std::collections::HashMap<String, Arc<dyn ChatProvider>> =
+        std::collections::HashMap::from([("mock".to_string(), provider as Arc<dyn ChatProvider>)]);
+    let deciders: std::collections::HashMap<String, Arc<dyn graph_llm::DecisionProvider>> =
+        std::collections::HashMap::from([(
+            "typesafe".to_string(),
+            decider.clone() as Arc<dyn graph_llm::DecisionProvider>,
+        )]);
+    let mut pipeline = pipeline;
+    pipeline.router = Arc::new(
+        graph_llm::ModelRouter::with_providers(providers, ModelRoles::new(entries))
+            .with_deciders(deciders)
+            .with_meter(pipeline.usage.clone()),
+    );
+    (pipeline, Some(decider))
+}
+
+fn tool_names(result: &Value) -> Vec<String> {
+    result["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn search_chooses_among_every_tool_with_the_decision_model() {
+    let (pipeline, decider) = searching(Some(Box::new(|option: &str| match option {
+        "t__search" => 0.95,
+        "t__issues" => 0.3,
+        _ => 0.01,
+    })));
+    let call = pipeline
+        .call_plan("search_tools", json!({"query": "find the open issues"}))
+        .await;
+    assert!(!call.is_error, "{}", call.result);
+    assert_eq!(call.result["mode"], json!("decision"));
+    assert_eq!(tool_names(&call.result), ["t__search", "t__issues"]);
+    let tools = call.result["tools"].as_array().unwrap();
+    assert!(tools[0]["score"].as_f64() > tools[1]["score"].as_f64());
+    assert!(tools[0].get("inputSchema").is_some(), "schemas by default");
+
+    let requests = decider.unwrap().requests.lock().unwrap().clone();
+    assert_eq!(
+        requests.len(),
+        1,
+        "one choice for a catalog under the chunk size"
+    );
+    let graph_llm::decision::Question::Choice {
+        instructions,
+        criteria,
+    } = &requests[0].questions["tool"]
+    else {
+        panic!("a choice question");
+    };
+    assert_eq!(
+        instructions,
+        "What tool would best accomplish the following task?\n\nfind the open issues"
+    );
+    let catalog = pipeline.searchable_tools().await.len();
+    assert_eq!(
+        criteria.len(),
+        catalog,
+        "every catalog tool is an option except plan__search_tools itself, plus no-tool"
+    );
+}
+
+#[tokio::test]
+async fn large_candidate_sets_are_chosen_in_chunks_then_a_final_round() {
+    let (pipeline, decider) = searching(Some(Box::new(|option: &str| {
+        if option == "t__search" {
+            0.9
+        } else {
+            0.1
+        }
+    })));
+    let candidates: Vec<Value> = (0..24)
+        .map(|n| json!({"name": format!("t__tool{n}"), "description": "a tool"}))
+        .chain(std::iter::once(
+            json!({"name": "t__search", "description": "searches"}),
+        ))
+        .collect();
+    let outcome = pipeline
+        .call_native(
+            "builtin__score_candidates",
+            json!({
+                "query": "search",
+                "candidates": candidates,
+                "question": "Which tool?",
+                "chunk_size": 10,
+                "model": "decider",
+            }),
+        )
+        .await;
+    assert!(!outcome.is_error, "{}", outcome.result);
+    assert_eq!(outcome.result["mode"], json!("decision"));
+    assert_eq!(outcome.result["scored"][0]["name"], json!("t__search"));
+    let requests = decider.unwrap().requests.lock().unwrap().clone();
+    let mut sizes: Vec<usize> = requests
+        .iter()
+        .map(|r| match &r.questions["tool"] {
+            graph_llm::decision::Question::Choice { criteria, .. } => criteria.len(),
+            _ => panic!("a choice question"),
+        })
+        .collect();
+    sizes.sort();
+    assert_eq!(
+        sizes,
+        [2, 8, 10, 10],
+        "25 tools in three balanced chunks plus the no-tool option, then t__search alone against no-tool"
+    );
+}
+
+#[tokio::test]
+async fn nothing_is_returned_when_no_tool_fits() {
+    let (pipeline, _) = searching(Some(Box::new(|_: &str| 1.0)));
+    let candidates: Vec<Value> = (0..20)
+        .map(|n| json!({"name": format!("t__tool{n}"), "description": "a tool"}))
+        .collect();
+    for chunk_size in [250, 8] {
+        let outcome = pipeline
+            .call_native(
+                "builtin__score_candidates",
+                json!({
+                    "query": "route on the result",
+                    "candidates": candidates,
+                    "question": "Which tool?",
+                    "threshold": 0.1,
+                    "chunk_size": chunk_size,
+                    "model": "decider",
+                }),
+            )
+            .await;
+        assert!(!outcome.is_error, "{}", outcome.result);
+        assert_eq!(
+            outcome.result["selected"],
+            json!([]),
+            "an even spread over 20 tools leaves none at 0.1 (chunk size {chunk_size})"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_no_tool_option_winning_returns_nothing() {
+    let (pipeline, decider) = searching(Some(Box::new(|option: &str| match option {
+        "no_tool" => 0.6,
+        "t__search" => 0.3,
+        _ => 0.01,
+    })));
+    let call = pipeline
+        .call_plan("search_tools", json!({"query": "publish a GitHub release"}))
+        .await;
+    assert!(!call.is_error, "{}", call.result);
+    assert_eq!(
+        call.result["tools"],
+        json!([]),
+        "t__search clears 0.1 but no-tool wins"
+    );
+    let requests = decider.unwrap().requests.lock().unwrap().clone();
+    let graph_llm::decision::Question::Choice { criteria, .. } = &requests[0].questions["tool"]
+    else {
+        panic!("a choice question");
+    };
+    assert_eq!(criteria["no_tool"], "No tool in this list fits the task.");
+}
+
+#[tokio::test]
+async fn search_falls_back_to_keywords_without_a_decision_model_or_when_it_fails() {
+    let (pipeline, _) = searching(None);
+    let call = pipeline
+        .call_plan(
+            "search_tools",
+            json!({"query": "search for things", "schemas": false}),
+        )
+        .await;
+    assert!(!call.is_error, "{}", call.result);
+    assert_eq!(call.result["mode"], json!("keyword"));
+    assert_eq!(tool_names(&call.result)[0], "t__search");
+    assert!(call.result["tools"][0].get("inputSchema").is_none());
+
+    let (pipeline, _) = searching(Some(Box::new(|_: &str| -1.0)));
+    let call = pipeline
+        .call_plan("search_tools", json!({"query": "search for things"}))
+        .await;
+    assert!(!call.is_error, "{}", call.result);
+    assert_eq!(call.result["mode"], json!("keyword"));
+    assert_eq!(tool_names(&call.result)[0], "t__search");
+}
+
+#[tokio::test]
+async fn always_loaded_tools_are_never_searched() {
+    let (mut pipeline, _) = searching(None);
+    pipeline.always_loaded = Arc::new(vec!["t__*".to_string()]);
+    let call = pipeline
+        .call_plan("search_tools", json!({"query": "search", "schemas": false}))
+        .await;
+    assert!(!call.is_error, "{}", call.result);
+    assert_eq!(call.result["always"], json!(["t__issues", "t__search"]));
+    assert!(!tool_names(&call.result)
+        .iter()
+        .any(|name| name.starts_with("t__")));
+}
+
+#[tokio::test]
+async fn control_steps_are_never_searched() {
+    let (pipeline, _) = searching(None);
+    let searchable: Vec<String> = pipeline
+        .searchable_tools()
+        .await
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+    for control in control_step_defs() {
+        assert!(!searchable.contains(&control.name), "{}", control.name);
+    }
+}
+
+#[tokio::test]
+async fn each_draft_step_sees_only_its_searched_tools() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = drafting(
+        vec![
+            outline_response(),
+            briefed_step_draft(search_step("E0")),
+            step_draft(issues_step("E1", "E0.values.0.id"), true),
+        ],
+        registry,
+    );
+    drafted(&pipeline, "sprint status").await;
+    let whole = pipeline.planner_catalog().await.0.lines().count();
+    let requests = provider.requests.lock().unwrap();
+    let second = user_turns(&requests[2]).join("\n");
+    assert!(
+        second.contains("## Further tools for this step"),
+        "{second}"
+    );
+    assert!(second.contains("t__issues") && second.contains("t__search"));
+    for control in control_step_defs() {
+        let named = format!("\"name\":\"{}\"", control.name);
+        assert!(
+            requests[2].system.contains(&named) && !second.contains(&named),
+            "the {} control step is offered once, in the cached system prompt",
+            control.name
+        );
+    }
+    let offered = second.matches("\"inputSchema\"").count();
+    assert!(
+        offered < whole,
+        "a step sees fewer tools than the whole catalog ({offered} of {whole})"
+    );
+    assert!(
+        requests[1..].iter().all(|r| r.system == requests[1].system),
+        "the cached system prompt is identical across steps"
+    );
 }

@@ -1,0 +1,60 @@
+---
+title: "Finding tools"
+description: "How graph picks the tools a task needs instead of sending the whole catalog"
+icon: "magnifying-glass"
+---
+
+A catalog with several MCP servers can hold hundreds of tools, and describing every one of them to a model costs tokens on every call and makes the right tool harder to pick. graph narrows the catalog first with the built-in `search_tools` plan, and [plan drafting](/plans/the-planner#drafting-without-executing) uses it for every step it drafts.
+
+## How a search works
+
+`search_tools` asks which tool would best accomplish the task, choosing among every tool in the catalog by its name and a one-sentence description: MCP, pack and user tools, plans, and agents. The choice also offers "No tool in this list fits the task." The choice's probabilities rank the tools; those at or above `min_probability` are returned, **most likely first**. When the no-tool option is the most likely answer, or no tool reaches `min_probability`, nothing is returned.
+
+Ask it about one step, not a whole goal. Drafting searches with each outline entry on its own: with the goal included, every step of a plan ranked the goal's main tool first.
+
+### Two ways to score
+
+| Mode | When | How |
+|---|---|---|
+| `decision` | a [decision model](/models/models-and-providers) is configured for the `model` role (`decider` by default) | one choice question with every tool as an option. A catalog larger than `chunk_size` (250, at most 255) is split into choices sent together; every tool that reaches `min_probability` in its own choice then meets the others in a final choice, which sets the ranking; when none reaches it, nothing is returned |
+| `keyword` | otherwise, or when the decision call fails | keyword overlap ranking over names and descriptions, no model call |
+
+The result's `mode` says which ran; a failed decision call adds `fallback_reason`.
+
+## Calling it
+
+`search_tools` is an ordinary plan, so a plan step or an agent calls it as `plan__search_tools`:
+
+```yaml
+- id: E0
+  tool_name: plan__search_tools
+  input:
+    query: "Review a pull request and post findings as comments"
+    min_probability: 0.2
+```
+
+| Input | Default | Meaning |
+|---|---|---|
+| `query` | required | the task the tools are for, as one step |
+| `min_probability` | `0.1` | minimum probability for a tool to be returned |
+| `limit` | `10` | most tools returned |
+| `model` | `decider` | the decision model role that chooses |
+| `chunk_size` | `250` | most tools per choice question, up to 255 |
+| `schemas` | `true` | include each tool's input schema and output shape |
+
+The result is `{mode, tools, always}`: the returned tools, most likely first, each with its probability as `score`, and the always-loaded tools.
+
+## Tools that are always loaded
+
+Control steps (`route`, `map`, `exit`, …) are never searched for: every drafted step is offered all of them. So are the tools in [`[tools].always_loaded`](/reference/configuration#plans-and-tools), which defaults to `builtin__infer` and `builtin__reshape`. A choice question puts most of its probability on one tool, so a step that needs a second, general-purpose tool, such as `builtin__infer` to summarize what a Linear tool fetched, rarely gets it from search; keeping those tools always offered covers that. Drafting puts them in the cached system prompt, described by name, description and declared schemas only: an observed output shape changes as tools run, so it would break the cache on every step. A searched tool still gets its observed shape.
+
+Every other tool, built-in packs included, is searched for. To keep more tools out of the search and always offer them, list them by name or with `*` globs. The list replaces the default, so keep the two built-ins in it:
+
+```toml
+[tools]
+always_loaded = ["builtin__infer", "builtin__reshape", "linear__get_*"]
+```
+
+## Changing how it searches
+
+`search_tools` is a built-in plan, so `graph plan show search_tools` prints it, and a plan file with the identifier `search_tools` replaces it everywhere, including in drafting. Its steps are small native tools you can rearrange or reword: `builtin__catalog_tools`, `builtin__score_candidates` (its `question` is the choice the decision model is asked, followed by the task), and `builtin__describe_tools`.

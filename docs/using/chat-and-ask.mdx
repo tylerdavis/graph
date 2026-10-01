@@ -80,7 +80,7 @@ resume with `graph chat --thread 8d36b7003df9`
 `chat` and `ask` run the built-in [`chat` agent](/reference/agent-schema) unless you name another one (`graph chat <agent>`, `graph ask --agent <agent>`). An agent can work with others in two ways, declared in its file:
 
 - **Subagents** (`subagents`): the agent calls `agent__<name>` and another agent runs the request in its own fresh context, then returns its answer. The run is kept in the thread but never shown to the caller, which sees only the answer.
-- **Handoffs** (`handoffs`): the agent calls `transfer_to_<name>` and the other agent takes over the conversation, picking up the current turn with a note on what is needed. The thread remembers who is active, so a resumed thread continues with the agent that last had the conversation.
+- **Handoffs** (`handoffs`): the agent calls `transfer_to_<name>` and the other agent takes over the conversation, picking up the current turn with a note on what is needed. With `wait_for_user: true` the turn ends at the handoff instead: the handing-off agent's reply is what the user sees, and the other agent answers from the user's next message. The thread remembers who is active, so a resumed thread continues with the agent that last had the conversation.
 
 Each agent sees your messages, what the other agents said, the handoffs, and its own tool calls, but not other agents' tool traffic. A turn hands off at most 4 times; after that, whoever holds the conversation answers.
 

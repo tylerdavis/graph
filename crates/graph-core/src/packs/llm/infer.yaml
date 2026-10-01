@@ -46,3 +46,11 @@ input_schema:
         an object schema: give it a top-level "type": "object" and a
         "properties" map (a bare {properties, required} is coerced to object,
         but write the type explicitly).
+    on_mismatch:
+      type: string
+      enum: [error, return]
+      description: >
+        What to do when the output still doesn't match output_schema after
+        the automatic fix-up: "error" (the default) fails the step; "return"
+        hands back the output as it is, for a caller that checks it itself
+        and retries.

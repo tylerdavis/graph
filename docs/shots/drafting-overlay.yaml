@@ -23,23 +23,21 @@ llm:
         - Review the changes against the repo rubric
         - Post each finding as an inline comment
   - structured:
-      step:
-        id: E0
-        toolName: builtin__gh_pr_meta
-        input: { pr: 61 }
-        reasoning: Title, body, and the shas to diff.
+      id: E0
+      toolName: builtin__gh_pr_meta
+      input: { pr: 61 }
+      reasoning: Title, body, and the shas to diff.
       planComplete: false
   - structured:
-      step:
-        id: E1
-        toolName: builtin__git_diff
-        input:
-          base: "{{E0.base_sha}}"
-          head: "{{E0.head_sha}}"
-          paths: "."
-          exclude: "Cargo.lock"
-          max_bytes: 200000
-        reasoning: The full change, within token budget.
+      id: E1
+      toolName: builtin__git_diff
+      input:
+        base: "{{E0.base_sha}}"
+        head: "{{E0.head_sha}}"
+        paths: "."
+        exclude: "Cargo.lock"
+        max_bytes: 200000
+      reasoning: The full change, within token budget.
       planComplete: false
 
 capture:
