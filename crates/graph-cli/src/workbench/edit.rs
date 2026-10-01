@@ -638,6 +638,7 @@ solver:
                 "tool",
                 "reasoning",
                 "in:status",
+                "in:decide",
                 "in:infer",
                 "in:message",
                 "in:model",

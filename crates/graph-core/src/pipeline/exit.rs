@@ -66,9 +66,10 @@ pub fn exit_tool_def() -> crate::tools::ToolDef {
         description: "End the plan early with a success or error state. Use it instead of \
                       fabricating results: exit success when there is legitimately nothing to \
                       do (e.g. a search returned nothing actionable), exit error to assert a \
-                      failure condition. Gate it with `when` (a logical comparison) or `infer` \
-                      (a yes/no question judged against prior results); omit both to exit \
-                      unconditionally. When the gate does not fire, the plan continues."
+                      failure condition. Gate it with `when` (a logical comparison), `infer` \
+                      (a yes/no question judged against prior results), or `decide` (the same \
+                      question asked of a decision model, when one is configured); omit all \
+                      three to exit unconditionally. When the gate does not fire, the plan continues."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -86,6 +87,18 @@ pub fn exit_tool_def() -> crate::tools::ToolDef {
                     }
                 },
                 "infer": {"type": "string", "description": "A yes/no question about prior results; exits when the answer is yes."},
+                "decide": {
+                    "type": "object",
+                    "required": ["question"],
+                    "description": "A yes/no question answered by a decision model (only when one is configured); fires when its probability reaches min_confidence.",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "state": {"description": "The data to judge, usually a template like {{E2.text}}"},
+                        "criteria": {"type": "object", "properties": {"true": {"type": "string"}, "false": {"type": "string"}}},
+                        "min_confidence": {"type": "number", "description": "0 to 1; default 0.5"},
+                        "model": {"type": "string", "description": "A decision model role; defaults to decider"}
+                    }
+                },
                 "model": {"type": "string", "description": "Model role for the `infer` verdict (any configured role, standard or custom); defaults to the judge role."}
             }
         }),
