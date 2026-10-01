@@ -300,6 +300,38 @@ pub enum ProviderKind {
     Openai,
     OpenaiCompat,
     Bedrock,
+    Systemone,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelKind {
+    Chat,
+    Decision,
+}
+
+impl ModelKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelKind::Chat => "chat",
+            ModelKind::Decision => "decision",
+        }
+    }
+}
+
+impl std::fmt::Display for ModelKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl ProviderKind {
+    pub fn model_kind(self) -> ModelKind {
+        match self {
+            ProviderKind::Systemone => ModelKind::Decision,
+            _ => ModelKind::Chat,
+        }
+    }
 }
 
 /// A role's resolved model choice.
@@ -317,6 +349,8 @@ pub struct ModelChoice {
     /// down (transient errors after its own retries are exhausted).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallbacks: Vec<FallbackChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
 }
 
 /// One failover candidate for a [`ModelChoice`]. Deliberately narrower than
@@ -330,6 +364,8 @@ pub struct FallbackChoice {
     /// Overrides the request temperature when set; otherwise the primary's
     /// effective temperature carries over.
     pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -343,15 +379,17 @@ pub enum Role {
     Solver,
     Repair,
     Judge,
+    Decider,
 }
 
 impl Role {
-    pub const ALL: [Role; 5] = [
+    pub const ALL: [Role; 6] = [
         Role::Chat,
         Role::Planner,
         Role::Solver,
         Role::Repair,
         Role::Judge,
+        Role::Decider,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -361,7 +399,19 @@ impl Role {
             Role::Solver => "solver",
             Role::Repair => "repair",
             Role::Judge => "judge",
+            Role::Decider => "decider",
         }
+    }
+
+    pub fn kind(self) -> ModelKind {
+        match self {
+            Role::Decider => ModelKind::Decision,
+            _ => ModelKind::Chat,
+        }
+    }
+
+    pub fn falls_back_to_default(self) -> bool {
+        self.kind() == ModelKind::Chat
     }
 
     pub fn from_name(name: &str) -> Option<Role> {
@@ -390,7 +440,8 @@ impl ModelRoles {
         if let Some(choice) = self.0.get(name) {
             return Some(choice);
         }
-        let standard = name == DEFAULT_ROLE || Role::from_name(name).is_some();
+        let standard =
+            name == DEFAULT_ROLE || Role::from_name(name).is_some_and(Role::falls_back_to_default);
         standard.then(|| self.0.get(DEFAULT_ROLE)).flatten()
     }
 

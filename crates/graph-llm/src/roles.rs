@@ -84,6 +84,7 @@ impl ModelRouter {
                         continue;
                     }
                 },
+                ProviderKind::Systemone => continue,
                 ProviderKind::Bedrock => {
                     unavailable.insert(
                         name.clone(),
@@ -298,6 +299,7 @@ mod tests {
             temperature: None,
             description: None,
             fallbacks,
+            context_window: None,
         }
     }
 
@@ -327,6 +329,7 @@ mod tests {
                     provider: "up".into(),
                     model: "backup-model".into(),
                     temperature: None,
+                    context_window: None,
                 }],
             ),
         )]);
@@ -373,6 +376,7 @@ mod tests {
                     provider: "up".into(),
                     model: "backup-model".into(),
                     temperature: None,
+                    context_window: None,
                 }],
             ),
         )]);
@@ -455,6 +459,7 @@ mod tests {
                     provider: "typo".into(),
                     model: "m2".into(),
                     temperature: None,
+                    context_window: None,
                 }],
             ),
         )]);

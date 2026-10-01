@@ -50,6 +50,7 @@ fn router() -> Arc<ModelRouter> {
                 temperature: None,
                 description: None,
                 fallbacks: Vec::new(),
+                context_window: None,
             },
         )]),
     ))
@@ -631,6 +632,7 @@ async fn caller_schema_without_type_gets_object_defaulted() {
                 temperature: None,
                 description: None,
                 fallbacks: Vec::new(),
+                context_window: None,
             },
         )]),
     ));
@@ -852,6 +854,7 @@ fn schema_router(chat_value: Value, repair_value: Value) -> Arc<ModelRouter> {
         temperature: None,
         description: None,
         fallbacks: Vec::new(),
+        context_window: None,
     };
     Arc::new(ModelRouter::with_providers(
         providers,
@@ -948,6 +951,7 @@ fn named_model_router() -> Arc<ModelRouter> {
         temperature: None,
         description: description.map(str::to_string),
         fallbacks: Vec::new(),
+        context_window: None,
     };
     Arc::new(ModelRouter::with_providers(
         providers,

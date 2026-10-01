@@ -326,6 +326,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
             temperature: None,
             description: None,
             fallbacks: Vec::new(),
+            context_window: None,
         },
     )]);
     let router = Arc::new(ModelRouter::with_providers(providers, roles));
