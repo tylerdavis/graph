@@ -10,7 +10,7 @@ use super::exit::PlanExit;
 use super::filter::FilterFail;
 use super::plan::{check_step_id, Step};
 use super::state::{BusEntry, BusKind};
-use super::{Pipeline, AGENT_TOOL, ASK_TOOL, EXIT_TOOL, FILTER_TOOL};
+use super::{Pipeline, AGENT_TOOL, ASK_TOOL, DECIDE_TOOL, EXIT_TOOL, FILTER_TOOL};
 use crate::template::{render_input, RenderError, Roots};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -61,17 +61,10 @@ pub fn parse_branch(name: &str, raw: &Value) -> Result<Branch, String> {
 }
 
 /// The body schema shared by the decide/map/reduce planner tool defs.
-/// `allow_exit` mirrors the validator: decide branches may hold `exit`
-/// steps, iteration bodies may not.
-pub fn body_schema(allow_exit: bool) -> Value {
-    let tool_name_doc = if allow_exit {
-        "Exact tool name; may be plan__* for a multi-step body, agent, filter, \
-         or exit (ends the WHOLE plan from inside the branch). Never decide, \
-         map, or reduce."
-    } else {
-        "Exact tool name; may be plan__* for a multi-step body, agent, or \
-         filter. Never exit, decide, map, or reduce."
-    };
+pub fn body_schema() -> Value {
+    let tool_name_doc = "Exact tool name; may be plan__* for a multi-step body, agent, ask, \
+                         filter, decide, or exit (ends the WHOLE plan from inside the body). \
+                         Never map or reduce.";
     json!({
         "oneOf": [
             {
@@ -103,10 +96,6 @@ pub fn body_schema(allow_exit: bool) -> Value {
 /// (including `input`); `pseudo` is the pseudo-roots this body's scope
 /// adds (`item`/`index` for map, plus `accumulator` for reduce, none for
 /// decide); `all_plan_ids` is every top-level id, for collision checks.
-/// `allow_exit` is true for decide branches — an `exit` there ends the
-/// whole plan — and false for map/reduce bodies, where a per-item exit
-/// has no coherent meaning.
-#[allow(clippy::too_many_arguments)]
 pub fn validate_body(
     name: &str,
     raw: &Value,
@@ -114,7 +103,6 @@ pub fn validate_body(
     pseudo: &[&str],
     all_plan_ids: &[&str],
     step_id: &str,
-    allow_exit: bool,
     problems: &mut Vec<String>,
 ) {
     let branch = match parse_branch(name, raw) {
@@ -128,7 +116,7 @@ pub fn validate_body(
     body_seen.extend_from_slice(pseudo);
     match branch {
         Branch::Call(call) => {
-            check_body_tool(name, &call.tool_name, step_id, allow_exit, problems);
+            check_body_tool(name, &call.tool_name, step_id, problems);
             if call.tool_name == super::AGENT_TOOL {
                 // The agent's own validator covers its templates (against
                 // this body's scope, pseudo-roots included) plus its schema
@@ -140,6 +128,14 @@ pub fn validate_body(
                 // A nested filter's gate shadows this body's pseudo-roots;
                 // its validator layers its own `item`/`index` on top.
                 super::filter::validate_filter_input(&call.input, &body_seen, step_id, problems);
+            } else if call.tool_name == DECIDE_TOOL {
+                super::decision::validate_decide_input(
+                    &call.input,
+                    &body_seen,
+                    all_plan_ids,
+                    step_id,
+                    problems,
+                );
             } else {
                 for value in call.input.values() {
                     super::check_templates(value, &body_seen, step_id, problems);
@@ -165,7 +161,7 @@ pub fn validate_body(
                         step.id
                     ));
                 }
-                check_body_tool(name, &step.tool_name, step_id, allow_exit, problems);
+                check_body_tool(name, &step.tool_name, step_id, problems);
                 if step.tool_name == super::AGENT_TOOL {
                     super::agent::validate_agent_input(&step.input, &body_seen, &step.id, problems);
                 } else if step.tool_name == super::ASK_TOOL {
@@ -174,6 +170,14 @@ pub fn validate_body(
                     super::filter::validate_filter_input(
                         &step.input,
                         &body_seen,
+                        &step.id,
+                        problems,
+                    );
+                } else if step.tool_name == DECIDE_TOOL {
+                    super::decision::validate_decide_input(
+                        &step.input,
+                        &body_seen,
+                        all_plan_ids,
                         &step.id,
                         problems,
                     );
@@ -188,36 +192,17 @@ pub fn validate_body(
     }
 }
 
-fn check_body_tool(
-    name: &str,
-    tool: &str,
-    step_id: &str,
-    allow_exit: bool,
-    problems: &mut Vec<String>,
-) {
-    if tool == EXIT_TOOL {
-        if !allow_exit {
-            problems.push(format!(
-                "step {step_id}: `{name}` uses 'exit' — an exit inside an \
-                 iteration body has no single-plan meaning; it is only \
-                 allowed in decide branches"
-            ));
-        }
-        return;
-    }
-    if tool == super::AGENT_TOOL || tool == super::ASK_TOOL || tool == FILTER_TOOL {
-        // `filter` is the one nestable control step: pure selection — no
-        // dispatch, no gate, no body of its own.
+fn check_body_tool(name: &str, tool: &str, step_id: &str, problems: &mut Vec<String>) {
+    if [AGENT_TOOL, ASK_TOOL, FILTER_TOOL, DECIDE_TOOL, EXIT_TOOL].contains(&tool) {
         return;
     }
     if let Some(problem) = super::plan::workbench_tool_problem(tool) {
         problems.push(format!("step {step_id}: `{name}` {problem}"));
         return;
     }
-    let control = [super::DECIDE_TOOL, super::MAP_TOOL, super::REDUCE_TOOL];
-    if control.contains(&tool) {
+    if [super::MAP_TOOL, super::REDUCE_TOOL].contains(&tool) {
         problems.push(format!(
-            "step {step_id}: `{name}` uses '{tool}' — control steps cannot nest \
+            "step {step_id}: `{name}` uses '{tool}' — map and reduce cannot nest \
              inside a body; call a plan (plan__*) instead"
         ));
     } else if !tool.contains("__") && tool != "plan_and_execute" {
@@ -394,6 +379,20 @@ fn ask_body_error(
     BodyError::fail(fail, steps_executed, bus)
 }
 
+fn decide_body_error(
+    error: BodyError,
+    label: &str,
+    steps_executed: usize,
+    mut bus: Vec<BusEntry>,
+) -> BodyError {
+    bus.extend(error.bus);
+    let fail = match error.fail {
+        BodyFail::Tool(message) => BodyFail::Tool(format!("{label}: {message}")),
+        fail => fail,
+    };
+    BodyError::fail(fail, steps_executed + error.steps_executed, bus)
+}
+
 impl Pipeline {
     /// Render and run one body in a scope layered over `base_scope` plus
     /// the given pseudo-roots (`item`/`index` for map, `accumulator` too
@@ -453,6 +452,20 @@ impl Pipeline {
                         Err(fail) => Err(ask_body_error(
                             fail,
                             &format!("{label} (ask)"),
+                            0,
+                            Vec::new(),
+                        )),
+                    };
+                }
+                if call.tool_name == DECIDE_TOOL {
+                    return match self.eval_body_decide(&path, &call.input, &scope).await {
+                        Ok(run) => Ok(BodyRun {
+                            steps_executed: 1 + run.steps_executed,
+                            ..run
+                        }),
+                        Err(e) => Err(decide_body_error(
+                            e,
+                            &format!("{label} (decide)"),
                             0,
                             Vec::new(),
                         )),
@@ -546,6 +559,22 @@ impl Pipeline {
                                 ));
                             }
                         }
+                    } else if body_step.tool_name == DECIDE_TOOL {
+                        match self.eval_body_decide(&path, &body_step.input, &scope).await {
+                            Ok(run) => {
+                                steps_executed += run.steps_executed;
+                                bus.extend(run.bus);
+                                run.result
+                            }
+                            Err(e) => {
+                                return Err(decide_body_error(
+                                    e,
+                                    &format!("{label} step {} (decide)", body_step.id),
+                                    steps_executed,
+                                    bus,
+                                ));
+                            }
+                        }
                     } else if body_step.tool_name == FILTER_TOOL {
                         match self.eval_body_filter(&path, &body_step.input, &scope).await {
                             Ok(result) => result,
@@ -617,6 +646,44 @@ impl Pipeline {
 }
 
 impl Pipeline {
+    async fn eval_body_decide(
+        &self,
+        path: &super::StepPath,
+        raw_input: &Map<String, Value>,
+        scope: &Map<String, Value>,
+    ) -> Result<BodyRun, BodyError> {
+        let path_text = path.to_string();
+        self.events.step_started(
+            &self.call_stack,
+            &path_text,
+            DECIDE_TOOL,
+            &Value::Object(raw_input.clone()),
+        );
+        let started = std::time::Instant::now();
+        let run = Box::pin(self.eval_decide(path, raw_input, scope)).await;
+        let (result, is_error) = match &run {
+            Ok(run) => (run.result.clone(), false),
+            Err(e) => (
+                match &e.fail {
+                    BodyFail::Render(error) => json!({"error": error.to_string()}),
+                    BodyFail::Tool(message) => json!({"error": message}),
+                    BodyFail::Aborted(error) => json!({"error": "aborted", "cause": error}),
+                    BodyFail::Exited(exit) => serde_json::to_value(exit).unwrap_or_default(),
+                },
+                !matches!(e.fail, BodyFail::Exited(_)),
+            ),
+        };
+        self.events.step_finished(
+            &self.call_stack,
+            &path_text,
+            DECIDE_TOOL,
+            &result,
+            is_error,
+            started.elapsed(),
+        );
+        run
+    }
+
     /// Evaluate a `filter` step inside a body, with the same event
     /// envelope the top-level control path emits. The step events carry
     /// the RAW input — like every control step, the gate renders lazily
@@ -741,34 +808,76 @@ mod tests {
     }
 
     #[test]
-    fn nested_control_tools_are_rejected() {
-        for tool in ["decide", "map", "reduce"] {
-            for allow_exit in [false, true] {
-                let mut problems = Vec::new();
-                check_body_tool("do", tool, "E1", allow_exit, &mut problems);
-                assert!(
-                    problems.iter().any(|p| p.contains("cannot nest")),
-                    "{tool}: {problems:?}"
-                );
-            }
+    fn map_and_reduce_cannot_nest() {
+        for tool in ["map", "reduce"] {
+            let mut problems = Vec::new();
+            check_body_tool("do", tool, "E1", &mut problems);
+            assert!(
+                problems.iter().any(|p| p.contains("cannot nest")),
+                "{tool}: {problems:?}"
+            );
         }
         let mut problems = Vec::new();
-        check_body_tool("do", "plan__inner", "E1", false, &mut problems);
-        check_body_tool("do", "plan_and_execute", "E1", false, &mut problems);
-        check_body_tool("do", "t__search", "E1", false, &mut problems);
+        check_body_tool("do", "plan__inner", "E1", &mut problems);
+        check_body_tool("do", "plan_and_execute", "E1", &mut problems);
+        check_body_tool("do", "t__search", "E1", &mut problems);
         assert!(problems.is_empty(), "{problems:?}");
     }
 
     #[test]
-    fn agent_is_allowed_in_bodies() {
-        for allow_exit in [false, true] {
-            let mut problems = Vec::new();
-            check_body_tool("do", "agent", "E1", allow_exit, &mut problems);
-            assert!(problems.is_empty(), "agent in body: {problems:?}");
+    fn agent_ask_filter_decide_and_exit_nest_in_every_body() {
+        for body in ["do", "then", "else"] {
+            for tool in ["agent", "ask", "filter", "decide", "exit"] {
+                let mut problems = Vec::new();
+                check_body_tool(body, tool, "E1", &mut problems);
+                assert!(problems.is_empty(), "{tool} in {body}: {problems:?}");
+            }
         }
+    }
+
+    #[test]
+    fn a_nested_decide_is_validated_against_the_body_scope() {
+        let steps = json!([{
+            "id": "gate",
+            "toolName": "decide",
+            "input": {
+                "if": {"value": "{{accumulator.done}}", "op": "eq", "to": false},
+                "then": [
+                    {"id": "next", "toolName": "t__step", "input": {"n": "{{item}}"}},
+                    {"id": "late", "toolName": "t__step", "input": {"n": "{{E9.values}}"}},
+                ],
+                "else": {"toolName": "t__noop", "input": {"state": "{{accumulator}}"}},
+            }
+        }]);
         let mut problems = Vec::new();
-        check_body_tool("then", "agent", "E1", true, &mut problems);
-        assert!(problems.is_empty(), "agent in decide branch: {problems:?}");
+        validate_body(
+            "do",
+            &steps,
+            &["input", "E0"],
+            &["item", "index", "accumulator"],
+            &["E0", "E1"],
+            "E1",
+            &mut problems,
+        );
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("E9"), "{problems:?}");
+
+        let missing_gate =
+            json!({"toolName": "decide", "input": {"then": {"toolName": "t__x", "input": {}}}});
+        let mut problems = Vec::new();
+        validate_body(
+            "do",
+            &missing_gate,
+            &["input"],
+            &["item"],
+            &["E1"],
+            "E1",
+            &mut problems,
+        );
+        assert!(
+            problems.iter().any(|p| p.contains("`if` or `infer`")),
+            "{problems:?}"
+        );
     }
 
     /// A body agent's input has to face the same validator a top-level one
@@ -788,7 +897,6 @@ mod tests {
             &["item", "index"],
             &["E0", "E1"],
             "E1",
-            false,
             &mut problems,
         );
         assert!(
@@ -813,27 +921,8 @@ mod tests {
             &[],
             &["E0", "E1"],
             "E1",
-            true,
             &mut problems,
         );
         assert!(problems.iter().any(|p| p.contains("E9")), "{problems:?}");
-    }
-
-    #[test]
-    fn exit_is_allowed_only_where_the_body_says_so() {
-        // Decide branches allow it…
-        let mut problems = Vec::new();
-        check_body_tool("then", "exit", "E1", true, &mut problems);
-        assert!(problems.is_empty(), "{problems:?}");
-
-        // …iteration bodies don't.
-        let mut problems = Vec::new();
-        check_body_tool("do", "exit", "E1", false, &mut problems);
-        assert!(
-            problems
-                .iter()
-                .any(|p| p.contains("only") && p.contains("decide branches")),
-            "{problems:?}"
-        );
     }
 }

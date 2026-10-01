@@ -129,7 +129,7 @@ Either form:
 - **A single tool call** — `{tool_name, input}`, no id. Any catalog tool, including `plan__*` and `plan_and_execute`.
 - **An inline step list** — normal steps with ids, run in order, with same-branch/same-iteration dataflow. Body ids must not reuse top-level ids and are invisible outside the body.
 
-Bodies must not contain `decide`, `map`, or `reduce` (branches may contain `exit`; map/reduce bodies may not). `agent`, `ask`, and `filter` are legal in any body. For other nested control flow, call a `plan__*` sub-plan — cycles are detected and nesting is capped at 8.
+`agent`, `ask`, `filter`, `decide`, and `exit` are legal in any body; a fired `exit` ends the whole plan. Bodies must not contain `map` or `reduce`. For nested iteration, call a `plan__*` sub-plan — cycles are detected and nesting is capped at 8.
 
 ## Step results of control steps
 

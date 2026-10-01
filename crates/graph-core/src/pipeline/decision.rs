@@ -6,9 +6,10 @@
 //! evaluated, so each branch may safely reference data that only exists
 //! when that branch is the right one to take.
 
-use super::body::{body_schema, parse_branch, validate_body, BodyFail};
+use super::body::{body_schema, parse_branch, validate_body, BodyError, BodyFail, BodyRun};
 use super::condition::{evaluate_gate, Condition};
-use super::state::BusKind;
+use super::gate::StepPath;
+use super::state::{BusEntry, BusKind};
 use super::{ExecutionEnd, Pipeline, RunState, Step};
 use crate::template::{render_input, render_str, RenderError, Roots};
 use serde::Deserialize;
@@ -42,7 +43,7 @@ pub struct DecideSpec {
 
 /// The decide step as described to the planner.
 pub fn decide_tool_def() -> crate::tools::ToolDef {
-    let branch_schema = body_schema(true);
+    let branch_schema = body_schema();
     crate::tools::ToolDef {
         name: DECIDE_TOOL.to_string(),
         description: "Fork the plan on a condition: run `then` when it holds, otherwise \
@@ -51,11 +52,10 @@ pub fn decide_tool_def() -> crate::tools::ToolDef {
                       vs. create a new one. Gate it with exactly one of `if` (a logical \
                       comparison) or `infer` (a yes/no question judged against prior \
                       results). A branch is a single tool call or a list of steps; \
-                      branches may contain `exit`, `agent`, `ask`, and `filter` steps (a \
-                      fired exit ends the WHOLE plan) but never `decide`, `map`, or \
-                      `reduce` — call a plan (plan__*) for nested control flow. Later \
-                      steps reference this \
-                      step's id: {{Ex.result}} is the chosen branch's output, \
+                      branches may contain `exit`, `agent`, `ask`, `filter`, and \
+                      `decide` steps (a fired exit ends the WHOLE plan) but never `map` \
+                      or `reduce` — call a plan (plan__*) for nested iteration. Later \
+                      steps reference this step's id: {{Ex.result}} is the chosen branch's output, \
                       {{Ex.branch}} which side ran."
             .to_string(),
         input_schema: json!({
@@ -131,70 +131,89 @@ pub fn validate_decide_input(
         &[],
         all_plan_ids,
         step_id,
-        true,
         problems,
     );
     if let Some(else_) = &spec.else_ {
-        validate_body(
-            "else",
-            else_,
-            seen,
-            &[],
-            all_plan_ids,
-            step_id,
-            true,
-            problems,
-        );
+        validate_body("else", else_, seen, &[], all_plan_ids, step_id, problems);
     }
 }
 
 impl Pipeline {
-    /// Execute a decide step: render only the condition, evaluate the
-    /// gate, then render and run just the chosen branch. Ok carries the
-    /// value to store under the decide step's id.
     pub(super) async fn run_decide(
         &self,
         step: &Step,
         state: &mut RunState,
     ) -> Result<Value, ExecutionEnd> {
-        let failed = |message: String| ExecutionEnd::Failed {
-            step: step.id.clone(),
-            tool: DECIDE_TOOL.to_string(),
-            message,
-        };
-        let render_end = |e: RenderError| match e {
-            e @ RenderError::EmptyData { .. } => ExecutionEnd::Empty {
-                step: step.id.clone(),
-                message: e.to_string(),
-            },
-            e => ExecutionEnd::Failed {
-                step: step.id.clone(),
-                tool: DECIDE_TOOL.to_string(),
-                message: e.to_string(),
-            },
-        };
+        let run = self
+            .eval_decide(&StepPath::top(&step.id), &step.input, &state.results)
+            .await;
+        match run {
+            Ok(run) => {
+                state.branch_steps_executed += run.steps_executed;
+                state.bus.extend(run.bus);
+                Ok(run.result)
+            }
+            Err(e) => {
+                state.branch_steps_executed += e.steps_executed;
+                state.bus.extend(e.bus);
+                Err(match e.fail {
+                    BodyFail::Render(e @ RenderError::EmptyData { .. }) => ExecutionEnd::Empty {
+                        step: step.id.clone(),
+                        message: e.to_string(),
+                    },
+                    BodyFail::Render(e) => ExecutionEnd::Failed {
+                        step: step.id.clone(),
+                        tool: DECIDE_TOOL.to_string(),
+                        message: e.to_string(),
+                    },
+                    BodyFail::Tool(message) => ExecutionEnd::Failed {
+                        step: step.id.clone(),
+                        tool: DECIDE_TOOL.to_string(),
+                        message,
+                    },
+                    BodyFail::Aborted(error) => ExecutionEnd::Aborted {
+                        step: step.id.clone(),
+                        error,
+                    },
+                    BodyFail::Exited(exit) => ExecutionEnd::Exited(exit),
+                })
+            }
+        }
+    }
 
-        let spec: DecideSpec = serde_json::from_value(Value::Object(step.input.clone()))
-            .map_err(|e| failed(format!("invalid decide step input: {e}")))?;
+    pub(super) async fn eval_decide(
+        &self,
+        path: &StepPath,
+        input: &Map<String, Value>,
+        scope: &Map<String, Value>,
+    ) -> Result<BodyRun, BodyError> {
+        let fail = |fail: BodyFail| BodyError {
+            fail,
+            steps_executed: 0,
+            bus: Vec::new(),
+        };
+        let path_text = path.to_string();
+        let spec: DecideSpec = serde_json::from_value(Value::Object(input.clone()))
+            .map_err(|e| fail(BodyFail::Tool(format!("invalid decide step input: {e}"))))?;
 
-        // Render only the condition; the branches wait until the gate has
-        // picked a side.
-        let roots = Roots::new(&state.results);
+        let roots = Roots::new(scope);
         let mut gate_payload = Map::new();
         let condition = match &spec.if_ {
             Some(raw) => {
-                let rendered = render_input(raw, &roots).map_err(render_end)?;
+                let rendered = render_input(raw, &roots).map_err(|e| fail(BodyFail::Render(e)))?;
                 gate_payload.insert("if".to_string(), rendered.clone());
                 Some(
-                    serde_json::from_value::<Condition>(rendered)
-                        .map_err(|e| failed(format!("invalid decide condition: {e}")))?,
+                    serde_json::from_value::<Condition>(rendered).map_err(|e| {
+                        fail(BodyFail::Tool(format!("invalid decide condition: {e}")))
+                    })?,
                 )
             }
             None => None,
         };
         let infer = match &spec.infer {
             Some(question) => {
-                let rendered = render_str(question, &roots).map_err(render_end)?;
+                let rendered =
+                    render_str(question, &roots).map_err(|e| fail(BodyFail::Render(e)))?;
                 gate_payload.insert("infer".to_string(), json!(rendered));
                 Some(rendered)
             }
@@ -202,7 +221,7 @@ impl Pipeline {
         };
         let model = match &spec.model {
             Some(model) => {
-                let rendered = render_str(model, &roots).map_err(render_end)?;
+                let rendered = render_str(model, &roots).map_err(|e| fail(BodyFail::Render(e)))?;
                 gate_payload.insert("model".to_string(), json!(rendered));
                 Some(rendered)
             }
@@ -213,7 +232,7 @@ impl Pipeline {
             .tool_started(DECIDE_TOOL, &Value::Object(gate_payload));
         let started = std::time::Instant::now();
         let eval = crate::usage::CallSite::role("judge")
-            .at(&step.id)
+            .at(&path_text)
             .in_plans(&self.call_stack)
             .scope(evaluate_gate(
                 condition.as_ref(),
@@ -224,66 +243,55 @@ impl Pipeline {
             .await;
         self.events
             .tool_finished(DECIDE_TOOL, started.elapsed(), eval.is_err());
-        let (triggered, reason) = eval.map_err(|e| failed(format!("decide step: {e}")))?;
+        let (triggered, reason) =
+            eval.map_err(|e| fail(BodyFail::Tool(format!("decide step: {e}"))))?;
 
         let (branch_name, raw_branch) = if triggered {
             ("then", Some(&spec.then))
         } else {
             ("else", spec.else_.as_ref())
         };
+        let info = |content: String| BusEntry {
+            source: path_text.clone(),
+            kind: BusKind::Info,
+            content,
+        };
         let Some(raw_branch) = raw_branch else {
-            state.push_bus(
-                &step.id,
-                BusKind::Info,
-                "gate not met, no else — continuing",
-            );
-            return Ok(json!({
-                "branch": null,
-                "verdict": false,
-                "reason": reason,
-                "result": null,
-            }));
+            return Ok(BodyRun {
+                result: json!({
+                    "branch": null,
+                    "verdict": false,
+                    "reason": reason,
+                    "result": null,
+                }),
+                steps_executed: 0,
+                bus: vec![info("gate not met, no else — continuing".to_string())],
+            });
         };
 
-        let branch = parse_branch(branch_name, raw_branch).map_err(failed)?;
-        let run = self
+        let branch = parse_branch(branch_name, raw_branch).map_err(|e| fail(BodyFail::Tool(e)))?;
+        let bus_path = path
+            .nested(branch_name, None)
+            .body
+            .unwrap_or_else(|| branch_name.to_string());
+        let mut run = self
             .run_body(
-                &step.id,
-                branch_name,
+                &path.step,
+                &bus_path,
                 &format!("`{branch_name}` branch"),
                 &branch,
-                &state.results,
+                scope,
                 &[],
             )
-            .await;
-        let result = match run {
-            Ok(run) => {
-                state.branch_steps_executed += run.steps_executed;
-                state.bus.extend(run.bus);
-                run.result
-            }
-            Err(e) => {
-                state.branch_steps_executed += e.steps_executed;
-                state.bus.extend(e.bus);
-                return Err(match e.fail {
-                    BodyFail::Render(e) => render_end(e),
-                    BodyFail::Tool(message) => failed(message),
-                    BodyFail::Aborted(error) => ExecutionEnd::Aborted {
-                        step: step.id.clone(),
-                        error,
-                    },
-                    // Not a failure: an exit in the branch ends the plan.
-                    BodyFail::Exited(exit) => ExecutionEnd::Exited(exit),
-                });
-            }
-        };
-        state.push_bus(&step.id, BusKind::Info, format!("decide → {branch_name}"));
-        Ok(json!({
+            .await?;
+        run.bus.push(info(format!("decide → {branch_name}")));
+        run.result = json!({
             "branch": branch_name,
             "verdict": triggered,
             "reason": reason,
-            "result": result,
-        }))
+            "result": run.result,
+        });
+        Ok(run)
     }
 }
 

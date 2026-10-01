@@ -1161,10 +1161,20 @@ async fn decide_validation_rejections() {
 
     let message = run(json!({
         "if": {"value": 1, "op": "eq", "to": 1},
-        "then": {"toolName": "decide", "input": {}},
+        "then": {"toolName": "reduce", "input": {}},
     }))
     .await;
     assert!(message.contains("cannot nest"), "{message}");
+
+    let message = run(json!({
+        "if": {"value": 1, "op": "eq", "to": 1},
+        "then": {"toolName": "decide", "input": {}},
+    }))
+    .await;
+    assert!(
+        message.contains("invalid decide input"),
+        "a nested decide is validated like a top-level one: {message}"
+    );
 
     // Cross-branch reference: else reads a then-branch id.
     let message = run(json!({
@@ -1953,6 +1963,122 @@ async fn reduce_folds_left_threading_the_accumulator() {
 }
 
 #[tokio::test]
+async fn a_decide_in_a_reduce_body_runs_only_the_chosen_branch_per_item() {
+    let registry =
+        registry_with_data_pack(json!({"values": [{"id": "a"}, {"id": "b"}, {"id": "c"}]}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "reduce", "input": {
+            "over": "{{E0.values}}",
+            "initial": {"done": false},
+            "do": [
+                {"id": "gate", "toolName": "decide", "input": {
+                    "if": {"value": "{{accumulator.done}}", "op": "eq", "to": false},
+                    "then": [
+                        {"id": "work", "toolName": "t__issues", "input": {"i": "{{item.id}}"}},
+                        {"id": "mark", "toolName": "builtin__reshape",
+                         "input": {"shape": {"done": true, "last": "{{work.got.i}}"}}},
+                    ],
+                    "else": {"toolName": "builtin__reshape", "input": {"shape": "{{accumulator}}"}},
+                }},
+                {"id": "next", "toolName": "builtin__reshape", "input": {"shape": "{{gate.result}}"}},
+            ],
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome.state.results["E1"]["result"],
+        json!({"done": true, "last": "a"})
+    );
+    let sources: Vec<&str> = outcome
+        .state
+        .bus
+        .iter()
+        .map(|e| e.source.as_str())
+        .collect();
+    assert!(sources.contains(&"E1/do.0/gate/then/work"), "{sources:?}");
+    assert!(sources.contains(&"E1/do.0/gate"), "{sources:?}");
+    assert!(
+        !sources.iter().any(|s| s.starts_with("E1/do.1/gate/then")),
+        "{sources:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_exit_in_a_map_body_ends_the_whole_plan() {
+    let registry = search_registry(json!({"values": [{"id": "a"}, {"id": "b"}, {"id": "c"}]}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": [
+                {"id": "stop", "toolName": "exit", "input": {
+                    "when": {"value": "{{item.id}}", "op": "eq", "to": "b"},
+                    "status": "success",
+                    "message": "found b",
+                }},
+                {"id": "work", "toolName": "t__issues", "input": {"i": "{{item.id}}"}},
+            ],
+        }},
+        {"id": "E2", "toolName": "t__issues", "input": {"after": true}},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let exit = outcome.exit.expect("the exit fired from the map body");
+    assert_eq!(exit.status, crate::pipeline::ExitStatus::Success);
+    assert_eq!(exit.step, "E1/do.1/stop");
+    let invoked: Vec<Value> = registry
+        .invocations
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(name, _)| name == "t__issues")
+        .map(|(_, input)| input.clone())
+        .collect();
+    assert_eq!(invoked, [json!({"i": "a"})], "item c and E2 never run");
+}
+
+#[tokio::test]
+async fn a_decide_nests_inside_a_decide_branch() {
+    let registry = search_registry(json!({"values": [{"id": "a"}]}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "decide", "input": {
+            "if": {"value": "{{E0.values.length}}", "op": "gt", "to": 0},
+            "then": [
+                {"id": "inner", "toolName": "decide", "input": {
+                    "if": {"value": "{{E0.values.0.id}}", "op": "eq", "to": "a"},
+                    "then": {"toolName": "t__issues", "input": {"picked": "a"}},
+                    "else": {"toolName": "t__issues", "input": {"picked": "other"}},
+                }},
+            ],
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+
+    let decided = &outcome.state.results["E1"];
+    assert_eq!(decided["branch"], json!("then"));
+    assert_eq!(decided["result"]["branch"], json!("then"));
+    assert_eq!(decided["result"]["result"], json!({"got": {"picked": "a"}}));
+}
+
+#[tokio::test]
 async fn reduce_defaults_initial_to_null_and_empty_over_returns_it() {
     let registry = search_registry(json!({"values": [{"id": "a"}]}));
     let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
@@ -2029,7 +2155,7 @@ async fn iteration_validation_rejections() {
     .await;
     assert!(message.contains("concurrency"), "{message}");
 
-    // Control steps cannot nest: map inside a decide branch…
+    // map cannot nest inside a decide branch…
     let message = run(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
         {"id": "E1", "toolName": "decide", "input": {
@@ -2040,7 +2166,7 @@ async fn iteration_validation_rejections() {
     .await;
     assert!(message.contains("cannot nest"), "{message}");
 
-    // …and decide inside a map body.
+    // …while a decide inside a map body is validated like any step.
     let message = run(json!([
         {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
         {"id": "E1", "toolName": "map", "input": {
@@ -2049,7 +2175,7 @@ async fn iteration_validation_rejections() {
         }},
     ]))
     .await;
-    assert!(message.contains("cannot nest"), "{message}");
+    assert!(message.contains("invalid decide input"), "{message}");
 
     // Pseudo-roots outside their scope.
     let message = run(json!([
