@@ -4649,3 +4649,244 @@ fn a_body_bearing_control_step_names_every_step_legal_in_its_body() {
         }
     }
 }
+
+type Judge = Box<dyn Fn(&Value) -> f64 + Send + Sync>;
+
+struct MockDecider {
+    judge: Judge,
+    requests: Mutex<Vec<graph_llm::decision::DecisionRequest>>,
+}
+
+#[async_trait]
+impl graph_llm::DecisionProvider for MockDecider {
+    async fn decide(
+        &self,
+        req: graph_llm::decision::DecisionRequest,
+    ) -> Result<graph_llm::decision::DecisionResponse, LlmError> {
+        let probability = (self.judge)(&req.state);
+        self.requests.lock().unwrap().push(req.clone());
+        Ok(graph_llm::decision::DecisionResponse {
+            model: req.model.clone(),
+            answers: req
+                .questions
+                .keys()
+                .map(|name| {
+                    (
+                        name.clone(),
+                        graph_llm::decision::Answer::Likelihood { probability },
+                    )
+                })
+                .collect(),
+            usage: Usage {
+                input_tokens: 30,
+                ..Default::default()
+            },
+        })
+    }
+}
+
+fn pipeline_with_decider(
+    responses: Vec<ChatResponse>,
+    registry: Arc<dyn ToolRegistry>,
+    judge: Judge,
+) -> (Pipeline, Arc<ScriptedProvider>, Arc<MockDecider>) {
+    let (mut pipeline, provider) =
+        pipeline_with_named(responses, registry, 1, std::collections::BTreeMap::new());
+    let decider = Arc::new(MockDecider {
+        judge,
+        requests: Mutex::new(Vec::new()),
+    });
+    let mut entries = std::collections::BTreeMap::new();
+    let choice = |provider: &str, model: &str| ModelChoice {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        temperature: None,
+        description: None,
+        fallbacks: Vec::new(),
+        context_window: None,
+    };
+    entries.insert("default".to_string(), choice("mock", "test"));
+    entries.insert("decider".to_string(), choice("typesafe", "jev-latest"));
+    entries.insert("other".to_string(), choice("typesafe", "jev-preview"));
+    let providers: std::collections::HashMap<String, Arc<dyn ChatProvider>> =
+        std::collections::HashMap::from([(
+            "mock".to_string(),
+            provider.clone() as Arc<dyn ChatProvider>,
+        )]);
+    let deciders: std::collections::HashMap<String, Arc<dyn graph_llm::DecisionProvider>> =
+        std::collections::HashMap::from([(
+            "typesafe".to_string(),
+            decider.clone() as Arc<dyn graph_llm::DecisionProvider>,
+        )]);
+    pipeline.router = Arc::new(
+        graph_llm::ModelRouter::with_providers(providers, ModelRoles::new(entries))
+            .with_deciders(deciders)
+            .with_meter(pipeline.usage.clone()),
+    );
+    (pipeline, provider, decider)
+}
+
+fn decide_exit_plan(gate: Value) -> Plan {
+    serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "exit", "input": {
+            "decide": gate,
+            "status": "error",
+            "message": "Blocked",
+        }},
+        {"id": "E2", "toolName": "t__search", "input": {"query": "after"}}
+    ]))
+    .unwrap()
+}
+
+async fn step_failure(pipeline: &Pipeline, plan: Plan) -> String {
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    let PipelineError::StepFailed { message, .. } = err else {
+        panic!("expected StepFailed, got {err:?}");
+    };
+    message
+}
+
+#[tokio::test]
+async fn a_decide_exit_fires_at_min_confidence_and_carries_the_probability() {
+    let registry = search_registry(json!({"values": [{"id": 1}]}));
+    let (pipeline, provider, decider) =
+        pipeline_with_decider(vec![], registry.clone(), Box::new(|_| 0.8));
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            decide_exit_plan(json!({
+                "question": "Is this blocked?",
+                "state": "{{E0.values}}",
+                "min_confidence": 0.8,
+            })),
+            Finish::Silent,
+            None,
+        )
+        .await
+        .unwrap();
+    let exit = outcome.exit.expect("exited");
+    assert_eq!(exit.message, "Blocked");
+    assert_eq!(exit.probability, Some(0.8));
+    assert_eq!(exit.reason, None);
+    assert_eq!(registry.invocations.lock().unwrap().len(), 1);
+    assert!(provider.requests.lock().unwrap().is_empty());
+
+    let requests = decider.requests.lock().unwrap();
+    assert_eq!(requests[0].model, "jev-latest");
+    assert_eq!(requests[0].state, json!([{"id": 1}]));
+    assert_eq!(
+        requests[0].questions["gate"],
+        graph_llm::decision::Question::Likelihood {
+            instructions: "Is this blocked?".into(),
+            criteria: None,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_decide_exit_below_min_confidence_passes_with_its_probability() {
+    let registry = search_registry(json!({"values": [{"id": 1}]}));
+    let (pipeline, _, decider) = pipeline_with_decider(vec![], registry.clone(), Box::new(|_| 0.3));
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            decide_exit_plan(json!({
+                "question": "Is this blocked?",
+                "model": "other",
+                "criteria": {"true": "work has stopped", "false": "work continues"},
+            })),
+            Finish::Silent,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(outcome.exit.is_none());
+    assert_eq!(
+        outcome.state.results["E1"],
+        json!({"passed": true, "verdict": false, "reason": null, "probability": 0.3})
+    );
+    assert_eq!(registry.invocations.lock().unwrap().len(), 2);
+    let requests = decider.requests.lock().unwrap();
+    assert_eq!(requests[0].model, "jev-preview");
+    assert_eq!(requests[0].state, Value::Null);
+}
+
+#[tokio::test]
+async fn a_decide_gate_refuses_a_chat_role() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, _) = pipeline_with_decider(vec![], registry, Box::new(|_| 0.9));
+    let message = step_failure(
+        &pipeline,
+        decide_exit_plan(json!({"question": "q?", "model": "default"})),
+    )
+    .await;
+    assert!(message.contains("'default' is a chat model"), "{message}");
+    assert!(message.contains("`infer`"), "{message}");
+}
+
+#[tokio::test]
+async fn an_infer_gate_refuses_a_decision_role() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, _) = pipeline_with_decider(vec![], registry, Box::new(|_| 0.9));
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "exit", "input": {
+            "infer": "Is this blocked?", "model": "decider", "status": "error",
+        }}
+    ]))
+    .unwrap();
+    let message = step_failure(&pipeline, plan).await;
+    assert!(
+        message.contains("'decider' is a decision model"),
+        "{message}"
+    );
+    assert!(message.contains("`decide`"), "{message}");
+}
+
+#[tokio::test]
+async fn gate_keys_are_mutually_exclusive_and_decide_rejects_what_it_does_not_support() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, _) = pipeline_with_decider(vec![], registry, Box::new(|_| 0.9));
+    let both: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "exit", "input": {
+            "infer": "q?", "decide": {"question": "q?"}, "status": "error",
+        }}
+    ]))
+    .unwrap();
+    let message = step_failure(&pipeline, both).await;
+    assert!(message.contains("mutually exclusive"), "{message}");
+
+    let message = step_failure(
+        &pipeline,
+        decide_exit_plan(json!({"question": "q?", "options": {"a": "A", "b": "B"}})),
+    )
+    .await;
+    assert!(message.contains("`route`"), "{message}");
+
+    let message = step_failure(
+        &pipeline,
+        decide_exit_plan(json!({"question": "q?", "min_confidence": 1.5})),
+    )
+    .await;
+    assert!(message.contains("between 0 and 1"), "{message}");
+
+    let stray_model: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "exit", "input": {
+            "decide": {"question": "q?"}, "model": "decider", "status": "error",
+        }}
+    ]))
+    .unwrap();
+    let message = step_failure(&pipeline, stray_model).await;
+    assert!(message.contains("inside the `decide` object"), "{message}");
+}
+
+#[tokio::test]
+async fn a_decide_gate_without_a_decider_says_how_to_configure_one() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let message = step_failure(&pipeline, decide_exit_plan(json!({"question": "q?"}))).await;
+    assert!(message.contains("[models.decider]"), "{message}");
+}
