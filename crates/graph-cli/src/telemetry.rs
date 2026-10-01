@@ -1305,4 +1305,62 @@ mod tests {
         assert_eq!(root.events.len(), 1);
         assert_eq!(root.events[0].name, "planning");
     }
+
+    #[test]
+    fn a_decision_call_is_a_decision_generation_with_its_question_and_answer() {
+        let (sink, exporter, provider) = harness(RunInfo::plan_run("docs_drift_decide"), true);
+        let none: Vec<String> = Vec::new();
+        sink.step_started(&none, "E5", "exit", &json!({}));
+        let mut decision = call(
+            "E5",
+            Some(json!({
+                "state": "+ fn a() {}",
+                "questions": {"gate": {"type": "likelihood", "instructions": "Does the diff need docs?"}}
+            })),
+        );
+        decision.kind = graph_config::ModelKind::Decision;
+        decision.role = "decider".into();
+        decision.provider = "typesafe".into();
+        decision.model = "jev-latest".into();
+        decision.output =
+            Some(json!({"answers": {"gate": {"type": "likelihood", "probability": 0.91}}}));
+        sink.model_call(&decision);
+        sink.model_call(&call("solver", None));
+        sink.step_finished(&none, "E5", "exit", &json!({}), false, Duration::ZERO);
+        provider.force_flush().unwrap();
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let generation = by_name(&spans, "decider");
+        assert_eq!(
+            attribute(generation, "gen_ai.operation.name"),
+            Some(&OtelValue::from("decision"))
+        );
+        assert_eq!(
+            attribute(generation, "gen_ai.system"),
+            Some(&OtelValue::from("typesafe"))
+        );
+        assert_eq!(
+            attribute(generation, "graph.site"),
+            Some(&OtelValue::from("E5"))
+        );
+        assert_eq!(
+            attribute(generation, "graph.cost_usd"),
+            Some(&OtelValue::F64(0.5))
+        );
+        let input = attribute(generation, "langfuse.observation.input")
+            .unwrap()
+            .to_string();
+        assert!(input.contains("Does the diff need docs?"), "{input}");
+        assert!(input.contains("+ fn a() {}"), "{input}");
+        let output = attribute(generation, "langfuse.observation.output")
+            .unwrap()
+            .to_string();
+        assert!(output.contains("0.91"), "{output}");
+
+        let chat = by_name(&spans, "solver");
+        assert_eq!(
+            attribute(chat, "gen_ai.operation.name"),
+            Some(&OtelValue::from("chat"))
+        );
+    }
 }

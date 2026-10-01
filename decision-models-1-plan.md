@@ -29,7 +29,7 @@ This sub-PR adds a Jev-compatible decision provider, a `decider` role, Langfuse-
 ### Phase 2: Decision provider
 - [x] Task 3: wire types and the `systemone` client, with stub-server tests and a live smoke test
 - [x] Task 4: router decision map, startup checks, `decide_named`, failover, `context_window`, metering
-- [ ] Task 5: decision span content in OTLP
+- [x] Task 5: decision span content in OTLP
 
 ### Checkpoint B
 - [ ] A live `jev-latest` call through the router meters correctly, and its span carries `operation=decision` plus the captured input and output.
