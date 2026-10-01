@@ -80,3 +80,32 @@ pub fn request_content(req: &DecisionRequest) -> Value {
 pub fn response_content(response: &DecisionResponse) -> Value {
     serde_json::json!({ "answers": response.answers })
 }
+
+pub fn estimate_state_tokens(state: &Value) -> u64 {
+    let bytes = match state {
+        Value::String(text) => text.len(),
+        other => other.to_string().len(),
+    };
+    (bytes as u64).div_ceil(4)
+}
+
+pub fn check_context_window(
+    role: &str,
+    model: &str,
+    limit: Option<u32>,
+    req: &DecisionRequest,
+) -> Result<(), LlmError> {
+    let Some(limit) = limit else {
+        return Ok(());
+    };
+    let estimate = estimate_state_tokens(&req.state);
+    if estimate > u64::from(limit) {
+        return Err(LlmError::ContextWindowExceeded {
+            role: role.to_string(),
+            model: model.to_string(),
+            limit,
+            estimate,
+        });
+    }
+    Ok(())
+}
