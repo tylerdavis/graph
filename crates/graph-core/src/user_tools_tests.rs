@@ -19,15 +19,18 @@ fn router() -> Arc<ModelRouter> {
                 .response_schema
                 .as_ref()
                 .map(|_| json!({"category": "bug"}));
+            let user = match &req.messages[0] {
+                graph_llm::types::ChatMessage::User { content } => content.clone(),
+                _ => String::new(),
+            };
+            let content = if req.system.is_empty() {
+                format!("echo: {user}")
+            } else {
+                format!("echo [{}]: {user}", req.system)
+            };
             Ok(ChatResponse {
                 thinking: Vec::new(),
-                content: Some(format!(
-                    "echo: {}",
-                    match &req.messages[0] {
-                        graph_llm::types::ChatMessage::User { content } => content.clone(),
-                        _ => String::new(),
-                    }
-                )),
+                content: Some(content),
                 tool_calls: vec![],
                 structured,
                 stop_reason: StopReason::EndTurn,
@@ -426,6 +429,23 @@ async fn llm_pack_infer_returns_text_or_caller_structured_output() {
         .unwrap();
     assert!(!outcome.is_error, "{:?}", outcome.result);
     assert_eq!(outcome.result, json!({"category": "bug"}));
+}
+
+#[tokio::test]
+async fn llm_pack_infer_sends_a_caller_system_prompt_as_the_system_prompt() {
+    let docs = load_pack_tools(&["llm".to_string()]).unwrap();
+    let registry = UserToolRegistry::builtins(docs, router());
+    let outcome = registry
+        .invoke(
+            "builtin__infer",
+            json!({"instruction": "Summarize X", "system": "You summarize."}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.result,
+        json!({"text": "echo [You summarize.]: Summarize X"})
+    );
 }
 
 // ── Reshape (data pack) ──────────────────────────────────────────────────
@@ -1570,4 +1590,50 @@ questions: { q: { type: likelihood, instructions: "Is it?" } }
         error.to_string().contains("'nano' is a chat model"),
         "{error}"
     );
+}
+
+#[test]
+fn a_builtin_override_replaces_the_pack_tool_it_names() {
+    let builtins = load_pack_tools(&["data".to_string()]).unwrap();
+    let mut mine = builtins
+        .iter()
+        .find(|d| d.name == "reshape")
+        .unwrap()
+        .clone();
+    mine.description = "my reshape".to_string();
+    mine.path = Some(std::path::PathBuf::from("/tools/builtin/reshape.yaml"));
+    let merged = apply_tool_overrides(builtins.clone(), vec![mine]).unwrap();
+    assert_eq!(merged.len(), builtins.len());
+    let reshape = merged.iter().find(|d| d.name == "reshape").unwrap();
+    assert_eq!(reshape.description, "my reshape");
+}
+
+#[test]
+fn a_builtin_override_without_a_matching_pack_tool_is_an_error() {
+    let builtins = load_pack_tools(&["data".to_string()]).unwrap();
+    let mut stray = doc("name: summarize\ndescription: s\nkind: exec\ncommand: echo\n");
+    stray.path = Some(std::path::PathBuf::from("/tools/builtin/summarize.yaml"));
+    let err = apply_tool_overrides(builtins, vec![stray]).unwrap_err();
+    assert!(err.starts_with("/tools/builtin/summarize.yaml"), "{err}");
+    assert!(err.contains("no built-in tool named 'summarize'"), "{err}");
+}
+
+#[test]
+fn a_top_level_tool_named_like_a_pack_tool_stays_a_user_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("reshape.yaml"),
+        "name: reshape\ndescription: mine\nkind: exec\ncommand: echo\n",
+    )
+    .unwrap();
+    std::fs::create_dir(dir.path().join(BUILTIN_OVERRIDE_DIR)).unwrap();
+    let dirs = vec![dir.path().to_path_buf()];
+    let user = load_user_tools(&dirs).unwrap();
+    assert_eq!(
+        user.len(),
+        1,
+        "the builtin/ subdirectory is not read as user tools"
+    );
+    let overrides = load_user_tools(&builtin_override_dirs(&dirs)).unwrap();
+    assert!(overrides.is_empty());
 }

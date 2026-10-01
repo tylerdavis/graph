@@ -25,6 +25,9 @@ pub enum Command {
     Ask {
         /// The message; reads stdin when omitted and piped
         message: Option<String>,
+        /// Run a named agent instead of the default `chat` agent
+        #[arg(long)]
+        agent: Option<String>,
         /// Continue a thread: `--thread <id>` for a specific one, bare
         /// `--thread` for the most recent. Omit to start a new thread.
         #[arg(long)]
@@ -38,6 +41,8 @@ pub enum Command {
     },
     /// Interactive chat (REPL)
     Chat {
+        /// The agent to talk to; the default `chat` agent when omitted
+        agent: Option<String>,
         /// Continue a thread: `--thread <id>` for a specific one, bare
         /// `--thread` for the most recent. Omit to start a new thread.
         #[arg(long)]
@@ -52,6 +57,11 @@ pub enum Command {
     Tools {
         #[command(subcommand)]
         command: ToolsCommand,
+    },
+    /// Inspect, validate, and migrate agent definitions
+    Agents {
+        #[command(subcommand)]
+        command: AgentsCommand,
     },
     /// Manage conversation threads
     Threads {
@@ -357,6 +367,33 @@ pub enum ToolsCommand {
         json: bool,
     },
     /// Rewrite a user tool file to the current tool format
+    Migrate {
+        path: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentsCommand {
+    /// List every agent: built-in, global (~/.config/graph/agents), and project (./.graph/agents)
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print an agent's effective definition, the file to copy when customizing it
+    Show {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate every agent, or one agent file against the others
+    Validate {
+        path: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rewrite an agent file to the current agent format
     Migrate {
         path: PathBuf,
         #[arg(long)]

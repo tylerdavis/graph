@@ -38,6 +38,7 @@ Everything a plan step or the agent can do is a **tool**, and every tool lives i
 | `user__` | [User-defined tools](/tools/user-defined) (exec / prompt / reshape / decision YAML) | `user__git_log` |
 | `builtin__` | [Bundled tool packs](/tools/builtins) compiled into the binary | `builtin__infer` |
 | `plan__` | One per [plan document](/plans/overview) | `plan__project_status` |
+| `agent__` | One per [named agent](/reference/agent-schema), callable from plan steps | `agent__search_bot` |
 | — | [`plan_and_execute`](/plans/the-planner): on-the-fly planning for novel multi-step tasks |  |
 
 This is what makes plans composable: authoring a plan _adds a tool to the catalog_, and a plan's steps draw from that same catalog — including other plans. The [composition rules](/tools/overview#composition-rules) and the commands for inspecting and invoking the catalog live in [The tool catalog](/tools/overview).
@@ -48,7 +49,7 @@ MCP tools rarely declare what their output looks like — but the planner needs 
 
 ## 4. The workbench
 
-Plans have a dedicated review surface: `graph workbench plan` (alias `graph wb plan`), a dual-pane TUI. The chat agent drafts and edits the plan in a side pane while you inspect its steps, validate on every change, and run it under a debugger that pauses before each tool call — so you can trust a plan's writes before you commit it. Details in [Workbench](/workbench/plan-workbench).
+Plans have a dedicated review surface: `graph workbench plan` (alias `graph wb plan`), a dual-pane TUI. The workbench's agents draft and edit the plan in a side pane while you inspect its steps, validate on every change, and run it under a debugger that pauses before each tool call — so you can trust a plan's writes before you commit it. Details in [Workbench](/workbench/plan-workbench).
 
 ## 5. The agent loop
 

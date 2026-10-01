@@ -1,6 +1,9 @@
 //! The ReAct agent loop: model ↔ tools until a final text answer.
 
+pub mod conversation;
+pub mod doc;
 mod events;
+pub mod task;
 
 pub use events::{EventSink, NullSink, RunStart, TeeSink};
 
@@ -29,6 +32,8 @@ pub struct Agent {
     /// workbench sets it to its mutating edit tools so a long fix-forward loop
     /// — edit, validate, run, repeat — isn't starved mid-repair.
     pub progress_tools: Vec<String>,
+    pub stop_tools: Vec<String>,
+    pub call_site: crate::usage::CallSite,
 }
 
 /// Failures of the agent loop (`ask`/`chat`/workbench turns). The plan
@@ -59,6 +64,7 @@ pub struct TurnOutcome {
     pub tool_calls_made: u32,
     /// Names of tools invoked this turn, in first-use order, deduplicated.
     pub tools_used: Vec<String>,
+    pub stopped_by: Option<String>,
 }
 
 impl Agent {
@@ -91,7 +97,9 @@ impl Agent {
             iteration += 1;
             // `stream_once` opens *and* drains the stream, so one scope over
             // the call covers the terminal event that carries the counts.
-            let response = crate::usage::CallSite::role("chat")
+            let response = self
+                .call_site
+                .clone()
                 .scope(self.stream_once(messages, &tools))
                 .await?;
             usage.add(&response.usage);
@@ -117,6 +125,7 @@ impl Agent {
                     usage,
                     tool_calls_made,
                     tools_used,
+                    stopped_by: None,
                 });
             }
 
@@ -134,7 +143,22 @@ impl Agent {
                     self.progress_tools.contains(&call.name) && !is_error_result(msg)
                 });
             stall = if made_progress { 0 } else { stall + 1 };
+            let stopped_by = response
+                .tool_calls
+                .iter()
+                .zip(&results)
+                .find(|(call, msg)| self.stop_tools.contains(&call.name) && !is_error_result(msg))
+                .map(|(call, _)| call.name.clone());
             messages.extend(results);
+            if stopped_by.is_some() {
+                return Ok(TurnOutcome {
+                    text: response.content.unwrap_or_default(),
+                    usage,
+                    tool_calls_made,
+                    tools_used,
+                    stopped_by,
+                });
+            }
         }
     }
 
@@ -306,6 +330,8 @@ mod tests {
             system_prompt: "test".into(),
             max_iterations: 3,
             progress_tools,
+            stop_tools: Vec::new(),
+            call_site: crate::usage::CallSite::role("chat"),
         };
         (agent, registry)
     }
@@ -513,6 +539,49 @@ mod tests {
         let outcome = agent.run_turn(&mut messages).await.unwrap();
         assert_eq!(outcome.text, "shipped");
         assert_eq!(outcome.tool_calls_made, 7);
+    }
+
+    #[tokio::test]
+    async fn a_successful_stop_tool_ends_the_turn_after_recording_every_result() {
+        let responses = vec![
+            tool_response(vec![
+                ("test__echo", json!({"n": 1})),
+                ("test__handoff", json!({})),
+            ]),
+            text_response("never reached"),
+        ];
+        let (mut agent, _) = agent(responses, false);
+        agent.stop_tools = vec!["test__handoff".to_string()];
+        let mut messages = vec![ChatMessage::User {
+            content: "go".into(),
+        }];
+        let outcome = agent.run_turn(&mut messages).await.unwrap();
+        assert_eq!(outcome.stopped_by.as_deref(), Some("test__handoff"));
+        let results = messages
+            .iter()
+            .filter(|m| matches!(m, ChatMessage::ToolResult { .. }))
+            .count();
+        assert_eq!(results, 2, "every tool_use keeps its tool_result");
+        assert!(matches!(
+            messages.last(),
+            Some(ChatMessage::ToolResult { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_failing_stop_tool_does_not_end_the_turn() {
+        let responses = vec![
+            tool_response(vec![("test__handoff", json!({}))]),
+            text_response("answered instead"),
+        ];
+        let (mut agent, _) = agent(responses, true);
+        agent.stop_tools = vec!["test__handoff".to_string()];
+        let mut messages = vec![ChatMessage::User {
+            content: "go".into(),
+        }];
+        let outcome = agent.run_turn(&mut messages).await.unwrap();
+        assert_eq!(outcome.stopped_by, None);
+        assert_eq!(outcome.text, "answered instead");
     }
 
     #[tokio::test]

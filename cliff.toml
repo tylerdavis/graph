@@ -8,7 +8,7 @@ header = """
 All notable changes to graph. Generated from conventional commits by git-cliff.
 """
 body = """
-{%- set file_kinds = ["config", "plan", "tool", "store"] -%}
+{%- set file_kinds = ["config", "plan", "tool", "agent", "store"] -%}
 {%- set versions = "" -%}
 {%- if message and message is containing("file versions:") -%}
 {%- set versions = message | split(pat="file versions:") | last | split(pat="\n") | first | trim -%}

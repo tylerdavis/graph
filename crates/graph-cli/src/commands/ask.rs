@@ -1,14 +1,16 @@
 //! `graph ask` — one agent turn, persisted to a thread.
 
-use crate::runtime::{resolve_thread, title_from, Runtime};
+use crate::runtime::{
+    load_history, persist_turn, resolve_thread, starting_agent, title_from, Runtime,
+};
 use anyhow::{bail, Result};
 use graph_core::NullSink;
-use graph_llm::types::ChatMessage;
 use std::io::{IsTerminal, Read};
 use std::sync::Arc;
 
 pub struct AskArgs {
     pub message: Option<String>,
+    pub agent: Option<String>,
     pub thread: Option<Option<String>>,
     pub json: bool,
     pub no_stream: bool,
@@ -20,12 +22,13 @@ pub async fn run(args: AskArgs) -> Result<()> {
     let runtime = Runtime::init()?;
     let store = runtime.store()?;
     let existing = resolve_thread(store.as_ref(), args.thread).await?;
+    let active = starting_agent(existing.as_ref(), args.agent.as_deref())?;
 
     let stream_text = !args.json && !args.no_stream;
     let created = existing.is_none();
     let thread = match existing {
         Some(thread) => thread,
-        None => store.create_thread(&title_from(&message)).await?,
+        None => store.create_thread(&title_from(&message), &active).await?,
     };
     let run = crate::telemetry::RunInfo::conversation("ask", Some(thread.id.clone()))
         .user(runtime.config.user.name.as_deref())
@@ -47,20 +50,11 @@ pub async fn run(args: AskArgs) -> Result<()> {
         ..Default::default()
     };
     runtime.usage.attach_events(events.clone());
-    let toolbox = runtime.toolbox_with(&store, events.clone(), hooks).await?;
-    let agent = runtime.agent(events.clone(), toolbox)?;
+    let conversation = runtime.conversation(&store, events.clone(), hooks).await?;
 
-    let mut messages = if created {
-        Vec::new()
-    } else {
-        store.load_messages(&thread.id).await?
-    };
-    let pre_len = messages.len();
-    messages.push(ChatMessage::User {
-        content: message.clone(),
-    });
+    let history = load_history(store.as_ref(), &thread.id).await?;
 
-    let result = agent.run_turn(&mut messages).await;
+    let result = conversation.run_turn(&history, &active, &message).await;
     runtime.shutdown().await;
     match &result {
         Ok(outcome) => events.run_finished(&serde_json::Value::String(outcome.text.clone()), false),
@@ -78,9 +72,7 @@ pub async fn run(args: AskArgs) -> Result<()> {
     }
     let outcome = result?;
 
-    store
-        .append_messages(&thread.id, &messages[pre_len..])
-        .await?;
+    persist_turn(store.as_ref(), &thread, &active, &outcome).await?;
 
     if args.json {
         let envelope = serde_json::json!({
@@ -89,6 +81,7 @@ pub async fn run(args: AskArgs) -> Result<()> {
             "tools_used": outcome.tools_used,
             "usage": usage,
             "thread_id": thread.id,
+            "agent": outcome.active,
         });
         println!("{}", serde_json::to_string_pretty(&envelope)?);
     } else {

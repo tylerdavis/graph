@@ -155,7 +155,7 @@ pub fn schema_skeleton(schema: &Value) -> Value {
     }
 }
 
-fn json_textarea(value: &Value) -> TextArea<'static> {
+pub(super) fn json_textarea(value: &Value) -> TextArea<'static> {
     let text = serde_json::to_string_pretty(value).unwrap_or_else(|_| "null".to_string());
     TextArea::from(text.lines().map(str::to_string).collect::<Vec<_>>())
 }

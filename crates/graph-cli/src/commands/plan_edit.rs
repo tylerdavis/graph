@@ -24,10 +24,10 @@ use crate::cli::{PlanAttribute, StepAttribute, StepCommand};
 use crate::commands::outcome::Outcome;
 use crate::commands::plan_cmd::resolve_target;
 use crate::runtime::Runtime;
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use graph_core::pipeline::authoring;
 use graph_core::pipeline::doc::PlanDoc;
-use graph_core::pipeline::{PipelineError, PlannerOutput};
+use graph_core::pipeline::{draft_input, Draft, AUTHOR_PLAN};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -160,10 +160,6 @@ pub async fn draft(
         Some(target) => Some(resolve_target(runtime, target)?.0),
         None => None,
     };
-    let existing_output = existing.as_ref().map(|doc| PlannerOutput {
-        plan: doc.steps.clone(),
-        solver_data: doc.solver.clone(),
-    });
 
     let store = runtime.store()?;
     // Drafting's deliverable is the plan, not prose: keep progress on stderr
@@ -175,26 +171,14 @@ pub async fn draft(
     );
     let pipeline = runtime.pipeline(&store, events).await?;
 
-    let drafted = pipeline.draft_plan(goal, existing_output.as_ref()).await;
-    let mut salvaged = None;
-    let planner_output = match drafted {
-        Ok(output) => output,
-        Err(PipelineError::DraftStepExhausted {
-            step_id,
-            problems,
-            partial,
-            ..
-        }) => {
-            salvaged = Some((step_id, problems));
-            *partial
-        }
-        Err(error) => {
-            runtime.shutdown().await;
-            bail!("planner failed: {error}");
-        }
-    };
-
+    let drafted = pipeline.call_plan(AUTHOR_PLAN, draft_input(goal)).await;
     runtime.shutdown().await;
+    if drafted.is_error {
+        bail!("drafting failed: {}", drafted.result);
+    }
+    let draft = Draft::from_authored(&drafted.result).map_err(|error| anyhow!(error))?;
+    let salvaged = draft.failed_step.map(|step_id| (step_id, draft.problems));
+    let planner_output = draft.output;
 
     let mut doc = authoring::merge_planner_output(existing, goal, planner_output);
     if output.is_some() {

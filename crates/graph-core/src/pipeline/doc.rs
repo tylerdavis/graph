@@ -168,6 +168,41 @@ pub fn load_plan_docs(dirs: &[PathBuf]) -> LoadedPlans {
     loaded
 }
 
+pub const BUILTIN_PLANS: &[&str] = &[
+    include_str!("../plans/draft_outline.yaml"),
+    include_str!("../plans/draft_step.yaml"),
+    include_str!("../plans/draft_expand.yaml"),
+    include_str!("../plans/author_plan.yaml"),
+];
+
+pub fn builtin_plan_docs() -> Vec<PlanDoc> {
+    let mut loaded = LoadedPlans::default();
+    add_builtin_plans(&mut loaded, BUILTIN_PLANS);
+    loaded.docs
+}
+
+pub fn add_builtin_plans(loaded: &mut LoadedPlans, sources: &[&str]) {
+    for raw in sources {
+        let doc = match parse_plan_source(raw, "built-in plan") {
+            Ok(doc) => doc,
+            Err(error) => {
+                loaded.skipped.push(error);
+                continue;
+            }
+        };
+        if let Err(message) = validate_doc(&doc) {
+            loaded.skipped.push(DocError::Invalid {
+                path: format!("built-in plan '{}'", doc.identifier),
+                message,
+            });
+            continue;
+        }
+        if !loaded.docs.iter().any(|d| d.identifier == doc.identifier) {
+            loaded.docs.push(doc);
+        }
+    }
+}
+
 /// Read a plan file for *execution*: parsed and structurally valid.
 pub fn load_plan_doc(path: &Path) -> Result<PlanDoc, DocError> {
     let doc = parse_plan_doc(path)?;
@@ -712,6 +747,30 @@ solver:
         assert!(
             matches!(&loaded.skipped[..], [DocError::Duplicate { path, .. }] if path.ends_with("b.yaml"))
         );
+    }
+
+    #[test]
+    fn a_plan_file_replaces_a_builtin_plan_with_the_same_identifier() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mine.yaml"), DOC).unwrap();
+        let mut loaded = load_plan_docs(&[dir.path().to_path_buf()]);
+        let builtin_same = DOC.replace("Sprint Analysis", "Built-in Sprint");
+        let builtin_other = DOC.replace("sprint_analysis", "builtin_only");
+        add_builtin_plans(&mut loaded, &[&builtin_same, &builtin_other]);
+        let ids: Vec<&str> = loaded.docs.iter().map(|d| d.identifier.as_str()).collect();
+        assert_eq!(ids, ["sprint_analysis", "builtin_only"]);
+        assert_eq!(loaded.docs[0].name, "Sprint Analysis", "the file wins");
+        assert!(loaded.docs[0].path.is_some());
+        assert!(loaded.docs[1].path.is_none(), "a built-in has no path");
+        assert!(loaded.skipped.is_empty(), "an override is not a duplicate");
+    }
+
+    #[test]
+    fn an_invalid_builtin_plan_is_skipped() {
+        let mut loaded = LoadedPlans::default();
+        add_builtin_plans(&mut loaded, &["steps: {"]);
+        assert!(loaded.docs.is_empty());
+        assert_eq!(loaded.skipped.len(), 1);
     }
 
     #[test]

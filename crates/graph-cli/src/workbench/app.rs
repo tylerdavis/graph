@@ -150,6 +150,7 @@ impl Default for ChatState {
 }
 
 pub struct App {
+    pub agent: String,
     pub focus: Focus,
     pub mode: Mode,
     pub chat: ChatState,
@@ -189,11 +190,13 @@ pub struct App {
 
 impl App {
     pub fn new(doc: Option<PlanDoc>) -> Self {
+        let agent = super::agents::starting_agent(doc.as_ref()).to_string();
         let mut ws = PlanWorkspace::default();
         if let Some(doc) = doc {
             ws.set_doc(doc);
         }
         Self {
+            agent,
             focus: Focus::Chat,
             mode: Mode::Idle,
             chat: ChatState::default(),
@@ -266,6 +269,11 @@ pub enum Msg {
     /// Ok carries the turn's final assistant text — the completed
     /// response is canonical; deltas are just its live preview.
     TurnFinished(Result<String, String>),
+    ActiveAgent {
+        name: String,
+        note: Option<String>,
+    },
+    AgentNotice(String),
     // Draft changes published by the workbench tools; `dirty` is false
     // when the draft came straight from disk (load), true for edits.
     DraftReplaced {
@@ -382,6 +390,8 @@ impl Msg {
                 Ok(text) => format!("agent turn finished ({} chars)", text.len()),
                 Err(error) => format!("agent turn failed: {error}"),
             },
+            Msg::ActiveAgent { name, .. } => format!("active agent: {name}"),
+            Msg::AgentNotice(text) => format!("agent notice: {text}"),
             Msg::DraftReplaced { doc, dirty } => format!(
                 "draft replaced: '{}' ({} steps, dirty={dirty})",
                 doc.identifier,
@@ -473,6 +483,9 @@ pub enum Effect {
     RunAgentTurn {
         message: String,
     },
+    Agent {
+        name: Option<String>,
+    },
     StartRun {
         gated: bool,
         input: Value,
@@ -497,6 +510,7 @@ impl Effect {
     pub fn label(&self) -> &'static str {
         match self {
             Effect::RunAgentTurn { .. } => "run-agent-turn",
+            Effect::Agent { .. } => "agent",
             Effect::StartRun { gated: false, .. } => "start-run",
             Effect::StartRun { gated: true, .. } => "start-debug-run",
             Effect::Validate => "validate",
@@ -540,12 +554,23 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
                     .entries
                     .push(ChatEntry::Activity(format!("✗ {name} failed")));
             }
-            // Backstop: the drafting overlay must not outlive the draft
-            // call (DraftReplaced normally clears it via set_doc).
-            if name == super::tools::DRAFT_PLAN {
+            // Backstop: the drafting overlay must not outlive a failed
+            // draft (DraftReplaced normally clears it via set_doc).
+            if is_error && (name == super::tools::SET_DRAFT || name.starts_with("plan__draft")) {
                 app.ws.drafting = None;
                 app.in_flight = None;
             }
+            Vec::new()
+        }
+        Msg::ActiveAgent { name, note } => {
+            app.agent = name;
+            if let Some(note) = note {
+                app.chat.entries.push(ChatEntry::Activity(note));
+            }
+            Vec::new()
+        }
+        Msg::AgentNotice(text) => {
+            app.chat.entries.push(ChatEntry::Activity(text));
             Vec::new()
         }
         Msg::TurnFinished(result) => {
@@ -1199,8 +1224,14 @@ fn on_chat_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
                 return Vec::new();
             }
             app.chat.input = TextArea::default();
-            app.chat.entries.push(ChatEntry::User(message.clone()));
             app.chat.scroll.set(0);
+            if let Some(rest) = message.strip_prefix("/agent") {
+                if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                    let name = rest.split_whitespace().next().map(str::to_string);
+                    return vec![Effect::Agent { name }];
+                }
+            }
+            app.chat.entries.push(ChatEntry::User(message.clone()));
             app.mode = Mode::Chatting;
             app.turn_in_flight = true;
             app.turn_started = Some(std::time::Instant::now());
@@ -2517,7 +2548,7 @@ steps:
         update(
             &mut app,
             Msg::AgentToolFinished {
-                name: super::super::tools::DRAFT_PLAN.to_string(),
+                name: super::super::tools::SET_DRAFT.to_string(),
                 is_error: true,
             },
         );

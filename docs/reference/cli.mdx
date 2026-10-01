@@ -11,14 +11,15 @@ Global: `-v/-vv/-vvv` raises log verbosity (stderr); `GRAPH_LOG` accepts a traci
 One agent turn.
 
 ```text
-graph ask "<message>" [--thread [<id>]] [--json] [--no-stream]
+graph ask "<message>" [--agent <name>] [--thread [<id>]] [--json] [--no-stream]
 ```
 
 | Flag | Effect |
 | --- | --- |
+| `--agent <name>` | run a [named agent](/reference/agent-schema) instead of the default `chat` agent; on an existing thread it must be the thread's owner |
 | `--thread` (bare) | continue the most recent thread |
 | `--thread <id>` | continue a specific thread |
-| `--json` | emit `{content, tool_calls_made, usage, thread_id}` instead of streaming |
+| `--json` | emit `{content, tool_calls_made, tools_used, usage, thread_id, agent}` instead of streaming; `agent` is the agent that answered |
 | `--no-stream` | print the final answer without token streaming |
 | piped stdin | appended to the message as input context |
 
@@ -26,7 +27,11 @@ Put `--thread` after the message (it takes an optional value).
 
 ## `graph chat`
 
-Interactive REPL. `--thread [<id>]` as above. Slash commands: `/thread`, `/state`, `/quit`.
+```text
+graph chat [<agent>] [--thread [<id>]]
+```
+
+Interactive REPL with the default `chat` agent, or the named one. `--thread [<id>]` as above; a resumed thread continues with its active agent, and naming an agent other than the thread's owner is refused. Slash commands: `/agent` (list agents, marking the active one), `/agent <name>` (switch), `/thread`, `/state`, `/quit`.
 
 ## `graph workbench`
 
@@ -46,13 +51,15 @@ graph plan migrate <name|path> [--json]
 graph plan run <name> [<json>|@file|-] [--input k=v]... [--json]
 ```
 
-`migrate` rewrites one plan file to the current [file version](/reference/file-versions#plans-and-tools), resolving a path or an identifier the same lenient way `validate` does. A file already at the current version is left untouched.
+`migrate` rewrites one plan file to the current [file version](/reference/file-versions#plans-tools-and-agents), resolving a path or an identifier the same lenient way `validate` does. A file already at the current version is left untouched.
 
 `validate` checks structure (templates, references, ids) and resolves every step tool against the loadable catalog — packs, user tools, plans (composition followed transitively), and configured MCP servers (server-level; MCP tool names are only verifiable by connecting). Problems exit `1`; a file whose `requires_servers` declares an unconfigured server validates with a note (portable, just not runnable here). `run` performs the same resolution and refuses to start when it fails. Naming a plan hidden by unconfigured `requires_servers` errors with the missing servers.
 
 `run` exit codes: `0` ok, `3` missing/invalid inputs (schema printed to stderr), `1` failure (including unresolvable tools). Solver output streams to stdout; output-mode plans print JSON; silent plans print nothing.
 
 Per the [streams contract](/reference/scripting-contract#streams), stdout carries only deliverables — `list`'s rows, `show`'s YAML, and `--json` envelopes. Verdicts and hints go to stderr, so `plan validate` prints nothing to stdout on success and its exit code is the answer; `plan list` on an empty catalog leaves stdout empty rather than emitting a hint into it.
+
+`show` names where the plan comes from on stderr (`source: built-in`, or the file path) and adds `source` to its `--json` envelope; a plan file whose `identifier` matches a built-in plan replaces it.
 
 `show` and `validate` are deliberately lenient about _which_ plans they will open: a plan that is invalid, or hidden by unconfigured `requires_servers`, is exactly the plan you need to inspect, so both resolve it from disk rather than requiring it to be in the runnable catalog. `list` only shows the runnable catalog; `list --json` also reports what was `skipped` (failed to load, with the reason) and `hidden` (with the missing servers).
 
@@ -119,6 +126,22 @@ Changing `identifier` writes a _new_ file (`<plans dir>/<new>.yaml`) and leaves 
 
 An edit reserializes the whole file, so cosmetic YAML is normalized: flow mappings (`input: { a: b }`) become block mappings, folded scalars (`>`) become literal ones (`|`), and comments are dropped. The plan itself is unchanged — commentary belongs in `description` and each step's `reasoning`, which are real fields the agent also reads.
 
+## `graph agents`
+
+```text
+graph agents list [--json]
+graph agents show <name> [--json]
+graph agents validate [<path>] [--json]
+graph agents migrate <path> [--json]
+```
+
+Agents come from three layers: built-in, `~/.config/graph/agents/`, then `./.graph/agents/`, with a later layer replacing an agent of the same name. See [Agent files](/reference/agent-schema).
+
+- `list` prints `name`, source (`built-in` or the file path) and description, one agent per line. `--json` adds each agent's model, subagents, handoffs, how it's called as a subagent (`subagentIo`), and any files that failed to load (`loadErrors`).
+- `show` prints the agent's effective file, stamped with the current `version`, and names its source on stderr. It's the file to copy when customizing a built-in.
+- `validate` checks every agent, or one file in the context of the others. Problems exit `1`, and `--json` returns them under `problems`.
+- `migrate` rewrites one agent file to the current [file version](/reference/file-versions#plans-tools-and-agents).
+
 ## `graph tools`
 
 ```text
@@ -128,11 +151,13 @@ graph tools test <name> [<json>|@file|-] [--input k=v]...
 graph tools migrate <path> [--json]
 ```
 
-`migrate` rewrites one user tool file to the current [file version](/reference/file-versions#plans-and-tools). It takes a path rather than a catalog name, since a file the catalog refuses is the one most likely to need it, and it never starts the tool catalog (no MCP connections).
+`migrate` rewrites one user tool file to the current [file version](/reference/file-versions#plans-tools-and-agents). It takes a path rather than a catalog name, since a file the catalog refuses is the one most likely to need it, and it never starts the tool catalog (no MCP connections).
 
 Operates on the full catalog: MCP (`server__`), user (`user__`), bundled packs (`builtin__`), plan (`plan__`), and `plan_and_execute`. `list` groups the catalog by source — names and one-line descriptions, `plan_and_execute` under `(core)`.
 
 `list --json` emits the flat catalog instead, each entry carrying the **namespaced** name a plan step has to use, its `source`, the full `description` (untruncated — it is the routing signal), `readOnly`, and `hasOutputSchema`, plus a per-source roll-up. That is the surface for a script or an [agent authoring a plan](/plans/authoring#authoring-from-the-command-line); per-tool schemas stay on `tools show`.
+
+For a `builtin__` or `user__` tool, `show` also names its source on stderr and under `source`: the tool file's path, or `built-in (<pack> pack)`. A tool file in a tools directory's `builtin/` subdirectory replaces the pack tool it names.
 
 `show --json` emits one tool's whole definition — `inputSchema` included, which is what you need to write a step's input object — with every key always present, `null` when absent. Unknown tool names stay ordinary errors (stderr, exit `1`); there is no envelope for them. See the [scripting contract](/reference/scripting-contract#the-tool-catalog).
 
@@ -180,7 +205,7 @@ graph config migrate  # rewrite ./.graph/config.toml to the current version (--g
 
 `check` is the pre-flight for a CI job or a fresh binary: it reports every config file's [file version](/reference/file-versions#config) — `current`, `migrate`, `too new`, or `too old` — then loads the merged config and exits `1` with the problems if it does not load. `migrate` preserves comments and layout, writing `version` as the first key; a file already at the current version is left untouched.
 
-The starter ends with a [`[prompts]` section](/reference/configuration#prompts) carrying the built-in chat and workbench system prompts, written out verbatim so they can be tuned in place — delete a field to fall back to the shipped default.
+System prompts aren't part of the starter: they live in [agent files](/reference/agent-schema), which `graph agents show` prints for copying.
 
 ## `graph version`
 

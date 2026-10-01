@@ -1,0 +1,42 @@
+version: 2
+identifier: author_plan
+name: Author a plan
+description: Drafts a new plan for a goal — outline, full plan and validation — and returns the plan document.
+input_schema:
+  type: object
+  required: [goal]
+  properties:
+    goal:
+      type: string
+      description: What the plan should accomplish, self-contained
+steps:
+  - id: outline
+    tool_name: plan__draft_outline
+    input:
+      goal: "{{input.goal}}"
+    reasoning: The coarse, whiteboard-level stages of a system that meets the goal.
+  - id: expanded
+    tool_name: plan__draft_expand
+    input:
+      goal: "{{input.goal}}"
+      outline: "{{outline.entries}}"
+    reasoning: One validated step per outline stage.
+  - id: drafted
+    tool_name: builtin__plan_from_draft
+    input:
+      goal: "{{input.goal}}"
+      draft: "{{expanded}}"
+    reasoning: The drafted steps as a plan document named from the goal.
+  - id: verified
+    tool_name: builtin__validate_plan
+    input:
+      plan: "{{drafted.plan}}"
+    reasoning: The final check, and which tools in the plan aren't read-only.
+output:
+  plan: "{{drafted.plan}}"
+  outline: "{{outline.entries}}"
+  valid: "{{verified.valid}}"
+  problems: "{{verified.problems}}"
+  side_effects: "{{verified.side_effects}}"
+  drafting_problems: "{{drafted.problems}}"
+  failed_step: "{{drafted.failed_step}}"

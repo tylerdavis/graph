@@ -5,7 +5,7 @@ use crate::cli::ThreadsCommand;
 use crate::commands::outcome::{report, Outcome};
 use crate::runtime::open_store;
 use anyhow::{bail, Result};
-use graph_core::Store;
+use graph_core::{EntryBody, Store, ThreadEntry};
 use graph_llm::types::ChatMessage;
 use serde_json::json;
 use std::sync::Arc;
@@ -29,6 +29,8 @@ async fn list(store: &Arc<dyn Store>) -> Result<Outcome> {
             "title": thread.title,
             "messageCount": thread.message_count,
             "updatedAt": thread.updated_at,
+            "owner": thread.owner,
+            "active": thread.active,
         })).collect::<Vec<_>>(),
         "count": threads.len(),
     });
@@ -55,29 +57,33 @@ async fn show(store: &Arc<dyn Store>, id: &str, state: bool) -> Result<Outcome> 
     let Some(meta) = store.get_thread(id).await? else {
         bail!("no thread with id {id}");
     };
-    let messages = store.load_messages(id).await?;
+    let entries = store.load_entries(id).await?;
     let body = json!({
         "id": meta.id,
         "title": meta.title,
         "messageCount": meta.message_count,
         "updatedAt": meta.updated_at,
-        "messages": messages,
+        "owner": meta.owner,
+        "active": meta.active,
+        "entries": entries,
     });
-    // `--state` asks for the raw runtime state, so it prints the messages
+    // `--state` asks for the raw runtime state, so it prints the entries
     // verbatim rather than the conversation transcript.
     if state {
-        let text = format!("{}\n", serde_json::to_string_pretty(&messages)?);
+        let text = format!("{}\n", serde_json::to_string_pretty(&entries)?);
         return Ok(Outcome::raw(text, body));
     }
     let mut text = format!(
-        "{} — {} ({} messages, updated {})\n\n",
+        "{} — {} ({} messages, updated {}; owner {}, active {})\n\n",
         meta.id,
         meta.title,
         meta.message_count,
         format_time(meta.updated_at),
+        meta.owner,
+        meta.active,
     );
-    for message in &messages {
-        text.push_str(&render_message(message));
+    for entry in &entries {
+        text.push_str(&render_entry(entry));
         text.push('\n');
     }
     Ok(Outcome::raw(text, body))
@@ -103,9 +109,33 @@ fn format_time(epoch_ms: i64) -> String {
         .unwrap_or_else(|| "?".to_string())
 }
 
-fn render_message(message: &ChatMessage) -> String {
+fn render_entry(entry: &ThreadEntry) -> String {
+    match &entry.body {
+        EntryBody::Message { message } => render_message(&entry.author, message),
+        EntryBody::Handoff {
+            from, to, message, ..
+        } => format!("  ⇢ {from} hands off to {to}: {message}\n"),
+        EntryBody::SubagentRun {
+            agent,
+            caller,
+            messages,
+            final_,
+            ..
+        } => format!(
+            "  ↳ {caller} ran {agent} ({} messages{})\n",
+            messages.len(),
+            if *final_ {
+                ""
+            } else {
+                ", stopped before answering"
+            }
+        ),
+    }
+}
+
+fn render_message(author: &str, message: &ChatMessage) -> String {
     match message {
-        ChatMessage::User { content } => format!("user> {content}\n"),
+        ChatMessage::User { content } => format!("{author}> {content}\n"),
         ChatMessage::Assistant {
             content,
             tool_calls,
@@ -120,7 +150,7 @@ fn render_message(message: &ChatMessage) -> String {
             }
             if let Some(text) = content {
                 if !text.is_empty() {
-                    out.push_str(&format!("assistant> {text}\n"));
+                    out.push_str(&format!("{author}> {text}\n"));
                 }
             }
             out
