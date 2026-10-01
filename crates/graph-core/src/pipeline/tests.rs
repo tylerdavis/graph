@@ -1282,7 +1282,7 @@ steps:
     .unwrap();
     crate::pipeline::doc::validate_doc(&doc).unwrap();
 
-    // …nested decide/map/reduce still are not.
+    // …nested route/map/reduce still are not.
     let doc: crate::pipeline::doc::PlanDoc = serde_yaml::from_str(
         r#"
 identifier: bad

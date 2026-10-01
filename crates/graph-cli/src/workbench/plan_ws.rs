@@ -545,7 +545,7 @@ impl PlanWorkspace {
 }
 
 /// Flatten a plan into display rows, `tree`-style: the plan identifier as
-/// the root, every top-level step, decide's step-list branches under a
+/// the root, every top-level step, route's step-list branches under a
 /// named branch head, map/reduce bodies hanging directly beneath their
 /// owner, and a final row for the finish stage (solver or output; silent
 /// plans get none).
@@ -673,7 +673,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// map with an inline step-list body, decide with single-call
+    /// map with an inline step-list body, route with single-call
     /// branches, and a solver finish.
     fn control_doc() -> PlanDoc {
         serde_yaml::from_str(

@@ -105,7 +105,7 @@ pub fn parse_branch(name: &str, raw: &Value) -> Result<Branch, String> {
     }
 }
 
-/// The body schema shared by the decide/map/reduce planner tool defs.
+/// The body schema shared by the route/map/reduce planner tool defs.
 /// `allow_exit` mirrors the validator: route branches may hold `exit`
 /// steps, iteration bodies may not.
 pub fn body_schema(allow_exit: bool) -> Value {

@@ -1,4 +1,4 @@
-//! Shared gate machinery for control steps (`exit`, `decide`): a logical
+//! Shared gate machinery for control steps (`exit`, `route`, `filter`): a logical
 //! condition (`when`) or an inferred verdict (`infer`) answered by the
 //! `judge` model role.
 

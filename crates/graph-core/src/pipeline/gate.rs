@@ -19,7 +19,7 @@ use std::fmt;
 pub struct StepPath {
     /// Top-level step id ("E3").
     pub step: String,
-    /// Body location for calls inside decide/map/reduce: "then", "else",
+    /// Body location for calls inside route/map/reduce: "then", "else",
     /// "do.2". Nesting appends: an `agent` step's round inside a map body
     /// is "do.2/agent.3".
     pub body: Option<String>,
@@ -92,7 +92,7 @@ pub struct GateContext<'a> {
     pub call_stack: &'a [String],
     /// The template scope the input was rendered against — the debugger's
     /// "locals". At the top level: the run's results map (`input` plus
-    /// prior step results). Inside decide/map/reduce bodies: the layered
+    /// prior step results). Inside route/map/reduce bodies: the layered
     /// body scope, including the `item`/`index`/`accumulator` pseudo-roots
     /// and earlier same-body step ids.
     pub scope: &'a Map<String, Value>,

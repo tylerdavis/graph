@@ -273,7 +273,7 @@ pub enum StepCommand {
         target: String,
         /// Step id — how later steps reference it as {{<id>.field}}
         id: String,
-        /// Tool name, or a control step: exit, agent, ask, decide, filter, map, reduce
+        /// Tool name, or a control step: exit, agent, ask, route, filter, map, reduce
         #[arg(value_name = "TOOL")]
         tool: String,
         /// The step's input object: inline JSON, @file.json, or - for stdin
