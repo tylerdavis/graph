@@ -16,7 +16,6 @@ pub mod authoring;
 pub mod body;
 pub mod catalog;
 pub mod condition;
-pub mod decision;
 pub mod doc;
 pub mod exit;
 pub mod filter;
@@ -26,6 +25,7 @@ pub mod iterate;
 mod outline;
 pub mod plan;
 mod prompts;
+pub mod route;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -34,7 +34,6 @@ pub use agent::{agent_tool_def, AGENT_TOOL};
 pub use ask::{ask_tool_def, AskResult, WhenUnanswered, ASK_TOOL};
 pub use authoring::{EditAccepted, EditRejected, WriteError};
 pub use catalog::{CatalogCheck, ToolCatalog};
-pub use decision::DECIDE_TOOL;
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
 pub use filter::FILTER_TOOL;
 pub use gate::{ErrorDecision, ExecutionGate, GateContext, GateDecision, StepPath};
@@ -43,6 +42,7 @@ pub use iterate::{MAP_TOOL, REDUCE_TOOL};
 pub use outline::{OutlineItem, PlanOutline, StepDraft, MAX_STEP_ATTEMPTS};
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
 pub use prompts::CONTROL_STEP_RULES;
+pub use route::ROUTE_TOOL;
 pub use state::{BusEntry, BusKind, RunState};
 
 use crate::store::{Store, ToolShape};
@@ -168,7 +168,7 @@ pub fn control_step_defs() -> Vec<crate::tools::ToolDef> {
         agent::agent_tool_def(),
         ask::ask_tool_def(),
         exit::exit_tool_def(),
-        decision::decide_tool_def(),
+        route::route_tool_def(),
         filter::filter_tool_def(),
         iterate::map_tool_def(),
         iterate::reduce_tool_def(),
@@ -180,7 +180,7 @@ pub fn control_step_defs() -> Vec<crate::tools::ToolDef> {
 pub fn is_control_step(name: &str) -> bool {
     matches!(
         name,
-        AGENT_TOOL | ASK_TOOL | EXIT_TOOL | DECIDE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL
+        AGENT_TOOL | ASK_TOOL | EXIT_TOOL | ROUTE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL
     )
 }
 
@@ -760,7 +760,7 @@ impl Pipeline {
             // (decide) or per item (map/reduce). Their step events carry
             // the raw input for the same reason.
             let control = match step.tool_name.as_str() {
-                AGENT_TOOL | ASK_TOOL | DECIDE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL => {
+                AGENT_TOOL | ASK_TOOL | ROUTE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL => {
                     self.events.step_started(
                         &self.call_stack,
                         &step.id,
@@ -771,7 +771,7 @@ impl Pipeline {
                     let run = match step.tool_name.as_str() {
                         AGENT_TOOL => self.run_agent(&step, state).await,
                         ASK_TOOL => self.run_ask(&step, state).await,
-                        DECIDE_TOOL => self.run_decide(&step, state).await,
+                        ROUTE_TOOL => self.run_route(&step, state).await,
                         FILTER_TOOL => self.run_filter(&step, state).await,
                         MAP_TOOL => self.run_map(&step, state).await,
                         _ => self.run_reduce(&step, state).await,

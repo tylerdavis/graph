@@ -21,7 +21,7 @@
 use super::body::{parse_branch, Branch};
 use super::doc::PlanDoc;
 use super::plan::Plan;
-use super::{AGENT_TOOL, ASK_TOOL, DECIDE_TOOL, EXIT_TOOL, FILTER_TOOL, MAP_TOOL, REDUCE_TOOL};
+use super::{AGENT_TOOL, ASK_TOOL, EXIT_TOOL, FILTER_TOOL, MAP_TOOL, REDUCE_TOOL, ROUTE_TOOL};
 use std::collections::BTreeSet;
 
 /// Glob matching over tool names, with `*` as "any run of characters",
@@ -175,7 +175,7 @@ fn agent_tool_patterns(plan: &Plan) -> Vec<(String, String)> {
             collect(step.id.clone(), &step.input);
         }
         let body_keys: &[&str] = match step.tool_name.as_str() {
-            DECIDE_TOOL => &["then", "else"],
+            ROUTE_TOOL => &["then", "else"],
             MAP_TOOL | REDUCE_TOOL => &["do"],
             _ => &[],
         };
@@ -286,7 +286,7 @@ fn check_tool(
     check: &mut CatalogCheck,
 ) {
     match tool {
-        AGENT_TOOL | ASK_TOOL | EXIT_TOOL | DECIDE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL
+        AGENT_TOOL | ASK_TOOL | EXIT_TOOL | ROUTE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL
         | "plan_and_execute" => {}
         _ if super::plan::workbench_tool_problem(tool).is_some() => {
             // The static layer rejects these with the full explanation;
@@ -355,7 +355,7 @@ fn step_tools(plan: &Plan) -> Vec<(String, String)> {
     for step in plan {
         tools.push((step.id.clone(), step.tool_name.clone()));
         let body_keys: &[&str] = match step.tool_name.as_str() {
-            DECIDE_TOOL => &["then", "else"],
+            ROUTE_TOOL => &["then", "else"],
             MAP_TOOL | REDUCE_TOOL => &["do"],
             _ => &[],
         };
@@ -386,7 +386,7 @@ fn plan_refs(plan: &Plan) -> Vec<&str> {
             refs.push(identifier);
         }
         let body_keys: &[&str] = match step.tool_name.as_str() {
-            DECIDE_TOOL => &["then", "else"],
+            ROUTE_TOOL => &["then", "else"],
             MAP_TOOL | REDUCE_TOOL => &["do"],
             _ => &[],
         };
@@ -548,7 +548,7 @@ steps:
     tool_name: linear__list_issues
     input: {}
   - id: E1
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "{{E0.count}}", op: gt, to: 0 }
       then: { toolName: ghost__triage, input: {} }
@@ -652,7 +652,7 @@ steps:
           outputSchema: { type: object, properties: {} }
           tools: ["ghost__thing"]
   - id: E2
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "{{E0.count}}", op: gt, to: 0 }
       then:

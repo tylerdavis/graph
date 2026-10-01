@@ -534,12 +534,12 @@ fn qualify(call_stack: &[String], path: &str) -> String {
 fn is_control(tool: &str) -> bool {
     matches!(
         tool,
-        "exit" | "decide" | "filter" | "map" | "reduce" | "ask" | "plan_and_execute"
+        "exit" | "route" | "filter" | "map" | "reduce" | "ask" | "plan_and_execute"
     ) || tool.starts_with(graph_core::toolbox::PLAN_TOOL_PREFIX)
 }
 
 fn is_bare_control(tool: &str) -> bool {
-    matches!(tool, "exit" | "decide" | "filter" | "map" | "reduce")
+    matches!(tool, "exit" | "route" | "filter" | "map" | "reduce")
 }
 
 fn observation_type(tool: &str) -> &'static str {

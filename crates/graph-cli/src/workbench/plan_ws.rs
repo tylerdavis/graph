@@ -3,7 +3,7 @@
 
 use graph_core::pipeline::body::{parse_branch, Branch};
 use graph_core::pipeline::doc::PlanDoc;
-use graph_core::pipeline::{DECIDE_TOOL, MAP_TOOL, MAX_STEP_ATTEMPTS, REDUCE_TOOL};
+use graph_core::pipeline::{MAP_TOOL, MAX_STEP_ATTEMPTS, REDUCE_TOOL, ROUTE_TOOL};
 use graph_core::{ToolDef, ToolShape};
 use serde_json::{Map, Value};
 use std::cell::Cell;
@@ -45,7 +45,7 @@ pub enum RowKey {
     Root,
     /// A top-level plan step; matches bare event paths ("E3").
     Step(String),
-    /// A named decide branch head ("then"/"else") over an inline step
+    /// A named route branch head ("then"/"else") over an inline step
     /// list — a structural node, never matched by run events.
     BranchHead { step: String, body: String },
     /// A call inside a control-step body. The map item index is stripped
@@ -609,7 +609,7 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
                     // Decide branches are named forks — the step list gets
                     // a branch-head node, like a directory in `tree`. Map
                     // and reduce have one anonymous body: no head.
-                    if step.tool_name == DECIDE_TOOL {
+                    if step.tool_name == ROUTE_TOOL {
                         rows.push(row(
                             (*body).to_string(),
                             String::new(),
@@ -670,7 +670,7 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
 /// The body slots a control step carries; empty for real tool steps.
 fn body_keys(tool: &str) -> &'static [&'static str] {
     match tool {
-        DECIDE_TOOL => &["then", "else"],
+        ROUTE_TOOL => &["then", "else"],
         MAP_TOOL | REDUCE_TOOL => &["do"],
         _ => &[],
     }
@@ -712,7 +712,7 @@ steps:
           tool_name: t__fetch
           input: { url: "{{item.url}}" }
   - id: E3
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "{{E0.count}}", greaterThan: 0 }
       then: { toolName: t__notify, input: { message: hit } }
@@ -751,7 +751,7 @@ solver:
                 ("E0", "t__search", false),
                 ("E1", "map", false),
                 ("E2", "t__fetch", true),
-                ("E3", "decide", false),
+                ("E3", "route", false),
                 ("then", "t__notify", true),
                 ("else", "t__log", true),
                 ("solver", "synthesizes the answer", false),
@@ -810,7 +810,7 @@ solver:
         // The owning map row is untouched by body events.
         assert_eq!(ws.steps[2].status, StepStatus::Pending);
 
-        // Single-call decide branch: the path has no body step id.
+        // Single-call route branch: the path has no body step id.
         ws.step_started("E3/then", json!({"message": "hit"}));
         assert_eq!(ws.steps[5].status, StepStatus::Running);
         ws.step_skipped("E3/then", json!({"sent": false}));

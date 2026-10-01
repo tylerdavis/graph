@@ -32,7 +32,7 @@ steps:
     pr: '{{input.pr}}'
   reasoning: Read back the inline review threads this plan posted on earlier runs (recognized by the hidden graph_review_9000:finding payload tag), each with its heuristic state — open, resolved (closed by our own identity), declined (closed by a human) — plus any human replies. Feeds the decide gate below and, through the audit plan, the reviewer's known-findings context. Empty on a PR's first review.
 - id: G1
-  tool_name: decide
+  tool_name: route
   input:
     if:
       op: eq

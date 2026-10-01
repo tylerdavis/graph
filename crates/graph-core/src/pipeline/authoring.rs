@@ -30,7 +30,7 @@
 use super::catalog::{self, ToolCatalog};
 use super::doc::{validate_doc, PlanDoc};
 use super::plan::{self, Plan, PlannerOutput, SolverData, Step};
-use super::{AGENT_TOOL, ASK_TOOL, DECIDE_TOOL, MAP_TOOL, REDUCE_TOOL};
+use super::{AGENT_TOOL, ASK_TOOL, MAP_TOOL, REDUCE_TOOL, ROUTE_TOOL};
 use crate::template;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
@@ -74,7 +74,7 @@ pub fn validate_steps(plan: &Plan) -> Vec<String> {
             super::FILTER_TOOL => {
                 super::filter::validate_filter_input(&step.input, &seen, &step.id, &mut problems)
             }
-            super::DECIDE_TOOL => super::decision::validate_decide_input(
+            super::ROUTE_TOOL => super::route::validate_route_input(
                 &step.input,
                 &seen,
                 &all_ids,
@@ -151,7 +151,7 @@ fn collect_model_kind_problems(
                 .and_then(serde_json::Value::as_str);
             let input = fields.get("input").and_then(serde_json::Value::as_object);
             if let (Some(tool), Some(input)) = (tool, input) {
-                if [super::EXIT_TOOL, super::DECIDE_TOOL, super::FILTER_TOOL].contains(&tool) {
+                if [super::EXIT_TOOL, super::ROUTE_TOOL, super::FILTER_TOOL].contains(&tool) {
                     let id = fields
                         .get("id")
                         .and_then(serde_json::Value::as_str)
@@ -829,7 +829,7 @@ fn snake_case_step(step: &mut serde_yaml::Value) {
                 rename_key(input, planner, file);
             }
         }
-        Some(DECIDE_TOOL) => {
+        Some(ROUTE_TOOL) => {
             for side in ["then", "else"] {
                 if let Some(branch) = input.get_mut(side) {
                     snake_case_body(branch);
@@ -1412,7 +1412,7 @@ name: Demo
 description: demo plan
 steps:
   - id: E1
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "{{E0.count}}", op: gt, to: 0 }
       then:
