@@ -240,6 +240,11 @@ fn visit_step(step: &mut Value, visit: &mut dyn FnMut(&mut Value)) {
                     visit_body(branch, visit);
                 }
             }
+            if let Some(Value::Mapping(cases)) = input.get_mut("cases") {
+                for (_, branch) in cases.iter_mut() {
+                    visit_body(branch, visit);
+                }
+            }
         }
         Some("map" | "reduce") => {
             if let Some(body) = input.get_mut("do") {

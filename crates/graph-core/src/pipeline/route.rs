@@ -7,7 +7,10 @@
 //! when that branch is the right one to take.
 
 use super::body::{body_schema, parse_branch, validate_body, BodyFail};
-use super::condition::{check_gate, select_gate, with_probability, Condition, DecideGate};
+use super::condition::{
+    check_gate, decide_choice, select_gate, with_probability, ChoiceOutcome, Condition, DecideGate,
+    GateOutcome,
+};
 use super::state::BusKind;
 use super::{ExecutionEnd, Pipeline, RunState, Step};
 use crate::template::{render_input, render_str, RenderError, Roots};
@@ -36,7 +39,10 @@ pub struct RouteSpec {
     #[serde(default)]
     pub decide: Option<Value>,
     /// Branch taken when the gate holds.
-    pub then: Value,
+    #[serde(default)]
+    pub then: Option<Value>,
+    #[serde(default)]
+    pub cases: Option<Map<String, Value>>,
     /// Branch taken otherwise; absent means the plan just continues.
     #[serde(rename = "else", default)]
     pub else_: Option<Value>,
@@ -59,11 +65,13 @@ pub fn route_tool_def() -> crate::tools::ToolDef {
                       `reduce` — call a plan (plan__*) for nested control flow. Later \
                       steps reference this \
                       step's id: {{Ex.result}} is the chosen branch's output, \
-                      {{Ex.branch}} which side ran."
+                      {{Ex.branch}} which side ran. With a decision model configured, \
+                      `decide.options` turns the fork N-way: `cases` holds one branch per \
+                      option key, the model picks one, and `else` runs when its \
+                      confidence is below `decide.min_confidence`."
             .to_string(),
         input_schema: json!({
             "type": "object",
-            "required": ["then"],
             "properties": {
                 "if": {
                     "type": "object",
@@ -75,12 +83,14 @@ pub fn route_tool_def() -> crate::tools::ToolDef {
                     }
                 },
                 "infer": {"type": "string", "description": "A yes/no question about prior results; runs `then` on yes."},
-                "decide": super::condition::decide_gate_schema(
-                    "A yes/no question answered by a decision model (only when one is configured); fires when its probability reaches min_confidence.",
-                    "The data to judge, usually a template like {{E2.text}}",
-                ),
+                "decide": route_decide_schema(),
                 "model": {"type": "string", "description": "Model role for the `infer` verdict (any configured role, standard or custom); defaults to the judge role."},
                 "then": branch_schema.clone(),
+                "cases": {
+                    "type": "object",
+                    "description": "One branch per `decide.options` key, used instead of `then`.",
+                    "additionalProperties": branch_schema.clone()
+                },
                 "else": branch_schema
             }
         }),
@@ -93,6 +103,19 @@ pub fn route_tool_def() -> crate::tools::ToolDef {
         })),
         read_only: None, // effect depends entirely on what the branch calls
     }
+}
+
+fn route_decide_schema() -> Value {
+    let mut schema = super::condition::decide_gate_schema(
+        "A question answered by a decision model (only when one is configured). Without `options` it is yes/no and runs `then` when its probability reaches min_confidence; with `options` the model picks one and the matching entry in `cases` runs.",
+        "The data to judge, usually a template like {{E2.text}}",
+    );
+    schema["properties"]["options"] = json!({
+        "type": "object",
+        "description": "Case name → what that case means; 2 to 255 entries. Each name needs a branch under `cases`.",
+        "additionalProperties": {"type": "string"}
+    });
+    schema
 }
 
 /// Static validation of a route step's raw input: gate arity, branch
@@ -127,7 +150,7 @@ pub fn validate_route_input(
         )),
     }
     if let Some(gate) = &spec.decide {
-        super::check_decide_gate_shape(gate, step_id, problems);
+        super::check_decide_gate_shape(gate, true, step_id, problems);
         super::check_templates(gate, seen, step_id, problems);
         if spec.model.is_some() {
             problems.push(format!(
@@ -144,16 +167,73 @@ pub fn validate_route_input(
     if let Some(model) = &spec.model {
         super::check_templates(&Value::String(model.clone()), seen, step_id, problems);
     }
-    validate_body(
-        "then",
-        &spec.then,
-        seen,
-        &[],
-        all_plan_ids,
-        step_id,
-        true,
-        problems,
-    );
+    let options = spec
+        .decide
+        .as_ref()
+        .and_then(|gate| gate.get("options"))
+        .and_then(Value::as_object);
+    match (options, &spec.cases) {
+        (Some(options), Some(cases)) => {
+            if spec.then.is_some() {
+                problems.push(format!(
+                    "step {step_id}: a route with `cases` takes no `then`; each case is its own branch"
+                ));
+            }
+            let missing: Vec<&str> = options
+                .keys()
+                .filter(|key| !cases.contains_key(*key))
+                .map(String::as_str)
+                .collect();
+            let extra: Vec<&str> = cases
+                .keys()
+                .filter(|key| !options.contains_key(*key))
+                .map(String::as_str)
+                .collect();
+            if !missing.is_empty() {
+                problems.push(format!(
+                    "step {step_id}: `cases` is missing a branch for {}",
+                    missing.join(", ")
+                ));
+            }
+            if !extra.is_empty() {
+                problems.push(format!(
+                    "step {step_id}: `cases` has a branch for {}, which is not in `decide.options`",
+                    extra.join(", ")
+                ));
+            }
+            let has_min_confidence = spec
+                .decide
+                .as_ref()
+                .is_some_and(|gate| gate.get("min_confidence").is_some());
+            if spec.else_.is_some() && !has_min_confidence {
+                problems.push(format!(
+                    "step {step_id}: `else` can never run under `cases` without `decide.min_confidence`"
+                ));
+            }
+            for (key, body) in cases {
+                validate_body(key, body, seen, &[], all_plan_ids, step_id, true, problems);
+            }
+        }
+        (Some(_), None) => problems.push(format!(
+            "step {step_id}: `decide.options` needs `cases`, one branch per option"
+        )),
+        (None, Some(_)) => problems.push(format!(
+            "step {step_id}: `cases` needs `decide.options` to choose between them"
+        )),
+        (None, None) => match &spec.then {
+            Some(then) => validate_body(
+                "then",
+                then,
+                seen,
+                &[],
+                all_plan_ids,
+                step_id,
+                true,
+                problems,
+            ),
+            None => problems.push(format!("step {step_id}: route needs `then`")),
+        },
+    }
     if let Some(else_) = &spec.else_ {
         validate_body(
             "else",
@@ -247,6 +327,16 @@ impl Pipeline {
             .at(&step.id)
             .in_plans(&self.call_stack)
             .scope(async {
+                if let Some(gate) = decide.as_ref().filter(|gate| gate.options.is_some()) {
+                    if model.is_some() {
+                        return Err(
+                            "`model` sits inside the `decide` object; move it there".to_string()
+                        );
+                    }
+                    return decide_choice(gate, &self.router)
+                        .await
+                        .map(RouteOutcome::Choice);
+                }
                 let gate = select_gate(
                     condition.as_ref(),
                     infer.as_deref(),
@@ -255,35 +345,69 @@ impl Pipeline {
                     "if",
                 )?
                 .ok_or_else(|| "a route step needs `if`, `infer`, or `decide`".to_string())?;
-                check_gate(gate, &self.router).await
+                check_gate(gate, &self.router).await.map(RouteOutcome::Gate)
             })
             .await;
         self.events
             .tool_finished(ROUTE_TOOL, started.elapsed(), eval.is_err());
         let outcome = eval.map_err(|e| failed(format!("route step: {e}")))?;
-        let (triggered, reason, probability) =
-            (outcome.triggered, outcome.reason, outcome.probability);
-
-        let (branch_name, raw_branch) = if triggered {
-            ("then", Some(&spec.then))
-        } else {
-            ("else", spec.else_.as_ref())
+        let decision = match outcome {
+            RouteOutcome::Gate(outcome) => {
+                let raw = if outcome.triggered {
+                    spec.then.as_ref()
+                } else {
+                    spec.else_.as_ref()
+                };
+                let branch = if outcome.triggered { "then" } else { "else" };
+                Decision {
+                    branch: branch.to_string(),
+                    raw,
+                    fields: with_probability(
+                        json!({"verdict": outcome.triggered, "reason": outcome.reason}),
+                        outcome.probability,
+                    ),
+                }
+            }
+            RouteOutcome::Choice(choice) => {
+                let fields = json!({
+                    "choice": choice.choice,
+                    "confidence": choice.confidence,
+                    "probabilities": choice.probabilities,
+                });
+                if choice.committed {
+                    let raw = spec
+                        .cases
+                        .as_ref()
+                        .and_then(|cases| cases.get(&choice.choice));
+                    if raw.is_none() {
+                        return Err(failed(format!(
+                            "route step: no case for the chosen option '{}'",
+                            choice.choice
+                        )));
+                    }
+                    Decision {
+                        branch: choice.choice,
+                        raw,
+                        fields,
+                    }
+                } else {
+                    Decision {
+                        branch: "else".to_string(),
+                        raw: spec.else_.as_ref(),
+                        fields,
+                    }
+                }
+            }
         };
+        let branch_name = decision.branch.as_str();
+        let raw_branch = decision.raw;
         let Some(raw_branch) = raw_branch else {
             state.push_bus(
                 &step.id,
                 BusKind::Info,
                 "gate not met, no else — continuing",
             );
-            return Ok(with_probability(
-                json!({
-                    "branch": null,
-                    "verdict": false,
-                    "reason": reason,
-                    "result": null,
-                }),
-                probability,
-            ));
+            return Ok(route_result(Value::Null, decision.fields, Value::Null));
         };
 
         let branch = parse_branch(branch_name, raw_branch).map_err(failed)?;
@@ -319,16 +443,29 @@ impl Pipeline {
             }
         };
         state.push_bus(&step.id, BusKind::Info, format!("route → {branch_name}"));
-        Ok(with_probability(
-            json!({
-                "branch": branch_name,
-                "verdict": triggered,
-                "reason": reason,
-                "result": result,
-            }),
-            probability,
-        ))
+        Ok(route_result(json!(branch_name), decision.fields, result))
     }
+}
+
+enum RouteOutcome {
+    Gate(GateOutcome),
+    Choice(ChoiceOutcome),
+}
+
+struct Decision<'a> {
+    branch: String,
+    raw: Option<&'a Value>,
+    fields: Value,
+}
+
+fn route_result(branch: Value, fields: Value, result: Value) -> Value {
+    let mut out = json!({"branch": branch, "result": result});
+    if let (Some(out), Some(fields)) = (out.as_object_mut(), fields.as_object()) {
+        for (key, value) in fields {
+            out.insert(key.clone(), value.clone());
+        }
+    }
+    out
 }
 
 #[cfg(test)]

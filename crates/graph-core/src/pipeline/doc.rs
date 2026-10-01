@@ -268,11 +268,20 @@ fn check_one_step_keys(step: &serde_yaml::Value, at: &str) -> Result<(), String>
         return Ok(());
     };
     match tool {
-        Some(super::ROUTE_TOOL) => ["then", "else"].iter().try_for_each(|side| {
-            input.get(side).map_or(Ok(()), |branch| {
-                check_body_keys(branch, &format!("{at}.input.{side}"))
+        Some(super::ROUTE_TOOL) => {
+            ["then", "else"].iter().try_for_each(|side| {
+                input.get(side).map_or(Ok(()), |branch| {
+                    check_body_keys(branch, &format!("{at}.input.{side}"))
+                })
+            })?;
+            let Some(cases) = input.get("cases").and_then(serde_yaml::Value::as_mapping) else {
+                return Ok(());
+            };
+            cases.iter().try_for_each(|(key, branch)| {
+                let key = key.as_str().unwrap_or("?");
+                check_body_keys(branch, &format!("{at}.input.cases.{key}"))
             })
-        }),
+        }
         Some(super::MAP_TOOL | super::REDUCE_TOOL) => input.get("do").map_or(Ok(()), |body| {
             check_body_keys(body, &format!("{at}.input.do"))
         }),

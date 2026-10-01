@@ -4678,12 +4678,29 @@ impl graph_llm::DecisionProvider for MockDecider {
             model: req.model.clone(),
             answers: req
                 .questions
-                .keys()
-                .map(|name| {
-                    (
-                        name.clone(),
-                        graph_llm::decision::Answer::Likelihood { probability },
-                    )
+                .iter()
+                .map(|(name, question)| {
+                    let answer = match question {
+                        graph_llm::decision::Question::Choice { criteria, .. } => {
+                            let choice = req.state["pick"]
+                                .as_str()
+                                .map(str::to_string)
+                                .unwrap_or_else(|| criteria.keys().next().unwrap().clone());
+                            graph_llm::decision::Answer::Choice {
+                                probabilities: criteria
+                                    .keys()
+                                    .map(|key| {
+                                        let p = if *key == choice { probability } else { 0.0 };
+                                        (key.clone(), p)
+                                    })
+                                    .collect(),
+                                choice,
+                                confidence: probability,
+                            }
+                        }
+                        _ => graph_llm::decision::Answer::Likelihood { probability },
+                    };
+                    (name.clone(), answer)
                 })
                 .collect(),
             usage: Usage {
@@ -5076,4 +5093,238 @@ steps:
         !problems.iter().any(|p| p.contains("none is configured")),
         "a templated model is left to run time: {problems:?}"
     );
+}
+
+fn cases_plan(min_confidence: Option<f64>, with_else: bool, pick: &str) -> Plan {
+    let mut gate = json!({
+        "question": "Which team handles this?",
+        "state": {"pick": pick},
+        "options": {"billing": "Payments", "technical": "Bugs"},
+    });
+    if let Some(min) = min_confidence {
+        gate["min_confidence"] = json!(min);
+    }
+    let mut input = json!({
+        "decide": gate,
+        "cases": {
+            "billing": [{"id": "B0", "toolName": "t__issues", "input": {}}],
+            "technical": {"toolName": "t__search", "input": {"query": "technical"}},
+        },
+    });
+    if with_else {
+        input["else"] = json!({"toolName": "t__search", "input": {"query": "unsure"}});
+    }
+    serde_json::from_value(json!([{"id": "E1", "toolName": "route", "input": input}])).unwrap()
+}
+
+#[tokio::test]
+async fn a_route_with_cases_runs_the_chosen_case() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, decider) = pipeline_with_decider(vec![], registry.clone(), Box::new(|_| 0.9));
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            cases_plan(Some(0.6), true, "billing"),
+            Finish::Silent,
+            None,
+        )
+        .await
+        .unwrap();
+    let result = &outcome.state.results["E1"];
+    assert_eq!(result["branch"], json!("billing"));
+    assert_eq!(result["choice"], json!("billing"));
+    assert_eq!(result["confidence"], json!(0.9));
+    assert_eq!(
+        result["probabilities"],
+        json!({"billing": 0.9, "technical": 0.0})
+    );
+    let invocations = registry.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(invocations[0].0, "t__issues");
+    assert!(
+        outcome
+            .state
+            .bus
+            .iter()
+            .any(|entry| entry.source.starts_with("E1/billing")),
+        "{:?}",
+        outcome
+            .state
+            .bus
+            .iter()
+            .map(|e| e.source.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(matches!(
+        &decider.requests.lock().unwrap()[0].questions["gate"],
+        graph_llm::decision::Question::Choice { criteria, .. } if criteria.len() == 2
+    ));
+}
+
+#[tokio::test]
+async fn a_route_below_min_confidence_takes_else_or_continues() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, _) = pipeline_with_decider(vec![], registry.clone(), Box::new(|_| 0.3));
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            cases_plan(Some(0.6), true, "technical"),
+            Finish::Silent,
+            None,
+        )
+        .await
+        .unwrap();
+    let result = &outcome.state.results["E1"];
+    assert_eq!(result["branch"], json!("else"));
+    assert_eq!(result["choice"], json!("technical"));
+    assert_eq!(
+        registry.invocations.lock().unwrap()[0].1["query"],
+        json!("unsure")
+    );
+
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, _) = pipeline_with_decider(vec![], registry.clone(), Box::new(|_| 0.3));
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            cases_plan(Some(0.6), false, "technical"),
+            Finish::Silent,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.state.results["E1"]["branch"], Value::Null);
+    assert_eq!(outcome.state.results["E1"]["result"], Value::Null);
+    assert!(registry.invocations.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_route_without_min_confidence_always_commits_to_the_choice() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, _) = pipeline_with_decider(vec![], registry.clone(), Box::new(|_| 0.05));
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            cases_plan(None, false, "technical"),
+            Finish::Silent,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.state.results["E1"]["branch"], json!("technical"));
+}
+
+#[test]
+fn static_validation_checks_cases_against_options() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let call = json!({"toolName": "t__issues", "input": {}});
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E1", "toolName": "route", "input": {
+            "decide": {"question": "q?", "options": {"a": "A", "b": "B"}},
+            "cases": {"a": call, "c": call},
+            "then": call,
+            "else": call,
+        }},
+        {"id": "E2", "toolName": "route", "input": {
+            "decide": {"question": "q?", "options": {"a": "A", "b": "B"}},
+        }},
+        {"id": "E3", "toolName": "route", "input": {
+            "decide": {"question": "q?"},
+            "cases": {"a": call},
+        }},
+        {"id": "E4", "toolName": "route", "input": {
+            "decide": {"question": "q?", "options": {"then": "A"}},
+            "cases": {"then": call},
+        }},
+        {"id": "E5", "toolName": "filter", "input": {
+            "over": [1, 2],
+            "decide": {"question": "q?", "options": {"a": "A", "b": "B"}},
+        }},
+        {"id": "E6", "toolName": "route", "input": {
+            "if": {"value": 1, "op": "eq", "to": 1},
+        }}
+    ]))
+    .unwrap();
+    let problems = pipeline.validate_plan(&plan).unwrap_err();
+    let has = |needle: &str| problems.iter().any(|p| p.contains(needle));
+    assert!(
+        has("step E1: a route with `cases` takes no `then`"),
+        "{problems:?}"
+    );
+    assert!(
+        has("step E1: `cases` is missing a branch for b"),
+        "{problems:?}"
+    );
+    assert!(has("step E1: `cases` has a branch for c"), "{problems:?}");
+    assert!(has("step E1: `else` can never run"), "{problems:?}");
+    assert!(
+        has("step E2: `decide.options` needs `cases`"),
+        "{problems:?}"
+    );
+    assert!(
+        has("step E3: `cases` needs `decide.options`"),
+        "{problems:?}"
+    );
+    assert!(
+        has("step E4: `decide.options` needs between 2 and 255"),
+        "{problems:?}"
+    );
+    assert!(has("step E4: case name `then`"), "{problems:?}");
+    assert!(
+        has("step E5: `decide.options` (named cases) only works on a `route` step"),
+        "{problems:?}"
+    );
+    assert!(has("step E6: route needs `then`"), "{problems:?}");
+}
+
+#[test]
+fn a_cases_route_round_trips_through_a_plan_file() {
+    let doc = crate::pipeline::doc::parse_plan_source(
+        r#"
+version: 2
+identifier: triage
+name: Triage
+description: Route a ticket to a team.
+steps:
+  - id: E1
+    tool_name: route
+    input:
+      decide:
+        question: Which team?
+        options: { billing: Payments, technical: Bugs }
+      cases:
+        billing:
+          - id: B0
+            tool_name: t__issues
+            input: {}
+        technical: { tool_name: t__search, input: { query: x } }
+"#,
+        "triage.yaml",
+    )
+    .unwrap();
+    assert_eq!(doc.steps[0].tool_name, "route");
+    let stray = crate::pipeline::doc::parse_plan_source(
+        r#"
+identifier: triage
+name: Triage
+description: d
+steps:
+  - id: E1
+    tool_name: route
+    input:
+      decide: { question: q, options: { a: A, b: B } }
+      cases:
+        a:
+          - id: B0
+            tool_name: t__issues
+            input: {}
+            retries: 3
+        b: { tool_name: t__search, input: {} }
+"#,
+        "stray.yaml",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(stray.contains("cases.a"), "{stray}");
 }
