@@ -1,0 +1,38 @@
+version: 2
+identifier: decide_gates
+name: Decide gates
+description: The version 2 decide gate on exit, decide, and filter.
+input_schema:
+  type: object
+  properties:
+    diff: { type: string }
+    items: { type: array }
+steps:
+  - id: E0
+    tool_name: exit
+    input:
+      decide:
+        question: Does this diff change user-visible behavior?
+        state: "{{input.diff}}"
+        criteria:
+          "true": A user or plan author would observe a difference
+          "false": Refactors, tests, comments, internal renames
+        min_confidence: 0.8
+      status: error
+      message: behavior changed without docs
+  - id: E1
+    tool_name: filter
+    input:
+      over: "{{input.items}}"
+      decide:
+        question: Is this item urgent?
+        state: "{{item}}"
+        model: decider
+      concurrency: 8
+  - id: E2
+    tool_name: decide
+    input:
+      decide:
+        question: Should these be escalated?
+        state: "{{E1.items}}"
+      then: { tool_name: user__escalate, input: { items: "{{E1.items}}" } }

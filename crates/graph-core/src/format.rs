@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 pub use graph_config::FORMATS_DOC;
 
-pub const PLAN_FORMAT: u32 = 1;
+pub const PLAN_FORMAT: u32 = 2;
 
 pub const PLAN_FORMAT_OLDEST: u32 = 1;
 
@@ -16,7 +16,11 @@ pub const FORMAT_KEY: &str = "version";
 
 pub type Migration = fn(&mut Value) -> Result<Vec<String>, String>;
 
-const PLAN_MIGRATIONS: &[Migration] = &[];
+const PLAN_MIGRATIONS: &[Migration] = &[decide_gate_added];
+
+fn decide_gate_added(_value: &mut Value) -> Result<Vec<String>, String> {
+    Ok(Vec::new())
+}
 
 const TOOL_MIGRATIONS: &[Migration] = &[];
 

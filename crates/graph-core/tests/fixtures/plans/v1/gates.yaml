@@ -1,0 +1,39 @@
+version: 1
+identifier: gates
+name: Gates
+description: Every version 1 gate form on exit, decide, and filter.
+input_schema:
+  type: object
+  properties:
+    items: { type: array }
+steps:
+  - id: E0
+    tool_name: exit
+    input:
+      when: { value: "{{input.items}}", op: empty }
+      status: success
+      message: nothing to do
+  - id: E1
+    tool_name: exit
+    input:
+      infer: "Is anything here blocked? {{input.items}}"
+      model: judge
+      status: error
+      message: blocked
+  - id: E2
+    tool_name: filter
+    input:
+      over: "{{input.items}}"
+      where: { value: "{{item.open}}", op: eq, to: true }
+  - id: E3
+    tool_name: filter
+    input:
+      over: "{{E2.items}}"
+      infer: "Is {{item.title}} urgent?"
+      concurrency: 4
+  - id: E4
+    tool_name: decide
+    input:
+      infer: "Should these be escalated? {{E3.items}}"
+      then: { tool_name: user__escalate, input: { items: "{{E3.items}}" } }
+      else: { tool_name: user__summarize, input: { items: "{{E3.items}}" } }
