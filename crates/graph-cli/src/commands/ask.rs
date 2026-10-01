@@ -2,6 +2,7 @@
 
 use crate::runtime::{resolve_thread, title_from, Runtime};
 use anyhow::{bail, Result};
+use graph_core::agent::doc::CHAT_AGENT;
 use graph_core::NullSink;
 use graph_llm::types::ChatMessage;
 use std::io::{IsTerminal, Read};
@@ -25,7 +26,11 @@ pub async fn run(args: AskArgs) -> Result<()> {
     let created = existing.is_none();
     let thread = match existing {
         Some(thread) => thread,
-        None => store.create_thread(&title_from(&message)).await?,
+        None => {
+            store
+                .create_thread(&title_from(&message), CHAT_AGENT)
+                .await?
+        }
     };
     let run = crate::telemetry::RunInfo::conversation("ask", Some(thread.id.clone()))
         .user(runtime.config.user.name.as_deref())
@@ -53,7 +58,7 @@ pub async fn run(args: AskArgs) -> Result<()> {
     let mut messages = if created {
         Vec::new()
     } else {
-        store.load_messages(&thread.id).await?
+        graph_core::conversation(&store.load_entries(&thread.id).await?)
     };
     let pre_len = messages.len();
     messages.push(ChatMessage::User {
@@ -79,7 +84,10 @@ pub async fn run(args: AskArgs) -> Result<()> {
     let outcome = result?;
 
     store
-        .append_messages(&thread.id, &messages[pre_len..])
+        .append_entries(
+            &thread.id,
+            &graph_core::message_entries(CHAT_AGENT, &messages[pre_len..]),
+        )
         .await?;
 
     if args.json {

@@ -3,12 +3,25 @@
 //! (each instance holds its own file descriptors, so flock contention is
 //! real even in-process).
 
-use graph_core::store::Store;
+use graph_core::store::{conversation, message_entries, Store, StoreError};
 use graph_llm::types::ChatMessage;
 use graph_store::FileStore;
 use serde_json::json;
 use std::io::Write;
 use std::sync::Arc;
+
+trait MessageLog: Store {
+    async fn append_messages(&self, id: &str, messages: &[ChatMessage]) -> Result<(), StoreError> {
+        self.append_entries(id, &message_entries("chat", messages))
+            .await
+    }
+
+    async fn load_messages(&self, id: &str) -> Result<Vec<ChatMessage>, StoreError> {
+        Ok(conversation(&self.load_entries(id).await?))
+    }
+}
+
+impl<T: Store + ?Sized> MessageLog for T {}
 
 fn user(content: &str) -> ChatMessage {
     ChatMessage::User {
@@ -21,7 +34,7 @@ async fn persists_across_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let thread_id = {
         let store = FileStore::open(dir.path()).unwrap();
-        let thread = store.create_thread("durable").await.unwrap();
+        let thread = store.create_thread("durable", "chat").await.unwrap();
         store
             .append_messages(&thread.id, &[user("hello")])
             .await
@@ -43,7 +56,7 @@ async fn persists_across_reopen() {
 async fn torn_final_line_is_dropped() {
     let dir = tempfile::tempdir().unwrap();
     let store = FileStore::open(dir.path()).unwrap();
-    let thread = store.create_thread("torn").await.unwrap();
+    let thread = store.create_thread("torn", "chat").await.unwrap();
     store
         .append_messages(&thread.id, &[user("one"), user("two")])
         .await
@@ -54,7 +67,7 @@ async fn torn_final_line_is_dropped() {
         .path()
         .join("threads")
         .join(&thread.id)
-        .join("messages.jsonl");
+        .join("entries.jsonl");
     let mut file = std::fs::OpenOptions::new()
         .append(true)
         .open(&path)
@@ -71,7 +84,7 @@ async fn torn_final_line_is_dropped() {
 async fn mid_file_corruption_errors() {
     let dir = tempfile::tempdir().unwrap();
     let store = FileStore::open(dir.path()).unwrap();
-    let thread = store.create_thread("corrupt").await.unwrap();
+    let thread = store.create_thread("corrupt", "chat").await.unwrap();
     store
         .append_messages(&thread.id, &[user("one")])
         .await
@@ -81,7 +94,7 @@ async fn mid_file_corruption_errors() {
         .path()
         .join("threads")
         .join(&thread.id)
-        .join("messages.jsonl");
+        .join("entries.jsonl");
     let mut file = std::fs::OpenOptions::new()
         .append(true)
         .open(&path)
@@ -94,7 +107,7 @@ async fn mid_file_corruption_errors() {
         .unwrap();
 
     let err = store.load_messages(&thread.id).await.unwrap_err();
-    assert!(err.to_string().contains("corrupt message"), "{err}");
+    assert!(err.to_string().contains("corrupt line"), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -105,7 +118,7 @@ async fn concurrent_appends_from_separate_instances() {
     let dir = tempfile::tempdir().unwrap();
     let thread_id = FileStore::open(dir.path())
         .unwrap()
-        .create_thread("contended")
+        .create_thread("contended", "chat")
         .await
         .unwrap()
         .id;
@@ -187,7 +200,7 @@ async fn tool_name_encoding_roundtrips() {
 async fn scan_skips_incomplete_thread_dirs() {
     let dir = tempfile::tempdir().unwrap();
     let store = FileStore::open(dir.path()).unwrap();
-    store.create_thread("real").await.unwrap();
+    store.create_thread("real", "chat").await.unwrap();
     // A directory without meta.json (mid-create or mid-delete) is skipped.
     std::fs::create_dir_all(dir.path().join("threads").join("halfmade")).unwrap();
     assert_eq!(store.list_threads().await.unwrap().len(), 1);

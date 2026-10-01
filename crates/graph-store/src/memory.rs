@@ -1,8 +1,9 @@
 //! In-memory `Store`: ephemeral runtime state for CI jobs and tests.
 //! Nothing survives the process.
 
-use graph_core::store::{Store, StoreError, ThreadMeta, ToolShape};
-use graph_llm::types::ChatMessage;
+use graph_core::store::{
+    EntryBody, NewEntry, Store, StoreError, ThreadEntry, ThreadMeta, ToolShape,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -14,7 +15,7 @@ pub struct MemoryStore {
 
 #[derive(Default)]
 struct Inner {
-    threads: HashMap<String, (ThreadMeta, Vec<ChatMessage>)>,
+    threads: HashMap<String, (ThreadMeta, Vec<ThreadEntry>)>,
     shapes: HashMap<String, ToolShape>,
 }
 
@@ -30,7 +31,7 @@ fn now_ms() -> i64 {
 
 #[async_trait::async_trait]
 impl Store for MemoryStore {
-    async fn create_thread(&self, title: &str) -> Result<ThreadMeta, StoreError> {
+    async fn create_thread(&self, title: &str, owner: &str) -> Result<ThreadMeta, StoreError> {
         let id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
         let now = now_ms();
         let meta = ThreadMeta {
@@ -39,6 +40,8 @@ impl Store for MemoryStore {
             created_at: now,
             updated_at: now,
             message_count: 0,
+            owner: owner.to_string(),
+            active: owner.to_string(),
         };
         self.inner
             .lock()
@@ -86,31 +89,53 @@ impl Store for MemoryStore {
         Ok(self.inner.lock().unwrap().threads.remove(id).is_some())
     }
 
-    async fn append_messages(
+    async fn append_entries(
         &self,
         thread_id: &str,
-        messages: &[ChatMessage],
+        entries: &[NewEntry],
     ) -> Result<(), StoreError> {
         let mut inner = self.inner.lock().unwrap();
         let (meta, stored) = inner
             .threads
             .get_mut(thread_id)
             .ok_or_else(|| StoreError(format!("no thread {thread_id}")))?;
-        stored.extend(messages.iter().cloned());
-        meta.message_count = stored.len() as i64;
-        meta.updated_at = now_ms();
+        let at = now_ms();
+        for entry in entries {
+            stored.push(ThreadEntry {
+                seq: stored.len() as u64,
+                at,
+                author: entry.author.clone(),
+                body: entry.body.clone(),
+            });
+        }
+        meta.message_count = stored
+            .iter()
+            .filter(|entry| matches!(entry.body, EntryBody::Message { .. }))
+            .count() as i64;
+        meta.updated_at = at;
         Ok(())
     }
 
-    async fn load_messages(&self, thread_id: &str) -> Result<Vec<ChatMessage>, StoreError> {
+    async fn load_entries(&self, thread_id: &str) -> Result<Vec<ThreadEntry>, StoreError> {
         Ok(self
             .inner
             .lock()
             .unwrap()
             .threads
             .get(thread_id)
-            .map(|(_, messages)| messages.clone())
+            .map(|(_, entries)| entries.clone())
             .unwrap_or_default())
+    }
+
+    async fn set_active_agent(&self, thread_id: &str, agent: &str) -> Result<(), StoreError> {
+        let mut inner = self.inner.lock().unwrap();
+        let (meta, _) = inner
+            .threads
+            .get_mut(thread_id)
+            .ok_or_else(|| StoreError(format!("no thread {thread_id}")))?;
+        meta.active = agent.to_string();
+        meta.updated_at = now_ms();
+        Ok(())
     }
 
     async fn record_tool_shape(

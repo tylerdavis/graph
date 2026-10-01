@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! <root>/threads/<id>/meta.json       thread metadata (atomic rename writes)
-//! <root>/threads/<id>/messages.jsonl  one ChatMessage per line (O_APPEND)
+//! <root>/threads/<id>/entries.jsonl   one ThreadEntry per line (O_APPEND)
 //! <root>/threads/<id>/.lock           advisory lock for append+meta updates
 //! <root>/shapes/<tool>.json           one file per tool shape (atomic rename)
 //! ```
@@ -18,8 +18,11 @@
 //! assume a local filesystem (flock over NFS is unreliable).
 
 use fs4::fs_std::FileExt;
-use graph_core::store::{Store, StoreError, ThreadMeta, ToolShape};
+use graph_core::store::{
+    message_entries, EntryBody, NewEntry, Store, StoreError, ThreadEntry, ThreadMeta, ToolShape,
+};
 use graph_llm::types::ChatMessage;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::{File, OpenOptions};
@@ -34,6 +37,12 @@ const FORMAT_VERSION: u32 = STORE_FORMAT;
 
 const FORMAT_MARKER: &str = "FORMAT";
 
+const ENTRIES_FILE: &str = "entries.jsonl";
+
+const LEGACY_MESSAGES_FILE: &str = "messages.jsonl";
+
+const LEGACY_AGENT: &str = "chat";
+
 pub struct FileStore {
     threads_dir: PathBuf,
     shapes_dir: PathBuf,
@@ -47,6 +56,16 @@ struct MetaFile {
     created_at: i64,
     updated_at: i64,
     message_count: i64,
+    #[serde(default)]
+    entry_count: u64,
+    #[serde(default = "legacy_agent")]
+    owner: String,
+    #[serde(default = "legacy_agent")]
+    active: String,
+}
+
+fn legacy_agent() -> String {
+    LEGACY_AGENT.to_string()
 }
 
 impl From<MetaFile> for ThreadMeta {
@@ -57,6 +76,8 @@ impl From<MetaFile> for ThreadMeta {
             created_at: m.created_at,
             updated_at: m.updated_at,
             message_count: m.message_count,
+            owner: m.owner,
+            active: m.active,
         }
     }
 }
@@ -212,6 +233,80 @@ fn lock_thread(dir: &Path) -> Result<File, StoreError> {
     Ok(file)
 }
 
+fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Result<Option<Vec<T>>, StoreError> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(StoreError(format!("reading {}: {e}", path.display()))),
+    };
+    let lines: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
+    let mut items = Vec::with_capacity(lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        match serde_json::from_str::<T>(line) {
+            Ok(item) => items.push(item),
+            // A torn final line is a partially flushed append; drop it.
+            // Corruption anywhere else is a real error.
+            Err(e) if i == lines.len() - 1 => {
+                tracing::warn!("dropping torn final line in {}: {e}", path.display());
+            }
+            Err(e) => {
+                return Err(StoreError(format!(
+                    "corrupt line {} in {}: {e}",
+                    i + 1,
+                    path.display()
+                )))
+            }
+        }
+    }
+    Ok(Some(items))
+}
+
+fn legacy_entries(dir: &Path, at: i64) -> Result<Option<Vec<ThreadEntry>>, StoreError> {
+    let Some(messages) = read_jsonl::<ChatMessage>(&dir.join(LEGACY_MESSAGES_FILE))? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        message_entries(LEGACY_AGENT, &messages)
+            .into_iter()
+            .enumerate()
+            .map(|(seq, entry)| ThreadEntry {
+                seq: seq as u64,
+                at,
+                author: entry.author,
+                body: entry.body,
+            })
+            .collect(),
+    ))
+}
+
+fn entry_lines(entries: &[ThreadEntry]) -> Result<Vec<u8>, StoreError> {
+    let mut buf = Vec::new();
+    for entry in entries {
+        serde_json::to_writer(&mut buf, entry)
+            .map_err(|e| StoreError(format!("serializing thread entry: {e}")))?;
+        buf.push(b'\n');
+    }
+    Ok(buf)
+}
+
+fn upgrade_legacy_log(dir: &Path, meta: &mut MetaFile) -> Result<(), StoreError> {
+    if dir.join(ENTRIES_FILE).exists() {
+        return Ok(());
+    }
+    let Some(entries) = legacy_entries(dir, meta.created_at)? else {
+        return Ok(());
+    };
+    write_atomic(&dir.join(ENTRIES_FILE), &entry_lines(&entries)?)?;
+    meta.entry_count = entries.len() as u64;
+    write_meta(dir, meta)?;
+    std::fs::remove_file(dir.join(LEGACY_MESSAGES_FILE)).map_err(|e| {
+        StoreError(format!(
+            "removing {}: {e}",
+            dir.join(LEGACY_MESSAGES_FILE).display()
+        ))
+    })
+}
+
 fn scan_threads(threads_dir: &Path) -> Result<Vec<ThreadMeta>, StoreError> {
     let entries = match std::fs::read_dir(threads_dir) {
         Ok(entries) => entries,
@@ -256,8 +351,9 @@ fn encode_tool_filename(tool: &str) -> String {
 
 #[async_trait::async_trait]
 impl Store for FileStore {
-    async fn create_thread(&self, title: &str) -> Result<ThreadMeta, StoreError> {
+    async fn create_thread(&self, title: &str, owner: &str) -> Result<ThreadMeta, StoreError> {
         let title = title.to_string();
+        let owner = owner.to_string();
         let threads_dir = self.threads_dir.clone();
         self.blocking(move || {
             let id = new_thread_id();
@@ -272,6 +368,9 @@ impl Store for FileStore {
                 created_at: now,
                 updated_at: now,
                 message_count: 0,
+                entry_count: 0,
+                active: owner.clone(),
+                owner,
             };
             write_meta(&dir, &meta)?;
             Ok(meta.into())
@@ -306,71 +405,74 @@ impl Store for FileStore {
         .await
     }
 
-    async fn append_messages(
+    async fn append_entries(
         &self,
         thread_id: &str,
-        messages: &[ChatMessage],
+        entries: &[NewEntry],
     ) -> Result<(), StoreError> {
         let thread_id = thread_id.to_string();
         let dir = self.thread_dir(&thread_id);
-        // Serialize the whole batch up front: one buffer, one append write.
-        let mut buf = Vec::new();
-        for message in messages {
-            serde_json::to_writer(&mut buf, message)
-                .map_err(|e| StoreError(format!("serializing message: {e}")))?;
-            buf.push(b'\n');
-        }
-        let count = messages.len() as i64;
+        let entries = entries.to_vec();
         self.blocking(move || {
+            read_meta(&dir)?.ok_or_else(|| StoreError(format!("no thread {thread_id}")))?;
+            let _lock = lock_thread(&dir)?;
             let mut meta =
                 read_meta(&dir)?.ok_or_else(|| StoreError(format!("no thread {thread_id}")))?;
-            let _lock = lock_thread(&dir)?;
-            // Re-read under the lock: another process may have appended
-            // between the existence check and lock acquisition.
-            meta = read_meta(&dir)?.unwrap_or(meta);
-            let path = dir.join("messages.jsonl");
+            upgrade_legacy_log(&dir, &mut meta)?;
+            let at = now_ms();
+            let numbered: Vec<ThreadEntry> = entries
+                .into_iter()
+                .enumerate()
+                .map(|(i, entry)| ThreadEntry {
+                    seq: meta.entry_count + i as u64,
+                    at,
+                    author: entry.author,
+                    body: entry.body,
+                })
+                .collect();
+            let path = dir.join(ENTRIES_FILE);
             let mut file = OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&path)
                 .map_err(|e| StoreError(format!("opening {}: {e}", path.display())))?;
-            file.write_all(&buf)
+            file.write_all(&entry_lines(&numbered)?)
                 .map_err(|e| StoreError(format!("appending to {}: {e}", path.display())))?;
-            meta.message_count += count;
-            meta.updated_at = meta.updated_at.max(now_ms());
+            meta.entry_count += numbered.len() as u64;
+            meta.message_count += numbered
+                .iter()
+                .filter(|entry| matches!(entry.body, EntryBody::Message { .. }))
+                .count() as i64;
+            meta.updated_at = meta.updated_at.max(at);
             write_meta(&dir, &meta)
         })
         .await
     }
 
-    async fn load_messages(&self, thread_id: &str) -> Result<Vec<ChatMessage>, StoreError> {
-        let path = self.thread_dir(thread_id).join("messages.jsonl");
+    async fn load_entries(&self, thread_id: &str) -> Result<Vec<ThreadEntry>, StoreError> {
+        let dir = self.thread_dir(thread_id);
         self.blocking(move || {
-            let raw = match std::fs::read_to_string(&path) {
-                Ok(raw) => raw,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-                Err(e) => return Err(StoreError(format!("reading {}: {e}", path.display()))),
-            };
-            let lines: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
-            let mut messages = Vec::with_capacity(lines.len());
-            for (i, line) in lines.iter().enumerate() {
-                match serde_json::from_str::<ChatMessage>(line) {
-                    Ok(message) => messages.push(message),
-                    // A torn final line is a partially flushed append; drop
-                    // it. Corruption anywhere else is a real error.
-                    Err(e) if i == lines.len() - 1 => {
-                        tracing::warn!("dropping torn final line in {}: {e}", path.display());
-                    }
-                    Err(e) => {
-                        return Err(StoreError(format!(
-                            "corrupt message (line {}) in {}: {e}",
-                            i + 1,
-                            path.display()
-                        )))
-                    }
-                }
+            if let Some(entries) = read_jsonl::<ThreadEntry>(&dir.join(ENTRIES_FILE))? {
+                return Ok(entries);
             }
-            Ok(messages)
+            let created_at = read_meta(&dir)?.map(|meta| meta.created_at).unwrap_or(0);
+            Ok(legacy_entries(&dir, created_at)?.unwrap_or_default())
+        })
+        .await
+    }
+
+    async fn set_active_agent(&self, thread_id: &str, agent: &str) -> Result<(), StoreError> {
+        let thread_id = thread_id.to_string();
+        let agent = agent.to_string();
+        let dir = self.thread_dir(&thread_id);
+        self.blocking(move || {
+            read_meta(&dir)?.ok_or_else(|| StoreError(format!("no thread {thread_id}")))?;
+            let _lock = lock_thread(&dir)?;
+            let mut meta =
+                read_meta(&dir)?.ok_or_else(|| StoreError(format!("no thread {thread_id}")))?;
+            meta.active = agent;
+            meta.updated_at = meta.updated_at.max(now_ms());
+            write_meta(&dir, &meta)
         })
         .await
     }
@@ -514,6 +616,167 @@ mod tests {
             err.contains("does not hold a store version number"),
             "{err}"
         );
+    }
+
+    fn legacy_thread(root: &Path) -> String {
+        let dir = root.join("threads").join("legacy00001");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("meta.json"),
+            r#"{"version":1,"id":"legacy00001","title":"old","created_at":5,"updated_at":6,"message_count":2}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(LEGACY_MESSAGES_FILE),
+            "{\"kind\":\"user\",\"content\":\"hi\"}\n{\"kind\":\"assistant\",\"content\":\"hello\"}\n",
+        )
+        .unwrap();
+        "legacy00001".to_string()
+    }
+
+    #[tokio::test]
+    async fn a_legacy_message_log_reads_as_chat_entries_and_upgrades_on_append() {
+        let root = tempfile::tempdir().unwrap();
+        let store = FileStore::open(root.path()).unwrap();
+        let id = legacy_thread(root.path());
+
+        let meta = store.get_thread(&id).await.unwrap().unwrap();
+        assert_eq!(
+            (meta.owner.as_str(), meta.active.as_str()),
+            ("chat", "chat")
+        );
+        let entries = store.load_entries(&id).await.unwrap();
+        let authors: Vec<&str> = entries.iter().map(|e| e.author.as_str()).collect();
+        assert_eq!(authors, ["user", "chat"]);
+
+        store
+            .append_entries(
+                &id,
+                &[NewEntry::message(
+                    "user",
+                    ChatMessage::User {
+                        content: "again".to_string(),
+                    },
+                )],
+            )
+            .await
+            .unwrap();
+        let dir = root.path().join("threads").join(&id);
+        assert!(!dir.join(LEGACY_MESSAGES_FILE).exists());
+        let entries = store.load_entries(&id).await.unwrap();
+        let seqs: Vec<u64> = entries.iter().map(|e| e.seq).collect();
+        assert_eq!(seqs, [0, 1, 2]);
+        assert_eq!(
+            store.get_thread(&id).await.unwrap().unwrap().message_count,
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn entries_keep_their_authors_order_and_kinds() {
+        let root = tempfile::tempdir().unwrap();
+        let store = FileStore::open(root.path()).unwrap();
+        let meta = store.create_thread("t", "orchestrator").await.unwrap();
+        assert_eq!(
+            (meta.owner.as_str(), meta.active.as_str()),
+            ("orchestrator", "orchestrator")
+        );
+        store
+            .append_entries(
+                &meta.id,
+                &[
+                    NewEntry::message(
+                        "user",
+                        ChatMessage::User {
+                            content: "go".to_string(),
+                        },
+                    ),
+                    NewEntry {
+                        author: "orchestrator".to_string(),
+                        body: EntryBody::Handoff {
+                            from: "orchestrator".to_string(),
+                            to: "plan_author".to_string(),
+                            message: "draft it".to_string(),
+                            via: None,
+                        },
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        store
+            .set_active_agent(&meta.id, "plan_author")
+            .await
+            .unwrap();
+        store
+            .append_entries(
+                &meta.id,
+                &[NewEntry {
+                    author: "plan_author".to_string(),
+                    body: EntryBody::SubagentRun {
+                        agent: "plan_refiner".to_string(),
+                        caller: "plan_author".to_string(),
+                        input: serde_json::json!({"goal": "g"}),
+                        messages: Vec::new(),
+                        output: serde_json::json!({"changes": []}),
+                        final_: true,
+                    },
+                }],
+            )
+            .await
+            .unwrap();
+
+        let entries = store.load_entries(&meta.id).await.unwrap();
+        let summary: Vec<(u64, &str)> =
+            entries.iter().map(|e| (e.seq, e.author.as_str())).collect();
+        assert_eq!(
+            summary,
+            [(0, "user"), (1, "orchestrator"), (2, "plan_author")]
+        );
+        assert!(matches!(entries[2].body, EntryBody::SubagentRun { .. }));
+        let meta = store.get_thread(&meta.id).await.unwrap().unwrap();
+        assert_eq!(meta.active, "plan_author");
+        assert_eq!(meta.owner, "orchestrator");
+        assert_eq!(meta.message_count, 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_appends_number_entries_without_gaps() {
+        let root = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(FileStore::open(root.path()).unwrap());
+        let meta = store.create_thread("t", "chat").await.unwrap();
+        let tasks: Vec<_> = (0..8)
+            .map(|i| {
+                let store = store.clone();
+                let id = meta.id.clone();
+                tokio::spawn(async move {
+                    store
+                        .append_entries(
+                            &id,
+                            &[NewEntry::message(
+                                "user",
+                                ChatMessage::User {
+                                    content: format!("m{i}"),
+                                },
+                            )],
+                        )
+                        .await
+                        .unwrap();
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.await.unwrap();
+        }
+        let mut seqs: Vec<u64> = store
+            .load_entries(&meta.id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|e| e.seq)
+            .collect();
+        seqs.sort();
+        assert_eq!(seqs, (0..8).collect::<Vec<u64>>());
     }
 
     #[test]
