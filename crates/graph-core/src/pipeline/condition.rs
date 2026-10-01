@@ -197,18 +197,6 @@ async fn decide_verdict(gate: &DecideGate, router: &ModelRouter) -> Result<GateO
 
 const GATE_QUESTION: &str = "gate";
 
-pub async fn evaluate_gate(
-    when: Option<&Condition>,
-    infer: Option<&str>,
-    model: Option<&str>,
-    router: &ModelRouter,
-) -> Result<(bool, Option<String>), String> {
-    let gate = select_gate(when, infer, None, model, "when")?
-        .ok_or_else(|| "a gate needs `when` or `infer`".to_string())?;
-    let outcome = check_gate(gate, router).await?;
-    Ok((outcome.triggered, outcome.reason))
-}
-
 pub fn eval_condition(condition: &Condition) -> Result<bool, String> {
     let value = &condition.value;
     let to = &condition.to;

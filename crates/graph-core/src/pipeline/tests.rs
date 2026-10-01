@@ -1157,7 +1157,7 @@ async fn decide_validation_rejections() {
     assert!(message.contains("mutually exclusive"), "{message}");
 
     let message = run(json!({"then": call})).await;
-    assert!(message.contains("`if` or `infer`"), "{message}");
+    assert!(message.contains("`if`, `infer`, or `decide`"), "{message}");
 
     let message = run(json!({
         "if": {"value": 1, "op": "eq", "to": 1},
@@ -2601,7 +2601,9 @@ async fn validate_plan_reports_all_problems() {
     let problems = pipeline.validate_plan(&plan).unwrap_err();
     assert!(problems.iter().any(|p| p.contains("E5")), "{problems:?}");
     assert!(
-        problems.iter().any(|p| p.contains("`if` or `infer`")),
+        problems
+            .iter()
+            .any(|p| p.contains("`if`, `infer`, or `decide`")),
         "{problems:?}"
     );
 }
@@ -4665,6 +4667,13 @@ impl graph_llm::DecisionProvider for MockDecider {
     ) -> Result<graph_llm::decision::DecisionResponse, LlmError> {
         let probability = (self.judge)(&req.state);
         self.requests.lock().unwrap().push(req.clone());
+        if probability < 0.0 {
+            return Err(LlmError::Api {
+                status: 400,
+                body: "refused".into(),
+                retry_after: None,
+            });
+        }
         Ok(graph_llm::decision::DecisionResponse {
             model: req.model.clone(),
             answers: req
@@ -4889,4 +4898,134 @@ async fn a_decide_gate_without_a_decider_says_how_to_configure_one() {
     let (pipeline, _) = pipeline(vec![], registry, 1);
     let message = step_failure(&pipeline, decide_exit_plan(json!({"question": "q?"}))).await;
     assert!(message.contains("[models.decider]"), "{message}");
+}
+
+#[tokio::test]
+async fn a_decide_gate_on_the_decide_step_picks_the_branch_and_reports_the_probability() {
+    for (probability, branch, ran) in [(0.9, "then", "t__issues"), (0.2, "else", "t__search")] {
+        let registry = search_registry(json!({"values": [{"id": 1}]}));
+        let (pipeline, _, decider) =
+            pipeline_with_decider(vec![], registry.clone(), Box::new(move |_| probability));
+        let plan: Plan = serde_json::from_value(json!([
+            {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+            {"id": "E1", "toolName": "decide", "input": {
+                "decide": {"question": "Is it urgent?", "state": "{{E0.values}}", "min_confidence": 0.6},
+                "then": {"toolName": "t__issues", "input": {}},
+                "else": {"toolName": "t__search", "input": {"query": "else"}},
+            }}
+        ]))
+        .unwrap();
+        let outcome = pipeline
+            .run_explicit("q", plan, Finish::Silent, None)
+            .await
+            .unwrap();
+        let result = &outcome.state.results["E1"];
+        assert_eq!(result["branch"], json!(branch));
+        assert_eq!(result["probability"], json!(probability));
+        assert_eq!(result["reason"], Value::Null);
+        let invocations = registry.invocations.lock().unwrap();
+        assert_eq!(invocations.last().unwrap().0, ran);
+        assert_eq!(
+            decider.requests.lock().unwrap()[0].state,
+            json!([{"id": 1}])
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_filter_decide_gate_keeps_by_min_confidence_with_aligned_probabilities() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, decider) = pipeline_with_decider(
+        vec![],
+        registry,
+        Box::new(|state| state["id"].as_f64().unwrap() / 10.0),
+    );
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E1", "toolName": "filter", "input": {
+            "over": [{"id": 9}, {"id": 1}, {"id": 5}, {"id": 4}, {"id": 7}],
+            "decide": {"question": "Keep {{item.id}}?", "state": "{{item}}"},
+            "concurrency": 4,
+        }}
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    let result = &outcome.state.results["E1"];
+    assert_eq!(result["items"], json!([{"id": 9}, {"id": 5}, {"id": 7}]));
+    assert_eq!(result["dropped"], json!([{"id": 1}, {"id": 4}]));
+    assert_eq!(result["probabilities"], json!([0.9, 0.1, 0.5, 0.4, 0.7]));
+    let requests = decider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 5);
+    assert!(requests.iter().any(|r| matches!(
+        &r.questions["gate"],
+        graph_llm::decision::Question::Likelihood { instructions, .. } if instructions == "Keep 7?"
+    )));
+}
+
+#[tokio::test]
+async fn a_failing_filter_decision_names_the_item() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _, _) = pipeline_with_decider(
+        vec![],
+        registry,
+        Box::new(|state| if state["id"] == json!(2) { -1.0 } else { 0.9 }),
+    );
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E1", "toolName": "filter", "input": {
+            "over": [{"id": 1}, {"id": 2}, {"id": 3}],
+            "decide": {"question": "Keep?", "state": "{{item}}"},
+        }}
+    ]))
+    .unwrap();
+    let message = step_failure(&pipeline, plan).await;
+    assert!(message.contains("item 1"), "{message}");
+    assert!(message.contains("decision failed"), "{message}");
+}
+
+#[test]
+fn static_validation_checks_the_decide_gate_shape() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "decide", "input": {
+            "decide": {"question": "q?", "options": {"a": "A"}, "threshold": 0.5},
+            "model": "decider",
+            "then": {"toolName": "t__issues", "input": {}},
+        }},
+        {"id": "E2", "toolName": "filter", "input": {
+            "over": "{{E0.values}}",
+            "decide": {"question": "Keep {{item.id}}?", "state": "{{item}}", "min_confidence": 2},
+        }},
+        {"id": "E3", "toolName": "filter", "input": {
+            "over": "{{E0.values}}",
+            "decide": {"state": "{{nope.x}}"},
+        }}
+    ]))
+    .unwrap();
+    let problems = pipeline.validate_plan(&plan).unwrap_err();
+    let has = |needle: &str| problems.iter().any(|p| p.contains(needle));
+    assert!(has("step E1: `decide.options`"), "{problems:?}");
+    assert!(has("unknown field `decide.threshold`"), "{problems:?}");
+    assert!(
+        has("step E1: `model` sits inside the `decide` object"),
+        "{problems:?}"
+    );
+    assert!(
+        has("step E2: `decide.min_confidence` must be between 0 and 1"),
+        "{problems:?}"
+    );
+    assert!(
+        has("step E3: `decide` needs a `question` string"),
+        "{problems:?}"
+    );
+    assert!(has("nope"), "{problems:?}");
+    assert!(
+        !problems
+            .iter()
+            .any(|p| p.contains("step E2") && p.contains("item")),
+        "{problems:?}"
+    );
 }

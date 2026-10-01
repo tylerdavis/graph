@@ -7,7 +7,7 @@
 //! when that branch is the right one to take.
 
 use super::body::{body_schema, parse_branch, validate_body, BodyFail};
-use super::condition::{evaluate_gate, Condition};
+use super::condition::{check_gate, select_gate, Condition, DecideGate};
 use super::state::BusKind;
 use super::{ExecutionEnd, Pipeline, RunState, Step};
 use crate::template::{render_input, render_str, RenderError, Roots};
@@ -33,6 +33,8 @@ pub struct DecideSpec {
     /// or `default`. Defaults to the `judge` role. Ignored without `infer`.
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub decide: Option<Value>,
     /// Branch taken when the gate holds.
     pub then: Value,
     /// Branch taken otherwise; absent means the plan just continues.
@@ -106,14 +108,27 @@ pub fn validate_decide_input(
             return;
         }
     };
-    match (&spec.if_, &spec.infer) {
-        (Some(_), Some(_)) => problems.push(format!(
-            "step {step_id}: `if` and `infer` are mutually exclusive"
+    match [spec.if_.is_some(), spec.infer.is_some(), spec.decide.is_some()]
+        .iter()
+        .filter(|set| **set)
+        .count()
+    {
+        0 => problems.push(format!(
+            "step {step_id}: decide needs `if`, `infer`, or `decide` — an unconditional decide is just steps"
         )),
-        (None, None) => problems.push(format!(
-            "step {step_id}: decide needs `if` or `infer` — an unconditional decide is just steps"
+        1 => {}
+        _ => problems.push(format!(
+            "step {step_id}: `if`, `infer`, and `decide` are mutually exclusive"
         )),
-        _ => {}
+    }
+    if let Some(gate) = &spec.decide {
+        super::check_decide_gate_shape(gate, step_id, problems);
+        super::check_templates(gate, seen, step_id, problems);
+        if spec.model.is_some() {
+            problems.push(format!(
+                "step {step_id}: `model` sits inside the `decide` object; move it there"
+            ));
+        }
     }
     if let Some(condition) = &spec.if_ {
         super::check_templates(condition, seen, step_id, problems);
@@ -208,6 +223,17 @@ impl Pipeline {
             }
             None => None,
         };
+        let decide = match &spec.decide {
+            Some(raw) => {
+                let rendered = render_input(raw, &roots).map_err(render_end)?;
+                gate_payload.insert("decide".to_string(), rendered.clone());
+                Some(
+                    serde_json::from_value::<DecideGate>(rendered)
+                        .map_err(|e| failed(format!("invalid decide gate: {e}")))?,
+                )
+            }
+            None => None,
+        };
 
         self.events
             .tool_started(DECIDE_TOOL, &Value::Object(gate_payload));
@@ -215,16 +241,23 @@ impl Pipeline {
         let eval = crate::usage::CallSite::role("judge")
             .at(&step.id)
             .in_plans(&self.call_stack)
-            .scope(evaluate_gate(
-                condition.as_ref(),
-                infer.as_deref(),
-                model.as_deref(),
-                &self.router,
-            ))
+            .scope(async {
+                let gate = select_gate(
+                    condition.as_ref(),
+                    infer.as_deref(),
+                    decide.as_ref(),
+                    model.as_deref(),
+                    "if",
+                )?
+                .ok_or_else(|| "a decide step needs `if`, `infer`, or `decide`".to_string())?;
+                check_gate(gate, &self.router).await
+            })
             .await;
         self.events
             .tool_finished(DECIDE_TOOL, started.elapsed(), eval.is_err());
-        let (triggered, reason) = eval.map_err(|e| failed(format!("decide step: {e}")))?;
+        let outcome = eval.map_err(|e| failed(format!("decide step: {e}")))?;
+        let (triggered, reason, probability) =
+            (outcome.triggered, outcome.reason, outcome.probability);
 
         let (branch_name, raw_branch) = if triggered {
             ("then", Some(&spec.then))
@@ -237,12 +270,15 @@ impl Pipeline {
                 BusKind::Info,
                 "gate not met, no else — continuing",
             );
-            return Ok(json!({
-                "branch": null,
-                "verdict": false,
-                "reason": reason,
-                "result": null,
-            }));
+            return Ok(with_probability(
+                json!({
+                    "branch": null,
+                    "verdict": false,
+                    "reason": reason,
+                    "result": null,
+                }),
+                probability,
+            ));
         };
 
         let branch = parse_branch(branch_name, raw_branch).map_err(failed)?;
@@ -278,13 +314,23 @@ impl Pipeline {
             }
         };
         state.push_bus(&step.id, BusKind::Info, format!("decide → {branch_name}"));
-        Ok(json!({
-            "branch": branch_name,
-            "verdict": triggered,
-            "reason": reason,
-            "result": result,
-        }))
+        Ok(with_probability(
+            json!({
+                "branch": branch_name,
+                "verdict": triggered,
+                "reason": reason,
+                "result": result,
+            }),
+            probability,
+        ))
     }
+}
+
+fn with_probability(mut result: Value, probability: Option<f64>) -> Value {
+    if let Some(probability) = probability {
+        result["probability"] = json!(probability);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -309,7 +355,9 @@ mod tests {
         .unwrap();
         let mut problems = Vec::new();
         validate_decide_input(&input, &["input"], &["E0"], "E0", &mut problems);
-        assert!(problems.iter().any(|p| p.contains("`if` or `infer`")));
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("`if`, `infer`, or `decide`")));
         assert!(problems.iter().any(|p| p.contains("cannot nest")));
     }
 
