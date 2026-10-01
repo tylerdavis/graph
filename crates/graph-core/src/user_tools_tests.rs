@@ -1327,3 +1327,49 @@ async fn slack_post_message_without_a_token_never_calls_slack() {
         "no request should have been attempted"
     );
 }
+
+#[test]
+fn a_builtin_override_replaces_the_pack_tool_it_names() {
+    let builtins = load_pack_tools(&["data".to_string()]).unwrap();
+    let mut mine = builtins
+        .iter()
+        .find(|d| d.name == "reshape")
+        .unwrap()
+        .clone();
+    mine.description = "my reshape".to_string();
+    mine.path = Some(std::path::PathBuf::from("/tools/builtin/reshape.yaml"));
+    let merged = apply_tool_overrides(builtins.clone(), vec![mine]).unwrap();
+    assert_eq!(merged.len(), builtins.len());
+    let reshape = merged.iter().find(|d| d.name == "reshape").unwrap();
+    assert_eq!(reshape.description, "my reshape");
+}
+
+#[test]
+fn a_builtin_override_without_a_matching_pack_tool_is_an_error() {
+    let builtins = load_pack_tools(&["data".to_string()]).unwrap();
+    let mut stray = doc("name: summarize\ndescription: s\nkind: exec\ncommand: echo\n");
+    stray.path = Some(std::path::PathBuf::from("/tools/builtin/summarize.yaml"));
+    let err = apply_tool_overrides(builtins, vec![stray]).unwrap_err();
+    assert!(err.starts_with("/tools/builtin/summarize.yaml"), "{err}");
+    assert!(err.contains("no built-in tool named 'summarize'"), "{err}");
+}
+
+#[test]
+fn a_top_level_tool_named_like_a_pack_tool_stays_a_user_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("reshape.yaml"),
+        "name: reshape\ndescription: mine\nkind: exec\ncommand: echo\n",
+    )
+    .unwrap();
+    std::fs::create_dir(dir.path().join(BUILTIN_OVERRIDE_DIR)).unwrap();
+    let dirs = vec![dir.path().to_path_buf()];
+    let user = load_user_tools(&dirs).unwrap();
+    assert_eq!(
+        user.len(),
+        1,
+        "the builtin/ subdirectory is not read as user tools"
+    );
+    let overrides = load_user_tools(&builtin_override_dirs(&dirs)).unwrap();
+    assert!(overrides.is_empty());
+}

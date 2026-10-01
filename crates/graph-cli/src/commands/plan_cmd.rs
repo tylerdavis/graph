@@ -116,10 +116,13 @@ fn show(name: &str) -> Result<Outcome> {
     // Lenient like `validate`: reading a plan the catalog rejects is
     // exactly how you find out why it was rejected.
     let (doc, _loaded) = resolve_target(&runtime, name)?;
-    Ok(Outcome::raw(
-        authoring::to_yaml(&doc)?,
-        plan_edit::doc_as_json(&doc)?,
-    ))
+    let source = doc
+        .path
+        .as_ref()
+        .map_or("built-in".to_string(), |path| path.display().to_string());
+    let mut body = plan_edit::doc_as_json(&doc)?;
+    body["source"] = serde_json::json!(source);
+    Ok(Outcome::raw(authoring::to_yaml(&doc)?, body).with_note(format!("source: {source}")))
 }
 
 /// Resolve a plan identifier or YAML file path to a document, for authoring

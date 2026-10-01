@@ -54,6 +54,8 @@ graph plan run <name> [<json>|@file|-] [--input k=v]... [--json]
 
 Per the [streams contract](/reference/scripting-contract#streams), stdout carries only deliverables — `list`'s rows, `show`'s YAML, and `--json` envelopes. Verdicts and hints go to stderr, so `plan validate` prints nothing to stdout on success and its exit code is the answer; `plan list` on an empty catalog leaves stdout empty rather than emitting a hint into it.
 
+`show` names where the plan comes from on stderr (`source: built-in`, or the file path) and adds `source` to its `--json` envelope; a plan file whose `identifier` matches a built-in plan replaces it.
+
 `show` and `validate` are deliberately lenient about _which_ plans they will open: a plan that is invalid, or hidden by unconfigured `requires_servers`, is exactly the plan you need to inspect, so both resolve it from disk rather than requiring it to be in the runnable catalog. `list` only shows the runnable catalog; `list --json` also reports what was `skipped` (failed to load, with the reason) and `hidden` (with the missing servers).
 
 ## Authoring plans
@@ -149,6 +151,8 @@ graph tools migrate <path> [--json]
 Operates on the full catalog: MCP (`server__`), user (`user__`), bundled packs (`builtin__`), plan (`plan__`), and `plan_and_execute`. `list` groups the catalog by source — names and one-line descriptions, `plan_and_execute` under `(core)`.
 
 `list --json` emits the flat catalog instead, each entry carrying the **namespaced** name a plan step has to use, its `source`, the full `description` (untruncated — it is the routing signal), `readOnly`, and `hasOutputSchema`, plus a per-source roll-up. That is the surface for a script or an [agent authoring a plan](/plans/authoring#authoring-from-the-command-line); per-tool schemas stay on `tools show`.
+
+For a `builtin__` or `user__` tool, `show` also names its source on stderr and under `source`: the tool file's path, or `built-in (<pack> pack)`. A tool file in a tools directory's `builtin/` subdirectory replaces the pack tool it names.
 
 `show --json` emits one tool's whole definition — `inputSchema` included, which is what you need to write a step's input object — with every key always present, `null` when absent. Unknown tool names stay ordinary errors (stderr, exit `1`); there is no envelope for them. See the [scripting contract](/reference/scripting-contract#the-tool-catalog).
 
