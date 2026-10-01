@@ -345,9 +345,9 @@ mod tests {
     #[tokio::test]
     async fn metering_attributes_a_failed_over_call_to_the_model_that_served_it() {
         #[derive(Default)]
-        struct Recorder(std::sync::Mutex<Vec<crate::LlmCall>>);
+        struct Recorder(std::sync::Mutex<Vec<crate::ModelCall>>);
         impl UsageMeter for Recorder {
-            fn record(&self, call: crate::LlmCall) {
+            fn record(&self, call: crate::ModelCall) {
                 self.0.lock().unwrap().push(call);
             }
         }

@@ -1,5 +1,5 @@
 use graph_config::TelemetryConfig;
-use graph_core::usage::{LlmCallEvent, UsageReport};
+use graph_core::usage::{ModelCallEvent, UsageReport};
 use graph_core::{EventSink, RunStart, TeeSink};
 use opentelemetry::trace::{
     Span as _, SpanBuilder, SpanKind, Status, TraceContextExt, Tracer as _, TracerProvider as _,
@@ -649,7 +649,7 @@ impl EventSink for OtlpSink {
         span.end_with_timestamp(SystemTime::now());
     }
 
-    fn llm_call(&self, call: &LlmCallEvent) {
+    fn model_call(&self, call: &ModelCallEvent) {
         let now = SystemTime::now();
         let started = now.checked_sub(call.elapsed).unwrap_or(now);
         let mut state = self.state.lock().unwrap();
@@ -664,7 +664,7 @@ impl EventSink for OtlpSink {
         let mut attributes = self.attrs(&state);
         attributes.extend([
             KeyValue::new("langfuse.observation.type", "generation"),
-            KeyValue::new("gen_ai.operation.name", "chat"),
+            KeyValue::new("gen_ai.operation.name", call.kind.as_str()),
             KeyValue::new("gen_ai.system", call.provider.clone()),
             KeyValue::new("gen_ai.request.model", call.model.clone()),
             KeyValue::new("gen_ai.response.model", call.model.clone()),
@@ -852,8 +852,9 @@ mod tests {
         (sink, exporter, provider)
     }
 
-    fn call(site: &str, input: Option<Value>) -> LlmCallEvent {
-        LlmCallEvent {
+    fn call(site: &str, input: Option<Value>) -> ModelCallEvent {
+        ModelCallEvent {
+            kind: graph_config::ModelKind::Chat,
             site: site.into(),
             role: "solver".into(),
             provider: "anthropic".into(),
@@ -909,7 +910,7 @@ mod tests {
         sink.step_started(&none, "E1", "map", &json!({}));
         sink.tool_started("map", &json!({}));
         sink.step_started(&none, "E1/do.0/E5", "builtin__infer", &json!({}));
-        sink.llm_call(&call("E1/do.0/E5", None));
+        sink.model_call(&call("E1/do.0/E5", None));
         sink.step_finished(
             &none,
             "E1/do.0/E5",
@@ -940,7 +941,7 @@ mod tests {
             Duration::ZERO,
         );
 
-        sink.llm_call(&call("solver", None));
+        sink.model_call(&call("solver", None));
         sink.usage_summary(&UsageReport {
             calls: 2,
             cost_usd: Some(1.0),
@@ -1030,7 +1031,7 @@ mod tests {
                 false,
                 Duration::ZERO,
             );
-            sink.llm_call(&call("chat", Some(json!({"system": "s"}))));
+            sink.model_call(&call("chat", Some(json!({"system": "s"}))));
             drop(sink);
             provider.force_flush().unwrap();
 
@@ -1247,15 +1248,15 @@ mod tests {
             session_id: None,
             input: Some(json!("draft a plan")),
         });
-        let chat = || LlmCallEvent {
+        let chat = || ModelCallEvent {
             role: "chat".into(),
             ..call("chat", None)
         };
-        sink.llm_call(&chat());
+        sink.model_call(&chat());
         sink.tool_started("workbench__draft_plan", &json!({"goal": "g"}));
         sink.draft_outline(&json!([{"summary": "list issues"}, {"summary": "summarize"}]));
         sink.draft_step_started(0, "list issues");
-        sink.llm_call(&LlmCallEvent {
+        sink.model_call(&ModelCallEvent {
             role: "planner".into(),
             site: "planner".into(),
             ..call("planner", None)
@@ -1263,7 +1264,7 @@ mod tests {
         sink.draft_step_finished(0, &Value::Null, &["bad tool".into()], 1);
         sink.draft_step_finished(0, &json!({"id": "E0"}), &[], 2);
         sink.tool_finished("workbench__draft_plan", Duration::ZERO, false);
-        sink.llm_call(&chat());
+        sink.model_call(&chat());
         sink.run_finished(&json!("done"), false);
         drop(sink);
         provider.force_flush().unwrap();

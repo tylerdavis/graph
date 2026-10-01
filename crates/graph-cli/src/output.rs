@@ -213,9 +213,10 @@ impl EventSink for JsonlSink {
         self.emit(serde_json::json!({"event": "synthesizing"}));
     }
 
-    fn llm_call(&self, call: &graph_core::usage::LlmCallEvent) {
+    fn model_call(&self, call: &graph_core::usage::ModelCallEvent) {
         self.emit(serde_json::json!({
-            "event": "llm_call",
+            "event": "model_call",
+            "kind": call.kind.as_str(),
             "site": call.site,
             "model": call.model,
             "input_tokens": call.usage.input_tokens,

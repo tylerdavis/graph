@@ -23,13 +23,15 @@ use crate::types::{ChatRequest, ChatResponse, EventStream, StreamEvent, Usage};
 use crate::{ChatProvider, LlmError};
 use async_trait::async_trait;
 use futures::StreamExt;
+use graph_config::ModelKind;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// One completed model call, as the meter sees it.
 #[derive(Debug, Clone)]
-pub struct LlmCall {
+pub struct ModelCall {
+    pub kind: ModelKind,
     /// Config name of the provider that served the call.
     pub provider: String,
     /// The model as sent on the wire — after any failover rewrite.
@@ -63,7 +65,7 @@ pub fn response_content(response: &ChatResponse) -> Value {
 /// Receives every metered call. Implementors aggregate; they must not fail —
 /// a bookkeeping problem never breaks an inference.
 pub trait UsageMeter: Send + Sync {
-    fn record(&self, call: LlmCall);
+    fn record(&self, call: ModelCall);
 
     fn captures_content(&self) -> bool {
         false
@@ -99,7 +101,8 @@ impl ChatProvider for MeteredProvider {
         let input = self.capture(&req);
         let response = self.inner.chat(req).await?;
         let output = input.is_some().then(|| response_content(&response));
-        self.meter.record(LlmCall {
+        self.meter.record(ModelCall {
+            kind: ModelKind::Chat,
             provider: self.provider.clone(),
             model,
             usage: response.usage,
@@ -125,7 +128,8 @@ impl ChatProvider for MeteredProvider {
         Ok(stream
             .inspect(move |event| {
                 if let Ok(StreamEvent::Completed(response)) = event {
-                    meter.record(LlmCall {
+                    meter.record(ModelCall {
+                        kind: ModelKind::Chat,
                         provider: provider.clone(),
                         model: model.clone(),
                         usage: response.usage,
@@ -146,16 +150,16 @@ mod tests {
     use std::sync::Mutex;
 
     #[derive(Default)]
-    struct Recorder(Mutex<Vec<LlmCall>>);
+    struct Recorder(Mutex<Vec<ModelCall>>);
 
     impl Recorder {
-        fn calls(&self) -> Vec<LlmCall> {
+        fn calls(&self) -> Vec<ModelCall> {
             self.0.lock().unwrap().clone()
         }
     }
 
     impl UsageMeter for Recorder {
-        fn record(&self, call: LlmCall) {
+        fn record(&self, call: ModelCall) {
             self.0.lock().unwrap().push(call);
         }
     }
@@ -242,7 +246,7 @@ mod tests {
     struct ContentRecorder(Recorder);
 
     impl UsageMeter for ContentRecorder {
-        fn record(&self, call: LlmCall) {
+        fn record(&self, call: ModelCall) {
             self.0.record(call);
         }
 
