@@ -81,7 +81,7 @@ An [`ask` step](/plans/ask-step) covers the other thing a plan can't compute: a 
 
 Design small, single-purpose plans (fetch-and-shape, in output mode) and compose them from reporting or gating plans. Cycles fail immediately with the chain named (`a → b → a`); nesting is capped at 8.
 
-A step can also run a [named agent](/reference/agent-schema) as `agent__<name>`. Without schemas the agent takes `{prompt}` and returns `{result}`, its final text. An agent with an `input_schema` takes that object instead, and one with an `output_schema` returns it. The agent runs in its own context window with only the tools its file lists, and agents it calls as subagents nest at most 3 deep.
+A step can also run a [named agent](/reference/agent-schema) as `agent__<name>`. Without schemas the agent takes `{prompt}` and returns `{result}`, its final text. An agent with an `input_schema` takes that object instead, and one with an `output_schema` returns it. The agent runs in its own context window with only the tools its file lists, and agents it calls as subagents nest at most 3 deep. The built-in `chat` agent is the exception: it reaches every tool, so the planner is never offered `agent__chat` and drafting rejects a step that calls it. A plan you write by hand can still call it.
 
 ## Plan discovery
 

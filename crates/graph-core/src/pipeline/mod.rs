@@ -145,6 +145,13 @@ pub enum PipelineError {
     },
 }
 
+fn step_schema_text() -> String {
+    serde_json::to_string_pretty(
+        &serde_json::to_value(schemars::schema_for!(Step)).unwrap_or_default(),
+    )
+    .unwrap_or_default()
+}
+
 /// Every control step, described the way the planner sees it.
 ///
 /// The single source of truth for the control-step vocabulary: the
@@ -624,31 +631,49 @@ impl Pipeline {
     /// each planning attempt sees the latest observed shapes). Returns the
     /// described-tools text and the pretty-printed step schema.
     async fn planner_catalog(&self) -> (String, String) {
-        self.planner_catalog_for(None).await
+        let mut tools = control_step_defs();
+        tools.extend(self.catalog_defs().await);
+        let shapes: HashMap<String, ToolShape> = self.shapes().await;
+        (prompts::describe_tools(&tools, &shapes), step_schema_text())
     }
 
-    async fn planner_catalog_for(
-        &self,
-        scope: Option<&std::collections::BTreeSet<String>>,
-    ) -> (String, String) {
+    pub async fn planner_tool_defs(&self) -> Vec<crate::tools::ToolDef> {
+        let mut tools = control_step_defs();
+        tools.extend(self.catalog_defs().await);
+        tools
+    }
+
+    async fn catalog_defs(&self) -> Vec<crate::tools::ToolDef> {
         let mut tools = self.registry.tools().await.unwrap_or_default();
         tools.extend(self.callable_plan_defs());
         tools.extend(self.agent_tool_defs());
-        if let Some(scope) = scope {
-            tools.retain(|tool| {
-                scope.contains(&tool.name)
-                    || search::is_always_loaded(&self.always_loaded, &tool.name)
-            });
+        tools
+    }
+
+    async fn drafting_catalog(
+        &self,
+        scope: &std::collections::BTreeSet<String>,
+    ) -> (String, String, String) {
+        let mut standing = control_step_defs();
+        let mut scoped = Vec::new();
+        for tool in self.catalog_defs().await {
+            if search::is_always_loaded(&self.always_loaded, &tool.name) {
+                standing.push(tool);
+            } else if scope.contains(&tool.name) {
+                scoped.push(tool);
+            }
         }
-        let mut described = control_step_defs();
-        described.extend(tools);
         let shapes: HashMap<String, ToolShape> = self.shapes().await;
-        let tools_text = prompts::describe_tools(&described, &shapes);
-        let step_schema = serde_json::to_string_pretty(
-            &serde_json::to_value(schemars::schema_for!(Step)).unwrap_or_default(),
+        let scoped_text = if scoped.is_empty() {
+            "(none beyond the tools above)".to_string()
+        } else {
+            prompts::describe_tools(&scoped, &shapes)
+        };
+        (
+            prompts::describe_tools(&standing, &HashMap::new()),
+            scoped_text,
+            step_schema_text(),
         )
-        .unwrap_or_default();
-        (tools_text, step_schema)
     }
 
     fn callable_plan_defs(&self) -> Vec<crate::tools::ToolDef> {

@@ -63,7 +63,7 @@ impl AnthropicProvider {
         );
 
         let mut messages = to_anthropic_messages(&req.messages);
-        if caching {
+        if caching && (messages.len() > 1 || !req.tools.is_empty()) {
             // Breakpoint two: a rolling marker on the tail of the
             // conversation. On a multi-round loop this is the one that pays —
             // round N reads everything through round N-1 instead of
@@ -737,6 +737,11 @@ mod tests {
             messages: vec![ChatMessage::User {
                 content: "a very large task brief".into(),
             }],
+            tools: vec![ToolSpec {
+                name: "search".into(),
+                description: "search things".into(),
+                input_schema: json!({"type": "object"}),
+            }],
             ..Default::default()
         };
         let body = provider().build_body(&req, false);
@@ -744,6 +749,29 @@ mod tests {
         assert_eq!(block["type"], "text");
         assert_eq!(block["text"], "a very large task brief");
         assert_eq!(block["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn a_one_shot_request_caches_only_its_system_prompt() {
+        let req = ChatRequest {
+            model: "claude-sonnet-5".into(),
+            system: "a stable drafting prompt".into(),
+            messages: vec![ChatMessage::User {
+                content: "a request that differs on every call".into(),
+            }],
+            response_schema: Some(ResponseSchema {
+                name: "draft".into(),
+                schema: json!({"type": "object"}),
+            }),
+            ..Default::default()
+        };
+        let body = provider().build_body(&req, false);
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(
+            body["messages"][0]["content"],
+            "a request that differs on every call"
+        );
+        assert_eq!(breakpoints(&body).len(), 1);
     }
 
     #[test]

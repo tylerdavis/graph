@@ -130,6 +130,14 @@ fn the_version_key_never_reaches_the_typed_config() {
 }
 
 #[test]
+fn infer_and_reshape_are_always_loaded_by_default() {
+    assert_eq!(
+        graph_config::ToolPaths::default().always_loaded,
+        ["builtin__infer", "builtin__reshape"]
+    );
+}
+
+#[test]
 fn always_loaded_tools_parse_as_names_and_globs() {
     let path = fixture_dir(CONFIG_FORMAT).join("always_loaded.toml");
     let config = load_from(std::slice::from_ref(&path)).unwrap().config;

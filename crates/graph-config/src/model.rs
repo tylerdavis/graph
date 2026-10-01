@@ -601,7 +601,7 @@ impl Default for ToolPaths {
                 PathBuf::from("~/.config/graph/tools"),
             ],
             packs: Vec::new(),
-            always_loaded: Vec::new(),
+            always_loaded: vec!["builtin__infer".into(), "builtin__reshape".into()],
         }
     }
 }

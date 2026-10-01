@@ -13,6 +13,12 @@ use std::sync::{Arc, Mutex};
 
 pub const HANDOFF_PREFIX: &str = "transfer_to_";
 
+struct Handoff {
+    target: String,
+    message: String,
+    wait_for_user: bool,
+}
+
 pub const MAX_HANDOFFS_PER_TURN: usize = 4;
 
 pub type ContextHook = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
@@ -111,7 +117,12 @@ impl Conversation {
                     tools_used.push(tool);
                 }
             }
-            let Some((target, message)) = tools.take_handoff() else {
+            let Some(Handoff {
+                target,
+                message,
+                wait_for_user,
+            }) = tools.take_handoff()
+            else {
                 return Ok(ConversationTurn {
                     text: outcome.text,
                     active,
@@ -126,10 +137,24 @@ impl Conversation {
                 body: EntryBody::Handoff {
                     from: active.clone(),
                     to: target.clone(),
-                    message,
+                    message: message.clone(),
                     via: Some(format!("{HANDOFF_PREFIX}{target}")),
                 },
             });
+            if wait_for_user {
+                let text = if outcome.text.trim().is_empty() {
+                    message
+                } else {
+                    outcome.text
+                };
+                return Ok(ConversationTurn {
+                    text,
+                    active: target,
+                    entries,
+                    tool_calls_made,
+                    tools_used,
+                });
+            }
             active = target;
         }
     }
@@ -371,7 +396,7 @@ struct ConversationTools {
     caller: String,
     depth: usize,
     runs: Mutex<Vec<NewEntry>>,
-    handoff: Mutex<Option<(String, String)>>,
+    handoff: Mutex<Option<Handoff>>,
 }
 
 impl ConversationTools {
@@ -409,7 +434,7 @@ impl ConversationTools {
         std::mem::take(&mut self.runs.lock().unwrap())
     }
 
-    fn take_handoff(&self) -> Option<(String, String)> {
+    fn take_handoff(&self) -> Option<Handoff> {
         self.handoff.lock().unwrap().take()
     }
 
@@ -419,7 +444,9 @@ impl ConversationTools {
             description: format!(
                 "Hand the conversation to the {target} agent, which continues this turn with the \
                  user and everything said so far. Use it when {target} is the right agent for \
-                 what the user needs now; your turn ends when you call it."
+                 what the user needs now; your turn ends when you call it. With wait_for_user, \
+                 {target} does not run now: it takes over from the user's next message, and any \
+                 text you send with this call is your reply to the user."
             ),
             input_schema: json!({
                 "type": "object",
@@ -428,6 +455,10 @@ impl ConversationTools {
                     "message": {
                         "type": "string",
                         "description": format!("What {target} needs to know to pick up from here")
+                    },
+                    "wait_for_user": {
+                        "type": "boolean",
+                        "description": format!("True to end the turn here and let {target} answer the user's next message; false (the default) to have {target} continue this turn now")
                     }
                 }
             }),
@@ -451,7 +482,12 @@ impl ToolRegistry for ConversationTools {
         if let Some(target) = name.strip_prefix(HANDOFF_PREFIX) {
             if self.handoffs.iter().any(|handoff| handoff == target) {
                 let message = input["message"].as_str().unwrap_or_default().to_string();
-                *self.handoff.lock().unwrap() = Some((target.to_string(), message));
+                let wait_for_user = input["wait_for_user"].as_bool().unwrap_or(false);
+                *self.handoff.lock().unwrap() = Some(Handoff {
+                    target: target.to_string(),
+                    message,
+                    wait_for_user,
+                });
                 return Ok(ToolOutcome {
                     result: json!({ "transferred_to": target }),
                     is_error: false,
@@ -647,6 +683,31 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[tokio::test]
+    async fn a_waiting_handoff_ends_the_turn_with_the_target_active() {
+        let mut confirm = call(
+            "c1",
+            "transfer_to_back",
+            json!({"message": "the plan is drafted", "wait_for_user": true}),
+        );
+        confirm.content = Some("Drafted the plan.".into());
+        let (conversation, provider) =
+            conversation(vec![confirm, text("the target must not run yet")]);
+        let turn = conversation
+            .run_turn(&[], "front", "draft me a plan")
+            .await
+            .unwrap();
+
+        assert_eq!(turn.active, "back");
+        assert_eq!(turn.text, "Drafted the plan.");
+        assert_eq!(
+            provider.requests.lock().unwrap().len(),
+            1,
+            "the target agent waits for the user's next message"
+        );
+        assert_eq!(kinds(&turn.entries).last().unwrap().1, "handoff");
     }
 
     #[tokio::test]

@@ -59,7 +59,10 @@ steps:
           - Current Date: {{context.date}}
 
           ## Tools Available
-          Each request lists the tools available for that step, with their schemas. Use only those tools and the control steps.
+          These tools are available to every step:
+          {{context.standing_tools}}
+
+          Each request lists the further tools available for that step. Use only the tools above and the ones the request lists.
 
           ## Template Rules
           {{context.templating_rules}}
@@ -83,7 +86,7 @@ steps:
           2. Steps are requested ONE at a time, each request naming the step id to use and the outline entry it advances. Emit exactly one step per request; you see the outline and every previously accepted step.
           3. A control step (`agent`, `route`, `filter`, `map`, or `reduce`) is ONE step — its body nests inside that single step's input.
           4. When the plan finishes with a solver, set `queryToAnswer` (always including the user's original task) and optionally `systemPrompt` on your FIRST step response; a later response may set them again to refine them. Omit both for a plan that finishes with an `output` map or exists only for its side effects.
-          5. Set `planComplete` to true on the step that finishes the plan. When the already-accepted steps complete the plan on their own, return `step: null` with `planComplete: true` instead of inventing a filler step.
+          5. Each response is one step's fields (`id`, `toolName`, `input`, `reasoning`) plus `planComplete`. Set `planComplete` to true on the step that finishes the plan. When the already-accepted steps complete the plan on their own, return `id`, `toolName` and `input` as null with `planComplete: true` instead of inventing a filler step.
           6. When a step is reported invalid, produce a corrected step for the SAME position, using the id you were given. Never re-emit accepted steps — they are immutable.
 
           ## Core Rules
@@ -113,8 +116,9 @@ steps:
                 input:
                   model: planner
                   system: "{{prompt.system}}"
-                  instruction: "{{context.request}}\n\n## Tools for this step\n{{context.tools}}\n\n{{accumulator.correction}}"
+                  instruction: "{{context.request}}\n\n## Further tools for this step\n{{context.tools}}\n\n{{accumulator.correction}}"
                   output_schema: "{{context.draft_schema}}"
+                  on_mismatch: return
               - id: accepted
                 tool_name: builtin__accept_step
                 input:

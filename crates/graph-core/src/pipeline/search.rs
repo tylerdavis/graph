@@ -127,6 +127,15 @@ fn default_chunk_size() -> usize {
 
 const MAX_CHOICE_OPTIONS: usize = 255;
 
+const NO_TOOL_OPTION: &str = "no_tool";
+
+const NO_TOOL_DESCRIPTION: &str = "No tool in this list fits the task.";
+
+struct Choice {
+    scores: Vec<f64>,
+    no_fit: bool,
+}
+
 fn balanced_chunks(indexes: &[usize], size: usize) -> Vec<Vec<usize>> {
     let count = indexes.len().div_ceil(size);
     let len = indexes.len().div_ceil(count);
@@ -257,10 +266,13 @@ impl Pipeline {
             .unwrap_or_else(|| DEFAULT_DECISION_ROLE.to_string());
         let mut fallback_reason = None;
         let decided = if candidates.is_empty() {
-            Some(Vec::new())
+            Some(Choice {
+                scores: Vec::new(),
+                no_fit: true,
+            })
         } else if self.router.kind_of_role(&role) == Some(ModelKind::Decision) {
             match self.decision_scores(&role, &input, &candidates).await {
-                Ok(scores) => Some(scores),
+                Ok(choice) => Some(choice),
                 Err(error) => {
                     fallback_reason = Some(error);
                     None
@@ -269,9 +281,9 @@ impl Pipeline {
         } else {
             None
         };
-        let (mode, scores) = match decided {
-            Some(scores) => ("decision", scores),
-            None => ("keyword", keyword_scores(&input.query, &candidates)),
+        let (mode, scores, no_fit) = match decided {
+            Some(choice) => ("decision", choice.scores, choice.no_fit),
+            None => ("keyword", keyword_scores(&input.query, &candidates), false),
         };
         let mut scored: Vec<(Candidate, f64)> = candidates.into_iter().zip(scores).collect();
         scored.sort_by(|a, b| {
@@ -287,6 +299,9 @@ impl Pipeline {
         if let Some(limit) = input.limit {
             take = take.min(limit);
         }
+        if no_fit {
+            take = 0;
+        }
         let entries: Vec<Value> = scored
             .iter()
             .enumerate()
@@ -301,7 +316,8 @@ impl Pipeline {
             })
             .collect();
         let selected: Vec<Value> = entries.iter().take(take).cloned().collect();
-        let mut out = json!({ "mode": mode, "scored": entries, "selected": selected });
+        let mut out =
+            json!({ "mode": mode, "scored": entries, "selected": selected, "no_fit": no_fit });
         if let Some(reason) = fallback_reason {
             out["fallback_reason"] = json!(reason);
         }
@@ -313,9 +329,9 @@ impl Pipeline {
         role: &str,
         input: &ScoreInput,
         candidates: &[Candidate],
-    ) -> Result<Vec<f64>, String> {
+    ) -> Result<Choice, String> {
         let instructions = format!("{}\n\n{}", input.question.trim(), input.query.trim());
-        let size = input.chunk_size.clamp(2, MAX_CHOICE_OPTIONS);
+        let size = input.chunk_size.clamp(2, MAX_CHOICE_OPTIONS - 1);
         let indexes: Vec<usize> = (0..candidates.len()).collect();
         if candidates.len() <= size {
             return self.choose(role, &instructions, candidates, &indexes).await;
@@ -325,8 +341,8 @@ impl Pipeline {
             .iter()
             .map(|chunk| self.choose(role, &instructions, candidates, chunk));
         let mut first_round: Vec<(usize, f64)> = Vec::new();
-        for (chunk, probabilities) in chunks.iter().zip(futures::future::join_all(rounds).await) {
-            first_round.extend(chunk.iter().copied().zip(probabilities?));
+        for (chunk, round) in chunks.iter().zip(futures::future::join_all(rounds).await) {
+            first_round.extend(chunk.iter().copied().zip(round?.scores));
         }
         let finalists: Vec<usize> = first_round
             .iter()
@@ -338,15 +354,21 @@ impl Pipeline {
             for (index, probability) in first_round {
                 scores[index] = probability;
             }
-            return Ok(scores);
+            return Ok(Choice {
+                scores,
+                no_fit: true,
+            });
         }
         let final_round = self
             .choose(role, &instructions, candidates, &finalists)
             .await?;
-        for (index, probability) in finalists.into_iter().zip(final_round) {
+        for (index, probability) in finalists.into_iter().zip(final_round.scores) {
             scores[index] = probability;
         }
-        Ok(scores)
+        Ok(Choice {
+            scores,
+            no_fit: final_round.no_fit,
+        })
     }
 
     async fn choose(
@@ -355,11 +377,8 @@ impl Pipeline {
         instructions: &str,
         candidates: &[Candidate],
         indexes: &[usize],
-    ) -> Result<Vec<f64>, String> {
-        if indexes.len() == 1 {
-            return Ok(vec![1.0]);
-        }
-        let criteria: BTreeMap<String, String> = indexes
+    ) -> Result<Choice, String> {
+        let mut criteria: BTreeMap<String, String> = indexes
             .iter()
             .map(|&i| {
                 (
@@ -368,6 +387,7 @@ impl Pipeline {
                 )
             })
             .collect();
+        criteria.insert(NO_TOOL_OPTION.to_string(), NO_TOOL_DESCRIPTION.to_string());
         let request = DecisionRequest {
             model: String::new(),
             state: Value::Null,
@@ -382,21 +402,24 @@ impl Pipeline {
         let response = CallSite::as_role(role, self.router.decide_named(Some(role), request))
             .await
             .map_err(|e| format!("decision model '{role}' failed: {e}"))?;
-        match response.answers.get("tool") {
-            Some(Answer::Choice { probabilities, .. }) => Ok(indexes
-                .iter()
-                .map(|&i| {
-                    probabilities
-                        .get(&candidates[i].name)
-                        .copied()
-                        .unwrap_or(0.0)
-                })
-                .collect()),
-            Some(_) => Err(format!(
-                "decision model '{role}' answered with the wrong kind"
-            )),
-            None => Err(format!("decision model '{role}' did not answer")),
-        }
+        let Some(Answer::Choice { probabilities, .. }) = response.answers.get("tool") else {
+            return Err(format!("decision model '{role}' did not answer the choice"));
+        };
+        let scores: Vec<f64> = indexes
+            .iter()
+            .map(|&i| {
+                probabilities
+                    .get(&candidates[i].name)
+                    .copied()
+                    .unwrap_or(0.0)
+            })
+            .collect();
+        let none = probabilities.get(NO_TOOL_OPTION).copied().unwrap_or(0.0);
+        let best = scores.iter().copied().fold(0.0, f64::max);
+        Ok(Choice {
+            no_fit: none > best,
+            scores,
+        })
     }
 
     pub(super) async fn shapes(&self) -> HashMap<String, crate::store::ToolShape> {

@@ -470,9 +470,10 @@ impl WorkbenchTools {
                 };
             }
         }
-        let defs = self.pipeline.registry.tools().await.unwrap_or_default();
-        let Some(def) = defs.into_iter().find(|def| def.name == name) else {
-            return error_outcome(&format!("no tool named '{name}' in the plan catalog"));
+        let defs = self.pipeline.planner_tool_defs().await;
+        let Some(def) = defs.iter().find(|def| def.name == name).cloned() else {
+            let servers = self.pipeline.registry.servers().await;
+            return error_outcome(&unknown_tool_message(name, &defs, &servers));
         };
         let observed = match &self.pipeline.store {
             Some(store) => store
@@ -569,6 +570,53 @@ impl WorkbenchTools {
 /// reporting-only and never gates an edit.
 pub(super) fn plan_problems(pipeline: &Pipeline, doc: &PlanDoc) -> Vec<String> {
     authoring::plan_problems(doc, &pipeline.plans, pipeline.catalog.as_deref())
+}
+
+fn unknown_tool_message(
+    name: &str,
+    defs: &[graph_core::tools::ToolDef],
+    servers: &[graph_core::tools::ToolServer],
+) -> String {
+    let mut message = format!("no tool named '{name}' in the plan catalog.");
+    if let Some((prefix, _)) = name.split_once("__") {
+        let known = ["builtin", "user", "plan", "agent"].contains(&prefix)
+            || servers.iter().any(|server| server.name == prefix);
+        if !known {
+            let configured: Vec<&str> = servers.iter().map(|server| server.name.as_str()).collect();
+            message.push_str(&format!(
+                " No MCP server '{prefix}' is configured (configured: {}), so no {prefix}__ tool exists.",
+                if configured.is_empty() { "none".to_string() } else { configured.join(", ") }
+            ));
+        }
+    }
+    let words: Vec<&str> = name
+        .split(['_', '-'])
+        .filter(|word| word.len() > 2)
+        .collect();
+    let mut close: Vec<(usize, &str)> = defs
+        .iter()
+        .map(|def| {
+            let shared = words
+                .iter()
+                .filter(|word| {
+                    def.name.contains(*word) || def.description.to_lowercase().contains(*word)
+                })
+                .count();
+            (shared, def.name.as_str())
+        })
+        .filter(|(shared, _)| *shared > 0)
+        .collect();
+    close.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+    let close: Vec<&str> = close.into_iter().take(8).map(|(_, name)| name).collect();
+    if close.is_empty() {
+        message.push_str(" Nothing in the catalog resembles it; do not guess further names.");
+    } else {
+        message.push_str(&format!(
+            " Closest tools that exist: {}. If none fits, the capability is missing from the catalog; tell the user instead of guessing further names.",
+            close.join(", ")
+        ));
+    }
+    message
 }
 
 fn error_outcome(message: &str) -> ToolOutcome {
@@ -1921,6 +1969,31 @@ steps:
                 {"id": "E0", "tool_name": "t__search", "input": {"query": "x"}},
             ],
         })
+    }
+
+    #[tokio::test]
+    async fn describe_tool_knows_control_steps() {
+        let (pipeline, _) = scripted_pipeline(Vec::new());
+        let (tools, _rx) = draft_tools(pipeline);
+        let outcome = tools.describe_tool(&json!({"name": "route"})).await;
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert_eq!(outcome.result["name"], json!("route"));
+    }
+
+    #[tokio::test]
+    async fn describe_tool_says_when_a_guessed_server_does_not_exist() {
+        let (pipeline, _) = scripted_pipeline(Vec::new());
+        let (tools, _rx) = draft_tools(pipeline);
+        let outcome = tools
+            .describe_tool(&json!({"name": "github__list_pull_requests"}))
+            .await;
+        assert!(outcome.is_error);
+        let error = outcome.result["error"].as_str().unwrap();
+        assert!(
+            error.contains("No MCP server 'github' is configured"),
+            "{error}"
+        );
+        assert!(error.contains("instead of guessing"), "{error}");
     }
 
     #[tokio::test]

@@ -3103,16 +3103,23 @@ fn outline_response() -> ChatResponse {
     structured(json!({"entries": ["find the team", "fetch its issues"]}))
 }
 
+fn flat_draft(step: Value, extra: Value) -> Value {
+    let mut draft = step;
+    for (key, value) in extra.as_object().unwrap() {
+        draft[key] = value.clone();
+    }
+    draft
+}
+
 fn step_draft(step: Value, plan_complete: bool) -> ChatResponse {
-    structured(json!({"step": step, "planComplete": plan_complete}))
+    structured(flat_draft(step, json!({"planComplete": plan_complete})))
 }
 
 fn briefed_step_draft(step: Value) -> ChatResponse {
-    structured(json!({
-        "step": step,
-        "planComplete": false,
-        "queryToAnswer": "how is the sprint going",
-    }))
+    structured(flat_draft(
+        step,
+        json!({"planComplete": false, "queryToAnswer": "how is the sprint going"}),
+    ))
 }
 
 fn user_turns(request: &ChatRequest) -> Vec<String> {
@@ -3274,7 +3281,7 @@ async fn draft_generates_outline_then_steps() {
     );
     assert!(user_turns(&requests[1])
         .join("\n")
-        .contains("## Tools for this step"));
+        .contains("## Further tools for this step"));
     assert!(
         requests[1].system.contains("### Drafting Protocol"),
         "the step system prompt comes from the draft_step plan"
@@ -3284,7 +3291,14 @@ async fn draft_generates_outline_then_steps() {
         .as_ref()
         .expect("a step is a structured inference")
         .schema;
-    assert_eq!(schema["required"], json!(["step", "planComplete"]));
+    assert_eq!(
+        schema["required"],
+        json!(["id", "toolName", "input", "planComplete"])
+    );
+    assert!(
+        schema.get("definitions").is_none(),
+        "the step is flat, not nested"
+    );
     assert_eq!(schema["additionalProperties"], json!(false));
     let first = user_turns(&requests[1]);
     assert!(
@@ -3376,6 +3390,165 @@ async fn draft_retries_invalid_step_with_errors_injected() {
 }
 
 #[tokio::test]
+async fn draft_retries_a_step_whose_tool_is_not_in_the_catalog() {
+    let registry = search_registry(json!({"values": []}));
+    let (mut pipeline, provider) = drafting(
+        vec![
+            outline_response(),
+            step_draft(
+                json!({"id": "E0", "toolName": "ghost__scan", "input": {}}),
+                false,
+            ),
+            step_draft(search_step("E0"), false),
+            step_draft(issues_step("E1", "E0.values.0.id"), true),
+        ],
+        registry,
+    );
+    pipeline.catalog = Some(Arc::new(catalog::ToolCatalog {
+        mcp_servers: std::collections::BTreeSet::from(["t".to_string()]),
+        plans: pipeline
+            .plans
+            .iter()
+            .map(|doc| doc.identifier.clone())
+            .collect(),
+        builtin_tools: ["builtin__infer", "builtin__reshape"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        ..Default::default()
+    }));
+    let output = drafted(&pipeline, "sprint status").await;
+    let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["E0", "E1"]);
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 4, "one retry for the unknown tool");
+    let retry = user_turns(&requests[2]).join("\n");
+    assert!(
+        retry.contains("ghost"),
+        "the catalog problem is fed back: {retry}"
+    );
+}
+
+#[tokio::test]
+async fn the_cached_drafting_prompt_carries_no_observed_shapes() {
+    let registry = search_registry(json!({"values": []}));
+    let (mut pipeline, provider) = drafting(
+        vec![
+            outline_response(),
+            step_draft(search_step("E0"), false),
+            step_draft(issues_step("E1", "E0.values.0.id"), true),
+        ],
+        registry,
+    );
+    let store = Arc::new(ShapeOnlyStore {
+        shapes: Mutex::new(Vec::new()),
+    });
+    store
+        .record_tool_shape(
+            "t__issues",
+            &json!({"type": "object"}),
+            &json!({"values": []}),
+        )
+        .await
+        .unwrap();
+    pipeline.store = Some(store);
+    pipeline.always_loaded = Arc::new(vec!["t__issues".to_string()]);
+    drafted(&pipeline, "sprint status").await;
+    let requests = provider.requests.lock().unwrap();
+    assert!(requests[1].system.contains("t__issues"));
+    assert!(
+        !requests[1].system.contains("observedOutputShape"),
+        "shapes change as drafting runs tools, so the cached prompt leaves them out"
+    );
+}
+
+#[tokio::test]
+async fn the_chat_agent_is_never_offered_to_or_accepted_from_the_planner() {
+    let registry = search_registry(json!({"values": []}));
+    let (mut pipeline, provider) = drafting(
+        vec![
+            outline_response(),
+            step_draft(
+                json!({"id": "E0", "toolName": "agent__chat", "input": {"prompt": "find the team"}}),
+                false,
+            ),
+            step_draft(search_step("E0"), false),
+            step_draft(issues_step("E1", "E0.values.0.id"), true),
+        ],
+        registry,
+    );
+    pipeline.agents = Arc::new(crate::agent::doc::AgentSet::layered(
+        crate::agent::doc::builtin_agents(crate::agent::doc::BUILTINS),
+        Vec::new(),
+    ));
+    assert!(pipeline.agents.get("chat").is_some());
+    assert!(!pipeline.planner_catalog().await.0.contains("agent__chat"));
+    assert!(!pipeline
+        .searchable_tools()
+        .await
+        .iter()
+        .any(|tool| tool.name == "agent__chat"));
+    let output = drafted(&pipeline, "sprint status").await;
+    assert_eq!(output.plan[0].tool_name, "t__search");
+    let requests = provider.requests.lock().unwrap();
+    let retry = user_turns(&requests[2]).join("\n");
+    assert!(retry.contains("not available to plans"), "{retry}");
+}
+
+#[tokio::test]
+async fn an_unrepairable_step_draft_is_retried_not_fatal() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = drafting(
+        vec![
+            outline_response(),
+            structured(json!({"thoughts": "a step goes here"})),
+            structured(json!({"thoughts": "still a step"})),
+            step_draft(search_step("E0"), false),
+            step_draft(issues_step("E1", "E0.values.0.id"), true),
+        ],
+        registry,
+    );
+    let output = drafted(&pipeline, "sprint status").await;
+    let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["E0", "E1"]);
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 5, "the draft, its repair, then a retry");
+    let retry = user_turns(&requests[3]).join("\n");
+    assert!(
+        retry.contains("does not match the response schema"),
+        "the mismatch is fed back as a correction: {retry}"
+    );
+}
+
+#[tokio::test]
+async fn malformed_step_drafts_are_fixed_without_a_repair_call() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, provider) = drafting(
+        vec![
+            outline_response(),
+            structured(search_step("E0")),
+            structured(json!({
+                "$PARAMETER_VALUE": {
+                    "id": "E1",
+                    "toolName": "t__issues",
+                    "input": "{\"teamId\": \"{{E0.values.0.id}}\"}",
+                    "planComplete": true,
+                }
+            })),
+        ],
+        registry,
+    );
+    let output = drafted(&pipeline, "sprint status").await;
+    let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["E0", "E1"]);
+    assert_eq!(
+        provider.requests.lock().unwrap().len(),
+        3,
+        "a missing planComplete, a wrapper key, and an input sent as a JSON string need no repair call"
+    );
+}
+
+#[tokio::test]
 async fn draft_exhausted_retries_returns_valid_partial() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, _) = drafting(
@@ -3412,7 +3585,7 @@ async fn draft_accepts_done_early_without_a_step() {
         vec![
             outline_response(),
             step_draft(search_step("E0"), false),
-            structured(json!({"step": null, "planComplete": true})),
+            structured(json!({"id": null, "toolName": null, "input": null, "planComplete": true})),
         ],
         registry.clone(),
     );
@@ -3424,7 +3597,7 @@ async fn draft_accepts_done_early_without_a_step() {
     let (empty_pipeline, provider) = drafting(
         vec![
             outline_response(),
-            structured(json!({"step": null, "planComplete": true})),
+            structured(json!({"id": null, "toolName": null, "input": null, "planComplete": true})),
             step_draft(search_step("E0"), true),
         ],
         registry,
@@ -5757,8 +5930,8 @@ async fn search_chooses_among_every_tool_with_the_decision_model() {
     let catalog = pipeline.searchable_tools().await.len();
     assert_eq!(
         criteria.len(),
-        catalog - 1,
-        "every catalog tool is an option except plan__search_tools itself"
+        catalog,
+        "every catalog tool is an option except plan__search_tools itself, plus no-tool"
     );
 }
 
@@ -5803,8 +5976,8 @@ async fn large_candidate_sets_are_chosen_in_chunks_then_a_final_round() {
     sizes.sort();
     assert_eq!(
         sizes,
-        [7, 9, 9],
-        "25 options in three balanced chunks; only t__search reaches the threshold, so no final round"
+        [2, 8, 10, 10],
+        "25 tools in three balanced chunks plus the no-tool option, then t__search alone against no-tool"
     );
 }
 
@@ -5835,6 +6008,30 @@ async fn nothing_is_returned_when_no_tool_fits() {
             "an even spread over 20 tools leaves none at 0.1 (chunk size {chunk_size})"
         );
     }
+}
+
+#[tokio::test]
+async fn the_no_tool_option_winning_returns_nothing() {
+    let (pipeline, decider) = searching(Some(Box::new(|option: &str| match option {
+        "no_tool" => 0.6,
+        "t__search" => 0.3,
+        _ => 0.01,
+    })));
+    let call = pipeline
+        .call_plan("search_tools", json!({"query": "publish a GitHub release"}))
+        .await;
+    assert!(!call.is_error, "{}", call.result);
+    assert_eq!(
+        call.result["tools"],
+        json!([]),
+        "t__search clears 0.1 but no-tool wins"
+    );
+    let requests = decider.unwrap().requests.lock().unwrap().clone();
+    let graph_llm::decision::Question::Choice { criteria, .. } = &requests[0].questions["tool"]
+    else {
+        panic!("a choice question");
+    };
+    assert_eq!(criteria["no_tool"], "No tool in this list fits the task.");
 }
 
 #[tokio::test]
@@ -5875,6 +6072,20 @@ async fn always_loaded_tools_are_never_searched() {
 }
 
 #[tokio::test]
+async fn control_steps_are_never_searched() {
+    let (pipeline, _) = searching(None);
+    let searchable: Vec<String> = pipeline
+        .searchable_tools()
+        .await
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+    for control in control_step_defs() {
+        assert!(!searchable.contains(&control.name), "{}", control.name);
+    }
+}
+
+#[tokio::test]
 async fn each_draft_step_sees_only_its_searched_tools() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, provider) = drafting(
@@ -5889,12 +6100,19 @@ async fn each_draft_step_sees_only_its_searched_tools() {
     let whole = pipeline.planner_catalog().await.0.lines().count();
     let requests = provider.requests.lock().unwrap();
     let second = user_turns(&requests[2]).join("\n");
-    assert!(second.contains("## Tools for this step"), "{second}");
     assert!(
-        second.contains("\"name\":\"route\""),
-        "control steps are always offered"
+        second.contains("## Further tools for this step"),
+        "{second}"
     );
     assert!(second.contains("t__issues") && second.contains("t__search"));
+    for control in control_step_defs() {
+        let named = format!("\"name\":\"{}\"", control.name);
+        assert!(
+            requests[2].system.contains(&named) && !second.contains(&named),
+            "the {} control step is offered once, in the cached system prompt",
+            control.name
+        );
+    }
     let offered = second.matches("\"inputSchema\"").count();
     assert!(
         offered < whole,

@@ -161,6 +161,7 @@ impl Pipeline {
         let agents: Vec<(String, String)> = self
             .agents
             .iter()
+            .filter(|doc| doc.name != crate::agent::doc::CHAT_AGENT)
             .map(|doc| (doc.name.clone(), doc.description.clone()))
             .collect();
         prompts::outliner_catalog(&tools, &servers, &agents)

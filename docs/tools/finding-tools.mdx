@@ -8,7 +8,7 @@ A catalog with several MCP servers can hold hundreds of tools, and describing ev
 
 ## How a search works
 
-`search_tools` asks which tool would best accomplish the task, choosing among every tool in the catalog by its name and a one-sentence description: MCP, pack and user tools, plans, and agents. The choice's probabilities rank the tools; those at or above `min_probability` are returned, **most likely first**. When no tool reaches it, nothing is returned: no tool fits the task, which is right for a step that is only control flow.
+`search_tools` asks which tool would best accomplish the task, choosing among every tool in the catalog by its name and a one-sentence description: MCP, pack and user tools, plans, and agents. The choice also offers "No tool in this list fits the task." The choice's probabilities rank the tools; those at or above `min_probability` are returned, **most likely first**. When the no-tool option is the most likely answer, or no tool reaches `min_probability`, nothing is returned.
 
 Ask it about one step, not a whole goal. Drafting searches with each outline entry on its own: with the goal included, every step of a plan ranked the goal's main tool first.
 
@@ -46,7 +46,9 @@ The result is `{mode, tools, always}`: the returned tools, most likely first, ea
 
 ## Tools that are always loaded
 
-Every tool is searched for, the built-in packs included; only the control steps (`exit`, `route`, `filter`, `map`, `reduce`, `agent`, `ask`) are always offered, because they are the plan grammar. To keep a tool out of the search and always offer it, list it in [`[tools].always_loaded`](/reference/configuration#plans-and-tools), by name or with `*` globs:
+Control steps (`route`, `map`, `exit`, …) are never searched for: every drafted step is offered all of them. So are the tools in [`[tools].always_loaded`](/reference/configuration#plans-and-tools), which defaults to `builtin__infer` and `builtin__reshape`. A choice question puts most of its probability on one tool, so a step that needs a second, general-purpose tool, such as `builtin__infer` to summarize what a Linear tool fetched, rarely gets it from search; keeping those tools always offered covers that. Drafting puts them in the cached system prompt, described by name, description and declared schemas only: an observed output shape changes as tools run, so it would break the cache on every step. A searched tool still gets its observed shape.
+
+Every other tool, built-in packs included, is searched for. To keep more tools out of the search and always offer them, list them by name or with `*` globs. The list replaces the default, so keep the two built-ins in it:
 
 ```toml
 [tools]
