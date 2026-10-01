@@ -61,6 +61,21 @@ pub struct DecideGate {
 
 pub const DEFAULT_MIN_CONFIDENCE: f64 = 0.5;
 
+pub fn decide_gate_schema(description: &str, state: &str) -> Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["question"],
+        "description": description,
+        "properties": {
+            "question": {"type": "string"},
+            "state": {"description": state},
+            "criteria": {"type": "object", "properties": {"true": {"type": "string"}, "false": {"type": "string"}}},
+            "min_confidence": {"type": "number", "description": "0 to 1; default 0.5"},
+            "model": {"type": "string", "description": "A decision model role; defaults to decider"}
+        }
+    })
+}
+
 pub enum Gate<'a> {
     Logic(&'a Condition),
     Infer {
@@ -196,6 +211,13 @@ async fn decide_verdict(gate: &DecideGate, router: &ModelRouter) -> Result<GateO
 }
 
 const GATE_QUESTION: &str = "gate";
+
+pub fn with_probability(mut result: Value, probability: Option<f64>) -> Value {
+    if let Some(probability) = probability {
+        result["probability"] = serde_json::json!(probability);
+    }
+    result
+}
 
 pub fn eval_condition(condition: &Condition) -> Result<bool, String> {
     let value = &condition.value;
