@@ -4,7 +4,7 @@
 
 use graph_core::shapes::{infer_schema, truncate_example};
 use graph_core::store::Store;
-use graph_core::{ToolDef, ToolError, ToolOutcome, ToolRegistry};
+use graph_core::{ToolDef, ToolError, ToolOutcome, ToolRegistry, ToolServer};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -23,6 +23,10 @@ impl RecordingRegistry {
 impl ToolRegistry for RecordingRegistry {
     async fn tools(&self) -> Result<Vec<ToolDef>, ToolError> {
         self.inner.tools().await
+    }
+
+    async fn servers(&self) -> Vec<ToolServer> {
+        self.inner.servers().await
     }
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {

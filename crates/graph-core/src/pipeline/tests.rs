@@ -2963,17 +2963,30 @@ steps:
 // ── Plan drafting ────────────────────────────────────────────────────────
 
 fn outline_response() -> ChatResponse {
-    structured(json!({
-        "items": [
-            {"summary": "find the team", "expectedTool": "t__search"},
-            {"summary": "fetch its issues", "expectedTool": "t__issues"},
-        ],
-        "queryToAnswer": "how is the sprint going",
-    }))
+    structured(json!({"entries": ["find the team", "fetch its issues"]}))
 }
 
 fn step_draft(step: Value, plan_complete: bool) -> ChatResponse {
     structured(json!({"step": step, "planComplete": plan_complete}))
+}
+
+fn briefed_step_draft(step: Value) -> ChatResponse {
+    structured(json!({
+        "step": step,
+        "planComplete": false,
+        "queryToAnswer": "how is the sprint going",
+    }))
+}
+
+fn user_turns(request: &ChatRequest) -> Vec<String> {
+    request
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            graph_llm::types::ChatMessage::User { content } => Some(content.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn search_step(id: &str) -> Value {
@@ -3004,7 +3017,7 @@ async fn draft_generates_outline_then_steps() {
     let (pipeline, provider) = pipeline(
         vec![
             outline_response(),
-            step_draft(search_step("E0"), false),
+            briefed_step_draft(search_step("E0")),
             step_draft(issues_step("E1", "E0.values.0.id"), true),
         ],
         registry.clone(),
@@ -3030,17 +3043,66 @@ async fn draft_generates_outline_then_steps() {
 
     let requests = provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 3, "outline + one call per step");
-    // The prompt-cache invariant: one byte-identical system prompt.
+    let outline = &requests[0];
     assert!(
-        requests.iter().all(|r| r.system == requests[0].system),
-        "every call must reuse the identical system prompt"
+        outline.system.contains("## MCP Servers\n- t\n"),
+        "the outliner sees each MCP server once, without its tools: {}",
+        outline.system
     );
-    // The last step call sees the outline and the accepted E0 as
-    // Assistant turns in the scratchpad.
+    assert!(
+        !outline.system.contains("t__search")
+            && !outline.system.contains("test tool")
+            && !outline.system.contains("inputSchema"),
+        "the outliner never sees descriptions or schemas"
+    );
+    assert_eq!(user_turns(outline), ["# Task\nsprint status"]);
+    assert!(
+        requests[1..].iter().all(|r| r.system == requests[1].system),
+        "every step call must reuse the identical system prompt"
+    );
+    assert!(requests[1].system.contains("t__search"));
+    let first = user_turns(&requests[1]);
+    assert!(
+        first[0].contains("# Outline\n1. find the team\n2. fetch its issues"),
+        "the first step call carries the whole outline: {first:?}"
+    );
+    let second = user_turns(&requests[2]);
+    assert!(
+        second
+            .last()
+            .unwrap()
+            .contains("outline entry 2:\nfetch its issues"),
+        "{second:?}"
+    );
     let assistants = assistant_turns(&requests[2]);
-    assert_eq!(assistants.len(), 2, "outline + accepted E0");
-    assert!(assistants[0].contains("find the team"), "{assistants:?}");
-    assert!(assistants[1].contains("t__search"), "{assistants:?}");
+    assert_eq!(assistants.len(), 1, "only the accepted E0");
+    assert!(assistants[0].contains("t__search"), "{assistants:?}");
+}
+
+#[tokio::test]
+async fn the_outline_call_resolves_the_outliner_role() {
+    let registry = search_registry(json!({"values": []}));
+    let mut named = std::collections::BTreeMap::new();
+    named.insert(
+        "outliner".to_string(),
+        ModelChoice {
+            provider: "mock".to_string(),
+            model: "outliner-model".to_string(),
+            temperature: None,
+            description: None,
+            fallbacks: Vec::new(),
+        },
+    );
+    let (pipeline, provider) = pipeline_with_named(
+        vec![outline_response(), step_draft(search_step("E0"), true)],
+        registry,
+        1,
+        named,
+    );
+    pipeline.draft_plan("sprint status", None).await.unwrap();
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests[0].model, "outliner-model");
+    assert_eq!(requests[1].model, "test", "steps stay on the planner role");
 }
 
 #[tokio::test]
@@ -3099,7 +3161,7 @@ async fn draft_exhausted_retries_returns_valid_partial() {
     let (pipeline, _) = pipeline(
         vec![
             outline_response(),
-            step_draft(search_step("E0"), false),
+            briefed_step_draft(search_step("E0")),
             step_draft(issues_step("E1", "E9.values"), false),
             step_draft(issues_step("E1", "E8.values"), false),
             step_draft(issues_step("E1", "E7.values"), false),
@@ -3149,7 +3211,11 @@ async fn drafting_into_an_existing_plan_carries_it_in_the_system_prompt() {
         .await
         .unwrap();
     let requests = provider.requests.lock().unwrap();
-    let system = &requests[0].system;
+    assert!(
+        !requests[0].system.contains("Draft Under Revision"),
+        "the outliner stays isolated from the draft"
+    );
+    let system = &requests[1].system;
     assert!(system.contains("Draft Under Revision"), "revision section");
     assert!(system.contains("t__search"), "serialized draft in prompt");
     // There is no caller-supplied feedback slot: steering the planner at a
@@ -3158,8 +3224,6 @@ async fn drafting_into_an_existing_plan_carries_it_in_the_system_prompt() {
         !system.contains("Last Error"),
         "the drafting prompt has no last-error slot: {system}"
     );
-    // Constant across the session: the step call sees the same system.
-    assert_eq!(requests[0].system, requests[1].system);
 }
 
 #[tokio::test]
@@ -3233,7 +3297,11 @@ async fn draft_emits_progress_events() {
             "draft_step_finished", // E1 attempt 2 accepted
         ]
     );
-    assert_eq!(events[1].1.as_array().unwrap().len(), 2, "outline items");
+    assert_eq!(
+        events[1].1,
+        json!(["find the team", "fetch its issues"]),
+        "outline entries"
+    );
     // The failed attempt carries non-empty problems and its attempt number.
     let failed = &events[5].1;
     assert!(!failed["problems"].as_array().unwrap().is_empty());
@@ -3254,11 +3322,11 @@ async fn draft_force_completes_when_outline_is_covered_and_planner_never_signals
     let (pipeline, provider) = pipeline(
         vec![
             outline_response(),
-            step_draft(search_step("E0"), false), // stage 1
-            step_draft(search_step("E1"), false), // stage 2
-            step_draft(search_step("E2"), false), // overflow 1 (closing)
-            step_draft(search_step("E3"), false), // overflow 2 (closing)
-                                                  // No more responses: the loop must force-close before asking again.
+            briefed_step_draft(search_step("E0")), // stage 1
+            step_draft(search_step("E1"), false),  // stage 2
+            step_draft(search_step("E2"), false),  // overflow 1 (closing)
+            step_draft(search_step("E3"), false),  // overflow 2 (closing)
+                                                   // No more responses: the loop must force-close before asking again.
         ],
         registry.clone(),
         1,
@@ -3311,7 +3379,7 @@ async fn draft_force_completes_when_outline_is_covered_and_planner_never_signals
     assert!(
         closing_users
             .iter()
-            .any(|turn| turn.contains("Every outline stage now has a step")),
+            .any(|turn| turn.contains("Every outline entry has now been advanced")),
         "closing requests use closing_step_request wording: {closing_users:?}"
     );
 }
@@ -3320,7 +3388,7 @@ async fn draft_force_completes_when_outline_is_covered_and_planner_never_signals
 async fn draft_rejects_an_empty_outline() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, _) = pipeline(
-        vec![structured(json!({"items": [], "queryToAnswer": "q"}))],
+        vec![structured(json!({"entries": ["  ", ""]}))],
         registry,
         1,
     );
@@ -3329,7 +3397,7 @@ async fn draft_rejects_an_empty_outline() {
         .await
         .unwrap_err();
     assert!(matches!(err, PipelineError::InvalidPlan(_)), "{err}");
-    assert!(err.to_string().contains("outline has no items"));
+    assert!(err.to_string().contains("outline has no entries"));
 }
 
 #[test]

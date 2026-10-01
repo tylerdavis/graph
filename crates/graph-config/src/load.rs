@@ -237,7 +237,7 @@ pub fn expand_tilde(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ModelRoles, ProviderKind, Role};
+    use crate::model::{ModelChoice, ModelRoles, ProviderKind, Role};
 
     fn write(dir: &Path, name: &str, contents: &str) -> PathBuf {
         let path = dir.join(name);
@@ -326,7 +326,7 @@ description = "fast and cheap"
         assert!(models.resolve("bogus").is_none());
         assert_eq!(
             models.known_names(),
-            vec!["chat", "default", "judge", "nano", "planner", "repair", "solver"]
+            vec!["chat", "default", "judge", "nano", "outliner", "planner", "repair", "solver"]
         );
         let no_default = ModelRoles::from([("nano", models.get("nano").unwrap().clone())]);
         assert_eq!(no_default.known_names(), vec!["nano"]);
@@ -339,6 +339,38 @@ description = "fast and cheap"
             vec!["default", "judge", "nano"]
         );
         assert!(ModelRoles::default().resolve("chat").is_none());
+    }
+
+    #[test]
+    fn the_outliner_role_falls_back_to_planner_before_default() {
+        let choice = |model: &str| ModelChoice {
+            provider: "p".into(),
+            model: model.into(),
+            temperature: None,
+            description: None,
+            fallbacks: Vec::new(),
+        };
+        let with_planner = ModelRoles::from([
+            ("default", choice("default-model")),
+            ("planner", choice("planner-model")),
+        ]);
+        assert_eq!(
+            with_planner.resolve_role(Role::Outliner).unwrap().model,
+            "planner-model"
+        );
+        let default_only = ModelRoles::from([("default", choice("default-model"))]);
+        assert_eq!(
+            default_only.resolve_role(Role::Outliner).unwrap().model,
+            "default-model"
+        );
+        let own_entry = ModelRoles::from([
+            ("planner", choice("planner-model")),
+            ("outliner", choice("outliner-model")),
+        ]);
+        assert_eq!(
+            own_entry.resolve("outliner").unwrap().model,
+            "outliner-model"
+        );
     }
 
     #[test]

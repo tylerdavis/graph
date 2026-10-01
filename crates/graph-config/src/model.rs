@@ -340,15 +340,17 @@ pub struct ModelRoles(BTreeMap<String, ModelChoice>);
 pub enum Role {
     Chat,
     Planner,
+    Outliner,
     Solver,
     Repair,
     Judge,
 }
 
 impl Role {
-    pub const ALL: [Role; 5] = [
+    pub const ALL: [Role; 6] = [
         Role::Chat,
         Role::Planner,
+        Role::Outliner,
         Role::Solver,
         Role::Repair,
         Role::Judge,
@@ -358,6 +360,7 @@ impl Role {
         match self {
             Role::Chat => "chat",
             Role::Planner => "planner",
+            Role::Outliner => "outliner",
             Role::Solver => "solver",
             Role::Repair => "repair",
             Role::Judge => "judge",
@@ -366,6 +369,13 @@ impl Role {
 
     pub fn from_name(name: &str) -> Option<Role> {
         Role::ALL.into_iter().find(|role| role.as_str() == name)
+    }
+
+    pub fn fallback(self) -> Option<Role> {
+        match self {
+            Role::Outliner => Some(Role::Planner),
+            _ => None,
+        }
     }
 }
 
@@ -390,8 +400,10 @@ impl ModelRoles {
         if let Some(choice) = self.0.get(name) {
             return Some(choice);
         }
-        let standard = name == DEFAULT_ROLE || Role::from_name(name).is_some();
-        standard.then(|| self.0.get(DEFAULT_ROLE)).flatten()
+        match Role::from_name(name)?.fallback() {
+            Some(fallback) => self.resolve(fallback.as_str()),
+            None => self.0.get(DEFAULT_ROLE),
+        }
     }
 
     pub fn resolve_role(&self, role: Role) -> Option<&ModelChoice> {
@@ -448,6 +460,8 @@ impl<const N: usize> From<[(&str, ModelChoice); N]> for ModelRoles {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// stdio transport: command to spawn.
     pub command: Option<String>,
     #[serde(default)]

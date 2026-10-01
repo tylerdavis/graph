@@ -1869,13 +1869,7 @@ steps:
     }
 
     fn outline_output() -> Value {
-        json!({
-            "items": [
-                {"summary": "search for x", "expectedTool": "t__search"},
-                {"summary": "report on it", "expectedTool": "t__report"},
-            ],
-            "queryToAnswer": "report on x",
-        })
+        json!({"entries": ["search for x", "report on it"]})
     }
 
     #[tokio::test]
@@ -1883,7 +1877,7 @@ steps:
         let (pipeline, provider) = scripted_pipeline(vec![
             outline_output(),
             json!({"step": {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
-                   "planComplete": false}),
+                   "planComplete": false, "queryToAnswer": "report on x"}),
             json!({"step": {"id": "E1", "toolName": "t__report",
                             "input": {"rows": "{{E0.values}}"}},
                    "planComplete": true}),

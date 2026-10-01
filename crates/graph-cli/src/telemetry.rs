@@ -1253,7 +1253,7 @@ mod tests {
         };
         sink.llm_call(&chat());
         sink.tool_started("workbench__draft_plan", &json!({"goal": "g"}));
-        sink.draft_outline(&json!([{"summary": "list issues"}, {"summary": "summarize"}]));
+        sink.draft_outline(&json!(["list issues", "summarize"]));
         sink.draft_step_started(0, "list issues");
         sink.llm_call(&LlmCallEvent {
             role: "planner".into(),

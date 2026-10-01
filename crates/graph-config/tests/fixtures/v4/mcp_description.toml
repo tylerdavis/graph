@@ -1,0 +1,9 @@
+version = 4
+
+[mcp.linear]
+url = "https://mcp.linear.app/mcp"
+description = "Issue tracking: issues, projects, cycles, teams, and docs"
+
+[mcp.github]
+command = "docker"
+args = ["run", "-i", "--rm", "ghcr.io/github/github-mcp-server"]

@@ -40,7 +40,7 @@ pub use filter::FILTER_TOOL;
 pub use gate::{ErrorDecision, ExecutionGate, GateContext, GateDecision, StepPath};
 pub use interlocutor::{AskOutcome, AskRequest, Interlocutor};
 pub use iterate::{MAP_TOOL, REDUCE_TOOL};
-pub use outline::{OutlineItem, PlanOutline, StepDraft, MAX_STEP_ATTEMPTS};
+pub use outline::{PlanOutline, StepDraft, MAX_STEP_ATTEMPTS};
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
 pub use prompts::CONTROL_STEP_RULES;
 pub use state::{BusEntry, BusKind, RunState};
@@ -631,19 +631,7 @@ impl Pipeline {
     async fn planner_catalog(&self) -> (String, String) {
         let mut tools = self.registry.tools().await.unwrap_or_default();
         tools.extend(control_step_defs());
-        for plan_doc in self.plans.iter() {
-            if self.call_stack.iter().any(|f| f == &plan_doc.identifier) {
-                continue; // don't offer plans already on the call stack
-            }
-            tools.push(crate::tools::ToolDef {
-                name: format!("plan__{}", plan_doc.identifier),
-                description: plan_doc.tool_description(),
-                input_schema: plan_doc.tool_input_schema(),
-                output_schema: None,
-                output_example: None,
-                read_only: None,
-            });
-        }
+        tools.extend(self.callable_plan_defs());
         let shapes: HashMap<String, ToolShape> = match &self.store {
             Some(store) => store
                 .tool_shapes()
@@ -660,6 +648,29 @@ impl Pipeline {
         )
         .unwrap_or_default();
         (tools_text, step_schema)
+    }
+
+    fn callable_plan_defs(&self) -> Vec<crate::tools::ToolDef> {
+        self.plans
+            .iter()
+            .filter(|plan_doc| !self.call_stack.iter().any(|f| f == &plan_doc.identifier))
+            .map(|plan_doc| crate::tools::ToolDef {
+                name: format!("plan__{}", plan_doc.identifier),
+                description: plan_doc.tool_description(),
+                input_schema: plan_doc.tool_input_schema(),
+                output_schema: None,
+                output_example: None,
+                read_only: None,
+            })
+            .collect()
+    }
+
+    async fn outliner_system(&self) -> String {
+        let mut tools = self.registry.tools().await.unwrap_or_default();
+        tools.extend(self.callable_plan_defs());
+        let names: Vec<String> = tools.into_iter().map(|tool| tool.name).collect();
+        let servers = self.registry.servers().await;
+        prompts::outliner_prompt(&prompts::outliner_catalog(&names, &servers))
     }
 
     /// The planner's system prompt: tool catalog (registry, control steps,

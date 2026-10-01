@@ -56,8 +56,7 @@ pub trait EventSink: Send + Sync {
         _elapsed: Duration,
     ) {
     }
-    /// Drafting produced its outline: a JSON array of
-    /// `{summary, expectedTool}` stage items.
+    /// Drafting produced its outline: a JSON array of entry strings.
     fn draft_outline(&self, _items: &Value) {}
     /// Drafting started generating the step for stage `index`
     /// (0-based), described by `summary`.

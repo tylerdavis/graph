@@ -166,6 +166,39 @@ pub fn available_packs() -> Vec<&'static str> {
     PACKS.iter().map(|(name, _)| *name).collect()
 }
 
+const PACK_SUMMARIES: &[(&str, &str)] = &[
+    (
+        "github",
+        "local git history, diffs, file contents, and grep, plus GitHub pull requests, review threads, comments, and releases.",
+    ),
+    ("slack", "posts messages and threaded replies to Slack channels."),
+];
+
+pub fn pack_summary(pack: &str) -> Option<&'static str> {
+    PACK_SUMMARIES
+        .iter()
+        .find(|(name, _)| *name == pack)
+        .map(|(_, summary)| *summary)
+}
+
+pub fn pack_of(tool: &str) -> Option<&'static str> {
+    static INDEX: std::sync::OnceLock<Vec<(String, &'static str)>> = std::sync::OnceLock::new();
+    INDEX
+        .get_or_init(|| {
+            PACKS
+                .iter()
+                .flat_map(|(pack, sources)| {
+                    sources.iter().filter_map(move |raw| {
+                        parse_tool_source(raw).ok().map(|doc| (doc.name, *pack))
+                    })
+                })
+                .collect()
+        })
+        .iter()
+        .find(|(name, _)| name == tool)
+        .map(|(_, pack)| *pack)
+}
+
 /// Parse the tools of the named packs. Unknown pack names error, listing
 /// what exists — a typo should fail loudly at startup, not surface as
 /// missing tools at plan time.

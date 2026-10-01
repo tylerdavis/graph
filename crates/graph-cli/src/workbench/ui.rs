@@ -708,12 +708,8 @@ fn draw_drafting_view(frame: &mut Frame, app: &App, drafting: &DraftingProgress,
     // one stage per accepted step plus the in-flight one, clamped.
     let consumed = (drafting.accepted.len() + usize::from(drafting.current.is_some()))
         .min(drafting.outline.len());
-    for stage in &drafting.outline[consumed..] {
-        let mut text = format!("○ {}", stage.summary);
-        if let Some(tool) = &stage.expected_tool {
-            text.push_str(&format!(" [{tool}]"));
-        }
-        lines.push(Line::styled(text, DIM));
+    for entry in &drafting.outline[consumed..] {
+        lines.push(Line::styled(format!("○ {entry}"), DIM));
     }
     let title = format!(
         " drafting plan — {} of ~{} stages ",

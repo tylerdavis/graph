@@ -109,13 +109,6 @@ pub enum RunLine {
     Error(String),
 }
 
-/// One outline stage of an in-flight draft.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct OutlineRow {
-    pub summary: String,
-    pub expected_tool: Option<String>,
-}
-
 /// A step the drafting loop has validated and accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedRow {
@@ -138,7 +131,7 @@ pub struct CurrentDraftStep {
 /// the shared draft doc is untouched until the final publish.
 #[derive(Debug, Default)]
 pub struct DraftingProgress {
-    pub outline: Vec<OutlineRow>,
+    pub outline: Vec<String>,
     pub accepted: Vec<AcceptedRow>,
     pub current: Option<CurrentDraftStep>,
     /// The last failed attempt's validation problems, if the current step
@@ -190,7 +183,7 @@ impl PlanWorkspace {
     }
 
     /// The outline arrived: show the drafting overlay.
-    pub fn begin_drafting(&mut self, outline: Vec<OutlineRow>) {
+    pub fn begin_drafting(&mut self, outline: Vec<String>) {
         self.tab = WsTab::Plan;
         self.drafting = Some(DraftingProgress {
             outline,
@@ -834,16 +827,7 @@ solver:
             tab: WsTab::Run,
             ..Default::default()
         };
-        ws.begin_drafting(vec![
-            OutlineRow {
-                summary: "search".into(),
-                expected_tool: Some("t__search".into()),
-            },
-            OutlineRow {
-                summary: "report".into(),
-                expected_tool: None,
-            },
-        ]);
+        ws.begin_drafting(vec!["search".into(), "report".into()]);
         assert_eq!(ws.tab, WsTab::Plan, "drafting shows the plan tab");
         assert!(ws.drafting.is_some());
 

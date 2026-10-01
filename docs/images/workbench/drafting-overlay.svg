@@ -87,22 +87,23 @@
 <text x="454.8" y="157.5" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">drafting:</text>
 <text x="538.8" y="157.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">Review</text>
 <text x="597.6" y="157.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">the</text>
-<text x="631.2" y="157.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">diff</text>
-<text x="673.2" y="157.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">against</text>
-<text x="740.4" y="157.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">the</text>
-<text x="774.0" y="157.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">repo</text>
-<text x="816.0" y="157.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">rubric</text>
+<text x="631.2" y="157.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">changes</text>
+<text x="698.4" y="157.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">against</text>
+<text x="765.6" y="157.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">the</text>
+<text x="799.2" y="157.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">repo</text>
+<text x="841.2" y="157.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#e5c07b">rubric</text>
 <text x="1009.2" y="157.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">││</text>
 <text x="18.0" y="175.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="34.8" y="175.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">◐</text>
 <text x="412.8" y="175.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="421.2" y="175.5" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">││○</text>
 <text x="454.8" y="175.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">Post</text>
-<text x="496.8" y="175.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">findings</text>
-<text x="572.4" y="175.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">as</text>
-<text x="597.6" y="175.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">inline</text>
-<text x="656.4" y="175.5" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">comments</text>
-<text x="732.0" y="175.5" textLength="268.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">[builtin__gh_pr_inline_comments]</text>
+<text x="496.8" y="175.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">each</text>
+<text x="538.8" y="175.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">finding</text>
+<text x="606.0" y="175.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">as</text>
+<text x="631.2" y="175.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">an</text>
+<text x="656.4" y="175.5" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">inline</text>
+<text x="715.2" y="175.5" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">comment</text>
 <text x="1009.2" y="175.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">││</text>
 <text x="18.0" y="193.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="412.8" y="193.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>

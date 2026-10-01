@@ -41,12 +41,13 @@ temperature = 0.4
 
 ### Standard roles
 
-The standard roles are the ones graph's own calls resolve through. Each falls back to `default` when it has no entry of its own:
+The standard roles are the ones graph's own calls resolve through. Each falls back to `default` when it has no entry of its own, except `outliner`, which falls back to `planner` first:
 
 | Role | Fires when |
 | --- | --- |
 | `chat` | every [agent-loop](/using/chat-and-ask) turn in `ask`/`chat` and the [workbench](/workbench/plan-workbench)'s chat pane |
 | `planner` | [`plan_and_execute`](/plans/the-planner) authors or revises a plan, and draft-only planning in the workbench |
+| `outliner` | [draft-only planning](/plans/the-planner#drafting-without-executing) sketches its coarse outline before the planner drafts steps — falls back to `planner` |
 | `solver` | a [solver-mode plan](/plans/finish-modes) synthesizes its report |
 | `repair` | a structured output fails to parse or validate — one fix-up pass |
 | `judge` | an `infer` gate on an [`exit`](/plans/exit-gates) or [`decide`](/plans/branching) step needs a yes/no verdict |
