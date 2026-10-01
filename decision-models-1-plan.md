@@ -17,17 +17,17 @@ This sub-PR adds a Jev-compatible decision provider, a `decider` role, Langfuse-
 ## Task list
 
 ### Phase 0: Setup
-- [ ] Task 0: dev branch, worktree, spec and plan committed
+- [x] Task 0: dev branch, worktree, spec and plan committed
 
 ### Phase 1: Foundation
-- [ ] Task 1: config v4 (`systemone` provider kind, `context_window`, `decider` role)
-- [ ] Task 2: `ModelCall` rename, `kind`, OTLP operation name, JSONL `model_call`
+- [x] Task 1: config v4 (`systemone` provider kind, `context_window`, `decider` role)
+- [x] Task 2: `ModelCall` rename, `kind`, OTLP operation name, JSONL `model_call`
 
 ### Checkpoint A
 - [ ] `mise run test` and `mise run lint` are green. Existing configs and plans behave identically.
 
 ### Phase 2: Decision provider
-- [ ] Task 3: wire types and the `systemone` client, with stub-server tests and a live smoke test
+- [x] Task 3: wire types and the `systemone` client, with stub-server tests and a live smoke test
 - [ ] Task 4: router decision map, startup checks, `decide_named`, failover, `context_window`, metering
 - [ ] Task 5: decision span content in OTLP
 
