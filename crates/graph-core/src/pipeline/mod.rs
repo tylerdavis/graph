@@ -42,7 +42,7 @@ pub use interlocutor::{AskOutcome, AskRequest, Interlocutor};
 pub use iterate::{MAP_TOOL, REDUCE_TOOL};
 pub use outline::{PlanOutline, StepDraft, MAX_STEP_ATTEMPTS};
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
-pub use prompts::CONTROL_STEP_RULES;
+pub use prompts::{CONTROL_STEP_RULES, TEMPLATING_RULES};
 pub use state::{BusEntry, BusKind, RunState};
 
 use crate::store::{Store, ToolShape};

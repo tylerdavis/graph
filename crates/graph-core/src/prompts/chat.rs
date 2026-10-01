@@ -13,16 +13,21 @@ pub fn chat_system_prompt(user: &UserConfig, now: &str, base_override: Option<&s
     if !prompt.ends_with('\n') {
         prompt.push('\n');
     }
-    prompt.push_str(&format!("\nCurrent date and time: {now}\n"));
+    prompt.push_str(&user_context_section(user, now));
+    prompt
+}
+
+pub fn user_context_section(user: &UserConfig, now: &str) -> String {
+    let mut section = format!("\nCurrent date and time: {now}\n");
     if let Some(name) = &user.name {
-        prompt.push_str(&format!("\nThe user's name is {name}.\n"));
+        section.push_str(&format!("\nThe user's name is {name}.\n"));
     }
     if let Some(context) = &user.context {
-        prompt.push_str(&format!(
+        section.push_str(&format!(
             "\nAbout the user and their environment:\n{context}\n"
         ));
     }
-    prompt
+    section
 }
 
 #[cfg(test)]
@@ -42,6 +47,21 @@ mod tests {
         assert!(prompt.contains("Current date and time: NOW"));
         assert!(prompt.contains("The user's name is Tyler."));
         assert!(prompt.contains("About the user and their environment:\nCEO"));
+    }
+
+    #[test]
+    fn the_user_context_section_is_what_the_chat_prompt_appends() {
+        let user = UserConfig {
+            name: Some("Tyler".into()),
+            context: Some("CEO".into()),
+            timezone: None,
+        };
+        let section = user_context_section(&user, "NOW");
+        assert_eq!(
+            section,
+            "\nCurrent date and time: NOW\n\nThe user's name is Tyler.\n\nAbout the user and their environment:\nCEO\n"
+        );
+        assert!(chat_system_prompt(&user, "NOW", None).ends_with(&section));
     }
 
     #[test]
