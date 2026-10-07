@@ -5,13 +5,13 @@
 //! executor — never dispatched to a tool registry, and (like every
 //! control step's evaluation) never consulted with the execution gate:
 //! selection makes no tool call. That is also why, unlike its siblings,
-//! `filter` may nest inside `decide`/`map`/`reduce` bodies — inside a
+//! `filter` may nest inside `route`/`map`/`reduce` bodies — inside a
 //! body its `where`/`infer` see their own `item`/`index`, shadowing the
 //! enclosing body's. Both halves of the partition are returned (`items`
 //! and `dropped`): selection narrows what runs next, never what is
 //! known.
 
-use super::condition::{evaluate_gate, Condition};
+use super::condition::{check_gate, Condition, DecideGate, Gate};
 use super::gate::StepPath;
 use super::iterate::{template_roots, type_name};
 use super::state::BusKind;
@@ -45,6 +45,8 @@ pub struct FilterSpec {
     /// or `default`. Defaults to the `judge` role. Ignored without `infer`.
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub decide: Option<Value>,
     /// Maximum `infer` verdicts in flight; 1 (the default) evaluates
     /// sequentially. Irrelevant for `where` — pure computation.
     #[serde(default = "default_concurrency")]
@@ -61,8 +63,9 @@ pub fn filter_tool_def() -> crate::tools::ToolDef {
         name: FILTER_TOOL.to_string(),
         description: "Partition a list with a per-item gate. `over` must produce an array \
                       (usually a template like {{E0.issues}}); the gate — exactly one of \
-                      `where` (a logical condition) or `infer` (a yes/no question judged \
-                      per item) — is evaluated once per element with {{item}} and \
+                      `where` (a logical condition), `infer` (a yes/no question judged \
+                      per item), or `decide` (that question asked of a decision model, \
+                      when one is configured, with state: {{item}}) — is evaluated once per element with {{item}} and \
                       {{index}} available. Later steps reference {{Ex.items}} (elements \
                       that passed, input order) with {{Ex.count}}, and {{Ex.dropped}} \
                       (elements that did not) with {{Ex.dropped_count}}. Use it to select \
@@ -71,7 +74,7 @@ pub fn filter_tool_def() -> crate::tools::ToolDef {
                       entries a later call cannot handle. `infer` costs one judge call \
                       per item (set `concurrency` to run them in parallel); prefer \
                       `where` whenever a field comparison can decide. Unlike other \
-                      control steps, `filter` may appear inside `decide`/`map`/`reduce` \
+                      control steps, `filter` may appear inside `route`/`map`/`reduce` \
                       bodies; its {{item}}/{{index}} shadow the enclosing body's inside \
                       the gate."
             .to_string(),
@@ -90,6 +93,10 @@ pub fn filter_tool_def() -> crate::tools::ToolDef {
                     }
                 },
                 "infer": {"type": "string", "description": "A yes/no question about {{item}}; the element is kept on yes. One judge call per item."},
+                "decide": super::condition::decide_gate_schema(
+                    "A per-item yes/no question answered by a decision model (only when one is configured); keeps the element when its probability reaches min_confidence. Results add `probabilities`, aligned with `over`.",
+                    "The data to judge, usually {{item}}",
+                ),
                 "model": {"type": "string", "description": "Model role for `infer` verdicts (any configured role, standard or custom); defaults to the judge role."},
                 "concurrency": {"type": "integer", "minimum": 1, "description": "Maximum `infer` verdicts in flight; 1 (default) evaluates one at a time."}
             }
@@ -123,14 +130,19 @@ pub fn validate_filter_input(
             return;
         }
     };
-    match (&spec.where_, &spec.infer) {
-        (Some(_), Some(_)) => problems.push(format!(
-            "step {step_id}: `where` and `infer` are mutually exclusive"
+    match gate_count(&spec) {
+        0 => problems.push(format!(
+            "step {step_id}: filter needs `where`, `infer`, or `decide` — an ungated filter keeps everything"
         )),
-        (None, None) => problems.push(format!(
-            "step {step_id}: filter needs `where` or `infer` — an ungated filter keeps everything"
+        1 => {}
+        _ => problems.push(format!(
+            "step {step_id}: `where`, `infer`, and `decide` are mutually exclusive"
         )),
-        _ => {}
+    }
+    if spec.decide.is_some() && spec.model.is_some() {
+        problems.push(format!(
+            "step {step_id}: `model` sits inside the `decide` object; move it there"
+        ));
     }
     if spec.concurrency == 0 {
         problems.push(format!("step {step_id}: `concurrency` must be at least 1"));
@@ -157,6 +169,10 @@ pub fn validate_filter_input(
     }
     if let Some(model) = &spec.model {
         super::check_templates(&Value::String(model.clone()), seen, step_id, problems);
+    }
+    if let Some(gate) = &spec.decide {
+        super::check_decide_gate_shape(gate, false, step_id, problems);
+        super::check_templates(gate, &gate_avail, step_id, problems);
     }
 
     // `over` renders before any item exists. Walk it with the gate scope
@@ -219,7 +235,7 @@ impl Pipeline {
     }
 
     /// Filter, evaluated against an arbitrary scope so it works
-    /// identically at the top level and inside a `decide`/`map`/`reduce`
+    /// identically at the top level and inside a `route`/`map`/`reduce`
     /// body. Per-item evaluation layers `item`/`index` over `scope`,
     /// shadowing an enclosing body's.
     pub(super) async fn run_filter_scoped(
@@ -232,18 +248,18 @@ impl Pipeline {
             .map_err(|e| FilterFail::Failed(format!("invalid filter input: {e}")))?;
         // Validation catches these, but an unvalidated plan can reach the
         // executor (a gate-injected draft, a direct API caller).
-        match (&spec.where_, &spec.infer) {
-            (Some(_), Some(_)) => {
+        match gate_count(&spec) {
+            0 => {
                 return Err(FilterFail::Failed(
-                    "`where` and `infer` are mutually exclusive".to_string(),
+                    "filter needs `where`, `infer`, or `decide`".to_string(),
                 ))
             }
-            (None, None) => {
+            1 => {}
+            _ => {
                 return Err(FilterFail::Failed(
-                    "filter needs `where` or `infer`".to_string(),
+                    "`where`, `infer`, and `decide` are mutually exclusive".to_string(),
                 ))
             }
-            _ => {}
         }
         let concurrency = spec.concurrency.max(1);
 
@@ -270,7 +286,13 @@ impl Pipeline {
             FILTER_TOOL,
             &json!({
                 "over": items.len(),
-                "mode": if spec.where_.is_some() { "where" } else { "infer" },
+                "mode": if spec.where_.is_some() {
+                    "where"
+                } else if spec.decide.is_some() {
+                    "decide"
+                } else {
+                    "infer"
+                },
                 "concurrency": concurrency,
             }),
         );
@@ -281,45 +303,50 @@ impl Pipeline {
         // ones not yet started are skipped.
         let halted = AtomicBool::new(false);
         let halted_ref = &halted;
-        let where_ref = &spec.where_;
-        let infer_ref = &spec.infer;
-        let model_ref = model.as_deref();
-        let verdict_futures: Vec<futures::future::BoxFuture<'_, Option<Result<bool, FilterFail>>>> =
-            items
-                .iter()
-                .enumerate()
-                .map(|(index, item)| {
-                    let future = async move {
-                        if halted_ref.load(Ordering::Relaxed) {
-                            return None;
-                        }
-                        let mut layered = scope.clone();
-                        layered.insert("item".to_string(), item.clone());
-                        layered.insert("index".to_string(), json!(index));
-                        let verdict = self
-                            .item_verdict(path, where_ref, infer_ref, model_ref, &layered, index)
-                            .await;
-                        if verdict.is_err() {
-                            halted_ref.store(true, Ordering::Relaxed);
-                        }
-                        Some(verdict)
-                    };
-                    Box::pin(future) as futures::future::BoxFuture<'_, _>
-                })
-                .collect();
-        let outcomes: Vec<Option<Result<bool, FilterFail>>> =
-            futures::stream::iter(verdict_futures)
-                .buffered(concurrency)
-                .collect()
-                .await;
+        let gate = ItemGate {
+            where_: &spec.where_,
+            infer: &spec.infer,
+            decide: &spec.decide,
+            model: model.as_deref(),
+        };
+        let gate_ref = &gate;
+        type Verdict = Result<(bool, Option<f64>), FilterFail>;
+        let verdict_futures: Vec<futures::future::BoxFuture<'_, Option<Verdict>>> = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let future = async move {
+                    if halted_ref.load(Ordering::Relaxed) {
+                        return None;
+                    }
+                    let mut layered = scope.clone();
+                    layered.insert("item".to_string(), item.clone());
+                    layered.insert("index".to_string(), json!(index));
+                    let verdict = self.item_verdict(path, gate_ref, &layered, index).await;
+                    if verdict.is_err() {
+                        halted_ref.store(true, Ordering::Relaxed);
+                    }
+                    Some(verdict)
+                };
+                Box::pin(future) as futures::future::BoxFuture<'_, _>
+            })
+            .collect();
+        let outcomes: Vec<Option<Verdict>> = futures::stream::iter(verdict_futures)
+            .buffered(concurrency)
+            .collect()
+            .await;
 
         let mut kept = Vec::new();
         let mut dropped = Vec::new();
+        let mut probabilities = Vec::new();
         let mut failure: Option<FilterFail> = None;
         for (item, outcome) in items.into_iter().zip(outcomes) {
+            if let Some(Ok((_, Some(probability)))) = &outcome {
+                probabilities.push(*probability);
+            }
             match outcome {
-                Some(Ok(true)) => kept.push(item),
-                Some(Ok(false)) => dropped.push(item),
+                Some(Ok((true, _))) => kept.push(item),
+                Some(Ok((false, _))) => dropped.push(item),
                 Some(Err(e)) => {
                     // `buffered` yields in order: the kept failure is the
                     // lowest-index one.
@@ -335,12 +362,16 @@ impl Pipeline {
         }
         self.events
             .tool_finished(FILTER_TOOL, started.elapsed(), false);
-        Ok(json!({
+        let mut result = json!({
             "items": kept,
             "count": kept.len(),
             "dropped": dropped,
             "dropped_count": dropped.len(),
-        }))
+        });
+        if spec.decide.is_some() {
+            result["probabilities"] = json!(probabilities);
+        }
+        Ok(result)
     }
 
     /// One item's verdict: render the gate against the item's scope and
@@ -348,27 +379,43 @@ impl Pipeline {
     async fn item_verdict(
         &self,
         path: &StepPath,
-        where_: &Option<Value>,
-        infer: &Option<String>,
-        model: Option<&str>,
+        gate: &ItemGate<'_>,
         layered: &Map<String, Value>,
         index: usize,
-    ) -> Result<bool, FilterFail> {
+    ) -> Result<(bool, Option<f64>), FilterFail> {
         let classify = |e: RenderError| match e {
             e @ RenderError::EmptyData { .. } => FilterFail::Empty(e),
             e => FilterFail::Failed(format!("`where` item {index}: {e}")),
         };
         let roots = Roots::new(layered);
-        match (where_, infer) {
-            (Some(raw), None) => {
+        let model = gate.model;
+        match (gate.where_, gate.infer, gate.decide) {
+            (Some(raw), None, None) => {
                 let rendered = render_input(raw, &roots).map_err(classify)?;
                 let condition: Condition = serde_json::from_value(rendered).map_err(|e| {
                     FilterFail::Failed(format!("item {index}: invalid filter condition: {e}"))
                 })?;
                 super::condition::eval_condition(&condition)
+                    .map(|verdict| (verdict, None))
                     .map_err(|e| FilterFail::Failed(format!("item {index}: {e}")))
             }
-            (None, Some(question)) => {
+            (None, None, Some(raw)) => {
+                let rendered = render_input(raw, &roots).map_err(|e| match e {
+                    e @ RenderError::EmptyData { .. } => FilterFail::Empty(e),
+                    e => FilterFail::Failed(format!("`decide` item {index}: {e}")),
+                })?;
+                let gate: DecideGate = serde_json::from_value(rendered).map_err(|e| {
+                    FilterFail::Failed(format!("item {index}: invalid decide gate: {e}"))
+                })?;
+                let outcome = crate::usage::CallSite::role("decider")
+                    .at(path.to_string())
+                    .in_plans(&self.call_stack)
+                    .scope(check_gate(Gate::Decide(&gate), &self.router))
+                    .await
+                    .map_err(|e| FilterFail::Failed(format!("item {index}: {e}")))?;
+                Ok((outcome.triggered, outcome.probability))
+            }
+            (None, Some(question), None) => {
                 let rendered = render_str(question, &roots).map_err(|e| match e {
                     e @ RenderError::EmptyData { .. } => FilterFail::Empty(e),
                     e => FilterFail::Failed(format!("`infer` item {index}: {e}")),
@@ -376,18 +423,42 @@ impl Pipeline {
                 // Per item, and `concurrency` runs several at once — this is
                 // the other place attribution has to ride the future rather
                 // than any shared cursor.
-                let (verdict, _reason) = crate::usage::CallSite::role("judge")
+                let outcome = crate::usage::CallSite::role("judge")
                     .at(path.to_string())
                     .in_plans(&self.call_stack)
-                    .scope(evaluate_gate(None, Some(&rendered), model, &self.router))
+                    .scope(check_gate(
+                        Gate::Infer {
+                            question: &rendered,
+                            model,
+                        },
+                        &self.router,
+                    ))
                     .await
                     .map_err(|e| FilterFail::Failed(format!("item {index}: {e}")))?;
-                Ok(verdict)
+                Ok((outcome.triggered, None))
             }
             // Arity is checked before any item runs.
             _ => unreachable!("filter gate arity checked by run_filter_scoped"),
         }
     }
+}
+
+struct ItemGate<'a> {
+    where_: &'a Option<Value>,
+    infer: &'a Option<String>,
+    decide: &'a Option<Value>,
+    model: Option<&'a str>,
+}
+
+fn gate_count(spec: &FilterSpec) -> usize {
+    [
+        spec.where_.is_some(),
+        spec.infer.is_some(),
+        spec.decide.is_some(),
+    ]
+    .iter()
+    .filter(|set| **set)
+    .count()
 }
 
 #[cfg(test)]
@@ -411,7 +482,9 @@ mod tests {
 
         let problems = problems_for(json!({"over": "{{E0.values}}"}));
         assert!(
-            problems.iter().any(|p| p.contains("`where` or `infer`")),
+            problems
+                .iter()
+                .any(|p| p.contains("`where`, `infer`, or `decide`")),
             "{problems:?}"
         );
 

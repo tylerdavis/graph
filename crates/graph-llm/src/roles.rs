@@ -209,16 +209,7 @@ impl ModelRouter {
     }
 
     fn decider(&self, name: &str) -> Result<&Arc<dyn DecisionProvider>, LlmError> {
-        if let Some(decider) = self.deciders.get(name) {
-            return Ok(decider);
-        }
-        match self.unavailable.get(name) {
-            Some(reason) => Err(LlmError::ProviderUnavailable {
-                provider: name.to_string(),
-                reason: reason.clone(),
-            }),
-            None => Err(LlmError::UnknownProvider(name.to_string())),
-        }
+        self.deciders.get(name).ok_or_else(|| self.missing(name))
     }
 
     fn metered_decider(
@@ -305,15 +296,16 @@ impl ModelRouter {
     /// beats unknown, because "your key is unset" is actionable where
     /// "not configured" sends someone off to check spelling.
     fn provider(&self, name: &str) -> Result<&Arc<dyn ChatProvider>, LlmError> {
-        if let Some(provider) = self.providers.get(name) {
-            return Ok(provider);
-        }
+        self.providers.get(name).ok_or_else(|| self.missing(name))
+    }
+
+    fn missing(&self, name: &str) -> LlmError {
         match self.unavailable.get(name) {
-            Some(reason) => Err(LlmError::ProviderUnavailable {
+            Some(reason) => LlmError::ProviderUnavailable {
                 provider: name.to_string(),
                 reason: reason.clone(),
-            }),
-            None => Err(LlmError::UnknownProvider(name.to_string())),
+            },
+            None => LlmError::UnknownProvider(name.to_string()),
         }
     }
 

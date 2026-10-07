@@ -16,6 +16,10 @@ api_key = "${ANTHROPIC_API_KEY}"
 [providers.local]
 type = "openai_compat"
 base_url = "http://localhost:11434/v1"    # Ollama, vLLM, LM Studio…
+
+[providers.typesafe]
+type = "systemone"
+api_key = "${TYPESAFE_API_KEY}"
 ```
 
 | `type` | Serves |
@@ -23,6 +27,7 @@ base_url = "http://localhost:11434/v1"    # Ollama, vLLM, LM Studio…
 | `anthropic` | the Anthropic API |
 | `openai` | the OpenAI API |
 | `openai_compat` | any OpenAI-compatible endpoint — Ollama, vLLM, LM Studio, hosted gateways, etc |
+| `systemone` | a [decision model](#decision-models) — TypeSafe's Jev at `https://api.typesafe.ai` by default, or any server speaking the same `/v1/systemone` API via `base_url` |
 
 ## Roles
 
@@ -50,17 +55,20 @@ The standard roles are the ones graph's own calls resolve through. Each falls ba
 | `outliner` | [draft-only planning](/plans/the-planner#drafting-without-executing) sketches its coarse outline before the planner drafts steps — falls back to `planner` |
 | `solver` | a [solver-mode plan](/plans/finish-modes) synthesizes its report |
 | `repair` | a structured output fails to parse or validate — one fix-up pass |
-| `judge` | an `infer` gate on an [`exit`](/plans/exit-gates) or [`decide`](/plans/branching) step needs a yes/no verdict |
+| `judge` | an `infer` gate on an [`exit`](/plans/exit-gates), [`route`](/plans/branching), or [`filter`](/plans/selection) step needs a yes/no verdict |
+| `decider` | a `decide` gate on the same steps asks a [decision model](#decision-models). Unlike the others it never falls back to `default` |
 
 The common cost setup: a strong model for `chat`/`planner` (they do the judgment), a fast model for `solver`/`repair`/`judge` (they do the volume). `graph plan run` on an authored plan touches only `solver` (or nothing) — the [cost table](/reference/scripting-contract#inference-cost-by-invocation) maps invocations to calls.
 
 ### Custom roles
 
-Any other name under `[models]` is a custom role. It is written exactly like a standard one and is selectable **wherever a model name is accepted**. That's exactly three places:
+Any other name under `[models]` is a custom role. It is written exactly like a standard one and is selectable **wherever a model name is accepted**:
 
 1. a [prompt tool](/tools/user-defined#prompt--an-llm-call-as-a-tool)'s `model` field
 2. [`builtin__infer`](/tools/builtins#builtin-infer)'s `model` input
-3. the `model:` override on an `infer` gate (`exit`/`decide`/`filter`)
+3. an [`agent` step](/plans/agent-step)'s `model`
+4. the `model:` override on an `infer` gate (`exit`/`route`/`filter`)
+5. the `model` inside a `decide` gate — decision roles only
 
 Standard roles resolve in those same places, with their usual fallback to `default`. A custom role never falls back: an unknown name fails the call listing what is configured — never a silent substitution.
 
@@ -72,6 +80,34 @@ description = "fast and cheap; small self-contained tasks like per-item map bodi
 ```
 
 The `description` is a **planner-facing routing signal**, and it is what makes a role selectable by the planner: `builtin__infer`'s catalog schema advertises every role carrying one, with guidance to prefer the smallest adequate model, so planner-authored plans route small chunks of work — [per-item map bodies](/plans/iteration#per-item-inference) especially — to cheap models on their own. A role without a description stays selectable by name in authored plans but is not offered to the planner. Write descriptions for that audience.
+
+## Decision models
+
+A decision model answers typed questions about a piece of data instead of generating text: given a `state` and a question, it returns a calibrated probability, in tens to hundreds of milliseconds and at a fraction of an LLM's price. graph speaks the System One API that TypeSafe's Jev serves, so a `systemone` provider can point at TypeSafe, at OpenRouter (`base_url = "https://openrouter.ai/api"`), or at a self-hosted compatible server.
+
+```toml
+[providers.typesafe]
+type = "systemone"
+api_key = "${TYPESAFE_API_KEY}"
+
+[providers.local_decider]
+type = "systemone"
+base_url = "http://127.0.0.1:8080"
+
+[models.decider]
+provider = "typesafe"
+model = "jev-latest"
+context_window = 32000
+fallbacks = [{ provider = "local_decider", model = "openjev-latest" }]
+```
+
+Plans use them through a [`decide` gate](/plans/exit-gates#decision-gates-decide) on `exit`, `route`, or `filter`. A decision model is never a chat model, and graph keeps the two apart rather than substituting one for the other:
+
+- At startup, `chat`, `planner`, `solver`, `repair`, and `judge` — and a `default` they fall back to — must be chat models, `decider` must be a decision model, and a role's `fallbacks` must all be the same kind as its primary. A violation fails before anything runs, naming the role.
+- At the point of use, an `infer` gate pointed at a decision role, or a `decide` gate pointed at a chat role, fails the step. `graph plan validate` reports both when the `model` is written literally.
+- `context_window` caps the estimated size of `state` (about four bytes per token). A request over it fails with the role, the limit, and the estimate — `state` is never truncated. Each fallback checks its own `context_window`.
+
+A service that hosts both kinds — OpenRouter, say — needs two `[providers.*]` entries with the same key, one per `type`. Decision calls are metered and priced like any other call (`[pricing]` keys them by model id), and they appear in traces as generations with `gen_ai.operation.name = "decision"`, carrying the question, `state`, and answer when content capture is on.
 
 ## Provider failover
 

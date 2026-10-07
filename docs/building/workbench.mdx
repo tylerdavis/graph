@@ -27,14 +27,14 @@ The workbench needs an interactive terminal; for scripting, use `graph plan run`
 | Tab | Contents |
 | --- | --- |
 | `1` plan | header (identifier, finish mode, validation state), the step list, and a detail pane showing the selected step's reasoning, input template, and what its tool returns (the declared output schema, else the observed output shape, plus control steps' output examples) — until a run replaces that prediction with the rendered input and result JSON |
-| `2` context | the tool catalog and observed output shapes — including the control-step vocabulary (`decide`, `map`, …) — exactly what the planner sees when drafting |
+| `2` context | the tool catalog and observed output shapes — including the control-step vocabulary (`route`, `map`, …) — exactly what the planner sees when drafting |
 | `3` run | the live transcript: step events, the streamed solver answer, and the final outcome |
 
 <Frame caption="The context tab: the namespaced catalog with read-only markers, and the selected tool's description and schemas in the detail pane.">
   ![The context tab: the namespaced catalog with read-only markers, and the selected tool's description and schemas in the detail pane.](/images/workbench/context-tab.svg)
 </Frame>
 
-The plan tab renders the whole plan as a `tree`-style flowchart: live status glyphs lead each row (`○` pending · `◐` running · `✓` ok · `✗` error · `⊘` skipped), the plan identifier is the root, steps fork off a gray trunk, and control steps carry their icon in the junction (`├─⑂` decide · `├─⟳` map · `├─∑` reduce · `├─✻` agent · `├─ƒ` plan call · `└─⎋` exit). Decide's step-list branches nest under named `then`/`else` heads piping in blue/magenta; map/reduce bodies hang directly in cyan (iterations all land on the one structural row — the last item's status and result stick). Plans that finish with a solver or rendered output get a final `solver`/`output` row that runs live during synthesis and carries the streamed answer as its result.
+The plan tab renders the whole plan as a `tree`-style flowchart: live status glyphs lead each row (`○` pending · `◐` running · `✓` ok · `✗` error · `⊘` skipped), the plan identifier is the root, steps fork off a gray trunk, and control steps carry their icon in the junction (`├─⑂` route · `├─⟳` map · `├─∑` reduce · `├─✻` agent · `├─ƒ` plan call · `└─⎋` exit). Decide's step-list branches nest under named `then`/`else` heads piping in blue/magenta; map/reduce bodies hang directly in cyan (iterations all land on the one structural row — the last item's status and result stick). Plans that finish with a solver or rendered output get a final `solver`/`output` row that runs live during synthesis and carries the streamed answer as its result.
 
 ## Driving it from chat
 
@@ -66,7 +66,7 @@ For changes to an existing draft, the agent prefers the precise editing tools ov
 - `update_metadata` patches identifier / name / description / exemplars; steps are inserted appended or anchored `before`/`after` an id.
 - `update_step` patches a step's tool, input, or reasoning; its `newId` renames the step **and rewrites every downstream `{{id.*}}` reference** — templates keep working.
 - An edit is rejected — with the draft untouched — **only when it would introduce new validation problems** (duplicate id, forward reference, deleting a step others still read). Problems the plan already had never block an edit: an already-invalid draft stays editable, each successful edit reports the remaining pre-existing problems, and rejections list the problems the edit introduced separately from the pre-existing ones.
-- These edit top-level steps; `decide`/`map`/`reduce` body steps live inside the control step's input, so update that step.
+- These edit top-level steps; `route`/`map`/`reduce` body steps live inside the control step's input, so update that step.
 - There is no whole-plan replace tool — reshape the draft with the editing tools, or re-draft with `draft_plan`.
 
 ### Drafting from a goal
@@ -89,7 +89,7 @@ A single agent turn is bounded by [`max_agent_iterations`](/reference/configurat
 
 ## Editing steps and metadata
 
-Select a row in the plan tab and press `Enter` (or `e`, or double-click it) to open it in a form. A step's form has one field per thing the step carries: `id`, `tool`, `reasoning`, then one field per key of the tool's input schema — pre-filled from the draft, required keys first, the schema's description as the hint — plus any input keys the step already carries that the schema doesn't list. Control steps get their own vocabulary the same way: an `exit` opens with `status`, `when`, `infer`, `message`, and `model`. Steps inside `decide`/`map`/`reduce` bodies open too and write back into the owning step. The plan row at the top opens the metadata form: identifier, name, description, exemplars, required servers, input schema, and a `finish` select (solver, output, or silent) that shows only that mode's fields — the solver's query, system prompt, and data map, or the output template map.
+Select a row in the plan tab and press `Enter` (or `e`, or double-click it) to open it in a form. A step's form has one field per thing the step carries: `id`, `tool`, `reasoning`, then one field per key of the tool's input schema — pre-filled from the draft, required keys first, the schema's description as the hint — plus any input keys the step already carries that the schema doesn't list. Control steps get their own vocabulary the same way: an `exit` opens with `status`, `when`, `infer`, `message`, and `model`. Steps inside `route`/`map`/`reduce` bodies open too and write back into the owning step. The plan row at the top opens the metadata form: identifier, name, description, exemplars, required servers, input schema, and a `finish` select (solver, output, or silent) that shows only that mode's fields — the solver's query, system prompt, and data map, or the output template map.
 
 <Frame caption="The step form for pr_review's exit gate: schema-driven fields with their hints, the required status first, the when condition as JSON, and a scrollbar because the form is taller than the window.">
   <img src="/images/workbench/step-form.svg" alt="The step form for pr_review's exit gate: schema-driven fields with their hints, the required status first, the when condition as JSON, and a scrollbar because the form is taller than the window." />
@@ -129,9 +129,9 @@ A debug run (`g`) works like a debugger over plan execution. Pauses are **non-mo
   ![A gated pr_review run paused at a breakpoint on E5 — steps E0–E4 executed, the debug panel showing the rendered input about to be sent.](/images/workbench/pr-review-debug.svg)
 </Frame>
 
-**Breakpoints.** `b` toggles a breakpoint on the selected step (a red `●` in the gutter), any time, including mid-run. With breakpoints set, `g` runs freely until one is hit; with none, it pauses before the first call. A breakpoint on a `map`/`decide` step also pauses each of its body calls (like a breakpoint on a loop line) — pressing `b` on a body sub-step row sets exactly that, on the owning control step. An `agent` step behaves the same way: the step itself is engine computation and never pauses, but a breakpoint on it stops before every tool call the model chooses. Nested plans have their own step namespace — breakpoint the `plan__*` step to pause before entering, then step through its calls.
+**Breakpoints.** `b` toggles a breakpoint on the selected step (a red `●` in the gutter), any time, including mid-run. With breakpoints set, `g` runs freely until one is hit; with none, it pauses before the first call. A breakpoint on a `map`/`route` step also pauses each of its body calls (like a breakpoint on a loop line) — pressing `b` on a body sub-step row sets exactly that, on the owning control step. An `agent` step behaves the same way: the step itself is engine computation and never pauses, but a breakpoint on it stops before every tool call the model chooses. Nested plans have their own step namespace — breakpoint the `plan__*` step to pause before entering, then step through its calls.
 
-**The debug panel.** At a pause, the plan tab auto-selects the paused call's row — the body sub-step itself when the pause is inside a `decide`/`map`/`reduce` — and the detail pane shows the debugger's view: the paused position and call stack, the fully rendered input about to be sent, and the **scope** — everything a template can read at this point: `input`, every prior step result, and inside bodies the `item`/`index`/`accumulator` pseudo-roots. One compact line per root; select any step row for its full JSON.
+**The debug panel.** At a pause, the plan tab auto-selects the paused call's row — the body sub-step itself when the pause is inside a `route`/`map`/`reduce` — and the detail pane shows the debugger's view: the paused position and call stack, the fully rendered input about to be sent, and the **scope** — everything a template can read at this point: `input`, every prior step result, and inside bodies the `item`/`index`/`accumulator` pseudo-roots. One compact line per root; select any step row for its full JSON.
 
 **Decisions** (shown in the panel title):
 
@@ -146,7 +146,7 @@ A debug run (`g`) works like a debugger over plan execution. Pauses are **non-mo
 
 **Questions.** An [`ask` step](/plans/ask-step) parks the run the same way a breakpoint does, but it is not a debugger pause — the plan declared it needs this value. The prompt shows the question and opens the answer editor directly, prefilled with a skeleton built from the step's answer schema; `s` submits the answer and `n` declines, taking the step's `when_unanswered` path. There is no abort: an unanswered question is a plan-declared condition, and a run that must stop can still be aborted at the next gated tool call. Breakpoints and continue mode never suppress a question — skipping it while a human sat watching would silently take the unattended path.
 
-Control-step _evaluation_ is never gated — `exit`/`decide` gates (including `infer` judge calls) and `map`/`reduce` orchestration are read-only engine computation; their side effects are the body calls, which are. While paused, the exit controls (`q`, `Ctrl+C`) abort the run — press again once it stops to quit; run keys are blocked until the pause is decided, and the chat input is inert. `?` still opens help, and the workspace scrolls and navigates normally.
+Control-step _evaluation_ is never gated — `exit`/`route` gates (including `infer` judge calls) and `map`/`reduce` orchestration are read-only engine computation; their side effects are the body calls, which are. While paused, the exit controls (`q`, `Ctrl+C`) abort the run — press again once it stops to quit; run keys are blocked until the pause is decided, and the chat input is inert. `?` still opens help, and the workspace scrolls and navigates normally.
 
 ## Saving
 

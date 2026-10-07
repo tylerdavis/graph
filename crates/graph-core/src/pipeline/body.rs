@@ -1,4 +1,4 @@
-//! The shared body grammar for control steps: `decide` branches and
+//! The shared body grammar for control steps: `route` branches and
 //! `map`/`reduce` bodies are each either a single tool call or an inline
 //! step list, parsed lazily from raw values so rendering can be deferred
 //! until the executor knows the body will actually run (and against which
@@ -39,6 +39,51 @@ pub struct BranchCall {
 /// Parse a body value: an array is an inline step list, an object is a
 /// single call. Explicit rather than serde-untagged so authors get a
 /// pointed error instead of "did not match any variant".
+pub fn control_bodies<'a>(tool: &str, input: &'a Map<String, Value>) -> Vec<(String, &'a Value)> {
+    let mut bodies = Vec::new();
+    let mut push = |key: &str, value: Option<&'a Value>| {
+        if let Some(value) = value {
+            bodies.push((key.to_string(), value));
+        }
+    };
+    match tool {
+        super::ROUTE_TOOL => {
+            push("then", input.get("then"));
+            if let Some(cases) = input.get("cases").and_then(Value::as_object) {
+                for (key, body) in cases {
+                    push(key, Some(body));
+                }
+            }
+            push("else", input.get("else"));
+        }
+        super::MAP_TOOL | super::REDUCE_TOOL => push("do", input.get("do")),
+        _ => {}
+    }
+    bodies
+}
+
+pub fn control_body<'a>(input: &'a Map<String, Value>, name: &str) -> Option<&'a Value> {
+    input.get(name).or_else(|| {
+        input
+            .get("cases")
+            .and_then(Value::as_object)
+            .and_then(|cases| cases.get(name))
+    })
+}
+
+pub fn control_body_mut<'a>(
+    input: &'a mut Map<String, Value>,
+    name: &str,
+) -> Option<&'a mut Value> {
+    if input.contains_key(name) {
+        return input.get_mut(name);
+    }
+    input
+        .get_mut("cases")
+        .and_then(Value::as_object_mut)
+        .and_then(|cases| cases.get_mut(name))
+}
+
 pub fn parse_branch(name: &str, raw: &Value) -> Result<Branch, String> {
     match raw {
         Value::Array(_) => {
@@ -60,8 +105,8 @@ pub fn parse_branch(name: &str, raw: &Value) -> Result<Branch, String> {
     }
 }
 
-/// The body schema shared by the decide/map/reduce planner tool defs.
-/// `allow_exit` mirrors the validator: decide branches may hold `exit`
+/// The body schema shared by the route/map/reduce planner tool defs.
+/// `allow_exit` mirrors the validator: route branches may hold `exit`
 /// steps, iteration bodies may not.
 pub fn body_schema(allow_exit: bool) -> Value {
     let tool_name_doc = if allow_exit {
@@ -103,7 +148,7 @@ pub fn body_schema(allow_exit: bool) -> Value {
 /// (including `input`); `pseudo` is the pseudo-roots this body's scope
 /// adds (`item`/`index` for map, plus `accumulator` for reduce, none for
 /// decide); `all_plan_ids` is every top-level id, for collision checks.
-/// `allow_exit` is true for decide branches — an `exit` there ends the
+/// `allow_exit` is true for route branches — an `exit` there ends the
 /// whole plan — and false for map/reduce bodies, where a per-item exit
 /// has no coherent meaning.
 #[allow(clippy::too_many_arguments)]
@@ -200,7 +245,7 @@ fn check_body_tool(
             problems.push(format!(
                 "step {step_id}: `{name}` uses 'exit' — an exit inside an \
                  iteration body has no single-plan meaning; it is only \
-                 allowed in decide branches"
+                 allowed in route branches"
             ));
         }
         return;
@@ -214,7 +259,7 @@ fn check_body_tool(
         problems.push(format!("step {step_id}: `{name}` {problem}"));
         return;
     }
-    let control = [super::DECIDE_TOOL, super::MAP_TOOL, super::REDUCE_TOOL];
+    let control = [super::ROUTE_TOOL, super::MAP_TOOL, super::REDUCE_TOOL];
     if control.contains(&tool) {
         problems.push(format!(
             "step {step_id}: `{name}` uses '{tool}' — control steps cannot nest \
@@ -742,7 +787,7 @@ mod tests {
 
     #[test]
     fn nested_control_tools_are_rejected() {
-        for tool in ["decide", "map", "reduce"] {
+        for tool in ["route", "map", "reduce"] {
             for allow_exit in [false, true] {
                 let mut problems = Vec::new();
                 check_body_tool("do", tool, "E1", allow_exit, &mut problems);
@@ -768,7 +813,7 @@ mod tests {
         }
         let mut problems = Vec::new();
         check_body_tool("then", "agent", "E1", true, &mut problems);
-        assert!(problems.is_empty(), "agent in decide branch: {problems:?}");
+        assert!(problems.is_empty(), "agent in route branch: {problems:?}");
     }
 
     /// A body agent's input has to face the same validator a top-level one
@@ -832,7 +877,7 @@ mod tests {
         assert!(
             problems
                 .iter()
-                .any(|p| p.contains("only") && p.contains("decide branches")),
+                .any(|p| p.contains("only") && p.contains("route branches")),
             "{problems:?}"
         );
     }

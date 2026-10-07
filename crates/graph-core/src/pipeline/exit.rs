@@ -4,8 +4,8 @@
 //! dispatched to a tool registry, and skips the solver entirely (an
 //! escape hatch is a zero-inference exit, except the verdict call itself).
 
-use super::condition::evaluate_gate;
-pub use super::condition::{Condition, Op, Verdict};
+use super::condition::{check_gate, select_gate, with_probability};
+pub use super::condition::{Condition, DecideGate, Op, Verdict};
 use graph_llm::ModelRouter;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -27,6 +27,8 @@ pub struct PlanExit {
     pub message: String,
     /// The model's reasoning, for inferred exits.
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probability: Option<f64>,
     /// Rendered output map, when the step declared one.
     pub output: Option<Map<String, Value>>,
     /// The step id that exited.
@@ -47,6 +49,8 @@ pub struct ExitSpec {
     /// or `default`. Defaults to the `judge` role. Ignored without `infer`.
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub decide: Option<DecideGate>,
     pub status: ExitStatus,
     #[serde(default)]
     pub message: Option<String>,
@@ -62,9 +66,10 @@ pub fn exit_tool_def() -> crate::tools::ToolDef {
         description: "End the plan early with a success or error state. Use it instead of \
                       fabricating results: exit success when there is legitimately nothing to \
                       do (e.g. a search returned nothing actionable), exit error to assert a \
-                      failure condition. Gate it with `when` (a logical comparison) or `infer` \
-                      (a yes/no question judged against prior results); omit both to exit \
-                      unconditionally. When the gate does not fire, the plan continues."
+                      failure condition. Gate it with `when` (a logical comparison), `infer` \
+                      (a yes/no question judged against prior results), or `decide` (the same \
+                      question asked of a decision model, when one is configured); omit all \
+                      three to exit unconditionally. When the gate does not fire, the plan continues."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -82,6 +87,10 @@ pub fn exit_tool_def() -> crate::tools::ToolDef {
                     }
                 },
                 "infer": {"type": "string", "description": "A yes/no question about prior results; exits when the answer is yes."},
+                "decide": super::condition::decide_gate_schema(
+                    "A yes/no question answered by a decision model (only when one is configured); fires when its probability reaches min_confidence.",
+                    "The data to judge, usually a template like {{E2.text}}",
+                ),
                 "model": {"type": "string", "description": "Model role for the `infer` verdict (any configured role, standard or custom); defaults to the judge role."}
             }
         }),
@@ -108,24 +117,33 @@ pub async fn evaluate(
     let spec: ExitSpec = serde_json::from_value(rendered_input.clone())
         .map_err(|e| format!("invalid exit step input: {e}"))?;
 
-    let (triggered, reason) = match (&spec.when, &spec.infer) {
-        (None, None) => (true, None), // unconditional
-        (when, infer) => evaluate_gate(
-            when.as_ref(),
-            infer.as_deref(),
-            spec.model.as_deref(),
-            router,
-        )
-        .await
-        .map_err(|e| format!("exit step: {e}"))?,
+    let gate = select_gate(
+        spec.when.as_ref(),
+        spec.infer.as_deref(),
+        spec.decide.as_ref(),
+        spec.model.as_deref(),
+        "when",
+    )
+    .map_err(|e| format!("exit step: {e}"))?;
+    let (triggered, reason, probability) = match gate {
+        None => (true, None, None),
+        Some(gate) => {
+            let outcome = check_gate(gate, router)
+                .await
+                .map_err(|e| format!("exit step: {e}"))?;
+            (outcome.triggered, outcome.reason, outcome.probability)
+        }
     };
 
     if !triggered {
-        return Ok(ExitEval::Passed(json!({
-            "passed": true,
-            "verdict": false,
-            "reason": reason,
-        })));
+        return Ok(ExitEval::Passed(with_probability(
+            json!({
+                "passed": true,
+                "verdict": false,
+                "reason": reason,
+            }),
+            probability,
+        )));
     }
 
     let mut message = spec.message.unwrap_or_else(|| match spec.status {
@@ -138,6 +156,7 @@ pub async fn evaluate(
     Ok(ExitEval::Exited(PlanExit {
         status: spec.status,
         message,
+        probability,
         reason,
         output: spec.output,
         step: step_id.to_string(),

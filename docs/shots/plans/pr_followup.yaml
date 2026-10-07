@@ -1,7 +1,8 @@
-# Docs-screenshot demo plan (docs/shots/branching-decide.yaml): a decide
+# Docs-screenshot demo plan (docs/shots/branching-route.yaml): a route
 # fork rendered in the workbench step tree. Not shipped to users — it
 # exists so the branching docs can show real then/else piping. Validated
 # against the real catalog like any plan.
+version: 2
 identifier: pr_followup
 name: PR follow-up
 description: >
@@ -22,7 +23,7 @@ steps:
     input: { base: "{{E0.base_sha}}", head: "{{E0.head_sha}}", prefix: "" }
     reasoning: Change count for the nudge comment.
   - id: E2
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "{{E0.state}}", op: eq, to: open }
       then:

@@ -250,6 +250,14 @@ mod tests {
             CONTROL_STEP_RULES.contains("per-item inference call"),
             "list inference must be steered toward map with per-item calls"
         );
+        assert!(
+            CONTROL_STEP_RULES.contains("Use it only when a decision model is configured"),
+            "decide gates must be steered to configs that have a decision model"
+        );
+        assert!(
+            CONTROL_STEP_RULES.contains("Keep the data in `state`"),
+            "decide gates must keep the data out of the question"
+        );
     }
 
     #[test]
