@@ -1,0 +1,40 @@
+version: 2
+name: decide
+description: >
+  Ask a decision model typed questions about one piece of data, in one fast,
+  cheap call. Each question is answered independently and in parallel. Types:
+  likelihood (is this true? returns {type, probability} in 0..1), choice (pick
+  one option; returns {type, choice, confidence, probabilities}), and score
+  (place it on an ordered scale; returns {type, score, confidence, legend,
+  probabilities}). Put the data in `state`, not in the questions. The result
+  maps each question name to its answer, so later steps read {{Ex.<name>.choice}}
+  or {{Ex.<name>.probability}}. Use it to classify, score, or check data where a
+  calibrated verdict matters more than prose; ask several related questions in
+  one call rather than one call each.
+kind: decision
+caller_questions: true
+caller_model: true
+input_schema:
+  type: object
+  required: [state, questions]
+  properties:
+    state:
+      description: >
+        The data to judge: text, an object, or a list, usually a template like
+        {{E2.ticket}} or {{item}}.
+    questions:
+      type: object
+      description: >
+        Question name → question. Likelihood: {"type": "likelihood",
+        "instructions": "Is it urgent?"}, optionally with "criteria": {"true":
+        …, "false": …}. Choice: {"type": "choice", "instructions": "Which
+        team?", "criteria": {"billing": "Payments", "technical": "Bugs"}}.
+        Score: {"type": "score", "instructions": "How frustrated?",
+        "criteria": ["Calm", "Frustrated", "Angry"]} with 2 to 10 levels.
+      additionalProperties:
+        type: object
+        required: [type, instructions]
+        properties:
+          type: { type: string, enum: [likelihood, choice, score] }
+          instructions: { type: string }
+          criteria: {}

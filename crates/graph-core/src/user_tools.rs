@@ -12,10 +12,13 @@
 use crate::template::{render_input, render_str, Roots};
 use crate::tools::{ToolDef, ToolError, ToolOutcome, ToolRegistry};
 use async_trait::async_trait;
+use graph_config::ModelKind;
+use graph_llm::decision::{DecisionRequest, Question};
 use graph_llm::types::{ChatMessage, ChatRequest, ResponseSchema};
 use graph_llm::ModelRouter;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -114,6 +117,18 @@ pub enum ToolKind {
         #[serde(default)]
         caller_shape: bool,
     },
+    Decision {
+        #[serde(default)]
+        state: Option<Value>,
+        #[serde(default)]
+        questions: Option<Value>,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        caller_questions: bool,
+        #[serde(default)]
+        caller_model: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,7 +163,13 @@ const PACKS: &[(&str, &[&str])] = &[
             include_str!("packs/github/git_grep.yaml"),
         ],
     ),
-    ("llm", &[include_str!("packs/llm/infer.yaml")]),
+    (
+        "llm",
+        &[
+            include_str!("packs/llm/infer.yaml"),
+            include_str!("packs/llm/decide.yaml"),
+        ],
+    ),
     ("data", &[include_str!("packs/data/reshape.yaml")]),
     (
         "slack",
@@ -283,6 +304,14 @@ const PROMPT_KEYS: &[&str] = &[
 
 const RESHAPE_KEYS: &[&str] = &["shape", "caller_shape"];
 
+const DECISION_KEYS: &[&str] = &[
+    "state",
+    "questions",
+    "model",
+    "caller_questions",
+    "caller_model",
+];
+
 pub fn unknown_tool_keys(value: &serde_yaml::Value) -> Vec<String> {
     let Some(mapping) = value.as_mapping() else {
         return Vec::new();
@@ -291,6 +320,7 @@ pub fn unknown_tool_keys(value: &serde_yaml::Value) -> Vec<String> {
         Some("exec") => EXEC_KEYS,
         Some("prompt") => PROMPT_KEYS,
         Some("reshape") => RESHAPE_KEYS,
+        Some("decision") => DECISION_KEYS,
         _ => &[],
     };
     mapping
@@ -320,7 +350,7 @@ pub fn parse_tool_source(raw: &str) -> Result<UserToolDoc, String> {
                 .join(", ")
         ));
     }
-    if upgrade.declared.is_none() {
+    if upgrade.declared.is_none() && !upgrade.migrated() {
         return serde_yaml::from_str(raw).map_err(|e| e.to_string());
     }
     serde_yaml::from_value(value).map_err(|e| e.to_string())
@@ -374,8 +404,41 @@ pub fn validate_tool(doc: &UserToolDoc) -> Result<(), String> {
                 return Err("reshape tool needs a `shape` or `caller_shape: true`".to_string())
             }
         },
+        ToolKind::Decision {
+            state,
+            questions,
+            caller_questions,
+            ..
+        } => {
+            if let Some(state) = state {
+                check_shape_templates(state, &check_template)?;
+            }
+            match (questions, caller_questions) {
+                (Some(questions), _) => {
+                    check_shape_templates(questions, &check_template)?;
+                    decision_questions(questions)?;
+                }
+                (None, true) => {}
+                (None, false) => {
+                    return Err(
+                        "decision tool needs `questions` or `caller_questions: true`".to_string(),
+                    )
+                }
+            }
+        }
     }
     Ok(())
+}
+
+fn decision_questions(questions: &Value) -> Result<BTreeMap<String, Question>, String> {
+    let questions: BTreeMap<String, Question> =
+        serde_json::from_value(questions.clone()).map_err(|e| {
+            format!("`questions` must map names to likelihood, choice, or score questions: {e}")
+        })?;
+    if questions.is_empty() {
+        return Err("`questions` needs at least one question".to_string());
+    }
+    Ok(questions)
 }
 
 /// Walk every string leaf of a reshape `shape` and validate its templates.
@@ -480,6 +543,42 @@ impl UserToolRegistry {
             }),
             _ => None,
         };
+        if let ToolKind::Decision {
+            state,
+            questions,
+            model,
+            caller_questions,
+            caller_model,
+        } = &doc.kind
+        {
+            let model = if *caller_model {
+                input
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .or(model.as_deref())
+            } else {
+                model.as_deref()
+            };
+            let caller =
+                caller_questions.then(|| input.get("questions").cloned().unwrap_or(Value::Null));
+            let model = model.map(str::to_string);
+            let mut roots = Map::new();
+            roots.insert("input".to_string(), input.clone());
+            let roots = Roots::new(&roots);
+            let state = match state {
+                Some(state) => {
+                    render_input(state, &roots).map_err(|e| ToolError::Transport(e.to_string()))?
+                }
+                None => input.get("state").cloned().unwrap_or(Value::Null),
+            };
+            let questions = match (caller, questions) {
+                (Some(questions), _) => questions,
+                (None, Some(questions)) => render_input(questions, &roots)
+                    .map_err(|e| ToolError::Transport(e.to_string()))?,
+                (None, None) => Value::Null,
+            };
+            return self.run_decision(state, questions, model.as_deref()).await;
+        }
         let mut roots = Map::new();
         roots.insert("input".to_string(), input);
         let roots = Roots::new(&roots);
@@ -515,6 +614,7 @@ impl UserToolRegistry {
                 self.run_prompt(doc, prompt, system.as_deref(), model, caller_schema, &roots)
                     .await
             }
+            ToolKind::Decision { .. } => unreachable!("decision tools return above"),
             ToolKind::Reshape { caller_shape, .. } => {
                 let shape = reshape_shape.expect("reshape shape resolved above");
                 if *caller_shape {
@@ -644,10 +744,11 @@ impl UserToolRegistry {
     /// — the planner's routing signal for picking the smallest adequate
     /// model. No described roles → no property: a knob with nothing to
     /// select would only invite invented names.
-    fn advertise_named_models(&self, schema: &mut Value) {
+    fn advertise_named_models(&self, schema: &mut Value, kind: ModelKind) {
         let described: Vec<(&str, &str)> = self
             .router
             .described_models()
+            .filter(|(name, _)| self.router.kind_of_role(name) == Some(kind))
             .filter_map(|(name, choice)| Some((name, choice.description.as_deref()?)))
             .collect();
         if described.is_empty() {
@@ -671,6 +772,40 @@ impl UserToolRegistry {
                 json!({"type": "string", "enum": names, "description": description}),
             );
         }
+    }
+
+    async fn run_decision(
+        &self,
+        state: Value,
+        questions: Value,
+        model: Option<&str>,
+    ) -> Result<ToolOutcome, ToolError> {
+        let questions = match decision_questions(&questions) {
+            Ok(questions) => questions,
+            Err(problem) => {
+                return Ok(ToolOutcome {
+                    result: json!({"error": problem}),
+                    is_error: true,
+                })
+            }
+        };
+        let response = self
+            .router
+            .decide_named(
+                model,
+                DecisionRequest {
+                    model: String::new(),
+                    state,
+                    questions,
+                },
+            )
+            .await
+            .map_err(|e| ToolError::Transport(e.to_string()))?;
+        Ok(ToolOutcome {
+            result: serde_json::to_value(&response.answers)
+                .map_err(|e| ToolError::Transport(e.to_string()))?,
+            is_error: false,
+        })
     }
 
     async fn run_prompt(
@@ -795,22 +930,33 @@ fn expand_env(value: &str) -> Result<String, String> {
 #[async_trait]
 impl ToolRegistry for UserToolRegistry {
     async fn tools(&self) -> Result<Vec<ToolDef>, ToolError> {
+        let has_decision_models = self.router.has_decision_models();
         Ok(self
             .tools
             .iter()
+            .filter(|doc| {
+                has_decision_models
+                    || !matches!(
+                        &doc.kind,
+                        ToolKind::Decision {
+                            caller_questions: true,
+                            ..
+                        }
+                    )
+            })
             .map(|doc| {
                 let mut input_schema = doc
                     .input_schema
                     .clone()
                     .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
-                if matches!(
-                    &doc.kind,
+                match &doc.kind {
                     ToolKind::Prompt {
-                        caller_model: true,
-                        ..
-                    }
-                ) {
-                    self.advertise_named_models(&mut input_schema);
+                        caller_model: true, ..
+                    } => self.advertise_named_models(&mut input_schema, ModelKind::Chat),
+                    ToolKind::Decision {
+                        caller_model: true, ..
+                    } => self.advertise_named_models(&mut input_schema, ModelKind::Decision),
+                    _ => {}
                 }
                 ToolDef {
                     name: format!("{}{}", self.prefix, doc.name),
@@ -819,7 +965,9 @@ impl ToolRegistry for UserToolRegistry {
                     output_schema: doc.output_schema.clone(),
                     output_example: None,
                     read_only: doc.read_only.or(match &doc.kind {
-                        ToolKind::Prompt { .. } | ToolKind::Reshape { .. } => Some(true),
+                        ToolKind::Prompt { .. }
+                        | ToolKind::Reshape { .. }
+                        | ToolKind::Decision { .. } => Some(true),
                         ToolKind::Exec { .. } => None,
                     }),
                 }
