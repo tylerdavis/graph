@@ -139,6 +139,7 @@ fn pipeline_with_named(
             temperature: None,
             description: None,
             fallbacks: Vec::new(),
+            context_window: None,
         },
     );
     let roles = ModelRoles::new(entries);
@@ -690,6 +691,7 @@ fn named_model(model: &str) -> std::collections::BTreeMap<String, ModelChoice> {
             temperature: None,
             description: None,
             fallbacks: Vec::new(),
+            context_window: None,
         },
     );
     named
@@ -3091,6 +3093,7 @@ async fn the_outline_call_resolves_the_outliner_role() {
             temperature: None,
             description: None,
             fallbacks: Vec::new(),
+            context_window: None,
         },
     );
     let (pipeline, provider) = pipeline_with_named(

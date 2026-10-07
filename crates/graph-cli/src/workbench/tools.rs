@@ -1833,6 +1833,7 @@ steps:
                 temperature: None,
                 description: None,
                 fallbacks: Vec::new(),
+                context_window: None,
             },
         )]);
         let router = Arc::new(graph_llm::ModelRouter::with_providers(providers, roles));

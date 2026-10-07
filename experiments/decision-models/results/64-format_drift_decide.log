@@ -1,0 +1,4 @@
+→ builtin__git_diff {"base":"ddeea53","exclude":"","head":"d9a7336","max_bytes":60000,"paths":":/crates/graph-config/src/model.rs :/crates/g
+✓ builtin__git_diff 21.9ms
+→ exit {"message":"no format model changed — format gate not applicable","output":{"format_bump_required":false,"reason":"no_mo
+✓ exit 22.8µs

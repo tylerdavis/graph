@@ -237,7 +237,7 @@ pub fn expand_tilde(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ModelChoice, ModelRoles, ProviderKind, Role};
+    use crate::model::{ModelChoice, ModelKind, ModelRoles, ProviderKind, Role};
 
     fn write(dir: &Path, name: &str, contents: &str) -> PathBuf {
         let path = dir.join(name);
@@ -349,6 +349,7 @@ description = "fast and cheap"
             temperature: None,
             description: None,
             fallbacks: Vec::new(),
+            context_window: None,
         };
         let with_planner = ModelRoles::from([
             ("default", choice("default-model")),
@@ -371,6 +372,63 @@ description = "fast and cheap"
             own_entry.resolve("outliner").unwrap().model,
             "outliner-model"
         );
+    }
+
+    #[test]
+    fn the_decider_role_never_falls_back_to_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "config.toml",
+            r#"
+[providers.p]
+type = "anthropic"
+
+[providers.ts]
+type = "systemone"
+
+[models.default]
+provider = "p"
+model = "m"
+"#,
+        );
+        let loaded = load_from(&[path]).unwrap();
+        let models = &loaded.config.models;
+        assert!(models.resolve_role(Role::Decider).is_none());
+        assert!(!models.known_names().contains(&"decider"));
+        assert_eq!(models.resolve_role(Role::Judge).unwrap().model, "m");
+        assert_eq!(
+            loaded.config.providers["ts"].kind.model_kind(),
+            ModelKind::Decision
+        );
+        assert_eq!(Role::Decider.kind(), ModelKind::Decision);
+    }
+
+    #[test]
+    fn context_window_is_read_on_roles_and_fallbacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "config.toml",
+            r#"
+[providers.ts]
+type = "systemone"
+
+[providers.local]
+type = "systemone"
+base_url = "http://127.0.0.1:8080"
+
+[models.decider]
+provider = "ts"
+model = "jev-latest"
+context_window = 32000
+fallbacks = [{ provider = "local", model = "openjev-latest", context_window = 16000 }]
+"#,
+        );
+        let loaded = load_from(&[path]).unwrap();
+        let decider = loaded.config.models.resolve_role(Role::Decider).unwrap();
+        assert_eq!(decider.context_window, Some(32000));
+        assert_eq!(decider.fallbacks[0].context_window, Some(16000));
     }
 
     #[test]
