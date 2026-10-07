@@ -12,6 +12,6 @@ mod structured;
 pub mod types;
 
 pub use error::LlmError;
-pub use metering::{LlmCall, MeteredProvider, UsageMeter};
+pub use metering::{MeteredProvider, ModelCall, UsageMeter};
 pub use provider::ChatProvider;
 pub use roles::ModelRouter;

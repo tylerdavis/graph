@@ -167,7 +167,7 @@ impl EventSink for ProgressSink {
         self.emit("synthesizing the answer".into());
     }
 
-    fn llm_call(&self, call: &graph_core::usage::LlmCallEvent) {
+    fn model_call(&self, call: &graph_core::usage::ModelCallEvent) {
         // Cumulative rather than per-call deltas: a client that samples the
         // notification stream still sees the current total, and one line per
         // inference sits at the same granularity as the step events already
@@ -256,8 +256,9 @@ mod tests {
         }
     }
 
-    fn call(site: &str, usage: Usage) -> graph_core::usage::LlmCallEvent {
-        graph_core::usage::LlmCallEvent {
+    fn call(site: &str, usage: Usage) -> graph_core::usage::ModelCallEvent {
+        graph_core::usage::ModelCallEvent {
+            kind: graph_config::ModelKind::Chat,
             site: site.into(),
             role: "chat".into(),
             provider: "p".into(),
@@ -274,8 +275,8 @@ mod tests {
     async fn spend_notifications_accumulate_across_calls() {
         let (sink, mut rx) = sink();
 
-        sink.llm_call(&call("E0", tokens(1_000, 100)));
-        sink.llm_call(&call("E1", tokens(2_000, 200)));
+        sink.model_call(&call("E0", tokens(1_000, 100)));
+        sink.model_call(&call("E1", tokens(2_000, 200)));
 
         let first = rx.try_recv().unwrap();
         let second = rx.try_recv().unwrap();
