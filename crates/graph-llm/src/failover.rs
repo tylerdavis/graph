@@ -12,6 +12,7 @@
 //! establishing the stream. Once a stream starts, mid-stream errors are
 //! surfaced, not retried elsewhere.
 
+use crate::decision::{check_context_window, DecisionProvider, DecisionRequest, DecisionResponse};
 use crate::retry::is_transient;
 use crate::types::{ChatRequest, ChatResponse, EventStream};
 use crate::{ChatProvider, LlmError};
@@ -95,6 +96,52 @@ impl ChatProvider for FailoverProvider {
             }
         }
         Err(last.expect("at least the primary attempt ran"))
+    }
+}
+
+pub(crate) struct DecisionCandidate {
+    pub provider: Arc<dyn DecisionProvider>,
+    pub provider_name: String,
+    pub model: String,
+    pub context_window: Option<u32>,
+}
+
+pub(crate) struct FailoverDecider {
+    pub role: String,
+    pub primary: Arc<dyn DecisionProvider>,
+    pub fallbacks: Vec<DecisionCandidate>,
+}
+
+#[async_trait]
+impl DecisionProvider for FailoverDecider {
+    async fn decide(&self, req: DecisionRequest) -> Result<DecisionResponse, LlmError> {
+        let mut last = match self.primary.decide(req.clone()).await {
+            Ok(response) => return Ok(response),
+            Err(error) if is_transient(&error) => error,
+            Err(error) => return Err(error),
+        };
+        for candidate in &self.fallbacks {
+            let mut attempt = req.clone();
+            attempt.model = candidate.model.clone();
+            check_context_window(
+                &self.role,
+                &candidate.model,
+                candidate.context_window,
+                &attempt,
+            )?;
+            tracing::warn!(
+                provider = candidate.provider_name.as_str(),
+                model = %attempt.model,
+                error = %last,
+                "provider outage; failing over"
+            );
+            match candidate.provider.decide(attempt).await {
+                Ok(response) => return Ok(response),
+                Err(error) if is_transient(&error) => last = error,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last)
     }
 }
 
