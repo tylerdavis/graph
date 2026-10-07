@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 pub use graph_config::FORMATS_DOC;
 
-pub const PLAN_FORMAT: u32 = 1;
+pub const PLAN_FORMAT: u32 = 2;
 
 pub const PLAN_FORMAT_OLDEST: u32 = 1;
 
@@ -16,7 +16,31 @@ pub const FORMAT_KEY: &str = "version";
 
 pub type Migration = fn(&mut Value) -> Result<Vec<String>, String>;
 
-const PLAN_MIGRATIONS: &[Migration] = &[];
+const PLAN_MIGRATIONS: &[Migration] = &[decide_step_becomes_route];
+
+fn decide_step_becomes_route(value: &mut Value) -> Result<Vec<String>, String> {
+    let mut renamed = 0;
+    for_each_step(value, &mut |step| {
+        let Some(mapping) = step.as_mapping_mut() else {
+            return;
+        };
+        for key in ["tool_name", "toolName"] {
+            if let Some(tool) = mapping.get_mut(key) {
+                if tool.as_str() == Some("decide") {
+                    *tool = Value::String("route".to_string());
+                    renamed += 1;
+                }
+            }
+        }
+    });
+    Ok(match renamed {
+        0 => Vec::new(),
+        n => vec![format!(
+            "renamed {n} `decide` step{} to `route`",
+            if n == 1 { "" } else { "s" }
+        )],
+    })
+}
 
 const TOOL_MIGRATIONS: &[Migration] = &[];
 
@@ -210,9 +234,14 @@ fn visit_step(step: &mut Value, visit: &mut dyn FnMut(&mut Value)) {
         return;
     };
     match tool.as_deref() {
-        Some("decide") => {
+        Some("decide" | "route") => {
             for side in ["then", "else"] {
                 if let Some(branch) = input.get_mut(side) {
+                    visit_body(branch, visit);
+                }
+            }
+            if let Some(Value::Mapping(cases)) = input.get_mut("cases") {
+                for (_, branch) in cases.iter_mut() {
                     visit_body(branch, visit);
                 }
             }
@@ -380,12 +409,40 @@ mod tests {
     }
 
     #[test]
+    fn version_1_decide_steps_become_route_steps() {
+        let mut value = yaml(
+            r#"
+identifier: p
+steps:
+  - id: E0
+    tool_name: decide
+    input:
+      if: { value: 1, op: eq, to: 1 }
+      then: { tool_name: user__a, input: {} }
+  - id: E1
+    toolName: decide
+    input: { infer: "q?", then: { tool_name: user__b, input: {} } }
+  - id: E2
+    tool_name: exit
+    input: { decide: { question: "q?" }, status: error }
+"#,
+        );
+        let upgrade = upgrade(Kind::Plan, &mut value).unwrap();
+        assert_eq!(upgrade.notes, vec!["renamed 2 `decide` steps to `route`"]);
+        let steps = value["steps"].as_sequence().unwrap();
+        assert_eq!(steps[0]["tool_name"], "route");
+        assert_eq!(steps[1]["toolName"], "route");
+        assert_eq!(steps[2]["tool_name"], "exit");
+        assert!(steps[2]["input"]["decide"].is_mapping());
+    }
+
+    #[test]
     fn for_each_step_reaches_every_nested_body() {
         let mut value = yaml(
             r#"
 steps:
   - id: E0
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "x", op: eq, to: "x" }
       then:
@@ -422,7 +479,7 @@ steps:
         assert_eq!(
             seen,
             vec![
-                "decide",
+                "route",
                 "map",
                 "user__one",
                 "reduce",

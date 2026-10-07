@@ -16,7 +16,6 @@ pub mod authoring;
 pub mod body;
 pub mod catalog;
 pub mod condition;
-pub mod decision;
 pub mod doc;
 pub mod exit;
 pub mod filter;
@@ -26,6 +25,7 @@ pub mod iterate;
 mod outline;
 pub mod plan;
 mod prompts;
+pub mod route;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -34,7 +34,6 @@ pub use agent::{agent_tool_def, AGENT_TOOL};
 pub use ask::{ask_tool_def, AskResult, WhenUnanswered, ASK_TOOL};
 pub use authoring::{EditAccepted, EditRejected, WriteError};
 pub use catalog::{CatalogCheck, ToolCatalog};
-pub use decision::DECIDE_TOOL;
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
 pub use filter::FILTER_TOOL;
 pub use gate::{ErrorDecision, ExecutionGate, GateContext, GateDecision, StepPath};
@@ -43,6 +42,7 @@ pub use iterate::{MAP_TOOL, REDUCE_TOOL};
 pub use outline::{PlanOutline, StepDraft, MAX_STEP_ATTEMPTS};
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
 pub use prompts::CONTROL_STEP_RULES;
+pub use route::ROUTE_TOOL;
 pub use state::{BusEntry, BusKind, RunState};
 
 use crate::store::{Store, ToolShape};
@@ -168,7 +168,7 @@ pub fn control_step_defs() -> Vec<crate::tools::ToolDef> {
         agent::agent_tool_def(),
         ask::ask_tool_def(),
         exit::exit_tool_def(),
-        decision::decide_tool_def(),
+        route::route_tool_def(),
         filter::filter_tool_def(),
         iterate::map_tool_def(),
         iterate::reduce_tool_def(),
@@ -180,7 +180,7 @@ pub fn control_step_defs() -> Vec<crate::tools::ToolDef> {
 pub fn is_control_step(name: &str) -> bool {
     matches!(
         name,
-        AGENT_TOOL | ASK_TOOL | EXIT_TOOL | DECIDE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL
+        AGENT_TOOL | ASK_TOOL | EXIT_TOOL | ROUTE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL
     )
 }
 
@@ -771,7 +771,7 @@ impl Pipeline {
             // (decide) or per item (map/reduce). Their step events carry
             // the raw input for the same reason.
             let control = match step.tool_name.as_str() {
-                AGENT_TOOL | ASK_TOOL | DECIDE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL => {
+                AGENT_TOOL | ASK_TOOL | ROUTE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL => {
                     self.events.step_started(
                         &self.call_stack,
                         &step.id,
@@ -782,7 +782,7 @@ impl Pipeline {
                     let run = match step.tool_name.as_str() {
                         AGENT_TOOL => self.run_agent(&step, state).await,
                         ASK_TOOL => self.run_ask(&step, state).await,
-                        DECIDE_TOOL => self.run_decide(&step, state).await,
+                        ROUTE_TOOL => self.run_route(&step, state).await,
                         FILTER_TOOL => self.run_filter(&step, state).await,
                         MAP_TOOL => self.run_map(&step, state).await,
                         _ => self.run_reduce(&step, state).await,
@@ -1232,6 +1232,107 @@ impl Pipeline {
 /// references to roots that are not available at this point in the plan —
 /// `available` carries `input`, every earlier step id, and (inside
 /// control-step bodies) the pseudo-roots and earlier same-body ids.
+const DECIDE_GATE_KEYS: &[&str] = &[
+    "question",
+    "state",
+    "model",
+    "criteria",
+    "min_confidence",
+    "options",
+];
+
+const MAX_OPTIONS: usize = 255;
+
+const RESERVED_CASE_KEYS: &[&str] = &["then", "else", "do"];
+
+fn is_case_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !RESERVED_CASE_KEYS.contains(&key)
+}
+
+fn check_decide_gate_shape(
+    gate: &Value,
+    allow_options: bool,
+    step_id: &str,
+    problems: &mut Vec<String>,
+) {
+    let Some(fields) = gate.as_object() else {
+        problems.push(format!(
+            "step {step_id}: `decide` must be an object with at least a `question`"
+        ));
+        return;
+    };
+    if !fields.get("question").is_some_and(Value::is_string) {
+        problems.push(format!(
+            "step {step_id}: `decide` needs a `question` string"
+        ));
+    }
+    for key in fields.keys() {
+        if !DECIDE_GATE_KEYS.contains(&key.as_str()) {
+            problems.push(format!(
+                "step {step_id}: unknown field `decide.{key}`, expected one of {}",
+                DECIDE_GATE_KEYS
+                    .iter()
+                    .map(|key| format!("`{key}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    if let Some(options) = fields.get("options") {
+        check_decide_options(options, allow_options, step_id, problems);
+    }
+    if let Some(min) = fields.get("min_confidence").and_then(Value::as_f64) {
+        if !(0.0..=1.0).contains(&min) {
+            problems.push(format!(
+                "step {step_id}: `decide.min_confidence` must be between 0 and 1, got {min}"
+            ));
+        }
+    }
+}
+
+fn check_decide_options(
+    options: &Value,
+    allow_options: bool,
+    step_id: &str,
+    problems: &mut Vec<String>,
+) {
+    if !allow_options {
+        problems.push(format!(
+            "step {step_id}: `decide.options` (named cases) only works on a `route` step, which runs one case per option"
+        ));
+        return;
+    }
+    let Some(options) = options.as_object() else {
+        problems.push(format!(
+            "step {step_id}: `decide.options` must map each case name to a description"
+        ));
+        return;
+    };
+    if !(2..=MAX_OPTIONS).contains(&options.len()) {
+        problems.push(format!(
+            "step {step_id}: `decide.options` needs between 2 and {MAX_OPTIONS} cases, got {}",
+            options.len()
+        ));
+    }
+    for (key, description) in options {
+        if !is_case_key(key) {
+            problems.push(format!(
+                "step {step_id}: case name `{key}` must be an identifier (letters, digits, underscores) and not then, else, or do"
+            ));
+        }
+        if !description.is_string() {
+            problems.push(format!(
+                "step {step_id}: `decide.options.{key}` must be a description string"
+            ));
+        }
+    }
+}
+
 fn check_templates(value: &Value, available: &[&str], step_id: &str, problems: &mut Vec<String>) {
     match value {
         Value::String(s) => {

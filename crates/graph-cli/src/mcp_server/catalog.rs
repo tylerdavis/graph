@@ -160,7 +160,7 @@ pub fn authoring_tools() -> Vec<Tool> {
                 "properties": {
                     "target": target_property(),
                     "id": {"type": "string", "description": "Step id — how later steps reference it as {{<id>.field}}."},
-                    "tool": {"type": "string", "description": "A tool name from graph_tools_list, or a control step: exit, agent, ask, decide, filter, map, reduce."},
+                    "tool": {"type": "string", "description": "A tool name from graph_tools_list, or a control step: exit, agent, ask, route, filter, map, reduce."},
                     "input": {"type": "object", "description": "The step's input object. Leaf strings may be templates over earlier results, e.g. {{E1.field}} or {{input.x}}."},
                     "reasoning": {"type": "string", "description": "Why this step exists, carried into the plan for readers."},
                     "before": {"type": "string", "description": "Insert before this step id instead of appending."},
@@ -210,7 +210,7 @@ pub fn authoring_tools() -> Vec<Tool> {
             "List everything a plan step's `tool` field may name on this machine: invokable \
              tools under their namespaced name (`server__tool`, `user__tool`, \
              `builtin__tool`, `plan__id`), plus the bare control steps under the \
-             `(control)` source — exit, ask, agent, decide, map, reduce. This is the \
+             `(control)` source — exit, ask, agent, route, map, reduce. This is the \
              complete vocabulary; nothing else is a legal step tool, and the control steps \
              are documented here rather than anywhere on disk. Schemas are omitted — use \
              graph_tools_show for one entry.",
@@ -220,12 +220,12 @@ pub fn authoring_tools() -> Vec<Tool> {
             "graph_tools_show",
             "Show one tool's or control step's description and schemas. `inputSchema` is \
              what a plan step's input object must satisfy — call this before writing any \
-             step, including `exit`, `ask`, `agent`, `decide`, `map`, and `reduce`, whose \
+             step, including `exit`, `ask`, `agent`, `route`, `map`, and `reduce`, whose \
              grammar is only described here. Every key is always present, null when absent.",
             json!({
                 "type": "object",
                 "required": ["name"],
-                "properties": {"name": {"type": "string", "description": "A namespaced tool name, or a control step: exit, ask, agent, decide, map, reduce."}}
+                "properties": {"name": {"type": "string", "description": "A namespaced tool name, or a control step: exit, ask, agent, route, map, reduce."}}
             }),
         ),
         tool(

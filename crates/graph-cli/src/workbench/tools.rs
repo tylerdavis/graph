@@ -177,7 +177,7 @@ impl WorkbenchTools {
                 message.push_str(
                     "\nhint: control flow is not a field — it is a step whose \
                      toolName is one of the bare control steps exit, agent, \
-                     ask, decide, filter, map, or reduce (there is no \
+                     ask, route, filter, map, or reduce (there is no \
                      gate/assert tool); a \
                      plan finishes with `solver` OR `output`, never both",
                 );
@@ -732,7 +732,7 @@ impl ToolRegistry for WorkbenchTools {
                               NEW validation problems, e.g. a duplicate id or a \
                               reference to a later step; pre-existing problems never \
                               block it and are reported in the result. Steps inside \
-                              decide/map/reduce bodies live in the control step's \
+                              route/map/reduce bodies live in the control step's \
                               input — use update_step on that step instead."
                     .to_string(),
                 input_schema: json!({
@@ -766,7 +766,7 @@ impl ToolRegistry for WorkbenchTools {
                               and the output so templates keep working. Rejected only \
                               when the edit introduces NEW validation problems; \
                               pre-existing ones are reported, not blocking. For steps \
-                              inside decide/map/reduce bodies, update the owning \
+                              inside route/map/reduce bodies, update the owning \
                               control step's input."
                     .to_string(),
                 input_schema: json!({
@@ -1696,7 +1696,7 @@ steps:
         assert!(message.contains("unknown field"), "{message}");
         assert!(message.contains("hint:"), "{message}");
         assert!(
-            message.contains("exit, agent, ask, decide, filter, map"),
+            message.contains("exit, agent, ask, route, filter, map"),
             "{message}"
         );
     }

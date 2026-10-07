@@ -1,0 +1,8 @@
+version: 2
+identifier: minimal
+name: Minimal
+description: The smallest valid plan.
+steps:
+  - id: E0
+    tool_name: exit
+    input: { status: success, message: done }

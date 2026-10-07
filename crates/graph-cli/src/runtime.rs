@@ -35,6 +35,10 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    pub fn model_kind_of(&self, role: &str) -> Option<graph_config::ModelKind> {
+        self.router.kind_of_role(role)
+    }
+
     pub fn init() -> Result<Self> {
         Self::with_config(load_config()?.config)
     }

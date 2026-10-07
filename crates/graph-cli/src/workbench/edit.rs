@@ -1,6 +1,6 @@
 use super::form::{Field, FieldKind, Form};
 use graph_core::pipeline::authoring;
-use graph_core::pipeline::body::{parse_branch, Branch};
+use graph_core::pipeline::body::{control_body, control_body_mut, parse_branch, Branch};
 use graph_core::pipeline::doc::PlanDoc;
 use graph_core::pipeline::plan::Step;
 use graph_core::ToolDef;
@@ -59,7 +59,7 @@ pub fn step_at(doc: &PlanDoc, target: &StepTarget) -> Option<(Step, bool)> {
             position,
         } => {
             let owner = doc.steps.iter().find(|s| &s.id == step)?;
-            let raw = owner.input.get(body)?;
+            let raw = control_body(&owner.input, body)?;
             match (parse_branch(body, raw).ok()?, position) {
                 (Branch::Steps(steps), Some(index)) => {
                     steps.into_iter().nth(*index).map(|step| (step, true))
@@ -422,7 +422,7 @@ impl PendingEdit {
             }) => {
                 let input = self.input_object()?;
                 let index = authoring::position_of(step, &doc.steps)?;
-                let Some(slot) = doc.steps[index].input.get_mut(body) else {
+                let Some(slot) = control_body_mut(&mut doc.steps[index].input, body) else {
                     return Err(json!({"error": format!("step {step} has no `{body}` body")}));
                 };
                 let raw = match position {
@@ -543,7 +543,7 @@ steps:
           tool_name: t__fetch
           input: { url: "{{item.url}}" }
   - id: E3
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "{{E0.count}}", op: gt, to: 0 }
       then: { tool_name: t__notify, input: { message: "{{E0.query}}" } }
@@ -638,6 +638,7 @@ solver:
                 "tool",
                 "reasoning",
                 "in:status",
+                "in:decide",
                 "in:infer",
                 "in:message",
                 "in:model",
@@ -948,5 +949,48 @@ solver:
         let mut edited = doc.clone();
         edit.apply(&mut edited).unwrap();
         assert!(edited.solver.is_none() && edited.output.is_none());
+    }
+
+    #[test]
+    fn a_case_body_step_is_found_and_edited_in_place() {
+        let mut doc = graph_core::pipeline::doc::parse_plan_source(
+            r#"
+version: 2
+identifier: triage
+name: Triage
+description: d
+steps:
+  - id: E0
+    tool_name: route
+    input:
+      decide: { question: q, options: { billing: Payments, technical: Bugs } }
+      cases:
+        billing:
+          - id: B0
+            tool_name: t__refund
+            input: { amount: 1 }
+        technical: { tool_name: t__incident, input: {} }
+"#,
+            "triage.yaml",
+        )
+        .unwrap();
+        let target = StepTarget::Body {
+            step: "E0".into(),
+            body: "billing".into(),
+            position: Some(0),
+        };
+        let (step, _) = step_at(&doc, &target).unwrap();
+        assert_eq!(step.tool_name, "t__refund");
+        let mut form = step_form("step B0", &step, true, &[]);
+        set(&mut form, "in:amount", "5");
+        let edit = PendingEdit {
+            target: EditTarget::Step(target),
+            values: form.read().unwrap(),
+        };
+        edit.apply(&mut doc).unwrap();
+        assert_eq!(
+            doc.steps[0].input["cases"]["billing"][0]["input"]["amount"],
+            json!(5)
+        );
     }
 }

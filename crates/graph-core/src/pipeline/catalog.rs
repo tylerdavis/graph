@@ -18,10 +18,10 @@
 //!   error; the individual tool is still checked at dispatch.
 //! - `workbench__*` is rejected by the static layer before this one runs.
 
-use super::body::{parse_branch, Branch};
+use super::body::{control_bodies, parse_branch, Branch};
 use super::doc::PlanDoc;
 use super::plan::Plan;
-use super::{AGENT_TOOL, ASK_TOOL, DECIDE_TOOL, EXIT_TOOL, FILTER_TOOL, MAP_TOOL, REDUCE_TOOL};
+use super::{AGENT_TOOL, ASK_TOOL, EXIT_TOOL, FILTER_TOOL, MAP_TOOL, REDUCE_TOOL, ROUTE_TOOL};
 use std::collections::BTreeSet;
 
 /// Glob matching over tool names, with `*` as "any run of characters",
@@ -174,15 +174,8 @@ fn agent_tool_patterns(plan: &Plan) -> Vec<(String, String)> {
         if step.tool_name == AGENT_TOOL {
             collect(step.id.clone(), &step.input);
         }
-        let body_keys: &[&str] = match step.tool_name.as_str() {
-            DECIDE_TOOL => &["then", "else"],
-            MAP_TOOL | REDUCE_TOOL => &["do"],
-            _ => &[],
-        };
-        for key in body_keys {
-            let Some(raw) = step.input.get(*key) else {
-                continue;
-            };
+        for (key, raw) in control_bodies(&step.tool_name, &step.input) {
+            let key = key.as_str();
             match parse_branch(key, raw) {
                 Ok(Branch::Call(call)) if call.tool_name == AGENT_TOOL => {
                     collect(step.id.clone(), &call.input);
@@ -286,7 +279,7 @@ fn check_tool(
     check: &mut CatalogCheck,
 ) {
     match tool {
-        AGENT_TOOL | ASK_TOOL | EXIT_TOOL | DECIDE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL
+        AGENT_TOOL | ASK_TOOL | EXIT_TOOL | ROUTE_TOOL | FILTER_TOOL | MAP_TOOL | REDUCE_TOOL
         | "plan_and_execute" => {}
         _ if super::plan::workbench_tool_problem(tool).is_some() => {
             // The static layer rejects these with the full explanation;
@@ -354,15 +347,8 @@ fn step_tools(plan: &Plan) -> Vec<(String, String)> {
     let mut tools = Vec::new();
     for step in plan {
         tools.push((step.id.clone(), step.tool_name.clone()));
-        let body_keys: &[&str] = match step.tool_name.as_str() {
-            DECIDE_TOOL => &["then", "else"],
-            MAP_TOOL | REDUCE_TOOL => &["do"],
-            _ => &[],
-        };
-        for key in body_keys {
-            let Some(raw) = step.input.get(*key) else {
-                continue;
-            };
+        for (key, raw) in control_bodies(&step.tool_name, &step.input) {
+            let key = key.as_str();
             match parse_branch(key, raw) {
                 Ok(Branch::Call(call)) => tools.push((step.id.clone(), call.tool_name)),
                 Ok(Branch::Steps(steps)) => {
@@ -385,15 +371,7 @@ fn plan_refs(plan: &Plan) -> Vec<&str> {
         if let Some(identifier) = step.tool_name.strip_prefix("plan__") {
             refs.push(identifier);
         }
-        let body_keys: &[&str] = match step.tool_name.as_str() {
-            DECIDE_TOOL => &["then", "else"],
-            MAP_TOOL | REDUCE_TOOL => &["do"],
-            _ => &[],
-        };
-        for key in body_keys {
-            let Some(raw) = step.input.get(*key) else {
-                continue;
-            };
+        for (_, raw) in control_bodies(&step.tool_name, &step.input) {
             collect_plan_refs(raw, &mut refs);
         }
     }
@@ -548,7 +526,7 @@ steps:
     tool_name: linear__list_issues
     input: {}
   - id: E1
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "{{E0.count}}", op: gt, to: 0 }
       then: { toolName: ghost__triage, input: {} }
@@ -652,7 +630,7 @@ steps:
           outputSchema: { type: object, properties: {} }
           tools: ["ghost__thing"]
   - id: E2
-    tool_name: decide
+    tool_name: route
     input:
       if: { value: "{{E0.count}}", op: gt, to: 0 }
       then:

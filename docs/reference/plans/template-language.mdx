@@ -16,7 +16,7 @@ Plan steps, solver templates, and user-tool arguments all share one small, stric
 
 Roots are step ids (`E0`-style or descriptive names like `fetch_project`) and `input`; `item`, `index`, and `accumulator` join them inside [iteration](/plans/iteration) bodies, and `length` is a path operator — step ids may not shadow any of those five. Root-anchored paths are **strict** — a path that doesn't resolve is a typed error, never a silent empty string (see below).
 
-Two scoping rules come from [branching](/plans/branching): a `decide` step's result is referenced through its own id (`{{E1.result.…}}`, `{{E1.branch}}`) — branch-internal step ids are visible only to later steps _inside the same branch_ — and the non-taken branch's templates are never rendered at all.
+Two scoping rules come from [branching](/plans/branching): a `route` step's result is referenced through its own id (`{{E1.result.…}}`, `{{E1.branch}}`) — branch-internal step ids are visible only to later steps _inside the same branch_ — and the non-taken branch's templates are never rendered at all.
 
 ## Typed splice
 

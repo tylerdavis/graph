@@ -41,7 +41,7 @@ pub trait EventSink: Send + Sync {
     /// syntax — "E3", "E3/then", "E3/do.2/E10" — and `call_stack` is the
     /// plan-call nesting (empty at the top level), disambiguating an inner
     /// plan's "E0" from the outer plan's. `input` is the rendered input for
-    /// tool calls; control steps (decide/map/reduce) report their raw input,
+    /// tool calls; control steps (route/map/reduce) report their raw input,
     /// since their bodies render lazily.
     fn step_started(&self, _call_stack: &[String], _path: &str, _tool: &str, _input: &Value) {}
     /// A plan step (or body call) finished, carrying its full result value —

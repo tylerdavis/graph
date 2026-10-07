@@ -5,7 +5,7 @@
 //! `ask` is the in-band half of interactivity (the `ExecutionGate` is the
 //! out-of-band half): the plan itself declares that it needs a value only
 //! a person can supply. The answer is an ordinary step result, so
-//! templates, `exit` gates, and `decide` branches compose over it exactly
+//! templates, `exit` gates, and `route` branches compose over it exactly
 //! as they do over a tool's output.
 //!
 //! The load-bearing field is `whenUnanswered`. A plan that only runs with
@@ -291,7 +291,7 @@ impl Pipeline {
     }
 
     /// Ask, rendered against an arbitrary scope so it works identically at
-    /// the top level and inside a `decide`/`map`/`reduce` body (where the
+    /// the top level and inside a `route`/`map`/`reduce` body (where the
     /// scope carries `item`/`index`/`accumulator`).
     ///
     /// The step is never gated: like every control step, it makes no tool
