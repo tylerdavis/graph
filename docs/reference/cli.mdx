@@ -36,10 +36,13 @@ Interactive REPL with the default `chat` agent, or the named one. `--thread [<id
 ## `graph workbench`
 
 ```text
-graph workbench plan [<name>|<path>]     # alias: graph wb plan
+graph workbench                          # alias: graph wb
+graph workbench plan [<name>|<path>]
+graph workbench agent [<name>]
+graph workbench tool [<name>]
 ```
 
-Full-screen TUI for drafting, inspecting, and test-running plans — see [Plan workbench](/workbench/plan-workbench). Opens blank (draft via chat), or with a plan resolved like `plan validate` (file path or identifier). Requires an interactive terminal on stdin and stdout.
+Full-screen TUI for building plans, agents and tools — see [Workbench](/workbench/plan-workbench). With no subcommand it opens at the front desk, which asks what you want to build. `plan` opens blank (draft via chat), or with a plan resolved like `plan validate` (file path or identifier). `agent` and `tool` open a new draft, or with a name, that agent or user tool loaded for editing. Requires an interactive terminal on stdin and stdout.
 
 ## `graph plan`
 

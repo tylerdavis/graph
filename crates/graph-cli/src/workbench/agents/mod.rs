@@ -5,16 +5,35 @@ use graph_core::pipeline::doc::PlanDoc;
 use std::sync::{Arc, Mutex};
 
 pub const WORKBENCH_AGENTS: &[&str] = &[
-    include_str!("orchestrator.yaml"),
+    include_str!("front_desk.yaml"),
+    include_str!("plan_drafter.yaml"),
     include_str!("plan_loader.yaml"),
     include_str!("plan_editor.yaml"),
     include_str!("tool_drafter.yaml"),
     include_str!("agent_drafter.yaml"),
 ];
 
-pub const ORCHESTRATOR: &str = "orchestrator";
+pub const FRONT_DESK: &str = "front_desk";
+
+pub const PLAN_DRAFTER: &str = "plan_drafter";
 
 pub const PLAN_EDITOR: &str = "plan_editor";
+
+pub fn workbench_only() -> Vec<graph_core::agent::doc::AgentDoc> {
+    let globals: Vec<String> = graph_core::agent::doc::BUILTINS
+        .iter()
+        .filter_map(|raw| graph_core::agent::doc::parse_agent_source(raw).ok())
+        .map(|doc| doc.name)
+        .collect();
+    let (set, _) = graph_core::agent::doc::AgentSet::load(WORKBENCH_AGENTS, &[]);
+    set.iter()
+        .filter(|doc| !globals.contains(&doc.name))
+        .collect()
+}
+
+pub fn is_workbench_only(name: &str) -> bool {
+    workbench_only().iter().any(|doc| doc.name == name)
+}
 
 pub fn builtin_sources() -> Vec<&'static str> {
     graph_core::agent::doc::BUILTINS
@@ -24,10 +43,21 @@ pub fn builtin_sources() -> Vec<&'static str> {
         .collect()
 }
 
-pub fn starting_agent(doc: Option<&PlanDoc>) -> &'static str {
-    match doc {
-        Some(_) => PLAN_EDITOR,
-        None => ORCHESTRATOR,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Start {
+    FrontDesk,
+    Plan(Option<String>),
+    Agent(Option<String>),
+    Tool(Option<String>),
+}
+
+pub fn starting_agent(start: &Start, doc: Option<&PlanDoc>) -> &'static str {
+    match (start, doc) {
+        (Start::FrontDesk, _) => FRONT_DESK,
+        (Start::Plan(_), Some(_)) => PLAN_EDITOR,
+        (Start::Plan(_), None) => PLAN_DRAFTER,
+        (Start::Agent(_), _) => super::artifact::AGENT_DRAFTER,
+        (Start::Tool(_), _) => super::artifact::TOOL_DRAFTER,
     }
 }
 
@@ -40,7 +70,7 @@ enum Section {
 fn sections(agent: &str) -> &'static [Section] {
     match agent {
         "plan_editor" => &[Section::CurrentDraft],
-        "orchestrator" => &[Section::DraftSummary],
+        "plan_drafter" => &[Section::DraftSummary],
         "tool_drafter" | "agent_drafter" => &[Section::Artifact],
         _ => &[],
     }
@@ -104,9 +134,34 @@ mod tests {
         let fragments: Vec<&str> = global_fragments().into_keys().collect();
         let problems = set.validate(&fragments);
         assert!(problems.is_empty(), "{problems:?}");
-        for name in ["orchestrator", "plan_loader", "plan_editor", "plan_refiner"] {
+        for name in [
+            "front_desk",
+            "plan_drafter",
+            "plan_loader",
+            "plan_editor",
+            "tool_drafter",
+            "agent_drafter",
+        ] {
             assert!(set.get(name).is_some(), "{name}");
         }
+    }
+
+    #[test]
+    fn each_way_into_the_workbench_starts_at_its_agent() {
+        let doc: PlanDoc =
+            serde_yaml::from_str("identifier: demo\nname: Demo\ndescription: d\nsteps: []\n")
+                .unwrap();
+        assert_eq!(starting_agent(&Start::FrontDesk, None), "front_desk");
+        assert_eq!(starting_agent(&Start::Plan(None), None), "plan_drafter");
+        assert_eq!(
+            starting_agent(&Start::Plan(Some("demo".into())), Some(&doc)),
+            "plan_editor"
+        );
+        assert_eq!(starting_agent(&Start::Agent(None), None), "agent_drafter");
+        assert_eq!(
+            starting_agent(&Start::Tool(Some("x".into())), None),
+            "tool_drafter"
+        );
     }
 
     #[test]
@@ -135,11 +190,13 @@ steps:
         let draft = Arc::new(Mutex::new(DraftState::new(None)));
         let hook = context_hook(draft);
         assert_eq!(
-            hook("orchestrator"),
+            hook("plan_drafter"),
             ["## Workbench\nThe draft pane is empty."]
         );
         assert!(hook("plan_editor")[0].starts_with("## Current draft"));
         assert!(hook("plan_loader").is_empty());
+        assert!(hook("front_desk").is_empty());
+        assert!(hook("tool_drafter")[0].starts_with("## Current draft"));
         assert!(hook("chat").is_empty());
     }
 }

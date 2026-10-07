@@ -207,6 +207,9 @@ pub fn validate_body(
                     ));
                 }
                 check_body_tool(name, &step.tool_name, step_id, problems);
+                if step.tool_name == EXIT_TOOL {
+                    super::exit::check_exit_input(&step.input, &step.id, problems);
+                }
                 if step.tool_name == super::AGENT_TOOL {
                     super::agent::validate_agent_input(&step.input, &body_seen, &step.id, problems);
                 } else if step.tool_name == super::ASK_TOOL {

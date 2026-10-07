@@ -1,0 +1,19 @@
+version: 2
+name: web_search
+description: Search the web through a SearXNG instance; returns titles, URLs and snippets.
+kind: exec
+command: bash
+args:
+  - "-c"
+  - 'curl -sf -H "Authorization: Bearer $SEARCH_TOKEN" "$SEARXNG_URL/search?format=json&q=$1"'
+  - "--"
+  - "{{input.query}}"
+env:
+  SEARXNG_URL: "${SEARXNG_URL:-https://search.example.com}"
+  SEARCH_TOKEN: "${SEARCH_TOKEN}"
+read_only: true
+input_schema:
+  type: object
+  required: [query]
+  properties:
+    query: { type: string, description: What to search for }

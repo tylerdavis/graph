@@ -40,6 +40,7 @@ pub struct Field {
     pub highlight: usize,
     pub focused: bool,
     pub strict: bool,
+    pub choose_only: bool,
     committed: String,
     original: String,
 }
@@ -66,6 +67,7 @@ impl Field {
             highlight: 0,
             focused: false,
             strict: false,
+            choose_only: false,
             committed: String::new(),
             original: String::new(),
         };
@@ -82,6 +84,57 @@ impl Field {
         self
     }
 
+    pub fn choices(mut self, options: Vec<String>) -> Self {
+        let mut ordered: Vec<String> = Vec::new();
+        for option in options {
+            if !ordered.contains(&option) {
+                ordered.push(option);
+            }
+        }
+        self.options = Some(ordered);
+        self.choose_only = true;
+        self.strict = true;
+        self.committed = self.text();
+        self.sync_choice();
+        self.set_focused(false);
+        self
+    }
+
+    fn sync_choice(&mut self) {
+        if !self.choose_only {
+            return;
+        }
+        let text = self.text();
+        if let Some(index) = self
+            .options
+            .as_ref()
+            .and_then(|options| options.iter().position(|option| *option == text.trim()))
+        {
+            self.highlight = index;
+        }
+    }
+
+    fn choose(&mut self, step: isize) {
+        let Some(options) = &self.options else {
+            return;
+        };
+        if options.is_empty() {
+            return;
+        }
+        let current = options
+            .iter()
+            .position(|option| *option == self.text().trim());
+        let count = options.len() as isize;
+        let next = match current {
+            Some(index) => (index as isize + step).rem_euclid(count) as usize,
+            None => 0,
+        };
+        self.textarea = TextArea::from([options[next].clone()]);
+        self.textarea.move_cursor(CursorMove::End);
+        self.highlight = next;
+        self.set_focused(true);
+    }
+
     pub fn strict(mut self) -> Self {
         self.strict = true;
         self
@@ -95,6 +148,9 @@ impl Field {
         let Some(options) = &self.options else {
             return Vec::new();
         };
+        if self.choose_only {
+            return options.iter().map(String::as_str).collect();
+        }
         let typed = self.text().trim().to_lowercase();
         let rank = |option: &str| {
             let lower = option.to_lowercase();
@@ -189,6 +245,7 @@ impl Field {
         self.textarea.move_cursor(CursorMove::End);
         self.committed = self.text();
         self.original = self.committed.clone();
+        self.sync_choice();
         self.set_focused(false);
         self
     }
@@ -204,6 +261,7 @@ impl Field {
         self.textarea.move_cursor(CursorMove::End);
         self.committed = self.text();
         self.original = self.committed.clone();
+        self.sync_choice();
         self.set_focused(false);
     }
 
@@ -535,6 +593,21 @@ impl Form {
 
     fn select_key(&mut self, key: KeyEvent) {
         let field = &mut self.fields[self.focused];
+        if field.choose_only {
+            match key.code {
+                KeyCode::BackTab => self.focus_previous(),
+                KeyCode::Tab | KeyCode::Enter => {
+                    if field.text().trim().is_empty() {
+                        field.choose(0);
+                    }
+                    self.focus_next();
+                }
+                KeyCode::Up | KeyCode::Left => field.choose(-1),
+                KeyCode::Down | KeyCode::Right | KeyCode::Char(' ') => field.choose(1),
+                _ => {}
+            }
+            return;
+        }
         let matches = field.matches().len();
         match key.code {
             KeyCode::BackTab => self.focus_previous(),
@@ -568,6 +641,9 @@ impl Form {
         let Some(field) = self.fields.get_mut(self.focused) else {
             return;
         };
+        if field.choose_only {
+            return;
+        }
         if field.multiline {
             field.textarea.insert_str(text);
         } else {
@@ -873,6 +949,43 @@ mod tests {
         let mut reloaded = self::tests::form();
         reloaded.mark_reloaded();
         assert!(reloaded.is_dirty(), "a reload counts as a change");
+    }
+
+    #[test]
+    fn a_choose_only_field_lists_every_option_and_takes_no_typing() {
+        let mut form = Form::new(
+            "t",
+            "h",
+            vec![
+                Field::new("status", "status", FieldKind::Text, false)
+                    .choices(vec!["Todo".into(), "In Progress".into(), "Done".into()])
+                    .value(Some(&Value::String("In Progress".into()))),
+                Field::new("note", "note", FieldKind::Text, false),
+            ],
+        );
+        assert_eq!(form.fields[0].matches(), ["Todo", "In Progress", "Done"]);
+        assert_eq!(form.fields[0].highlight, 1);
+
+        form.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(
+            form.fields[0].text(),
+            "In Progress",
+            "typing changes nothing"
+        );
+        form.paste("anything");
+        assert_eq!(form.fields[0].text(), "In Progress");
+
+        form.handle_key(key(KeyCode::Down));
+        assert_eq!(form.fields[0].text(), "Done");
+        form.handle_key(key(KeyCode::Right));
+        assert_eq!(form.fields[0].text(), "Todo", "choices wrap around");
+        form.handle_key(key(KeyCode::Left));
+        assert_eq!(form.fields[0].text(), "Done");
+        assert_eq!(form.fields[0].highlight, 2);
+
+        form.handle_key(key(KeyCode::Enter));
+        assert_eq!(form.focused, 1, "Enter keeps the choice and moves on");
+        assert_eq!(form.fields[0].text(), "Done");
     }
 
     #[test]

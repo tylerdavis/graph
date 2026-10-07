@@ -180,6 +180,17 @@ pub async fn draft(
         Some(output) if drafted.result["exited"] == json!(true) => output.clone(),
         _ => drafted.result,
     };
+    let missing_tools = composed["missing"]
+        .as_array()
+        .is_some_and(|missing| !missing.is_empty());
+    if composed["plan"].is_null() && !missing_tools {
+        return Ok(Outcome::rejected(json!({
+            "ok": false,
+            "error": "the draft never became a valid plan; try again, or reword the goal",
+            "problems": composed["problems"].clone(),
+            "yaml": composed["yaml"].clone(),
+        })));
+    }
     if composed["plan"].is_null() {
         let missing = composed["missing"].clone();
         let capabilities: Vec<&Value> = missing

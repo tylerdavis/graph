@@ -19,7 +19,6 @@ mod compose;
 pub mod condition;
 pub mod doc;
 mod drafter;
-mod drafting;
 pub mod exit;
 pub mod filter;
 pub mod gate;
@@ -39,9 +38,8 @@ pub use agent::{agent_tool_def, AGENT_TOOL};
 pub use ask::{ask_tool_def, AskResult, WhenUnanswered, ASK_TOOL};
 pub use authoring::{EditAccepted, EditRejected, WriteError};
 pub use catalog::{CatalogCheck, ToolCatalog};
-pub use compose::COMPOSE_PLAN;
+pub use compose::{draft_input, COMPOSE_PLAN};
 pub use drafter::{drafter_tool_defs, Drafted, DraftedTools};
-pub use drafting::{draft_input, Draft, DraftState, StepDraft, AUTHOR_PLAN, MAX_STEP_ATTEMPTS};
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
 pub use filter::FILTER_TOOL;
 pub use gate::{ErrorDecision, ExecutionGate, GateContext, GateDecision, StepPath};
@@ -102,6 +100,7 @@ pub struct Pipeline {
     pub user_context: String,
     pub current_date: String,
     pub max_attempts: u32,
+    pub max_agent_iterations: u32,
     /// Where this run's model calls are tallied. Shared with the
     /// [`ModelRouter`] as its `UsageMeter`, and — because [`Pipeline::nested`]
     /// clones — with every plan this one calls, so a composed plan's spend

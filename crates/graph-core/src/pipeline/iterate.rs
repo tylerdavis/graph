@@ -35,8 +35,6 @@ pub struct MapSpec {
     /// Maximum items in flight; 1 (the default) runs items sequentially.
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
-    /// What a failing item does: `fail` (the default) fails the step;
-    /// `skip` leaves it out of `results` and records it under `failed`.
     #[serde(default)]
     pub on_error: OnItemError,
 }
@@ -332,7 +330,11 @@ impl Pipeline {
                             .await;
                         if let Err(error) = &run {
                             let skippable = skip_failures
-                                && matches!(error.fail, BodyFail::Tool(_) | BodyFail::Render(_));
+                                && matches!(
+                                    error.fail,
+                                    BodyFail::Tool(_)
+                                        | BodyFail::Render(RenderError::EmptyData { .. })
+                                );
                             if !skippable {
                                 halted_ref.store(true, Ordering::Relaxed);
                             }
@@ -372,7 +374,9 @@ impl Pipeline {
                                 json!({"index": index, "item": items[index], "error": message}),
                             );
                         }
-                        BodyFail::Render(error) if skip_failures => {
+                        BodyFail::Render(error @ RenderError::EmptyData { .. })
+                            if skip_failures =>
+                        {
                             skipped.push(json!({"index": index, "item": items[index], "error": error.to_string()}));
                         }
                         fail => {

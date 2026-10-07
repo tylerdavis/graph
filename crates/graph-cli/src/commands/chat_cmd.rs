@@ -16,7 +16,16 @@ pub async fn run(agent: Option<String>, thread: Option<Option<String>>) -> Resul
     let runtime = Runtime::init()?;
     let store = runtime.store()?;
     let mut thread: Option<ThreadMeta> = resolve_thread(store.as_ref(), thread).await?;
-    let mut active = starting_agent(thread.as_ref(), agent.as_deref())?;
+    if let Some(name) = agent
+        .as_deref()
+        .filter(|name| crate::workbench::agents::is_workbench_only(name))
+    {
+        bail!("{name} runs only in the workbench: start it with `graph wb`");
+    }
+    let agents = runtime.agent_set();
+    let mut active = starting_agent(thread.as_ref(), agent.as_deref(), &|name| {
+        agents.get(name).is_some()
+    })?;
     let owner = thread
         .as_ref()
         .map(|meta| meta.owner.clone())

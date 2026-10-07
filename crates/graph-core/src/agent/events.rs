@@ -21,6 +21,7 @@ pub trait EventSink: Send + Sync {
     /// `plan run --json` embeds.
     fn usage_summary(&self, _report: &UsageReport) {}
     fn run_finished(&self, _output: &Value, _is_error: bool) {}
+    fn handoff(&self, _from: &str, _to: &str, _back: bool) {}
     fn run_started(&self, _run: &RunStart) {}
     /// A tool invocation is starting.
     fn tool_started(&self, _name: &str, _args: &Value) {}
@@ -54,23 +55,6 @@ pub trait EventSink: Send + Sync {
         _result: &Value,
         _is_error: bool,
         _elapsed: Duration,
-    ) {
-    }
-    /// Drafting produced its outline: a JSON array of entry strings.
-    fn draft_outline(&self, _items: &Value) {}
-    /// Drafting started generating the step for stage `index`
-    /// (0-based), described by `summary`.
-    fn draft_step_started(&self, _index: usize, _summary: &str) {}
-    /// A drafted step finished validation. Empty `problems` means the step
-    /// was accepted; non-empty means this attempt failed and drafting will
-    /// retry (or exhaust). `step` is the step JSON (null when the model
-    /// returned none); `attempt` counts from 1 within the stage.
-    fn draft_step_finished(
-        &self,
-        _index: usize,
-        _step: &Value,
-        _problems: &[String],
-        _attempt: u32,
     ) {
     }
 }
@@ -114,6 +98,10 @@ impl EventSink for TeeSink {
         self.sinks
             .iter()
             .for_each(|s| s.run_finished(output, is_error));
+    }
+
+    fn handoff(&self, from: &str, to: &str, back: bool) {
+        self.sinks.iter().for_each(|s| s.handoff(from, to, back));
     }
 
     fn run_started(&self, run: &RunStart) {
@@ -168,22 +156,6 @@ impl EventSink for TeeSink {
         self.sinks
             .iter()
             .for_each(|s| s.step_finished(call_stack, path, tool, result, is_error, elapsed));
-    }
-
-    fn draft_outline(&self, items: &Value) {
-        self.sinks.iter().for_each(|s| s.draft_outline(items));
-    }
-
-    fn draft_step_started(&self, index: usize, summary: &str) {
-        self.sinks
-            .iter()
-            .for_each(|s| s.draft_step_started(index, summary));
-    }
-
-    fn draft_step_finished(&self, index: usize, step: &Value, problems: &[String], attempt: u32) {
-        self.sinks
-            .iter()
-            .for_each(|s| s.draft_step_finished(index, step, problems, attempt));
     }
 }
 

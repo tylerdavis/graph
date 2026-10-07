@@ -57,6 +57,20 @@ impl EventSink for ChannelSink {
         }
     }
 
+    fn handoff(&self, from: &str, to: &str, back: bool) {
+        if matches!(self.kind, SinkKind::AgentTurn) {
+            let verb = if back {
+                "handed back to"
+            } else {
+                "handed off to"
+            };
+            self.send(Msg::ActiveAgent {
+                name: to.to_string(),
+                note: Some(format!("⇢ {from} {verb} {to}")),
+            });
+        }
+    }
+
     fn tool_started(&self, name: &str, _args: &Value) {
         if matches!(self.kind, SinkKind::AgentTurn) {
             self.send(Msg::AgentToolStarted(name.to_string()));
@@ -76,35 +90,6 @@ impl EventSink for ChannelSink {
         if matches!(self.kind, SinkKind::PlanRun) {
             self.send(Msg::Planning);
         }
-    }
-
-    fn draft_outline(&self, items: &Value) {
-        let items = items
-            .as_array()
-            .map(|list| {
-                list.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
-        self.send(Msg::DraftOutline { items });
-    }
-
-    fn draft_step_started(&self, index: usize, summary: &str) {
-        self.send(Msg::DraftStepStarted {
-            index,
-            summary: summary.to_string(),
-        });
-    }
-
-    fn draft_step_finished(&self, index: usize, step: &Value, problems: &[String], attempt: u32) {
-        self.send(Msg::DraftStepFinished {
-            index,
-            step: step.clone(),
-            problems: problems.to_vec(),
-            attempt,
-        });
     }
 
     fn synthesizing(&self) {

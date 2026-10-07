@@ -94,7 +94,7 @@ Two built-in agents write new files with you, over as many turns as it takes:
 
 Both save to the project (`./.graph/tools/` and `./.graph/agents/`), ask "Save it?" before writing anything, and never replace an existing file unless you agree. `graph ask`, which has no terminal to ask in, saves without asking. A saved tool or agent is usable right away in the same session. In the [workbench](/workbench/plan-workbench#drafting-a-tool-or-an-agent) the drafters work on a draft in the pane instead, which you save yourself.
 
-A thread belongs to the agent it was started with. `graph chat <agent> --thread <id>` is refused when `<agent>` isn't that owner. Leave the agent out to resume, or switch with `/agent <name>` inside the REPL.
+A thread belongs to the agent it was started with. `graph chat <agent> --thread <id>` is refused when `<agent>` isn't that owner, and resumes with the owner when it is. Leave the agent out to resume with the agent that last had the conversation, or switch with `/agent <name>` inside the REPL. When that agent isn't available where you resume (a project agent, resumed from another project), the thread resumes with its owner instead.
 
 ## Reading the output
 

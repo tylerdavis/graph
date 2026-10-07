@@ -19,15 +19,17 @@ pub const SAVE_TOOL_TOOL: &str = "builtin__save_tool";
 
 pub const SAVE_AGENT_TOOL: &str = "builtin__save_agent";
 
-const WORKBENCH_AGENTS: [&str; 3] = ["orchestrator", "plan_loader", "plan_editor"];
+const WORKBENCH_AGENTS: [&str; 4] = ["front_desk", "plan_drafter", "plan_loader", "plan_editor"];
 
 #[derive(Debug, Default)]
 pub struct Drafted {
     tools: RwLock<Vec<UserToolDoc>>,
     agents: Arc<RwLock<Vec<AgentDoc>>>,
     tested: Mutex<HashSet<String>>,
+    approved: Mutex<HashSet<String>>,
     pub tools_dir: Option<PathBuf>,
     pub agents_dir: Option<PathBuf>,
+    pub tool_dirs: Vec<PathBuf>,
 }
 
 impl Drafted {
@@ -37,6 +39,11 @@ impl Drafted {
             agents_dir,
             ..Self::default()
         }
+    }
+
+    pub fn with_tool_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.tool_dirs = dirs;
+        self
     }
 
     pub fn tools(&self) -> Vec<UserToolDoc> {
@@ -209,21 +216,55 @@ fn run_preview(doc: &UserToolDoc, input: &Value) -> String {
     )
 }
 
-fn write_file(dir: &Path, name: &str, yaml: &str, overwrite: bool) -> Result<PathBuf, String> {
+fn write_file(path: &Path, yaml: &str, overwrite: bool) -> Result<PathBuf, String> {
+    let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
-    let path = dir.join(format!("{name}.yaml"));
+    let path = path.to_path_buf();
+    let file = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
     if path.exists() && !overwrite {
         return Err(format!(
             "{} already exists; pass overwrite: true only after the user confirms replacing it",
             path.display()
         ));
     }
-    let staging = dir.join(format!(".{name}.yaml.tmp"));
+    let staging = dir.join(format!(".{file}.tmp"));
     std::fs::write(&staging, yaml)
         .map_err(|e| format!("can't write {}: {e}", staging.display()))?;
     std::fs::rename(&staging, &path)
         .map_err(|e| format!("can't move {} into place: {e}", path.display()))?;
     Ok(path)
+}
+
+fn redacted_text(text: &str, secrets: &std::collections::BTreeMap<String, String>) -> String {
+    let mut text = text.to_string();
+    for secret in secrets.values().filter(|secret| !secret.is_empty()) {
+        text = text.replace(secret.as_str(), "[secret]");
+    }
+    text
+}
+
+fn redacted(result: Value, secrets: &std::collections::BTreeMap<String, String>) -> Value {
+    if secrets.is_empty() {
+        return result;
+    }
+    match result {
+        Value::String(text) => Value::String(redacted_text(&text, secrets)),
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(|item| redacted(item, secrets))
+                .collect(),
+        ),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, value)| (redacted_text(&key, secrets), redacted(value, secrets)))
+                .collect(),
+        ),
+        other => other,
+    }
 }
 
 fn stamped(yaml: &str, kind: crate::format::Kind) -> String {
@@ -257,6 +298,73 @@ impl Pipeline {
         Some(catalog)
     }
 
+    async fn approve_run(
+        &self,
+        doc: &UserToolDoc,
+        sample: &Value,
+        unset: &[String],
+    ) -> Result<std::collections::BTreeMap<String, String>, Value> {
+        let Some(interlocutor) = &self.interlocutor else {
+            return Err(json!({
+                "ran": false,
+                "reason": "nobody can approve a test run here; ask the user whether to save it untested"
+            }));
+        };
+        let mut prompt = run_preview(doc, sample);
+        let mut properties = serde_json::Map::new();
+        properties.insert(
+            "run".to_string(),
+            json!({"type": "boolean", "description": "Run it now?"}),
+        );
+        if unset.is_empty() {
+            prompt.push_str(
+                "\n\nRunning this exact draft with this exact input again won't ask; any change to either will.",
+            );
+        } else {
+            prompt.push_str(&format!(
+                "\n\nIt needs {}, which isn't set. Enter a value below for this run only: it isn't saved, and it is never passed to the model.",
+                unset.join(", ")
+            ));
+            for var in unset {
+                properties.insert(
+                    var.clone(),
+                    json!({"type": "string", "description": format!("{var} for this test run only (never saved, never passed to the model)")}),
+                );
+            }
+        }
+        let mut order = vec![json!("run")];
+        order.extend(unset.iter().map(|var| json!(var)));
+        let outcome = interlocutor
+            .ask(AskRequest {
+                path: StepPath::top("try_tool"),
+                call_stack: self.call_stack.clone(),
+                prompt,
+                schema: json!({
+                    "type": "object",
+                    "required": ["run"],
+                    "properties": properties,
+                    "propertyOrder": order,
+                }),
+                default: Some(json!({"run": true})),
+            })
+            .await;
+        match outcome {
+            AskOutcome::Answered(answer) if answer["run"] == json!(true) => {
+                let mut secrets = std::collections::BTreeMap::new();
+                for var in unset {
+                    if let Some(value) = answer[var].as_str().filter(|value| !value.is_empty()) {
+                        secrets.insert(var.clone(), value.to_string());
+                    }
+                }
+                Ok(secrets)
+            }
+            AskOutcome::Unavailable(reason) => Err(
+                json!({"ran": false, "reason": format!("the user couldn't be asked: {reason}")}),
+            ),
+            _ => Err(json!({"ran": false, "reason": "the user declined the test run"})),
+        }
+    }
+
     pub(super) async fn try_tool(&self, input: Value) -> Result<Value, String> {
         let yaml = input["yaml"].as_str().unwrap_or_default();
         let doc = match parse_tool(yaml) {
@@ -267,45 +375,38 @@ impl Pipeline {
             Value::Object(_) => input["input"].clone(),
             _ => json!({}),
         };
-        let Some(interlocutor) = &self.interlocutor else {
-            return Ok(json!({
-                "ran": false,
-                "reason": "nobody can approve a test run here; ask the user whether to save it untested"
-            }));
-        };
-        let outcome = interlocutor
-            .ask(AskRequest {
-                path: StepPath::top("try_tool"),
-                call_stack: self.call_stack.clone(),
-                prompt: run_preview(&doc, &sample),
-                schema: json!({
-                    "type": "object",
-                    "required": ["run"],
-                    "properties": {"run": {"type": "boolean", "description": "Run it now?"}}
-                }),
-                default: Some(json!({"run": true})),
-            })
-            .await;
-        let approved = match outcome {
-            AskOutcome::Answered(answer) => answer["run"] == json!(true),
-            AskOutcome::Declined => false,
-            AskOutcome::Unavailable(reason) => {
-                return Ok(
-                    json!({"ran": false, "reason": format!("the user couldn't be asked: {reason}")}),
-                )
+        let unset = crate::user_tools::unset_env_vars(&doc);
+        let approval = format!("{yaml}\n{sample}");
+        let remembered =
+            unset.is_empty() && self.drafted.approved.lock().unwrap().contains(&approval);
+        let secrets = if remembered {
+            std::collections::BTreeMap::new()
+        } else {
+            match self.approve_run(&doc, &sample, &unset).await {
+                Ok(secrets) => secrets,
+                Err(refusal) => return Ok(refusal),
             }
         };
-        if !approved {
-            return Ok(json!({"ran": false, "reason": "the user declined the test run"}));
+        if !remembered && unset.is_empty() {
+            self.drafted.approved.lock().unwrap().insert(approval);
         }
         let name = format!("{USER_TOOL_PREFIX}{}", doc.name);
+        let doc = crate::user_tools::with_env_values(&doc, &secrets);
         let registry = UserToolRegistry::new(vec![doc], self.router.clone());
         let outcome = registry
             .invoke(&name, sample)
             .await
-            .map_err(|error| error.to_string())?;
-        let mut report =
-            json!({"ran": true, "is_error": outcome.is_error, "result": outcome.result});
+            .map_err(|error| redacted_text(&error.to_string(), &secrets))?;
+        let result = redacted(outcome.result, &secrets);
+        let mut report = json!({"ran": true, "is_error": outcome.is_error, "result": result});
+        let outcome = ToolOutcome {
+            result: report["result"].clone(),
+            is_error: outcome.is_error,
+        };
+        if !unset.is_empty() {
+            report["needs_env"] = json!(unset);
+            report["note"] = json!("these environment variables have to be set where graph starts before the tool works outside this test; their values were never passed to you");
+        }
         if !outcome.is_error {
             let shape = crate::shapes::infer_schema(&outcome.result);
             if let Some(store) = &self.store {
@@ -355,15 +456,21 @@ impl Pipeline {
         parse_tool(yaml).err().unwrap_or_default()
     }
 
-    async fn confirm_save(&self, name: &str, path: &Path) -> Result<(), Value> {
+    async fn confirm_save(&self, name: &str, path: &Path, yaml: &str) -> Result<(), Value> {
+        let unattended = || {
+            Err(refused(
+                "nobody is here to approve saving it; saving needs the user's confirmation",
+                Vec::new(),
+            ))
+        };
         let Some(interlocutor) = &self.interlocutor else {
-            return Ok(());
+            return unattended();
         };
         let outcome = interlocutor
             .ask(AskRequest {
                 path: StepPath::top("save"),
                 call_stack: self.call_stack.clone(),
-                prompt: format!("Save {name} to {}?", path.display()),
+                prompt: format!("Save {name} to {}?\n\n{}", path.display(), yaml.trim_end()),
                 schema: json!({
                     "type": "object",
                     "required": ["save"],
@@ -374,7 +481,7 @@ impl Pipeline {
             .await;
         match outcome {
             AskOutcome::Answered(answer) if answer["save"] == json!(true) => Ok(()),
-            AskOutcome::Unavailable(_) => Ok(()),
+            AskOutcome::Unavailable(_) => unattended(),
             _ => Err(refused("the user didn't want it saved yet", Vec::new())),
         }
     }
@@ -385,6 +492,18 @@ impl Pipeline {
         untested: bool,
         overwrite: bool,
         confirm: bool,
+    ) -> Value {
+        self.save_tool_file_at(yaml, untested, overwrite, confirm, None)
+            .await
+    }
+
+    pub async fn save_tool_file_at(
+        &self,
+        yaml: &str,
+        untested: bool,
+        overwrite: bool,
+        confirm: bool,
+        existing: Option<&Path>,
     ) -> Value {
         let doc = match parse_tool(yaml) {
             Ok(doc) => doc,
@@ -403,11 +522,14 @@ impl Pipeline {
             );
         };
         let name = format!("{USER_TOOL_PREFIX}{}", doc.name);
-        let target = dir.join(format!("{}.yaml", doc.name));
-        let defined_elsewhere = self
-            .catalog
-            .as_deref()
-            .is_some_and(|catalog| catalog.user_tools.contains(&name))
+        let target = existing
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| dir.join(format!("{}.yaml", doc.name)));
+        let defined_elsewhere = existing.is_none()
+            && self
+                .catalog
+                .as_deref()
+                .is_some_and(|catalog| catalog.user_tools.contains(&name))
             && !target.exists();
         if defined_elsewhere {
             return refused(
@@ -422,13 +544,12 @@ impl Pipeline {
             );
         }
         if confirm {
-            if let Err(declined) = self.confirm_save(&name, &target).await {
+            if let Err(declined) = self.confirm_save(&name, &target, yaml).await {
                 return declined;
             }
         }
         let path = match write_file(
-            &dir,
-            &doc.name,
+            &target,
             &stamped(yaml, crate::format::Kind::Tool),
             overwrite,
         ) {
@@ -496,6 +617,17 @@ impl Pipeline {
     }
 
     pub async fn save_agent_file(&self, yaml: &str, overwrite: bool, confirm: bool) -> Value {
+        self.save_agent_file_at(yaml, overwrite, confirm, None)
+            .await
+    }
+
+    pub async fn save_agent_file_at(
+        &self,
+        yaml: &str,
+        overwrite: bool,
+        confirm: bool,
+        existing: Option<&Path>,
+    ) -> Value {
         let doc = match self.check_agent_file(yaml).await {
             Ok(doc) => doc,
             Err(problems) => return refused("the agent file has problems", problems),
@@ -503,7 +635,9 @@ impl Pipeline {
         let Some(dir) = self.drafted.agents_dir.clone() else {
             return refused("no agents directory is available", Vec::new());
         };
-        let target = dir.join(format!("{}.yaml", doc.name));
+        let target = existing
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| dir.join(format!("{}.yaml", doc.name)));
         if target.exists() && !overwrite {
             return refused(
                 format!("{} already exists; pass overwrite: true only after the user confirms replacing it", target.display()),
@@ -511,13 +645,12 @@ impl Pipeline {
             );
         }
         if confirm {
-            if let Err(declined) = self.confirm_save(&doc.name, &target).await {
+            if let Err(declined) = self.confirm_save(&doc.name, &target, yaml).await {
                 return declined;
             }
         }
         let path = match write_file(
-            &dir,
-            &doc.name,
+            &target,
             &stamped(yaml, crate::format::Kind::Agent),
             overwrite,
         ) {

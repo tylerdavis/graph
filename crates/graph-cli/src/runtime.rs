@@ -64,15 +64,26 @@ impl Runtime {
         );
         let router = ModelRouter::from_config(&loaded.config)?.with_meter(usage.clone());
         let registry = Arc::new(McpManager::new(loaded.config.mcp.clone()));
-        let drafted = Arc::new(graph_core::pipeline::Drafted::new(
-            loaded
-                .config
-                .tools
-                .paths
-                .first()
-                .map(|p| graph_config::expand_tilde(p)),
-            graph_core::agent::doc::agent_dirs().into_iter().next(),
-        ));
+        let drafted = Arc::new(
+            graph_core::pipeline::Drafted::new(
+                loaded
+                    .config
+                    .tools
+                    .paths
+                    .first()
+                    .map(|p| graph_config::expand_tilde(p)),
+                graph_core::agent::doc::agent_dirs().into_iter().next(),
+            )
+            .with_tool_dirs(
+                loaded
+                    .config
+                    .tools
+                    .paths
+                    .iter()
+                    .map(|p| graph_config::expand_tilde(p))
+                    .collect(),
+            ),
+        );
         Ok(Self {
             config: loaded.config,
             registry,
@@ -355,6 +366,7 @@ impl Runtime {
             user_context,
             current_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
             max_attempts: self.config.settings.planning_attempts.max(1),
+            max_agent_iterations: self.config.settings.max_agent_iterations,
             usage: self.usage.clone(),
             agents: Arc::new(self.agent_set()),
             agent_depth: 0,
@@ -545,7 +557,11 @@ pub async fn persist_turn(
     Ok(())
 }
 
-pub fn starting_agent(thread: Option<&ThreadMeta>, requested: Option<&str>) -> Result<String> {
+pub fn starting_agent(
+    thread: Option<&ThreadMeta>,
+    requested: Option<&str>,
+    known: &dyn Fn(&str) -> bool,
+) -> Result<String> {
     match (thread, requested) {
         (Some(meta), Some(agent)) if agent != meta.owner => anyhow::bail!(
             "thread {} belongs to the {} agent — continue it without naming an agent \
@@ -554,7 +570,17 @@ pub fn starting_agent(thread: Option<&ThreadMeta>, requested: Option<&str>) -> R
             meta.owner,
             meta.active
         ),
-        (Some(meta), _) => Ok(meta.active.clone()),
+        (Some(_), Some(owner)) => Ok(owner.to_string()),
+        (Some(meta), None) if !known(&meta.active) && known(&meta.owner) => {
+            tracing::warn!(
+                "thread {} was last with the {} agent, which isn't available here; resuming with its owner, {}",
+                meta.id,
+                meta.active,
+                meta.owner
+            );
+            Ok(meta.owner.clone())
+        }
+        (Some(meta), None) => Ok(meta.active.clone()),
         (None, Some(agent)) => Ok(agent.to_string()),
         (None, None) => Ok(graph_core::agent::doc::CHAT_AGENT.to_string()),
     }
@@ -631,13 +657,24 @@ mod tests {
     #[test]
     fn a_thread_resumes_with_its_active_agent_and_refuses_other_owners() {
         let meta = thread("router", "poet");
-        assert_eq!(starting_agent(Some(&meta), None).unwrap(), "poet");
-        assert_eq!(starting_agent(Some(&meta), Some("router")).unwrap(), "poet");
-        let error = starting_agent(Some(&meta), Some("poet"))
+        let all = |_: &str| true;
+        assert_eq!(starting_agent(Some(&meta), None, &all).unwrap(), "poet");
+        assert_eq!(
+            starting_agent(Some(&meta), Some("router"), &all).unwrap(),
+            "router",
+            "naming the owner resumes with the owner"
+        );
+        let error = starting_agent(Some(&meta), Some("poet"), &all)
             .unwrap_err()
             .to_string();
         assert!(error.contains("belongs to the router agent"), "{error}");
-        assert_eq!(starting_agent(None, Some("poet")).unwrap(), "poet");
-        assert_eq!(starting_agent(None, None).unwrap(), "chat");
+        assert_eq!(starting_agent(None, Some("poet"), &all).unwrap(), "poet");
+        assert_eq!(starting_agent(None, None, &all).unwrap(), "chat");
+        let no_poet = |name: &str| name != "poet";
+        assert_eq!(
+            starting_agent(Some(&meta), None, &no_poet).unwrap(),
+            "router",
+            "an active agent that isn't available falls back to the owner"
+        );
     }
 }

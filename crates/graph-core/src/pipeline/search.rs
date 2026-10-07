@@ -171,14 +171,7 @@ pub(super) fn names_of(value: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-const AUTHORING_PLANS: &[&str] = &[
-    "search_tools",
-    "draft_outline",
-    "draft_step",
-    "draft_expand",
-    "author_plan",
-    "compose_plan",
-];
+const AUTHORING_PLANS: &[&str] = &["search_tools", "compose_plan"];
 
 impl Pipeline {
     pub(super) async fn searchable_tools(&self) -> Vec<ToolDef> {
@@ -528,15 +521,5 @@ mod tests {
         assert_eq!(scores[0], 0.0);
         assert_eq!(scores[2], 0.0);
         assert_eq!(keyword_scores("", &candidates), vec![0.0; 3]);
-    }
-
-    #[test]
-    fn every_pack_has_a_summary() {
-        for pack in crate::user_tools::available_packs() {
-            assert!(
-                crate::user_tools::pack_summary(pack).is_some(),
-                "{pack} has no summary"
-            );
-        }
     }
 }

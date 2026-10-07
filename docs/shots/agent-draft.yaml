@@ -2,6 +2,8 @@ name: agent-draft
 title: graph workbench — drafting an agent
 grid: { cols: 120, rows: 36 }
 
+agent: front_desk
+
 chat: "make an agent that writes release notes from the commits since a tag"
 
 llm:

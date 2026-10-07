@@ -65,7 +65,7 @@ struct ShotSpec {
     /// chrome and ignore it.
     title: String,
     /// Repo-relative path of the plan to load into the workbench.
-    /// Omitted: the workbench starts with an empty draft (drafting shots).
+    /// Omitted: the workbench starts with an empty draft.
     #[serde(default)]
     plan: Option<String>,
     #[serde(default)]
@@ -80,6 +80,8 @@ struct ShotSpec {
     llm: Vec<LlmScript>,
     #[serde(default)]
     answers: VecDeque<Value>,
+    #[serde(default)]
+    agent: Option<String>,
     /// Scripted tool outcomes per namespaced tool name, consumed in call
     /// order. Every name must resolve in the real catalog; outcomes are
     /// validated against the tool's declared output schema.
@@ -136,10 +138,6 @@ struct Capture {
     /// turn ended).
     #[serde(default)]
     at: Option<NamedCapture>,
-    /// Capture when the drafting overlay starts this
-    /// (0-based) step.
-    #[serde(default)]
-    draft_step: Option<usize>,
     /// Keys fed through the reducer after the capture state is reached,
     /// before rendering — switch tabs ("tab", "2"), move selection ("j").
     #[serde(default)]
@@ -410,6 +408,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         // Fixed: the pipeline date must not vary between regenerations.
         current_date: "2026-07-19".to_string(),
         max_attempts: 2,
+        max_agent_iterations: 15,
         usage: std::sync::Arc::new(graph_core::usage::UsageLedger::unpriced()),
         agents: agent_set.clone(),
         agent_depth: 0,
@@ -456,8 +455,11 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         handoff_guard: None,
     };
 
+    let start_agent = spec.agent.clone().unwrap_or_else(|| {
+        super::agents::starting_agent(&super::agents::Start::Plan(None), doc.as_ref()).to_string()
+    });
     let context = Arc::new(WorkbenchContext {
-        active: Mutex::new(super::agents::starting_agent(doc.as_ref()).to_string()),
+        active: Mutex::new(start_agent.clone()),
         conversation,
         pipeline,
         history: Arc::new(tokio::sync::Mutex::new(Vec::new())),
@@ -472,6 +474,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
     // Boot exactly like `run_plan_workbench`, then type the chat message
     // through the reducer and submit it.
     let mut app = App::new(doc);
+    app.agent = start_agent;
     run_effect(app::Effect::LoadContext, &context);
     if app.ws.doc.is_some() {
         run_effect(app::Effect::Validate, &context);
@@ -504,10 +507,6 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
             Msg::TurnFinished(_) => turn_done = true,
             _ => {}
         }
-        let draft_step_started = match (&msg, spec.capture.draft_step) {
-            (Msg::DraftStepStarted { index, .. }, Some(target)) => *index == target,
-            _ => false,
-        };
         for effect in app::update(&mut app, msg) {
             run_effect(effect, &context);
         }
@@ -535,18 +534,11 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
                 Mode::Paused(_) => feed_key(&mut app, KeyCode::Char('c'), &context),
                 _ => {}
             }
-        } else if spec.capture.draft_step.is_some() {
-            if draft_step_started {
-                break;
-            }
         } else {
             let done = match spec.capture.at {
                 Some(NamedCapture::Loaded) => context_loaded && validated && turn_done,
                 Some(NamedCapture::Finished) => app.ws.outcome.is_some() && turn_done,
-                None => bail!(
-                    "shot '{}': capture needs one of pause_at, draft_step, or at",
-                    spec.name
-                ),
+                None => bail!("shot '{}': capture needs one of pause_at or at", spec.name),
             };
             if done {
                 break;

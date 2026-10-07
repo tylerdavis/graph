@@ -189,29 +189,6 @@ pub fn available_packs() -> Vec<&'static str> {
     PACKS.iter().map(|(name, _)| *name).collect()
 }
 
-const PACK_SUMMARIES: &[(&str, &str)] = &[
-    (
-        "github",
-        "local git history, diffs, file contents, and grep, plus GitHub pull requests, review threads, comments, and releases.",
-    ),
-    ("slack", "posts messages and threaded replies to Slack channels."),
-    (
-        "llm",
-        "model calls inside a plan: structured inference with a chosen model, and decision-model questions answered with calibrated probabilities.",
-    ),
-    (
-        "data",
-        "reshapes JSON: builds new objects and lists from earlier results with templates, no model call.",
-    ),
-];
-
-pub fn pack_summary(pack: &str) -> Option<&'static str> {
-    PACK_SUMMARIES
-        .iter()
-        .find(|(name, _)| *name == pack)
-        .map(|(_, summary)| *summary)
-}
-
 pub fn pack_of(tool: &str) -> Option<&'static str> {
     static INDEX: std::sync::OnceLock<Vec<(String, &'static str)>> = std::sync::OnceLock::new();
     INDEX
@@ -1154,6 +1131,13 @@ fn normalize_output_schema(mut schema: Value) -> Value {
     schema
 }
 
+fn env_reference(inner: &str) -> (&str, Option<&str>) {
+    match inner.split_once(":-") {
+        Some((var, default)) => (var, Some(default)),
+        None => (inner, None),
+    }
+}
+
 fn expand_env(value: &str) -> Result<String, String> {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
@@ -1163,14 +1147,62 @@ fn expand_env(value: &str) -> Result<String, String> {
         let end = after
             .find('}')
             .ok_or_else(|| format!("unterminated ${{...}} in env value: {value:?}"))?;
-        let var = &after[..end];
-        let resolved = std::env::var(var)
-            .map_err(|_| format!("environment variable {var} referenced by tool env is not set"))?;
+        let (var, default) = env_reference(&after[..end]);
+        let resolved = match (std::env::var(var), default) {
+            (Ok(set), Some(default)) if set.is_empty() => default.to_string(),
+            (Ok(set), _) => set,
+            (Err(_), Some(default)) => default.to_string(),
+            (Err(_), None) => {
+                return Err(format!(
+                    "environment variable {var} referenced by tool env is not set"
+                ))
+            }
+        };
         out.push_str(&resolved);
         rest = &after[end + 1..];
     }
     out.push_str(rest);
     Ok(out)
+}
+
+pub fn unset_env_vars(doc: &UserToolDoc) -> Vec<String> {
+    let ToolKind::Exec { env, .. } = &doc.kind else {
+        return Vec::new();
+    };
+    let mut unset = Vec::new();
+    for value in env.values() {
+        let mut rest = value.as_str();
+        while let Some(start) = rest.find("${") {
+            let after = &rest[start + 2..];
+            let Some(end) = after.find('}') else {
+                break;
+            };
+            let (var, default) = env_reference(&after[..end]);
+            if default.is_none()
+                && std::env::var(var).is_err()
+                && !unset.iter().any(|seen| seen == var)
+            {
+                unset.push(var.to_string());
+            }
+            rest = &after[end + 1..];
+        }
+    }
+    unset
+}
+
+pub fn with_env_values(
+    doc: &UserToolDoc,
+    values: &std::collections::BTreeMap<String, String>,
+) -> UserToolDoc {
+    let mut doc = doc.clone();
+    if let ToolKind::Exec { env, .. } = &mut doc.kind {
+        for value in env.values_mut() {
+            for (var, supplied) in values {
+                *value = value.replace(&format!("${{{var}}}"), supplied);
+            }
+        }
+    }
+    doc
 }
 
 #[async_trait]

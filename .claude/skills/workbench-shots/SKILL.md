@@ -83,7 +83,7 @@ tools:                   # scripted outcomes per tool, consumed in call order
     - { text: "…" }
 
 capture:
-  at: finished           # or: loaded | pause_at: "E5" / "E1/do.1" | draft_step: 2
+  at: finished           # or: loaded | pause_at: "E5" / "E1/do.1"
   keys: [tab, "1", j, j] # fed through the reducer after the capture state
   turn_seconds: 9.4      # optional status-bar timer
   crop: steps            # optional: chat | workspace | steps | body | status

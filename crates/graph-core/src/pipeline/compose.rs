@@ -7,6 +7,10 @@ use crate::tools::ToolDef;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
+pub fn draft_input(goal: &str) -> Value {
+    json!({ "goal": goal })
+}
+
 pub const COMPOSE_PLAN: &str = "compose_plan";
 
 pub const COMPOSE_CONTEXT_TOOL: &str = "builtin__compose_context";
@@ -481,27 +485,17 @@ fn unknown_fields(
 }
 
 fn unused_steps(doc: &super::doc::PlanDoc) -> Vec<String> {
-    let output = json!(doc.output);
-    let solver = json!(doc.solver);
     let mut problems = Vec::new();
     for (index, step) in doc.steps.iter().enumerate() {
         if matches!(step.tool_name.as_str(), "exit" | "ask") {
             continue;
         }
-        let later = json!(&doc.steps[index + 1..]).to_string();
-        let pattern = format!("{{{{{}", step.id);
-        let referenced = |text: &str| {
-            text.match_indices(&pattern).any(|(at, _)| {
-                text[at + pattern.len()..]
-                    .chars()
-                    .next()
-                    .is_some_and(|next| matches!(next, '.' | '}' | ' ' | '|'))
-            })
-        };
-        if !referenced(&later)
-            && !referenced(&output.to_string())
-            && !referenced(&solver.to_string())
-        {
+        let readers = [
+            json!(&doc.steps[index + 1..]),
+            json!(doc.output),
+            json!(doc.solver),
+        ];
+        if !readers.iter().any(|value| reads_root(value, &step.id)) {
             problems.push(format!(
                 "step {}: its result is never used by a later step or the output; remove it or use it",
                 step.id
@@ -509,6 +503,37 @@ fn unused_steps(doc: &super::doc::PlanDoc) -> Vec<String> {
         }
     }
     problems
+}
+
+fn reads_root(value: &Value, root: &str) -> bool {
+    let mut stack = vec![value];
+    while let Some(value) = stack.pop() {
+        match value {
+            Value::String(text) if text.contains("{{") => {
+                let roots = crate::template::referenced_roots(text).unwrap_or_default();
+                if roots.iter().any(|found| found == root) {
+                    return true;
+                }
+            }
+            Value::Object(map) => stack.extend(map.values()),
+            Value::Array(items) => stack.extend(items),
+            _ => {}
+        }
+    }
+    false
+}
+
+fn snake_case(key: &str) -> String {
+    let mut out = String::with_capacity(key.len() + 4);
+    for c in key.chars() {
+        if c.is_ascii_uppercase() {
+            out.push('_');
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn missing_inputs(steps: &Value, defs: &[ToolDef]) -> Vec<String> {
@@ -528,7 +553,11 @@ fn missing_inputs(steps: &Value, defs: &[ToolDef]) -> Vec<String> {
                         .into_iter()
                         .flatten()
                         .filter_map(Value::as_str)
-                        .filter(|key| !given.is_some_and(|given| given.contains_key(*key)))
+                        .filter(|key| {
+                            !given.is_some_and(|given| {
+                                given.contains_key(*key) || given.contains_key(&snake_case(key))
+                            })
+                        })
                         .collect();
                     if !missing.is_empty() {
                         let id = map.get("id").and_then(Value::as_str).unwrap_or(&def.name);
@@ -751,6 +780,27 @@ mod tests {
     }
 
     #[test]
+    fn a_required_input_may_use_the_file_spelling_of_its_name() {
+        let defs = vec![ToolDef {
+            name: "ask".to_string(),
+            description: String::new(),
+            input_schema: json!({"type": "object", "required": ["prompt", "outputSchema"]}),
+            output_schema: None,
+            output_example: None,
+            read_only: None,
+        }];
+        let steps = json!([
+            {"id": "a", "tool_name": "ask", "input": {"prompt": "x", "output_schema": {}}},
+            {"id": "b", "tool_name": "ask", "input": {"prompt": "x", "outputSchema": {}}},
+            {"id": "c", "tool_name": "ask", "input": {"prompt": "x"}},
+        ]);
+        assert_eq!(
+            missing_inputs(&steps, &defs),
+            ["step c: ask requires outputSchema"]
+        );
+    }
+
+    #[test]
     fn a_plan_input_passed_whole_to_a_parameter_of_another_type_is_a_problem() {
         let defs = vec![ToolDef {
             name: "t__changed".to_string(),
@@ -791,6 +841,13 @@ mod tests {
             unused_steps(&doc),
             ["step ab: its result is never used by a later step or the output; remove it or use it"]
         );
+    }
+
+    #[test]
+    fn a_step_read_through_a_section_or_a_padded_tag_is_used() {
+        let yaml = "version: 2\nidentifier: p\nname: p\ndescription: d\nsteps:\n  - id: commits\n    tool_name: t__search\n    input: {query: x}\n  - id: other\n    tool_name: t__search\n    input: {query: y}\n  - id: summary\n    tool_name: t__issues\n    input: {teamId: \"{{#commits.values}}{{title}}{{/commits.values}} {{ other.count }}\"}\noutput: {issues: \"{{summary}}\"}\n";
+        let doc = parse_plan_source(yaml, "plan").unwrap();
+        assert!(unused_steps(&doc).is_empty(), "{:?}", unused_steps(&doc));
     }
 
     #[test]

@@ -59,6 +59,28 @@ pub struct ExitSpec {
     pub output: Option<Map<String, Value>>,
 }
 
+pub fn check_exit_input(input: &Map<String, Value>, step_id: &str, problems: &mut Vec<String>) {
+    let gates = ["when", "infer", "decide"]
+        .iter()
+        .filter(|key| input.contains_key(**key))
+        .count();
+    if gates > 1 {
+        problems.push(format!(
+            "step {step_id}: `when`, `infer`, and `decide` are mutually exclusive"
+        ));
+    }
+    if let Some(gate) = input.get("decide") {
+        let before = problems.len();
+        super::check_decide_gate_shape(gate, false, step_id, problems);
+        if problems.len() > before {
+            return;
+        }
+    }
+    if let Err(e) = serde_json::from_value::<ExitSpec>(Value::Object(input.clone())) {
+        problems.push(format!("step {step_id}: invalid exit input: {e}"));
+    }
+}
+
 /// The exit step as described to the planner.
 pub fn exit_tool_def() -> crate::tools::ToolDef {
     crate::tools::ToolDef {

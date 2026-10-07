@@ -772,55 +772,6 @@ impl EventSink for OtlpSink {
     fn synthesizing(&self) {
         self.root_event("synthesizing", Vec::new());
     }
-
-    fn draft_outline(&self, items: &Value) {
-        let count = items.as_array().map_or(0, Vec::len);
-        self.root_event("draft_outline", vec![KeyValue::new("stages", count as i64)]);
-    }
-
-    fn draft_step_started(&self, index: usize, summary: &str) {
-        let key = format!("draft.{index}");
-        let mut state = self.state.lock().unwrap();
-        let parent = self.parent_for(&mut state, None);
-        let mut attributes = self.attrs(&state);
-        attributes.extend([
-            KeyValue::new("langfuse.observation.type", "chain"),
-            KeyValue::new("graph.draft.index", index as i64),
-            KeyValue::new("graph.draft.summary", summary.to_string()),
-        ]);
-        let span = self.tracer.build_with_context(
-            SpanBuilder::from_name(format!("draft step {}: {summary}", index + 1))
-                .with_start_time(SystemTime::now())
-                .with_attributes(attributes),
-            &parent,
-        );
-        state.steps.push((key, parent.with_span(span)));
-    }
-
-    fn draft_step_finished(&self, index: usize, step: &Value, problems: &[String], attempt: u32) {
-        let key = format!("draft.{index}");
-        let mut state = self.state.lock().unwrap();
-        let Some(position) = state.steps.iter().rposition(|(k, _)| *k == key) else {
-            return;
-        };
-        if !problems.is_empty() {
-            state.steps[position].1.span().add_event(
-                "attempt rejected",
-                vec![
-                    KeyValue::new("attempt", i64::from(attempt)),
-                    KeyValue::new("problems", problems.join("; ")),
-                ],
-            );
-            return;
-        }
-        let (_, cx) = state.steps.remove(position);
-        let span = cx.span();
-        span.set_attribute(KeyValue::new("graph.draft.attempts", i64::from(attempt)));
-        if let Some(output) = self.json_attribute("langfuse.observation.output", step) {
-            span.set_attribute(output);
-        }
-        span.end_with_timestamp(SystemTime::now());
-    }
 }
 
 impl Drop for OtlpSink {
@@ -1254,15 +1205,11 @@ mod tests {
         };
         sink.model_call(&chat());
         sink.tool_started("workbench__draft_plan", &json!({"goal": "g"}));
-        sink.draft_outline(&json!(["list issues", "summarize"]));
-        sink.draft_step_started(0, "list issues");
         sink.model_call(&ModelCallEvent {
             role: "planner".into(),
             site: "planner".into(),
             ..call("planner", None)
         });
-        sink.draft_step_finished(0, &Value::Null, &["bad tool".into()], 1);
-        sink.draft_step_finished(0, &json!({"id": "E0"}), &[], 2);
         sink.tool_finished("workbench__draft_plan", Duration::ZERO, false);
         sink.model_call(&chat());
         sink.run_finished(&json!("done"), false);
@@ -1276,15 +1223,8 @@ mod tests {
             .all(|s| s.span_context.trace_id() == root.span_context.trace_id()));
         let draft_tool = by_name(&spans, "workbench__draft_plan");
         assert_eq!(draft_tool.parent_span_id, root.span_context.span_id());
-        let stage = by_name(&spans, "draft step 1: list issues");
-        assert_eq!(stage.parent_span_id, draft_tool.span_context.span_id());
-        assert_eq!(stage.events.len(), 1);
-        assert_eq!(
-            attribute(stage, "graph.draft.attempts"),
-            Some(&OtelValue::I64(2))
-        );
         let planner = by_name(&spans, "planner");
-        assert_eq!(planner.parent_span_id, stage.span_context.span_id());
+        assert_eq!(planner.parent_span_id, draft_tool.span_context.span_id());
         let chats: Vec<_> = spans.iter().filter(|s| s.name == "chat").collect();
         assert_eq!(chats.len(), 2);
         assert!(chats

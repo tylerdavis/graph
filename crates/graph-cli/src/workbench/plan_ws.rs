@@ -3,7 +3,7 @@
 
 use graph_core::pipeline::body::{control_bodies, parse_branch, Branch};
 use graph_core::pipeline::doc::PlanDoc;
-use graph_core::pipeline::{MAX_STEP_ATTEMPTS, ROUTE_TOOL};
+use graph_core::pipeline::ROUTE_TOOL;
 use graph_core::{ToolDef, ToolShape};
 use serde_json::{Map, Value};
 use std::cell::Cell;
@@ -109,36 +109,6 @@ pub enum RunLine {
     Error(String),
 }
 
-/// A step the drafting loop has validated and accepted.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedRow {
-    pub id: String,
-    pub tool: String,
-    pub reasoning: Option<String>,
-}
-
-/// The step currently being drafted.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CurrentDraftStep {
-    pub index: usize,
-    pub summary: String,
-    /// The attempt currently in flight (1-based); > 1 means retrying.
-    pub attempt: u32,
-}
-
-/// Live progress of a `workbench__draft_plan` call, rendered
-/// by the plan tab in place of the doc rows. Built purely from events —
-/// the shared draft doc is untouched until the final publish.
-#[derive(Debug, Default)]
-pub struct DraftingProgress {
-    pub outline: Vec<String>,
-    pub accepted: Vec<AcceptedRow>,
-    pub current: Option<CurrentDraftStep>,
-    /// The last failed attempt's validation problems, if the current step
-    /// is retrying.
-    pub failed: Option<Vec<String>>,
-}
-
 #[derive(Default)]
 pub struct PlanWorkspace {
     pub tab: WsTab,
@@ -165,9 +135,6 @@ pub struct PlanWorkspace {
     pub solver_text: String,
     /// Set after a run: the headline plus whether it was an error.
     pub outcome: Option<(String, bool)>,
-    /// A draft in flight; the plan tab renders this instead
-    /// of the doc rows while set.
-    pub drafting: Option<DraftingProgress>,
     pub context_loaded: bool,
 }
 
@@ -179,65 +146,6 @@ impl PlanWorkspace {
         self.diagnostics.clear();
         self.doc = Some(doc);
         self.outcome = None;
-        self.drafting = None;
-    }
-
-    /// The outline arrived: show the drafting overlay.
-    pub fn begin_drafting(&mut self, outline: Vec<String>) {
-        self.tab = WsTab::Plan;
-        self.drafting = Some(DraftingProgress {
-            outline,
-            ..Default::default()
-        });
-    }
-
-    pub fn draft_step_started(&mut self, index: usize, summary: &str) {
-        if let Some(drafting) = &mut self.drafting {
-            drafting.current = Some(CurrentDraftStep {
-                index,
-                summary: summary.to_string(),
-                attempt: 1,
-            });
-            drafting.failed = None;
-        }
-    }
-
-    pub fn draft_step_finished(
-        &mut self,
-        _index: usize,
-        step: serde_json::Value,
-        problems: &[String],
-        attempt: u32,
-    ) {
-        let Some(drafting) = &mut self.drafting else {
-            return;
-        };
-        if problems.is_empty() {
-            let text = |key: &str| {
-                step.get(key)
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string()
-            };
-            drafting.accepted.push(AcceptedRow {
-                id: text("id"),
-                tool: text("toolName"),
-                reasoning: step
-                    .get("reasoning")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            });
-            drafting.current = None;
-            drafting.failed = None;
-        } else {
-            // The next attempt is already being produced — but the final
-            // failed attempt has no successor, so clamp at the ceiling
-            // rather than show "retry 4/3".
-            if let Some(current) = &mut drafting.current {
-                current.attempt = (attempt + 1).min(MAX_STEP_ATTEMPTS);
-            }
-            drafting.failed = Some(problems.to_vec());
-        }
     }
 
     pub fn set_context(&mut self, tools: Vec<ToolDef>, shapes: Vec<ToolShape>) {
@@ -862,83 +770,6 @@ steps:
         // An unknown sub-path highlights the owning control step.
         assert_eq!(ws.find_path("E1/do.0/E99"), Some(2));
         assert_eq!(ws.find_path("E99"), None);
-    }
-
-    #[test]
-    fn drafting_progress_transitions() {
-        let mut ws = PlanWorkspace {
-            tab: WsTab::Run,
-            ..Default::default()
-        };
-        ws.begin_drafting(vec!["search".into(), "report".into()]);
-        assert_eq!(ws.tab, WsTab::Plan, "drafting shows the plan tab");
-        assert!(ws.drafting.is_some());
-
-        ws.draft_step_started(0, "search");
-        {
-            let drafting = ws.drafting.as_ref().unwrap();
-            let current = drafting.current.as_ref().unwrap();
-            assert_eq!((current.index, current.attempt), (0, 1));
-            assert_eq!(current.summary, "search");
-        }
-
-        // A failed attempt bumps the in-flight attempt and records why.
-        ws.draft_step_finished(
-            0,
-            json!({"id": "E0", "toolName": "t__bad", "input": {}}),
-            &["bad reference".to_string()],
-            1,
-        );
-        {
-            let drafting = ws.drafting.as_ref().unwrap();
-            assert_eq!(drafting.current.as_ref().unwrap().attempt, 2);
-            assert_eq!(
-                drafting.failed.as_deref(),
-                Some(&["bad reference".to_string()][..])
-            );
-            assert!(drafting.accepted.is_empty());
-        }
-
-        // The final failed attempt has no successor: the displayed attempt
-        // clamps at the ceiling rather than overshooting to "retry 4/3".
-        ws.draft_step_finished(
-            0,
-            json!({"id": "E0", "toolName": "t__bad", "input": {}}),
-            &["bad reference".to_string()],
-            MAX_STEP_ATTEMPTS,
-        );
-        assert_eq!(
-            ws.drafting
-                .as_ref()
-                .unwrap()
-                .current
-                .as_ref()
-                .unwrap()
-                .attempt,
-            MAX_STEP_ATTEMPTS,
-        );
-
-        // Acceptance appends the row and clears current/failed.
-        ws.draft_step_finished(
-            0,
-            json!({"id": "E0", "toolName": "t__search", "input": {},
-                   "reasoning": "find x"}),
-            &[],
-            2,
-        );
-        {
-            let drafting = ws.drafting.as_ref().unwrap();
-            assert_eq!(drafting.accepted.len(), 1);
-            assert_eq!(drafting.accepted[0].id, "E0");
-            assert_eq!(drafting.accepted[0].tool, "t__search");
-            assert_eq!(drafting.accepted[0].reasoning.as_deref(), Some("find x"));
-            assert!(drafting.current.is_none());
-            assert!(drafting.failed.is_none());
-        }
-
-        // Publishing the finished doc dismisses the overlay.
-        ws.set_doc(control_doc());
-        assert!(ws.drafting.is_none());
     }
 
     #[test]

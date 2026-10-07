@@ -6,7 +6,7 @@
 use crate::store::ToolShape;
 use crate::tools::ToolDef;
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub const TEMPLATING_RULES: &str = include_str!("prompts/templating_rules.md").trim_ascii_end();
 
@@ -21,90 +21,6 @@ pub(super) const COMPOSING_RULES: &str =
     include_str!("prompts/composing_rules.md").trim_ascii_end();
 
 pub(super) const PLANNING_RULES: &str = include_str!("prompts/planning_rules.md").trim_ascii_end();
-
-const BUILTIN_SUMMARIES: &[(&str, &str)] = &[
-    (
-        "builtin__infer",
-        "one LLM call over a self-contained instruction, returning text or JSON validated against a schema.",
-    ),
-    (
-        "builtin__reshape",
-        "deterministically rebuilds data into a new JSON shape (rename, select, nest, flatten, interpolate) without an LLM.",
-    ),
-];
-
-fn described(name: &str, description: Option<&str>) -> String {
-    match description {
-        Some(description) => format!("- {name}: {description}"),
-        None => format!("- {name}"),
-    }
-}
-
-pub fn outliner_catalog(
-    tools: &[(String, String)],
-    servers: &[crate::tools::ToolServer],
-    agents: &[(String, String)],
-) -> String {
-    let mut mcp: Vec<String> = Vec::new();
-    let mut packs: Vec<String> = Vec::new();
-    let mut builtins: Vec<String> = Vec::new();
-    let mut user: Vec<String> = Vec::new();
-    let mut plans: Vec<String> = Vec::new();
-    let mut seen_packs: HashSet<&str> = HashSet::new();
-    let mut seen_servers: HashSet<&str> = HashSet::new();
-    for (name, description) in tools {
-        let summary = BUILTIN_SUMMARIES
-            .iter()
-            .find(|(tool, _)| tool == name)
-            .map(|(_, summary)| *summary);
-        match name.split_once("__") {
-            Some(("builtin", tool)) => match crate::user_tools::pack_of(tool) {
-                Some(pack)
-                    if summary.is_none() && !crate::user_tools::DEFAULT_PACKS.contains(&pack) =>
-                {
-                    if seen_packs.insert(pack) {
-                        packs.push(described(pack, crate::user_tools::pack_summary(pack)));
-                    }
-                }
-                _ => builtins.push(capability(summary.unwrap_or(description))),
-            },
-            Some(("user", bare)) => user.push(named(bare, &capability(description))),
-            Some(("plan", bare)) => plans.push(named(bare, &capability(description))),
-            Some((server, _)) => {
-                if seen_servers.insert(server) {
-                    let description = servers
-                        .iter()
-                        .find(|known| known.name == server)
-                        .and_then(|known| known.description.as_deref());
-                    mcp.push(described(server, description));
-                }
-            }
-            None => builtins.push(capability(summary.unwrap_or(description))),
-        }
-    }
-    let sections: Vec<String> = [
-        ("MCP Servers", mcp),
-        ("Tool packs", packs),
-        ("Built-in capabilities", builtins),
-        (
-            "Agents",
-            agents
-                .iter()
-                .map(|(_, description)| capability(description))
-                .collect(),
-        ),
-        ("Project tools", user),
-        ("Saved plans", plans),
-    ]
-    .into_iter()
-    .filter(|(_, lines)| !lines.is_empty())
-    .map(|(title, lines)| format!("## {title}\n{}", lines.join("\n")))
-    .collect();
-    if sections.is_empty() {
-        return "## Tools\nNo tools are configured.".to_string();
-    }
-    sections.join("\n\n")
-}
 
 pub(super) fn summary_line(description: &str) -> String {
     capability(description).trim_start_matches("- ").to_string()
@@ -126,10 +42,6 @@ fn capability(description: &str) -> String {
         line.push('…');
     }
     format!("- {}", line.trim())
-}
-
-fn named(name: &str, line: &str) -> String {
-    format!("- {name}: {}", line.trim_start_matches("- "))
 }
 
 pub struct PlannerPromptArgs<'a> {
@@ -156,37 +68,6 @@ pub fn planner_prompt(args: &PlannerPromptArgs) -> String {
         step_schema = args.step_schema,
         planning_rules = PLANNING_RULES,
         control_step_rules = CONTROL_STEP_RULES,
-    )
-}
-
-pub fn drafting_preamble(query: &str, entries: &[String]) -> String {
-    let outline: Vec<String> = entries
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| format!("{}. {entry}", index + 1))
-        .collect();
-    format!("# Task\n{query}\n\n# Outline\n{}", outline.join("\n"))
-}
-
-/// One step request: names the id the step must use and the outline entry
-/// it (advisorily) advances.
-pub fn step_request(next_step_id: &str, entry_number: usize, entry: &str) -> String {
-    format!(
-        "Produce step {next_step_id}, advancing outline entry {entry_number}:\n\
-         {entry}\n\n\
-         Emit exactly one step — or step: null with planComplete: true if \
-         the accepted steps already complete the plan."
-    )
-}
-
-/// A closing step request used once every outline stage already has a
-/// step: push the planner to finish rather than re-draft the last stage.
-pub fn closing_step_request(next_step_id: &str) -> String {
-    format!(
-        "Every outline entry has now been advanced. If the plan is complete, return \
-         step: null with planComplete: true. Only if one concrete additional \
-         step is genuinely required to finish the plan, emit exactly that step \
-         as {next_step_id} and set planComplete: true on it."
     )
 }
 
@@ -264,115 +145,5 @@ mod tests {
         });
         assert!(prompt.contains(CONTROL_STEP_RULES));
         assert!(prompt.contains(PLANNING_RULES));
-    }
-
-    #[test]
-    fn request_helpers_name_ids_and_entries() {
-        let request = step_request("E2", 3, "fetch the issues");
-        assert!(request.contains("step E2"));
-        assert!(request.contains("outline entry 3:\nfetch the issues"));
-        assert!(request.contains("planComplete: true"));
-    }
-
-    #[test]
-    fn drafting_preamble_numbers_every_outline_entry() {
-        let preamble = drafting_preamble(
-            "report on x",
-            &["gather x".to_string(), "summarize it".to_string()],
-        );
-        assert_eq!(
-            preamble,
-            "# Task\nreport on x\n\n# Outline\n1. gather x\n2. summarize it"
-        );
-    }
-
-    #[test]
-    fn the_outliner_catalog_describes_capabilities_without_tool_names() {
-        let tools: Vec<(String, String)> = [
-            ("builtin__git_diff", "Unified diff between two git refs."),
-            ("linear__list_issues", "List issues."),
-            ("builtin__infer", "Run an LLM inference."),
-            (
-                "user__summarize",
-                "Summarize a file in two sentences. Uses the solver model.",
-            ),
-            ("user__review_thread", "Turn findings into review comments."),
-            ("linear__get_issue", "Get an issue."),
-            ("github__search_code", "Search code."),
-            (
-                "plan__sprint_analysis",
-                "sprint_analysis — Reports how the current sprint is going.",
-            ),
-            ("builtin__reshape", "Reshape JSON."),
-            ("builtin__git_log", "Commits between refs."),
-            ("builtin__slack_post_message", "Post to Slack."),
-        ]
-        .map(|(name, description)| (name.to_string(), description.to_string()))
-        .to_vec();
-        let servers = [
-            crate::tools::ToolServer {
-                name: "linear".into(),
-                description: Some("Issue tracking".into()),
-            },
-            crate::tools::ToolServer {
-                name: "github".into(),
-                description: None,
-            },
-        ];
-        let agents = [("outliner".to_string(), "Writes outlines".to_string())];
-        let catalog = outliner_catalog(&tools, &servers, &agents);
-        let sections: Vec<&str> = catalog.split("\n\n").collect();
-        assert_eq!(
-            sections[0],
-            "## MCP Servers\n- linear: Issue tracking\n- github"
-        );
-        assert!(
-            sections[1].starts_with("## Tool packs\n- github: local git history"),
-            "{catalog}"
-        );
-        assert!(
-            sections[1].contains("\n- slack: posts messages"),
-            "{catalog}"
-        );
-        assert!(
-            sections[2].starts_with("## Built-in capabilities\n- one LLM call"),
-            "{catalog}"
-        );
-        assert!(sections[2].contains("\n- deterministically"), "{catalog}");
-        assert_eq!(sections[3], "## Agents\n- Writes outlines");
-        assert_eq!(
-            sections[4],
-            "## Project tools\n- summarize: Summarize a file in two sentences.\n- review_thread: Turn findings into review comments."
-        );
-        assert_eq!(
-            sections[5],
-            "## Saved plans\n- sprint_analysis: Reports how the current sprint is going."
-        );
-        assert_eq!(sections.len(), 6);
-        for name in [
-            "builtin__",
-            "user__",
-            "plan__",
-            "agent__",
-            "list_issues",
-            "git_diff",
-        ] {
-            assert!(
-                !catalog.contains(name),
-                "{name} leaked into the outline catalog: {catalog}"
-            );
-        }
-        assert_eq!(
-            outliner_catalog(&[], &[], &[]),
-            "## Tools\nNo tools are configured."
-        );
-    }
-
-    #[test]
-    fn closing_step_request_pushes_the_planner_to_finish() {
-        let request = closing_step_request("E5");
-        assert!(request.contains("Every outline entry has now been advanced"));
-        assert!(request.contains("planComplete: true"));
-        assert!(request.contains("E5"));
     }
 }

@@ -195,6 +195,7 @@ mod tests {
             user_context: String::new(),
             current_date: "2026-07-09".into(),
             max_attempts: 2,
+            max_agent_iterations: 15,
             usage: std::sync::Arc::new(crate::usage::UsageLedger::unpriced()),
             agents: Arc::new(crate::agent::doc::AgentSet::default()),
             agent_depth: 0,

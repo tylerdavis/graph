@@ -45,8 +45,13 @@ use tokio::sync::mpsc;
 
 pub(crate) const WORKBENCH_SYSTEM_PROMPT: &str = include_str!("prompts/system.md").trim_ascii_end();
 
-pub async fn run(command: WorkbenchCommand, verbosity: u8) -> Result<()> {
-    let WorkbenchCommand::Plan { name_or_path } = command;
+pub async fn run(command: Option<WorkbenchCommand>, verbosity: u8) -> Result<()> {
+    let start = match command {
+        None => agents::Start::FrontDesk,
+        Some(WorkbenchCommand::Plan { name_or_path }) => agents::Start::Plan(name_or_path),
+        Some(WorkbenchCommand::Agent { name }) => agents::Start::Agent(name),
+        Some(WorkbenchCommand::Tool { name }) => agents::Start::Tool(name),
+    };
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         bail!(
             "the workbench needs an interactive terminal — \
@@ -55,7 +60,7 @@ pub async fn run(command: WorkbenchCommand, verbosity: u8) -> Result<()> {
     }
     let runtime = Runtime::init()?;
     let log_path = init_debug_log(&runtime, verbosity);
-    let result = run_plan_workbench(&runtime, name_or_path, log_path).await;
+    let result = run_workbench(&runtime, start, log_path).await;
     // MCP child processes must shut down before the tokio runtime drops.
     runtime.shutdown().await;
     result
@@ -122,14 +127,19 @@ fn default_log_filter(verbosity: u8) -> &'static str {
     }
 }
 
-async fn run_plan_workbench(
+async fn run_workbench(
     runtime: &Runtime,
-    name_or_path: Option<String>,
+    start: agents::Start,
     log_path: Option<std::path::PathBuf>,
 ) -> Result<()> {
-    let doc = match &name_or_path {
-        Some(arg) => Some(resolve_doc(runtime, arg)?),
-        None => None,
+    let doc = match &start {
+        agents::Start::Plan(Some(arg)) => Some(resolve_doc(runtime, arg)?),
+        _ => None,
+    };
+    let opening = match &start {
+        agents::Start::Agent(Some(name)) => Some((artifact::ArtifactKind::Agent, name.clone())),
+        agents::Start::Tool(Some(name)) => Some((artifact::ArtifactKind::Tool, name.clone())),
+        _ => None,
     };
     let store = runtime.store()?;
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
@@ -229,7 +239,7 @@ async fn run_plan_workbench(
     }
 
     let context = Arc::new(WorkbenchContext {
-        active: std::sync::Mutex::new(agents::starting_agent(doc.as_ref()).to_string()),
+        active: std::sync::Mutex::new(agents::starting_agent(&start, doc.as_ref()).to_string()),
         conversation,
         pipeline,
         history: Arc::new(tokio::sync::Mutex::new(Vec::new())),
@@ -242,7 +252,14 @@ async fn run_plan_workbench(
     });
 
     let mut app = App::new(doc);
+    app.agent = agents::starting_agent(&start, app.ws.doc.as_ref()).to_string();
     app.log_path = log_path;
+    if let Some((kind, name)) = opening {
+        artifact::open_existing(&context.draft, &context.pipeline, &context.tx, kind, &name)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        app.artifact = artifact::view(&context.draft, &context.pipeline);
+    }
     effects::run_effect(app::Effect::LoadContext, &context);
     if app.ws.doc.is_some() {
         effects::run_effect(app::Effect::Validate, &context);
