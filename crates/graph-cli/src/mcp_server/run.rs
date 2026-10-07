@@ -145,7 +145,10 @@ pub async fn tools_show(name: &str) -> Result<Outcome> {
     let toolbox = runtime
         .toolbox(&store, std::sync::Arc::new(graph_core::NullSink))
         .await?;
-    let outcome = crate::commands::tools_cmd::show(toolbox.as_ref(), name).await;
+    let outcome = match runtime.tool_docs() {
+        Ok(docs) => crate::commands::tools_cmd::show(toolbox.as_ref(), &docs, name).await,
+        Err(error) => Err(error),
+    };
     runtime.shutdown().await;
     outcome
 }

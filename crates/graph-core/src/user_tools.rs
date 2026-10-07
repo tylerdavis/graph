@@ -244,6 +244,49 @@ pub fn load_pack_tools(packs: &[String]) -> Result<Vec<UserToolDoc>, String> {
     Ok(docs)
 }
 
+pub struct ToolDocs {
+    pub builtins: Vec<UserToolDoc>,
+    pub user: Vec<UserToolDoc>,
+}
+
+pub const BUILTIN_OVERRIDE_DIR: &str = "builtin";
+
+pub fn builtin_override_dirs(tool_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    tool_dirs
+        .iter()
+        .map(|dir| dir.join(BUILTIN_OVERRIDE_DIR))
+        .collect()
+}
+
+pub fn apply_tool_overrides(
+    builtins: Vec<UserToolDoc>,
+    overrides: Vec<UserToolDoc>,
+) -> Result<Vec<UserToolDoc>, String> {
+    if let Some(stray) = overrides
+        .iter()
+        .find(|doc| !builtins.iter().any(|builtin| builtin.name == doc.name))
+    {
+        let location = stray
+            .path
+            .as_ref()
+            .map_or(stray.name.clone(), |path| path.display().to_string());
+        return Err(format!(
+            "{location}: no built-in tool named '{}' in the enabled packs; a file under `{BUILTIN_OVERRIDE_DIR}/` must replace an existing `builtin__` tool",
+            stray.name
+        ));
+    }
+    Ok(builtins
+        .into_iter()
+        .map(|builtin| {
+            overrides
+                .iter()
+                .find(|doc| doc.name == builtin.name)
+                .cloned()
+                .unwrap_or(builtin)
+        })
+        .collect())
+}
+
 // ── Loading & validation ─────────────────────────────────────────────────
 
 pub fn load_user_tools(dirs: &[PathBuf]) -> Result<Vec<UserToolDoc>, String> {

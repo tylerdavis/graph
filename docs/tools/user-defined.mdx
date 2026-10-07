@@ -115,4 +115,5 @@ Decision tools are read-only by default. Loading checks that every question has 
 - `output_schema`, when declared, feeds the planner's shape knowledge just like an MCP output schema.
 - Names must match `[a-zA-Z0-9_-]+`; templates referencing anything but `{{input.*}}` are load-time errors.
 - Files are read strictly: a key the tool's `kind` does not accept is a load error naming it (`unknown field(s) \`tmeout_secs\` for a \`exec\` tool`), never ignored.
+- A file directly in a tools directory is always a `user__` tool. To replace a built-in pack tool instead, put the file in the directory's `builtin/` subdirectory with the built-in's `name`. See [built-in tools](/reference/tools/stdlib/about).
 - `version` is the [file version](/reference/file-versions#plans-tools-and-agents) the document is written in; omitted means `1`. `graph tools migrate <path>` brings a file to the current version.
