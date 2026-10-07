@@ -10,15 +10,15 @@ graph stores its runtime state as plain JSON and JSONL files under the data dire
 
 | Data | Purpose |
 |---|---|
-| Threads & messages | conversation continuity (`--thread`), audit (`threads show`) |
+| Threads & entries | conversation continuity (`--thread`), audit (`threads show`) |
 | Tool shapes | the [shape cache](/tools/shape-cache) that trains planning |
 
 ## Layout
 
 ```text
 <data_dir>/FORMAT                        the store's file version, written on first open
-<data_dir>/threads/<id>/meta.json        thread metadata (title, timestamps, message count)
-<data_dir>/threads/<id>/messages.jsonl   one message per line, in order
+<data_dir>/threads/<id>/meta.json        thread metadata (title, timestamps, message count, owner, active agent)
+<data_dir>/threads/<id>/entries.jsonl    one entry per line, in order: messages, handoffs, subagent runs
 <data_dir>/shapes/<tool>.json            one cached shape per tool
 ```
 
@@ -31,7 +31,7 @@ Everything is directly inspectable with `cat` and `jq`, and `graph threads` / `g
 Multiple graph processes — parallel CI jobs, simultaneous one-shots — can share one `data_dir`:
 
 - Whole files (`meta.json`, shapes) are written to a temp file and atomically renamed into place, so readers never observe a partial write.
-- Message appends go through `O_APPEND` as a single write, serialized per thread by an advisory lock so metadata stays consistent with the log.
+- Entry appends go through `O_APPEND` as a single write, serialized per thread by an advisory lock so metadata (and each entry's `seq`) stays consistent with the log.
 - Shape writes are last-writer-wins. `seen_count` is advisory and may lose increments under contention; schema and example converge regardless.
 
 The advisory locks assume a local filesystem — don't point `data_dir` at NFS.

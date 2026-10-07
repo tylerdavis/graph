@@ -1,7 +1,10 @@
 //! Store conformance suite: every backend must satisfy the same semantics.
 //! Each case runs against `MemoryStore` and `FileStore`.
 
-use graph_core::store::Store;
+mod common;
+
+use common::MessageLog;
+use graph_core::store::{conversation, EntryBody, NewEntry, Store};
 use graph_llm::types::{ChatMessage, ToolCall};
 use graph_store::{FileStore, MemoryStore};
 use serde_json::json;
@@ -18,7 +21,7 @@ fn backends(dir: &tempfile::TempDir) -> Vec<(&'static str, Arc<dyn Store>)> {
 async fn thread_lifecycle_and_message_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     for (name, store) in backends(&dir) {
-        let thread = store.create_thread("first thread").await.unwrap();
+        let thread = store.create_thread("first thread", "chat").await.unwrap();
         let messages = vec![
             ChatMessage::User {
                 content: "list my PRs".into(),
@@ -105,9 +108,9 @@ async fn append_to_missing_thread_errors() {
 async fn latest_and_list_order_by_recency() {
     let dir = tempfile::tempdir().unwrap();
     for (name, store) in backends(&dir) {
-        let a = store.create_thread("a").await.unwrap();
+        let a = store.create_thread("a", "chat").await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        let b = store.create_thread("b").await.unwrap();
+        let b = store.create_thread("b", "chat").await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
         // Touching A with a message makes it the most recent.
@@ -153,5 +156,77 @@ async fn tool_shapes_upsert_and_count() {
         assert_eq!(shapes[0].tool, "linear__search", "{name}");
         assert_eq!(shapes[0].seen_count, 2, "{name}");
         assert_eq!(shapes[0].example, first, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn threads_record_owner_active_agent_and_every_entry_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, store) in backends(&dir) {
+        let thread = store
+            .create_thread("network", "orchestrator")
+            .await
+            .unwrap();
+        assert_eq!(thread.owner, "orchestrator", "{name}");
+        assert_eq!(thread.active, "orchestrator", "{name}");
+        store
+            .append_entries(
+                &thread.id,
+                &[
+                    NewEntry::message(
+                        "user",
+                        ChatMessage::User {
+                            content: "draft a plan".into(),
+                        },
+                    ),
+                    NewEntry {
+                        author: "orchestrator".into(),
+                        body: EntryBody::Handoff {
+                            from: "orchestrator".into(),
+                            to: "plan_author".into(),
+                            message: "the user wants a plan".into(),
+                            via: Some("transfer_to_plan_author".into()),
+                        },
+                    },
+                    NewEntry {
+                        author: "plan_author".into(),
+                        body: EntryBody::SubagentRun {
+                            agent: "plan_verifier".into(),
+                            caller: "plan_author".into(),
+                            input: json!({"goal": "g"}),
+                            messages: vec![ChatMessage::User {
+                                content: "g".into(),
+                            }],
+                            output: json!({"passed": true}),
+                            final_: true,
+                        },
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        store
+            .set_active_agent(&thread.id, "plan_author")
+            .await
+            .unwrap();
+
+        let meta = store.get_thread(&thread.id).await.unwrap().unwrap();
+        assert_eq!(meta.owner, "orchestrator", "{name}");
+        assert_eq!(meta.active, "plan_author", "{name}");
+        assert_eq!(meta.message_count, 1, "{name}");
+        let entries = store.load_entries(&thread.id).await.unwrap();
+        let kinds: Vec<String> = entries
+            .iter()
+            .map(|entry| {
+                serde_json::to_value(entry).unwrap()["kind"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(kinds, ["message", "handoff", "subagent_run"], "{name}");
+        let seqs: Vec<u64> = entries.iter().map(|entry| entry.seq).collect();
+        assert_eq!(seqs, [0, 1, 2], "{name}");
+        assert_eq!(conversation(&entries).len(), 1, "{name}");
     }
 }
