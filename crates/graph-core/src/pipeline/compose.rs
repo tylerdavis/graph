@@ -1,13 +1,23 @@
 use super::doc::parse_plan_source;
 use super::native_tools::called_tools;
 use super::{authoring, prompts, Pipeline, AGENT_TOOL_PREFIX};
+
+const SEARCH_TOOLS_PLAN: &str = "search_tools";
 use crate::tools::ToolDef;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
+pub const COMPOSE_PLAN: &str = "compose_plan";
+
 pub const COMPOSE_CONTEXT_TOOL: &str = "builtin__compose_context";
 
 pub const CHECK_PLAN_TOOL: &str = "builtin__check_plan";
+
+pub const QUESTION_FORM_TOOL: &str = "builtin__question_form";
+
+pub const FIND_TOOLS_TOOL: &str = "builtin__find_tools";
+
+pub const INSTRUCTIONS_KEY: &str = "instructions";
 
 pub fn compose_tool_defs() -> Vec<ToolDef> {
     vec![
@@ -54,14 +64,18 @@ pub fn compose_tool_defs() -> Vec<ToolDef> {
                 "required": ["yaml"],
                 "properties": {
                     "yaml": {"type": "string", "description": "The plan as YAML"},
-                    "patch": {"type": "string", "description": "Optional YAML patch to apply first"}
+                    "patch": {"type": "string", "description": "Optional YAML patch to apply first"},
+                    "search": {"type": "array", "items": {"type": "string"}, "description": "Tools the model asked to be searched for; the plan is not settled while any are pending"},
+                    "pending": {"type": "boolean", "description": "Answers that the plan has not taken in yet; the plan is not settled while true"}
                 }
             }),
             output_schema: Some(json!({
                 "type": "object",
-                "required": ["valid", "problems", "yaml", "plan"],
+                "required": ["valid", "settled", "problems", "yaml", "plan"],
                 "properties": {
                     "valid": {"type": "boolean"},
+                    "settled": {"type": "boolean", "description": "Valid, with no search requested and no answers pending"},
+                    "search": {"type": "array", "items": {"type": "string"}, "description": "The tool searches still requested, including any written into the plan by mistake"},
                     "problems": {"type": "array", "items": {"type": "string"}},
                     "yaml": {"type": "string"},
                     "plan": {"type": ["object", "null"]}
@@ -70,7 +84,122 @@ pub fn compose_tool_defs() -> Vec<ToolDef> {
             output_example: None,
             read_only: Some(true),
         },
+        ToolDef {
+            name: FIND_TOOLS_TOOL.to_string(),
+            description:
+                "Searches for tools a drafting call asked for, one search_tools run per \
+                          request, and adds what it finds to the tools already found. Returns the \
+                          combined `found` list and the tools described for the next drafting call."
+                    .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["queries", "found"],
+                "properties": {
+                    "queries": {"type": "array", "items": {"type": "string"}, "description": "What each missing tool should do"},
+                    "found": {"type": "array", "items": {"type": "object"}, "description": "The {does, tools} entries found so far"}
+                }
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "required": ["found", "tools"],
+                "properties": {
+                    "found": {"type": "array", "items": {"type": "object"}},
+                    "tools": {"type": "string"}
+                }
+            })),
+            output_example: None,
+            read_only: Some(true),
+        },
+        ToolDef {
+            name: QUESTION_FORM_TOOL.to_string(),
+            description: "Turns the questions a draft asked into an ask step's answer schema: \
+                          one string field per question (a pick list when it has options), its \
+                          question as the field's description, plus an open `instructions` field \
+                          for anything else the user wants the planner to know. The draft's \
+                          guesses become the default answer."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["draft"],
+                "properties": {
+                    "draft": {"type": "object", "description": "The draft call's result; its `questions` are read when present: [{key, question, guess?, options?}]"}
+                }
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "required": ["count", "questions", "schema", "default"],
+                "properties": {
+                    "count": {"type": "integer"},
+                    "questions": {"type": "array", "items": {"type": "object"}},
+                    "schema": {"type": "object"},
+                    "default": {"type": "object"}
+                }
+            })),
+            output_example: None,
+            read_only: Some(true),
+        },
     ]
+}
+
+pub(super) fn question_form(input: Value) -> Result<Value, String> {
+    let mut asked = input["draft"]["questions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if asked.is_empty() {
+        let yaml = strip_fences(input["draft"]["yaml"].as_str().unwrap_or_default());
+        asked = split_key(&yaml, "questions").1;
+    }
+    let mut questions = Vec::new();
+    let mut properties = serde_json::Map::new();
+    let mut default = serde_json::Map::new();
+    for question in &asked {
+        let (Some(key), Some(text)) = (question["key"].as_str(), question["question"].as_str())
+        else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() || key == INSTRUCTIONS_KEY || properties.contains_key(key) {
+            continue;
+        }
+        let options: Vec<&str> = question["options"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let mut property = json!({"type": "string", "description": text});
+        if !options.is_empty() {
+            property["enum"] = json!(options);
+        }
+        if let Some(guess) = question["guess"].as_str() {
+            if options.is_empty() || options.contains(&guess) {
+                default.insert(key.to_string(), json!(guess));
+            }
+        }
+        properties.insert(key.to_string(), property);
+        questions.push(question.clone());
+    }
+    if !properties.is_empty() {
+        properties.insert(
+            INSTRUCTIONS_KEY.to_string(),
+            json!({"type": "string", "description": "Anything else the planner should know?"}),
+        );
+    }
+    let mut order: Vec<String> = questions
+        .iter()
+        .filter_map(|question| question["key"].as_str())
+        .map(|key| key.trim().to_string())
+        .collect();
+    if !order.is_empty() {
+        order.push(INSTRUCTIONS_KEY.to_string());
+    }
+    Ok(json!({
+        "count": questions.len(),
+        "questions": questions,
+        "schema": {"type": "object", "properties": properties, "propertyOrder": order},
+        "default": default,
+    }))
 }
 
 impl Pipeline {
@@ -92,12 +221,58 @@ impl Pipeline {
             "step_schema": step_schema,
             "templating_rules": prompts::TEMPLATING_RULES,
             "composing_rules": prompts::COMPOSING_RULES,
-            "rounds": [1, 2],
+            "rounds": [1, 2, 3],
         }))
+    }
+
+    pub(super) async fn find_tools(&self, input: Value) -> Result<Value, String> {
+        let mut found = input["found"].as_array().cloned().unwrap_or_default();
+        let queries: Vec<String> = input["queries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+            .map(str::to_string)
+            .collect();
+        let searches = futures::future::join_all(queries.iter().map(|query| {
+            self.call_plan(SEARCH_TOOLS_PLAN, json!({"query": query, "schemas": false}))
+        }))
+        .await;
+        for (query, search) in queries.iter().zip(searches) {
+            if !search.is_error {
+                found.push(json!({"does": query, "tools": search.result["tools"]}));
+            }
+        }
+        let context = self.compose_context(json!({ "found": found })).await?;
+        Ok(json!({"found": found, "tools": context["tools"]}))
     }
 
     pub(super) async fn check_plan(&self, input: Value) -> Result<Value, String> {
         let yaml = strip_fences(input["yaml"].as_str().unwrap_or_default());
+        let (yaml, _) = split_key(&yaml, "questions");
+        let (yaml, inline_search) = split_key(&yaml, "search");
+        let search: Vec<String> = input["search"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(&inline_search)
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+            .map(str::to_string)
+            .collect();
+        let mut checked = self.checked_plan(&yaml, &input).await?;
+        let pending = input["pending"].as_bool().unwrap_or(false);
+        let settled = checked["valid"] == json!(true) && search.is_empty() && !pending;
+        checked["settled"] = json!(settled);
+        checked["search"] = json!(search);
+        Ok(checked)
+    }
+
+    async fn checked_plan(&self, yaml: &str, input: &Value) -> Result<Value, String> {
+        let yaml = yaml.to_string();
         let yaml = match input["patch"].as_str().map(strip_fences) {
             Some(patch) if !patch.trim().is_empty() => match apply_patch(&yaml, &patch) {
                 Ok(merged) => merged,
@@ -270,9 +445,16 @@ fn unknown_fields(
             ) {
                 continue;
             }
-            let schema = defs
-                .iter()
-                .find(|def| &def.name == tool)
+            let def = defs.iter().find(|def| &def.name == tool);
+            let shaped_by_caller = def.is_some_and(|def| {
+                ["output_schema", "shape"]
+                    .iter()
+                    .any(|key| def.input_schema["properties"].get(key).is_some())
+            });
+            if shaped_by_caller {
+                continue;
+            }
+            let schema = def
                 .and_then(|def| def.output_schema.clone())
                 .or_else(|| shapes.get(tool).map(|shape| shape.schema.clone()));
             let Some(properties) = schema
@@ -431,6 +613,21 @@ fn mistyped_inputs(steps: &Value, defs: &[ToolDef], declared: &Value) -> Vec<Str
     problems
 }
 
+fn split_key(yaml: &str, key: &str) -> (String, Vec<Value>) {
+    let Ok(mut doc) = serde_yaml::from_str::<serde_yaml::Value>(yaml) else {
+        return (yaml.to_string(), Vec::new());
+    };
+    let Some(questions) = doc.as_mapping_mut().and_then(|map| map.remove(key)) else {
+        return (yaml.to_string(), Vec::new());
+    };
+    let questions = serde_json::to_value(questions)
+        .ok()
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    let yaml = serde_yaml::to_string(&doc).unwrap_or_else(|_| yaml.to_string());
+    (yaml, questions)
+}
+
 fn apply_patch(yaml: &str, patch: &str) -> Result<String, String> {
     let mut doc: serde_yaml::Value =
         serde_yaml::from_str(yaml).map_err(|e| format!("the plan YAML does not parse: {e}"))?;
@@ -462,12 +659,23 @@ fn apply_patch(yaml: &str, patch: &str) -> Result<String, String> {
         let remove: Vec<&str> = remove.iter().filter_map(|id| id.as_str()).collect();
         steps.retain(|step| !id_of(step).is_some_and(|id| remove.contains(&id.as_str())));
     }
-    for replacement in patch
-        .get("steps")
-        .and_then(|steps| steps.as_sequence())
-        .cloned()
-        .unwrap_or_default()
-    {
+    let replacements: Vec<serde_yaml::Value> = match patch.get("steps") {
+        Some(serde_yaml::Value::Sequence(list)) => list.clone(),
+        Some(serde_yaml::Value::Mapping(by_id)) => by_id
+            .iter()
+            .map(|(id, step)| {
+                let mut step = step.clone();
+                if let Some(map) = step.as_mapping_mut() {
+                    if !map.contains_key("id") {
+                        map.insert("id".into(), id.clone());
+                    }
+                }
+                step
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    for replacement in replacements {
         let mut replacement = replacement;
         let after = replacement
             .as_mapping_mut()
@@ -602,6 +810,99 @@ mod tests {
         let problems = unknown_fields(&doc, &defs, &Default::default());
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("t__issue's output has no `project`"));
+    }
+
+    #[test]
+    fn a_tool_whose_output_each_call_defines_is_not_held_to_a_recorded_shape() {
+        let yaml = "version: 2\nidentifier: p\nname: p\ndescription: d\nsteps:\n  - id: summary\n    tool_name: builtin__infer\n    input: {instruction: x}\noutput: {a: \"{{summary.text}}\"}\n";
+        let doc = parse_plan_source(yaml, "plan").unwrap();
+        let defs = vec![ToolDef {
+            name: "builtin__infer".to_string(),
+            description: String::new(),
+            input_schema: json!({"type": "object", "properties": {"instruction": {}, "output_schema": {}}}),
+            output_schema: None,
+            output_example: None,
+            read_only: None,
+        }];
+        let shapes = std::collections::HashMap::from([(
+            "builtin__infer".to_string(),
+            crate::store::ToolShape {
+                tool: "builtin__infer".to_string(),
+                schema: json!({"type": "object", "properties": {"patch": {}}}),
+                example: json!({"patch": ""}),
+                seen_count: 1,
+            },
+        )]);
+        assert!(unknown_fields(&doc, &defs, &shapes).is_empty());
+    }
+
+    #[test]
+    fn a_draft_s_questions_become_one_form_with_an_open_instructions_field() {
+        let form = question_form(json!({"draft": {"yaml": "x", "questions": [
+            {"key": "status", "question": "Which status means in progress?", "guess": "Started", "options": ["Backlog", "Started"]},
+            {"key": "project", "question": "Which project?", "guess": "Mobile"},
+            {"key": "label", "question": "Which label?", "guess": "bug", "options": ["feature"]},
+            {"key": "status", "question": "Asked twice"},
+            {"question": "No key"}
+        ]}}))
+        .unwrap();
+        assert_eq!(form["count"], 3);
+        assert_eq!(
+            form["schema"]["propertyOrder"],
+            json!(["status", "project", "label", "instructions"])
+        );
+        assert_eq!(
+            form["schema"]["properties"]["status"],
+            json!({"type": "string", "description": "Which status means in progress?", "enum": ["Backlog", "Started"]})
+        );
+        assert_eq!(
+            form["schema"]["properties"]["instructions"]["description"],
+            "Anything else the planner should know?"
+        );
+        assert_eq!(
+            form["default"],
+            json!({"status": "Started", "project": "Mobile"}),
+            "a guess outside the options is not offered"
+        );
+        assert!(super::super::ask::answer_schema_problem(&form["schema"]).is_none());
+    }
+
+    #[test]
+    fn questions_written_inside_the_plan_are_asked_and_left_out_of_it() {
+        let yaml = "version: 2\nidentifier: p\nquestions:\n  - {key: state, question: Which state?, guess: started}\nsteps: []\n";
+        let form = question_form(json!({"draft": {"yaml": yaml}})).unwrap();
+        assert_eq!(form["count"], 1);
+        assert_eq!(form["default"], json!({"state": "started"}));
+        let (plan, questions) = split_key(yaml, "questions");
+        assert_eq!(questions.len(), 1);
+        assert!(!plan.contains("questions"), "{plan}");
+    }
+
+    #[test]
+    fn a_draft_without_questions_asks_nothing() {
+        for draft in [json!({"yaml": "x"}), json!({"yaml": "x", "questions": []})] {
+            let form = question_form(json!({ "draft": draft })).unwrap();
+            assert_eq!(form["count"], 0);
+            assert_eq!(form["schema"]["properties"], json!({}));
+        }
+    }
+
+    #[test]
+    fn a_search_written_inside_the_plan_is_a_request_not_a_plan_key() {
+        let yaml = "version: 2\nidentifier: p\nsearch: [List workflow states]\nsteps: []\n";
+        let (plan, search) = split_key(yaml, "search");
+        assert_eq!(search, vec![json!("List workflow states")]);
+        assert!(!plan.contains("search"), "{plan}");
+    }
+
+    #[test]
+    fn a_patch_may_key_its_steps_by_id() {
+        let patch = "steps:\n  b:\n    tool_name: t__issues\n    input: {teamId: y}\n";
+        let merged = apply_patch(PLAN, patch).unwrap();
+        let doc = parse_plan_source(&merged, "plan").unwrap();
+        assert_eq!(doc.steps.len(), 2);
+        assert_eq!(doc.steps[1].id, "b");
+        assert_eq!(doc.steps[1].input["teamId"], "y");
     }
 
     #[test]

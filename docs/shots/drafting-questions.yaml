@@ -1,0 +1,50 @@
+name: drafting-questions
+title: graph workbench — drafting a plan
+grid: { cols: 120, rows: 36 }
+
+chat: "draft a plan that summarizes what changed in the storage layer since the last release"
+
+llm:
+  - call: plan__compose_plan
+    input:
+      goal: Summarize what changed in the storage layer since the last release.
+  - structured:
+      inputs:
+        - { name: since, type: string, description: The last release tag }
+      capabilities:
+        - { does: Fetch the commits since a tag that touch the storage code from git, kind: data }
+        - { does: Summarize what changed, kind: judgment }
+      details: []
+  - structured:
+      yaml: |
+        version: 2
+        identifier: storage_changes
+        name: Storage changes
+        description: Summarizes what changed in the storage layer since a release.
+        input_schema:
+          type: object
+          required: [since]
+          properties:
+            since: { type: string, description: The last release tag }
+        steps:
+          - id: commits
+            tool_name: builtin__git_log
+            input: { base: "{{input.since}}", head: HEAD, paths: crates/graph-store/ }
+          - id: summary
+            tool_name: builtin__infer
+            input:
+              instruction: "Summarize what changed in the storage layer: {{commits.commits}}"
+        output:
+          summary: "{{summary.text}}"
+      questions:
+        - key: storage_paths
+          question: Which paths hold the storage layer?
+          guess: crates/graph-store/
+        - key: merges
+          question: Should merge commits count as changes?
+          guess: "no"
+          options: ["yes", "no"]
+
+capture:
+  pause_at: "compose_plan→clarify/then/asked"
+  turn_seconds: 6

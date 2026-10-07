@@ -4788,6 +4788,143 @@ async fn author_plan_outlines_drafts_and_validates_without_running_anything() {
     assert_eq!(provider.requests.lock().unwrap().len(), 3);
 }
 
+fn compose_needs() -> ChatResponse {
+    structured(json!({
+        "inputs": [],
+        "capabilities": [{"does": "Fetch the issues in a state", "kind": "data"}],
+        "details": []
+    }))
+}
+
+const GUESSED_PLAN: &str = "version: 2
+identifier: in_progress
+name: In progress
+description: Issues in progress.
+steps:
+  - id: issues
+    tool_name: t__issues
+    input: { state: Started }
+output:
+  issues: \"{{issues.got}}\"
+";
+
+fn compose_draft(questions: Value) -> ChatResponse {
+    structured(json!({"yaml": GUESSED_PLAN, "questions": questions}))
+}
+
+fn status_question() -> Value {
+    json!([{"key": "status", "question": "Which status means in progress?", "guess": "Started"}])
+}
+
+async fn composed(pipeline: &Pipeline) -> Value {
+    let call = pipeline
+        .call_plan(
+            "compose_plan",
+            json!({"goal": "list the issues in progress"}),
+        )
+        .await;
+    assert!(!call.is_error, "{}", call.result);
+    call.result
+}
+
+#[tokio::test]
+async fn compose_plan_asks_about_guessed_values_and_patches_in_the_answers() {
+    let registry = search_registry(json!({}));
+    let (pipeline, provider) = drafting(
+        vec![
+            compose_needs(),
+            compose_draft(status_question()),
+            structured(
+                json!({"patch": "steps:\n  - id: issues\n    tool_name: t__issues\n    input: { state: In Progress }\n"}),
+            ),
+        ],
+        registry.clone(),
+    );
+    let human = ScriptedHuman::answering(json!({"status": "In Progress"}));
+    let pipeline = pipeline.with_interlocutor(human.clone());
+
+    let result = composed(&pipeline).await;
+    assert_eq!(result["valid"], json!(true), "{result}");
+    assert_eq!(result["plan"]["steps"][0]["input"]["state"], "In Progress");
+    assert_eq!(result["questions"].as_array().unwrap().len(), 1);
+
+    let asked = human.asked.lock().unwrap();
+    assert_eq!(asked.len(), 1);
+    let fields: Vec<&String> = asked[0].schema["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(fields, ["instructions", "status"]);
+    assert_eq!(asked[0].default, Some(json!({"status": "Started"})));
+    assert_eq!(provider.requests.lock().unwrap().len(), 3);
+    assert!(
+        registry.invocations.lock().unwrap().is_empty(),
+        "composing never runs the plan's tools"
+    );
+}
+
+#[tokio::test]
+async fn compose_plan_searches_for_a_tool_the_draft_asked_for_and_finishes_with_it() {
+    let registry = search_registry(json!({}));
+    let (pipeline, provider) = drafting(
+        vec![
+            compose_needs(),
+            structured(json!({
+                "yaml": GUESSED_PLAN,
+                "questions": [],
+                "search": ["search for things"]
+            })),
+            structured(json!({
+                "patch": "steps:\n  - id: found\n    after: issues\n    tool_name: t__search\n    input: { query: x }\noutput:\n  issues: \"{{issues.got}}\"\n  found: \"{{found}}\"\n",
+                "search": []
+            })),
+        ],
+        registry,
+    );
+
+    let result = composed(&pipeline).await;
+    assert_eq!(result["valid"], json!(true), "{result}");
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3, "one round after the search");
+    let round = format!("{:?}", requests[2].messages);
+    assert!(
+        round.contains("t__search"),
+        "the round sees the tool search found"
+    );
+}
+
+#[tokio::test]
+async fn compose_plan_asks_nothing_when_the_draft_guessed_nothing() {
+    let registry = search_registry(json!({}));
+    let (pipeline, provider) = drafting(vec![compose_needs(), compose_draft(json!([]))], registry);
+    let human = ScriptedHuman::answering(json!({}));
+    let pipeline = pipeline.with_interlocutor(human.clone());
+
+    let result = composed(&pipeline).await;
+    assert_eq!(result["valid"], json!(true), "{result}");
+    assert!(human.asked.lock().unwrap().is_empty());
+    assert_eq!(provider.requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn compose_plan_keeps_its_guesses_when_nobody_can_answer() {
+    let registry = search_registry(json!({}));
+    let (pipeline, provider) = drafting(
+        vec![compose_needs(), compose_draft(status_question())],
+        registry,
+    );
+
+    let result = composed(&pipeline).await;
+    assert_eq!(result["valid"], json!(true), "{result}");
+    assert_eq!(result["plan"]["steps"][0]["input"]["state"], "Started");
+    assert_eq!(
+        provider.requests.lock().unwrap().len(),
+        2,
+        "no patch round without answers"
+    );
+}
+
 const ASK_SCHEMA: fn() -> Value = || {
     json!({
         "type": "object",

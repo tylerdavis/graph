@@ -1,5 +1,8 @@
 use super::authoring;
-use super::compose::{compose_tool_defs, CHECK_PLAN_TOOL, COMPOSE_CONTEXT_TOOL};
+use super::compose::{
+    compose_tool_defs, question_form, CHECK_PLAN_TOOL, COMPOSE_CONTEXT_TOOL, FIND_TOOLS_TOOL,
+    QUESTION_FORM_TOOL,
+};
 use super::doc::{parse_plan_source, PlanDoc};
 use super::drafting::{
     accept_step_tool_def, draft_context_tool_def, ACCEPT_STEP_TOOL, DRAFT_CONTEXT_TOOL,
@@ -20,7 +23,7 @@ pub const PLAN_FROM_DRAFT_TOOL: &str = "builtin__plan_from_draft";
 
 pub const APPLY_EDITS_TOOL: &str = "builtin__apply_edits";
 
-pub const NATIVE_TOOLS: [&str; 11] = [
+pub const NATIVE_TOOLS: [&str; 13] = [
     CATALOG_OUTLINE_TOOL,
     DRAFT_CONTEXT_TOOL,
     ACCEPT_STEP_TOOL,
@@ -32,6 +35,8 @@ pub const NATIVE_TOOLS: [&str; 11] = [
     DESCRIBE_TOOLS_TOOL,
     COMPOSE_CONTEXT_TOOL,
     CHECK_PLAN_TOOL,
+    QUESTION_FORM_TOOL,
+    FIND_TOOLS_TOOL,
 ];
 
 const CONTROL_TOOLS: &[&str] = &["exit", "route", "filter", "map", "reduce", "agent", "ask"];
@@ -184,6 +189,8 @@ impl Pipeline {
             DESCRIBE_TOOLS_TOOL => self.describe_tools(input).await,
             COMPOSE_CONTEXT_TOOL => self.compose_context(input).await,
             CHECK_PLAN_TOOL => self.check_plan(input).await,
+            QUESTION_FORM_TOOL => question_form(input),
+            FIND_TOOLS_TOOL => self.find_tools(input).await,
             _ => Err(format!("unknown native tool '{name}'")),
         };
         match result {

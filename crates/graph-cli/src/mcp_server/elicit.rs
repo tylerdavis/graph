@@ -122,6 +122,7 @@ impl Interlocutor for ElicitationInterlocutor {
 fn to_elicitation_schema(schema: &Value) -> Result<ElicitationSchema, String> {
     let mut normalized = schema.as_object().cloned().unwrap_or_default();
     normalized.insert("type".to_string(), Value::String("object".to_string()));
+    normalized.remove("propertyOrder");
 
     if let Some(Value::Object(properties)) = normalized.get("properties").cloned() {
         let mut fixed = Map::new();
