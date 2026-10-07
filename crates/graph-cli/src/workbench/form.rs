@@ -1,7 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::Block;
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Paragraph, Wrap};
 use serde_json::Value;
 use std::cell::{Cell, RefCell};
 use tui_textarea::{CursorMove, TextArea};
@@ -29,6 +30,7 @@ pub struct Field {
     pub key: String,
     pub label: String,
     pub hint: Option<String>,
+    pub question: Option<String>,
     pub kind: FieldKind,
     pub multiline: bool,
     pub required: bool,
@@ -54,6 +56,7 @@ impl Field {
             key: key.to_string(),
             label: label.to_string(),
             hint: None,
+            question: None,
             kind,
             multiline,
             required: false,
@@ -131,6 +134,34 @@ impl Field {
             self.hint = Some(hint);
         }
         self
+    }
+
+    pub fn question(mut self, question: impl Into<String>) -> Self {
+        let question = question.into();
+        if !question.trim().is_empty() {
+            self.question = Some(question.trim().to_string());
+        }
+        self
+    }
+
+    pub fn question_paragraph(&self) -> Option<Paragraph<'static>> {
+        self.question.as_ref().map(|question| {
+            Paragraph::new(
+                question
+                    .lines()
+                    .map(|line| Line::from(line.to_string()))
+                    .collect::<Vec<_>>(),
+            )
+            .wrap(Wrap { trim: false })
+        })
+    }
+
+    pub fn question_rows(&self, width: u16) -> u16 {
+        match self.question_paragraph() {
+            Some(paragraph) if width > 0 => paragraph.line_count(width) as u16,
+            Some(_) => 1,
+            None => 0,
+        }
     }
 
     pub fn required(mut self, required: bool) -> Self {
@@ -231,7 +262,7 @@ impl Field {
         } else {
             1
         };
-        rows as u16 + 2
+        rows as u16 + 2 + self.question_rows(width + 2)
     }
 
     pub fn set_focused(&mut self, focused: bool) {

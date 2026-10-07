@@ -89,7 +89,7 @@ pub fn ask_tool_def() -> crate::tools::ToolDef {
                     "description": "The question, as the user will see it. May use templates like {{E0.candidates}}."
                 },
                 "outputSchema": {
-                    "description": "JSON Schema for the answer. Must be type object whose properties are all primitives (string, number, integer, boolean) or string enums — no nested objects or arrays. Give every property a description: it is the field label the user sees."
+                    "description": "JSON Schema for the answer. Must be type object whose properties are all primitives (string, number, integer, boolean) or string enums — no nested objects or arrays. Give every property a description written as a question: it is what the user reads for that field. May be a template ({{E1.schema}}) or contain templates (an enum from {{E1.names}}); it is then checked when the step runs."
                 },
                 "whenUnanswered": {
                     "type": "string",
@@ -97,7 +97,7 @@ pub fn ask_tool_def() -> crate::tools::ToolDef {
                     "description": "What to do when nobody can answer (headless run, client without elicitation support, user declined). 'fail' (the default) fails the step; 'default' falls back to the `default` value."
                 },
                 "default": {
-                    "description": "The fallback answer used when whenUnanswered is 'default'. Must conform to outputSchema. May use templates."
+                    "description": "The fallback answer used when whenUnanswered is 'default', and the answer a host offers prefilled. Must conform to outputSchema. May use templates."
                 }
             }
         }),
@@ -180,31 +180,14 @@ pub fn validate_ask_input(
         }
     };
 
-    let schema_ok = match jsonschema::validator_for(&spec.output_schema) {
-        Ok(_) => {
-            if spec
-                .output_schema
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(|t| t != "object")
-            {
-                problems.push(format!(
-                    "step {step_id}: `outputSchema` must have type \"object\""
-                ));
-                false
-            } else if let Some(problem) = elicitation_schema_problem(&spec.output_schema) {
-                problems.push(format!("step {step_id}: {problem}"));
-                false
-            } else {
-                true
-            }
-        }
-        Err(e) => {
-            problems.push(format!(
-                "step {step_id}: `outputSchema` is not valid JSON Schema: {e}"
-            ));
-            false
-        }
+    let schema_ok = if has_templates(&spec.output_schema) {
+        super::check_templates(&spec.output_schema, seen, step_id, problems);
+        false
+    } else if let Some(problem) = answer_schema_problem(&spec.output_schema) {
+        problems.push(format!("step {step_id}: {problem}"));
+        false
+    } else {
+        true
     };
 
     match (&spec.when_unanswered, &spec.default) {
@@ -234,6 +217,20 @@ pub fn validate_ask_input(
     }
 
     super::check_templates(&Value::String(spec.prompt), seen, step_id, problems);
+}
+
+fn answer_schema_problem(schema: &Value) -> Option<String> {
+    if let Err(e) = jsonschema::validator_for(schema) {
+        return Some(format!("`outputSchema` is not valid JSON Schema: {e}"));
+    }
+    if schema
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|t| t != "object")
+    {
+        return Some("`outputSchema` must have type \"object\"".to_string());
+    }
+    elicitation_schema_problem(schema)
 }
 
 /// Schema-check a value, returning the joined errors when it fails.
@@ -317,9 +314,19 @@ impl Pipeline {
         // can reach the executor unvalidated (a gate-injected draft, a
         // direct API caller). Refuse rather than hand a host a form it
         // cannot render.
-        if let Some(problem) = elicitation_schema_problem(&spec.output_schema) {
+        let schema = match render_input(&spec.output_schema, &roots) {
+            Ok(schema) => schema,
+            Err(e @ RenderError::EmptyData { .. }) => return Err(AskFail::Empty(e)),
+            Err(e) => return Err(AskFail::Failed(e.to_string())),
+        };
+        if let Some(problem) = answer_schema_problem(&schema) {
             return Err(AskFail::Failed(problem));
         }
+        let default = spec
+            .default
+            .as_ref()
+            .and_then(|raw| render_input(raw, &roots).ok())
+            .filter(|value| schema_mismatch(value, &schema).is_none());
 
         let outcome = match &self.interlocutor {
             Some(interlocutor) => {
@@ -328,7 +335,8 @@ impl Pipeline {
                         path: path.clone(),
                         call_stack: self.call_stack.clone(),
                         prompt: prompt.clone(),
-                        schema: spec.output_schema.clone(),
+                        schema: schema.clone(),
+                        default,
                     })
                     .await
             }
@@ -339,7 +347,7 @@ impl Pipeline {
             AskOutcome::Answered(answer) => {
                 // The host is not trusted to have validated: an MCP client
                 // may return a partial form, a TTY answer is hand-typed.
-                if let Some(problem) = schema_mismatch(&answer, &spec.output_schema) {
+                if let Some(problem) = schema_mismatch(&answer, &schema) {
                     return Err(AskFail::Failed(format!(
                         "the answer to \"{}\" does not conform to `outputSchema`: {problem}",
                         truncate(&prompt, 80)
@@ -368,7 +376,7 @@ impl Pipeline {
                     Err(e @ RenderError::EmptyData { .. }) => return Err(AskFail::Empty(e)),
                     Err(e) => return Err(AskFail::Failed(e.to_string())),
                 };
-                if let Some(problem) = schema_mismatch(&rendered, &spec.output_schema) {
+                if let Some(problem) = schema_mismatch(&rendered, &schema) {
                     return Err(AskFail::Failed(format!(
                         "the rendered `default` does not conform to `outputSchema`: {problem}"
                     )));
@@ -422,6 +430,32 @@ mod tests {
             &mut problems,
         );
         assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    #[test]
+    fn a_templated_schema_is_checked_for_its_references_and_left_to_the_run() {
+        let mut problems = Vec::new();
+        validate_ask_input(
+            &input(json!({
+                "prompt": "A few details",
+                "outputSchema": "{{E0.schema}}",
+                "whenUnanswered": "default",
+                "default": "{{E0.guesses}}"
+            })),
+            &["input", "E0"],
+            "E1",
+            &mut problems,
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+
+        validate_ask_input(
+            &input(json!({"prompt": "A few details", "outputSchema": "{{E9.schema}}"})),
+            &["input", "E0"],
+            "E1",
+            &mut problems,
+        );
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("E9"), "{problems:?}");
     }
 
     #[test]

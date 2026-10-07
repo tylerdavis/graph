@@ -4855,6 +4855,72 @@ async fn the_question_renders_against_earlier_results() {
 }
 
 #[tokio::test]
+async fn a_templated_answer_schema_and_default_render_before_the_question() {
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let human = ScriptedHuman::answering(json!({"status": "Started"}));
+    let pipeline = pipeline.with_interlocutor(human.clone());
+    let schema = json!({
+        "type": "object",
+        "required": ["status"],
+        "properties": {"status": {"enum": ["Backlog", "Started"], "description": "Which status?"}}
+    });
+
+    let plan: Plan = serde_json::from_value(json!([ask_step(
+        "E0",
+        json!({
+            "prompt": "A few details",
+            "outputSchema": "{{input.schema}}",
+            "whenUnanswered": "default",
+            "default": {"status": "{{input.guess}}"}
+        })
+    )]))
+    .unwrap();
+
+    let outcome = pipeline
+        .run_explicit(
+            "q",
+            plan,
+            Finish::Silent,
+            Some(json!({"schema": schema, "guess": "Backlog"})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.state.results["E0"]["answer"]["status"], "Started");
+    let asked = human.asked.lock().unwrap();
+    assert_eq!(asked[0].schema, schema);
+    assert_eq!(asked[0].default, Some(json!({"status": "Backlog"})));
+}
+
+#[tokio::test]
+async fn a_templated_schema_that_renders_to_a_nested_form_fails_the_step() {
+    let registry = search_registry(json!({}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let human = ScriptedHuman::answering(json!({}));
+    let pipeline = pipeline.with_interlocutor(human.clone());
+
+    let plan: Plan = serde_json::from_value(json!([ask_step(
+        "E0",
+        json!({"prompt": "A few details", "outputSchema": "{{input.schema}}"})
+    )]))
+    .unwrap();
+
+    let result = pipeline
+        .run_explicit(
+            "q",
+            plan,
+            Finish::Silent,
+            Some(json!({"schema": {
+                "type": "object",
+                "properties": {"nested": {"type": "object", "description": "x"}}
+            }})),
+        )
+        .await;
+    assert!(result.is_err(), "a form no host can render fails the step");
+    assert!(human.asked.lock().unwrap().is_empty(), "nobody is asked");
+}
+
+#[tokio::test]
 async fn with_nobody_to_ask_the_default_declares_what_happens() {
     // The portability invariant: this is the CI run of an interactive plan.
     let registry = search_registry(json!({}));

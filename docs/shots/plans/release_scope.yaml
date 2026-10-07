@@ -1,0 +1,25 @@
+identifier: release_scope
+name: Release scope
+description: Release notes scoped by the person running the plan.
+steps:
+  - id: E0
+    tool_name: ask
+    input:
+      prompt: A few details before drafting the release notes.
+      outputSchema:
+        type: object
+        required: [since, audience]
+        properties:
+          since: { type: string, description: "Which tag should the notes start from? Usually the last release, e.g. v0.15.0." }
+          audience: { enum: [customers, engineers], description: "Who are the notes for?" }
+          max_items: { type: integer, default: 20, description: "How many changes should the notes list at most?" }
+          include_internal: { type: boolean, description: "Should CI and tooling changes be included?" }
+    reasoning: The starting tag and audience are the user's call.
+  - id: E1
+    tool_name: builtin__git_changed_files
+    input: { base: "{{E0.answer.since}}", head: "HEAD", prefix: "" }
+    reasoning: Everything that changed since that tag.
+solver:
+  query_to_answer: Write release notes for {{E0.answer.audience}} covering at most {{E0.answer.max_items}} changes.
+  data:
+    files: "{{E1.files}}"

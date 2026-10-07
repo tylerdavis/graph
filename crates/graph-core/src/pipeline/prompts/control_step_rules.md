@@ -6,7 +6,7 @@
 
 ### Asking the user
 - Use the `ask` tool ONLY for a value the plan cannot obtain any other way: a choice between options only the user can make, a confirmation before an irreversible action, a missing detail no tool exposes. If a tool can fetch it, call the tool; if a model can judge it, use `infer` or `agent`. Every `ask` costs a human's attention, which is the most expensive resource the plan spends.
-- `outputSchema` must be a flat object whose properties are primitives (string, number, integer, boolean) or enums — a person fills it in one field at a time. Describe every property: the description is the label the user sees. Prefer an enum over free text when the options are known.
+- `outputSchema` must be a flat object whose properties are primitives (string, number, integer, boolean) or enums — a person fills it in one field at a time. Describe every property as a question: the description is what the user reads for that field. Prefer an enum over free text when the options are known.
 - Later steps reference the answer as {{Ex.answer.field}}; {{Ex.answered}} is false when nobody could be asked.
 - Always set `whenUnanswered`. It is "fail" by default, which stops the run when the plan runs somewhere with no human (CI, a headless client). Use `whenUnanswered: "default"` with a `default` value whenever the plan has a sensible unattended behaviour — that is what keeps one plan runnable both interactively and in automation.
 

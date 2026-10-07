@@ -37,7 +37,10 @@ pub enum GateKind {
     /// An `ask` step is putting a question to the user. Not a debugger
     /// pause: the run is waiting on an answer it declared it needs, so the
     /// only two replies are an answer (the inject editor) and a decline.
-    Ask { schema: Value },
+    Ask {
+        schema: Value,
+        default: Option<Value>,
+    },
 }
 
 /// A pending debugger decision: the run is parked on `reply`.
@@ -86,6 +89,12 @@ pub enum Mode {
     /// A modal editor (inject result, run input) or confirm dialog is open.
     Editing(Box<EditorState>),
     Form(Box<FormState>),
+    Answering(Box<AnswerState>),
+}
+
+pub struct AnswerState {
+    pub form: Form,
+    pub prompt: GatePrompt,
 }
 
 pub struct FormState {
@@ -118,6 +127,7 @@ impl Mode {
             Mode::Paused(_) => "paused",
             Mode::Editing(_) => "editing",
             Mode::Form(_) => "form",
+            Mode::Answering(_) => "answering",
         }
     }
 }
@@ -746,7 +756,9 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
                     );
                 }
                 GateKind::Ask { .. } => {
-                    app.ws.step_running(&prompt.path);
+                    if prompt.call_stack.is_empty() {
+                        app.ws.step_running(&prompt.path);
+                    }
                     app.status = format!("? {} is asking — s answer · n decline", prompt.path);
                 }
             }
@@ -755,7 +767,7 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
             // An ask has exactly one useful reply, so open the editor for
             // it rather than making the user discover the `s` key.
             if ask {
-                return open_inject_editor(app);
+                return open_answer_form(app);
             }
             Vec::new()
         }
@@ -922,6 +934,7 @@ fn on_terminal_event(app: &mut App, event: Event) -> Vec<Effect> {
         Mode::Paused(_) => return on_paused_key(app, key),
         Mode::Editing(_) => return on_editor_key(app, key),
         Mode::Form(_) => return on_form_key(app, key),
+        Mode::Answering(_) => return on_answer_key(app, key),
         _ => {}
     }
 
@@ -955,6 +968,7 @@ fn on_paste(app: &mut App, text: String) -> Vec<Effect> {
             }
         }
         Mode::Form(state) => state.form.paste(&text),
+        Mode::Answering(state) => state.form.paste(&text),
         // The chat input is inert while paused (single-letter debug keys
         // own the keyboard), so a paste has nowhere to land.
         Mode::Paused(_) => {}
@@ -982,26 +996,15 @@ fn on_mouse(app: &mut App, mouse: MouseEvent) -> Vec<Effect> {
     if matches!(app.mode, Mode::Editing(_)) {
         return Vec::new();
     }
+    if let Mode::Answering(state) = &mut app.mode {
+        form_mouse(&mut state.form, mouse);
+        return Vec::new();
+    }
     if let Mode::Form(state) = &mut app.mode {
-        match mouse.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                let hit_field = state
-                    .form
-                    .visible_fields
-                    .borrow()
-                    .iter()
-                    .find(|(_, rect)| hit(*rect, mouse.column, mouse.row))
-                    .map(|(index, _)| *index);
-                if let Some(index) = hit_field {
-                    state.form.set_focus(index);
-                    if let Some(field) = state.form.take_change() {
-                        reload_form(app, &field);
-                    }
-                }
+        if form_mouse(&mut state.form, mouse) {
+            if let Some(field) = state.form.take_change() {
+                reload_form(app, &field);
             }
-            MouseEventKind::ScrollUp => state.form.scroll_by(true, 3),
-            MouseEventKind::ScrollDown => state.form.scroll_by(false, 3),
-            _ => {}
         }
         return Vec::new();
     }
@@ -1409,22 +1412,38 @@ fn decide(app: &mut App, decision: UiDecision) -> Vec<Effect> {
     Vec::new()
 }
 
+fn form_mouse(form: &mut Form, mouse: MouseEvent) -> bool {
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            let clicked = form
+                .visible_fields
+                .borrow()
+                .iter()
+                .find(|(_, rect)| hit(*rect, mouse.column, mouse.row))
+                .map(|(index, _)| *index);
+            if let Some(index) = clicked {
+                form.set_focus(index);
+                return true;
+            }
+        }
+        MouseEventKind::ScrollUp => form.scroll_by(true, 3),
+        MouseEventKind::ScrollDown => form.scroll_by(false, 3),
+        _ => {}
+    }
+    false
+}
+
 fn open_inject_editor(app: &mut App) -> Vec<Effect> {
-    let Mode::Paused(_) = app.mode else {
+    let Mode::Paused(prompt) = &app.mode else {
         return Vec::new();
     };
+    if matches!(prompt.kind, GateKind::Ask { .. }) {
+        return open_answer_form(app);
+    }
     let Mode::Paused(prompt) = std::mem::replace(&mut app.mode, Mode::Idle) else {
         unreachable!()
     };
-    // An `ask` has no recorded output shape — the prefill is the answer
-    // form itself, built from the schema the step declared.
-    let (prefill, provenance) = match &prompt.kind {
-        GateKind::Ask { schema } => (
-            super::editor::schema_skeleton(schema),
-            "a skeleton from the question's answer schema",
-        ),
-        _ => app.ws.prefill_for(&prompt.tool),
-    };
+    let (prefill, provenance) = app.ws.prefill_for(&prompt.tool);
     let references = prompt
         .top_level_step()
         .map(|step| app.ws.downstream_references(step))
@@ -1433,6 +1452,80 @@ fn open_inject_editor(app: &mut App) -> Vec<Effect> {
         prompt, prefill, provenance, references,
     )));
     Vec::new()
+}
+
+fn open_answer_form(app: &mut App) -> Vec<Effect> {
+    let Mode::Paused(prompt) = std::mem::replace(&mut app.mode, Mode::Idle) else {
+        unreachable!()
+    };
+    let GateKind::Ask { schema, default } = &prompt.kind else {
+        app.mode = Mode::Paused(prompt);
+        return Vec::new();
+    };
+    let question = prompt
+        .input
+        .get("prompt")
+        .and_then(Value::as_str)
+        .unwrap_or("The plan is asking for input.");
+    let form = super::answer::answer_form(&prompt.path, question, schema, default.as_ref());
+    app.status = format!(
+        "? {} is asking — Tab next field · Enter pick · Ctrl+S answer · Esc back",
+        prompt.path
+    );
+    app.mode = Mode::Answering(Box::new(AnswerState { form, prompt }));
+    Vec::new()
+}
+
+fn on_answer_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
+    let Mode::Answering(state) = &mut app.mode else {
+        return Vec::new();
+    };
+    let submit = match state.form.handle_key(key) {
+        FormAction::None | FormAction::Changed(_) => return Vec::new(),
+        FormAction::Cancel => {
+            let Mode::Answering(state) = std::mem::replace(&mut app.mode, Mode::Idle) else {
+                unreachable!()
+            };
+            app.status = format!("? {} is asking — s answer · n decline", state.prompt.path);
+            app.mode = Mode::Paused(state.prompt);
+            return Vec::new();
+        }
+        FormAction::Submit => true,
+        FormAction::Validate => false,
+    };
+    let GateKind::Ask { schema, .. } = &state.prompt.kind else {
+        return Vec::new();
+    };
+    let schema = schema.clone();
+    match super::answer::read_answer(&mut state.form, &schema) {
+        Err(problems) => {
+            state.form.verdict = Some(Verdict::Invalid {
+                problems,
+                pre_existing: Vec::new(),
+            });
+            state.form.focus_first_error();
+            Vec::new()
+        }
+        Ok(_) if !submit => {
+            state.form.verdict = Some(Verdict::Valid {
+                pre_existing: Vec::new(),
+            });
+            Vec::new()
+        }
+        Ok(answer) => {
+            let Mode::Answering(state) = std::mem::replace(&mut app.mode, Mode::Idle) else {
+                unreachable!()
+            };
+            let mut prompt = state.prompt;
+            if let Some(reply) = prompt.reply.take() {
+                let _ = reply.send(UiDecision::Skip { result: answer });
+            }
+            app.ws.run_log_info(&format!("? {} answered", prompt.path));
+            app.status = format!("answered {}", prompt.path);
+            app.mode = app.resume_mode();
+            Vec::new()
+        }
+    }
 }
 
 fn open_add_form(app: &mut App, before: bool) -> Vec<Effect> {
@@ -1705,7 +1798,7 @@ fn on_editor_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
                 _ => unreachable!(),
             };
             if let EditorContext::InjectResult { prompt } = editor.context {
-                app.mode = Mode::Paused(prompt);
+                app.mode = Mode::Paused(*prompt);
             }
             Vec::new()
         }
@@ -2222,6 +2315,72 @@ steps:
             UiDecision::Proceed { continue_mode } => assert!(continue_mode),
             other => panic!("expected Proceed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_question_opens_a_form_under_it_and_answers_with_typed_values() {
+        let mut app = App::new(Some(two_step_doc()));
+        app.mode = Mode::Running { gated: false };
+        let schema = json!({
+            "type": "object",
+            "required": ["status"],
+            "properties": {
+                "status": {"enum": ["Todo", "In Progress"]},
+                "limit": {"type": "integer"}
+            }
+        });
+        let (reply, mut receiver) = oneshot::channel();
+        update(
+            &mut app,
+            Msg::GateAsk {
+                kind: GateKind::Ask {
+                    schema: schema.clone(),
+                    default: Some(json!({"limit": 5})),
+                },
+                path: "E1".to_string(),
+                tool: "ask".to_string(),
+                input: json!({"prompt": "Which status means started?", "outputSchema": schema}),
+                call_stack: Vec::new(),
+                scope: Map::new(),
+                reply,
+            },
+        );
+        let Mode::Answering(state) = &mut app.mode else {
+            panic!("a question opens the answer form");
+        };
+        assert_eq!(state.form.header, "Which status means started?");
+        assert_eq!(
+            state.form.fields[1].text(),
+            "5",
+            "the step's default is prefilled"
+        );
+
+        update(&mut app, ctrl('s'));
+        let Mode::Answering(state) = &mut app.mode else {
+            panic!("a missing required answer keeps the form open");
+        };
+        assert!(matches!(state.form.verdict, Some(Verdict::Invalid { .. })));
+        assert!(receiver.try_recv().is_err());
+
+        update(&mut app, key(KeyCode::Esc));
+        assert!(
+            matches!(app.mode, Mode::Paused(_)),
+            "Esc returns to the pause"
+        );
+        update(&mut app, key(KeyCode::Char('s')));
+        let Mode::Answering(state) = &mut app.mode else {
+            panic!("s reopens the form");
+        };
+        state.form.fields[0].set_text("In Progress");
+        state.form.fields[1].set_text("5");
+        update(&mut app, ctrl('s'));
+        match receiver.try_recv() {
+            Ok(UiDecision::Skip { result }) => {
+                assert_eq!(result, json!({"status": "In Progress", "limit": 5}))
+            }
+            _ => panic!("the answer is sent as the step's result"),
+        }
+        assert!(matches!(app.mode, Mode::Running { gated: true }));
     }
 
     #[test]

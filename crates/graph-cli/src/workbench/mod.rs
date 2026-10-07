@@ -3,6 +3,7 @@
 //! on the right. See docs/workbench/plan-workbench.mdx.
 
 pub(crate) mod agents;
+mod answer;
 mod app;
 mod chat;
 mod edit;
