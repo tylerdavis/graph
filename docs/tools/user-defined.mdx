@@ -66,6 +66,49 @@ output_schema:               # optional → enforced structured output
 
 With an `output_schema`, the result is validated JSON; without one, `{"text": …}`. Useful as a cheap sub-task inside plans — classify, extract, reword — with `model` controlling cost: any configured [role](/models/models-and-providers#roles) — a standard one like `chat` (the default, with the usual fallback to `default`) or a [custom one](/models/models-and-providers#custom-roles) like `nano`. An unknown name fails the call with the configured names listed.
 
+## `decision` — typed questions for a decision model
+
+```yaml
+name: triage
+description: Route a support ticket and check whether it is urgent.
+kind: decision
+model: decider               # a decision role; defaults to decider
+state: { ticket: "{{input.ticket}}" }
+questions:
+  team:
+    type: choice
+    instructions: Which team should handle this ticket?
+    criteria: { billing: Payments, technical: Bugs }
+  urgent:
+    type: likelihood
+    instructions: Does the ticket convey urgency?
+input_schema:
+  type: object
+  required: [ticket]
+  properties:
+    ticket: { type: string }
+```
+
+One call asks a [decision model](/models/models-and-providers#decision-models) every question about the same `state`, each answered independently. There is no prompt to write and no schema to enforce: each answer is typed by its question.
+
+| Question `type` | `criteria` | Answer |
+| --- | --- | --- |
+| `likelihood` | optional `{"true": …, "false": …}` | `{type, probability}` — the chance the statement holds, 0 to 1 |
+| `choice` | `{key: description}`, up to 255 options | `{type, choice, confidence, probabilities}` |
+| `score` | a list of 2 to 10 ordered levels | `{type, score, confidence, legend, probabilities}` — `score` is probability-weighted |
+
+The result maps each question name to its answer, so a later step reads `{{E0.team.choice}}` or `{{E0.urgent.probability}}`.
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `questions` | unless `caller_questions` | question name → question; strings may template over `{{input.*}}` |
+| `state` | no | the data to judge, a template tree over `{{input.*}}`; omitted, the call's `state` input is used |
+| `model` | no | a decision role; defaults to `decider`. A chat role fails the call, naming it |
+| `caller_questions` | no | take `questions` from the call's input instead — how [`builtin__decide`](/untitled-page#builtin__decide) works |
+| `caller_model` | no | let the call's `model` input pick the role |
+
+Decision tools are read-only by default. Loading checks that every question has a known `type` and that templates reference only `{{input.*}}`.
+
 ## Shared behavior
 
 - `input_schema` validates before dispatch — missing fields return actionable errors (in chat, the agent asks and retries).

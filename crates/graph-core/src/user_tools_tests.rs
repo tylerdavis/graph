@@ -395,7 +395,10 @@ async fn slack_pack_loads_and_validates() {
 #[tokio::test]
 async fn llm_pack_infer_returns_text_or_caller_structured_output() {
     let docs = load_pack_tools(&["llm".to_string()]).unwrap();
-    assert_eq!(docs.len(), 1);
+    assert_eq!(
+        docs.iter().map(|doc| doc.name.as_str()).collect::<Vec<_>>(),
+        ["infer", "decide"]
+    );
     let registry = UserToolRegistry::builtins(docs, router());
 
     // No output_schema in the call: plain text.
@@ -1329,5 +1332,242 @@ async fn slack_post_message_without_a_token_never_calls_slack() {
     assert!(
         !shim.path().join("curl.log").exists(),
         "no request should have been attempted"
+    );
+}
+
+struct EchoDecider {
+    requests: std::sync::Mutex<Vec<graph_llm::decision::DecisionRequest>>,
+}
+
+#[async_trait]
+impl graph_llm::DecisionProvider for EchoDecider {
+    async fn decide(
+        &self,
+        req: graph_llm::decision::DecisionRequest,
+    ) -> Result<graph_llm::decision::DecisionResponse, LlmError> {
+        self.requests.lock().unwrap().push(req.clone());
+        let answers = req
+            .questions
+            .iter()
+            .map(|(name, question)| {
+                let answer = match question {
+                    graph_llm::decision::Question::Choice { criteria, .. } => {
+                        let choice = criteria.keys().next().unwrap().clone();
+                        graph_llm::decision::Answer::Choice {
+                            probabilities: criteria
+                                .keys()
+                                .map(|key| (key.clone(), if *key == choice { 0.8 } else { 0.2 }))
+                                .collect(),
+                            choice,
+                            confidence: 0.6,
+                        }
+                    }
+                    _ => graph_llm::decision::Answer::Likelihood { probability: 0.9 },
+                };
+                (name.clone(), answer)
+            })
+            .collect();
+        Ok(graph_llm::decision::DecisionResponse {
+            model: req.model,
+            answers,
+            usage: Usage::default(),
+        })
+    }
+}
+
+fn decision_router(with_decider: bool) -> (Arc<ModelRouter>, Arc<EchoDecider>) {
+    let decider = Arc::new(EchoDecider {
+        requests: std::sync::Mutex::new(Vec::new()),
+    });
+    let choice = |provider: &str, model: &str, description: Option<&str>| ModelChoice {
+        provider: provider.into(),
+        model: model.into(),
+        temperature: None,
+        description: description.map(str::to_string),
+        fallbacks: Vec::new(),
+        context_window: None,
+    };
+    let mut providers: HashMap<String, Arc<dyn ChatProvider>> = HashMap::new();
+    providers.insert("mock".into(), Arc::new(UnusedChat));
+    let mut roles = vec![
+        ("default", choice("mock", "m", None)),
+        ("nano", choice("mock", "small", Some("small chat model"))),
+    ];
+    if with_decider {
+        roles.push((
+            "decider",
+            choice("typesafe", "jev-latest", Some("calibrated verdicts")),
+        ));
+    }
+    let router = ModelRouter::with_providers(
+        providers,
+        ModelRoles::from_iter(
+            roles
+                .into_iter()
+                .map(|(name, choice)| (name.to_string(), choice)),
+        ),
+    )
+    .with_deciders(HashMap::from([(
+        "typesafe".to_string(),
+        decider.clone() as Arc<dyn graph_llm::DecisionProvider>,
+    )]));
+    (Arc::new(router), decider)
+}
+
+struct UnusedChat;
+
+#[async_trait]
+impl ChatProvider for UnusedChat {
+    async fn chat(&self, _req: ChatRequest) -> Result<ChatResponse, LlmError> {
+        unimplemented!()
+    }
+    async fn chat_stream(&self, _req: ChatRequest) -> Result<EventStream, LlmError> {
+        unimplemented!()
+    }
+}
+
+#[tokio::test]
+async fn builtin_decide_is_listed_only_with_a_decision_model_and_advertises_decision_roles() {
+    let docs = load_pack_tools(&["llm".to_string()]).unwrap();
+    let (router, _) = decision_router(false);
+    let names: Vec<String> = UserToolRegistry::builtins(docs.clone(), router)
+        .tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|def| def.name)
+        .collect();
+    assert_eq!(names, ["builtin__infer"]);
+
+    let (router, _) = decision_router(true);
+    let defs = UserToolRegistry::builtins(docs, router)
+        .tools()
+        .await
+        .unwrap();
+    let decide = defs.iter().find(|d| d.name == "builtin__decide").unwrap();
+    assert_eq!(decide.read_only, Some(true));
+    assert_eq!(
+        decide.input_schema["properties"]["model"]["enum"],
+        json!(["decider"])
+    );
+    let infer = defs.iter().find(|d| d.name == "builtin__infer").unwrap();
+    assert_eq!(
+        infer.input_schema["properties"]["model"]["enum"],
+        json!(["nano"])
+    );
+}
+
+#[tokio::test]
+async fn builtin_decide_answers_caller_questions_about_the_state() {
+    let docs = load_pack_tools(&["llm".to_string()]).unwrap();
+    let (router, decider) = decision_router(true);
+    let registry = UserToolRegistry::builtins(docs, router);
+    let outcome = registry
+        .invoke(
+            "builtin__decide",
+            json!({
+                "state": {"ticket": "payouts failing"},
+                "questions": {
+                    "urgent": {"type": "likelihood", "instructions": "Is it urgent?"},
+                    "team": {"type": "choice", "instructions": "Which team?", "criteria": {"billing": "Payments", "technical": "Bugs"}}
+                }
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "{}", outcome.result);
+    assert_eq!(
+        outcome.result,
+        json!({
+            "urgent": {"type": "likelihood", "probability": 0.9},
+            "team": {"type": "choice", "choice": "billing", "confidence": 0.6, "probabilities": {"billing": 0.8, "technical": 0.2}}
+        })
+    );
+    let requests = decider.requests.lock().unwrap();
+    assert_eq!(requests[0].model, "jev-latest");
+    assert_eq!(requests[0].state, json!({"ticket": "payouts failing"}));
+}
+
+#[tokio::test]
+async fn a_user_decision_tool_renders_its_state_and_questions_from_input() {
+    let tool = doc(r#"
+name: triage
+description: Route a ticket.
+kind: decision
+state: { ticket: "{{input.ticket}}", source: "{{input.source}}" }
+questions:
+  team:
+    type: choice
+    instructions: "Which team handles a {{input.source}} ticket?"
+    criteria: { billing: Payments, technical: Bugs }
+input_schema:
+  type: object
+  required: [ticket, source]
+  properties:
+    ticket: { type: string }
+    source: { type: string }
+"#);
+    let (router, decider) = decision_router(true);
+    let registry = UserToolRegistry::new(vec![tool], router);
+    let outcome = registry
+        .invoke(
+            "user__triage",
+            json!({"ticket": "refund please", "source": "email"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.result["team"]["choice"], json!("billing"));
+    let requests = decider.requests.lock().unwrap();
+    assert_eq!(
+        requests[0].state,
+        json!({"ticket": "refund please", "source": "email"})
+    );
+    assert!(matches!(
+        &requests[0].questions["team"],
+        graph_llm::decision::Question::Choice { instructions, .. } if instructions == "Which team handles a email ticket?"
+    ));
+}
+
+#[test]
+fn decision_tools_are_checked_at_load() {
+    let parse = |yaml: &str| {
+        let doc = parse_tool_source(yaml)?;
+        validate_tool(&doc)
+    };
+    let err = parse("name: t\ndescription: d\nkind: decision\n").unwrap_err();
+    assert!(
+        err.contains("`questions` or `caller_questions: true`"),
+        "{err}"
+    );
+    let err = parse(
+        "name: t\ndescription: d\nkind: decision\nquestions: { q: { type: guess, instructions: x } }\n",
+    )
+    .unwrap_err();
+    assert!(err.contains("likelihood, choice, or score"), "{err}");
+    let err = parse(
+        "name: t\ndescription: d\nkind: decision\nquestions: { q: { type: likelihood, instructions: \"{{steps.E0}}\" } }\n",
+    )
+    .unwrap_err();
+    assert!(err.contains("{{input.*}}"), "{err}");
+    let err = parse("name: t\ndescription: d\nkind: decision\nprompt: x\ncaller_questions: true\n")
+        .unwrap_err();
+    assert!(err.contains("`prompt`"), "{err}");
+}
+
+#[tokio::test]
+async fn a_decision_tool_on_a_chat_role_fails_naming_the_role() {
+    let tool = doc(r#"
+name: check
+description: d
+kind: decision
+model: nano
+questions: { q: { type: likelihood, instructions: "Is it?" } }
+"#);
+    let (router, _) = decision_router(true);
+    let registry = UserToolRegistry::new(vec![tool], router);
+    let error = registry.invoke("user__check", json!({})).await.unwrap_err();
+    assert!(
+        error.to_string().contains("'nano' is a chat model"),
+        "{error}"
     );
 }

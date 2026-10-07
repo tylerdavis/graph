@@ -203,6 +203,12 @@ impl ModelRouter {
         }
     }
 
+    pub fn has_decision_models(&self) -> bool {
+        self.roles
+            .iter()
+            .any(|(_, choice)| self.kind_of(&choice.provider) == Some(ModelKind::Decision))
+    }
+
     pub fn kind_of_role(&self, name: &str) -> Option<ModelKind> {
         let choice = self.roles.resolve(name)?;
         self.kind_of(&choice.provider)

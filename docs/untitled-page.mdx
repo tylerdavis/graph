@@ -18,3 +18,25 @@ The `output_schema` must be an **object** schema — give it an explicit top-lev
 To analyze each element of a list, call `infer` inside a `map` body with `{{item}}` interpolated per call rather than interpolating the whole list into one instruction — see [per-item inference](/plans/iteration#per-item-inference) for why and when not to.
 
 For a _fixed_ inference step you reuse across plans (a classifier, a reviewer), still prefer a dedicated `user__` prompt tool — its prompt and schema live in one reviewed file instead of being repeated in every plan.
+
+### `builtin__decide`
+
+Typed questions for a [decision model](/models/models-and-providers#decision-models) — the `decision` [tool kind](/tools/user-defined#decision--typed-questions-for-a-decision-model) exposed as one callable tool. One call asks every question about the same `state` and answers each independently, in well under a second. Read-only. It appears in the catalog only when a decision model is configured.
+
+| Input | Type |  |
+| :-- | :-- | :-- |
+| `state` | any | required — the data to judge: text, an object, or a list, usually a template like `{{E2.ticket}}` or `{{item}}` |
+| `questions` | object | required — question name → `{type, instructions, criteria?}`, with `type` one of `likelihood`, `choice`, or `score` |
+| `model` | string | optional — a decision role; defaults to `decider`. Decision roles carrying a `description` are advertised here |
+
+```yaml
+  - id: E1
+    tool_name: builtin__decide
+    input:
+      state: "{{E0.ticket}}"
+      questions:
+        team: { type: choice, instructions: Which team?, criteria: { billing: Payments, technical: Bugs } }
+        urgent: { type: likelihood, instructions: Is it urgent? }
+```
+
+The result maps names to answers — `{{E1.team.choice}}`, `{{E1.urgent.probability}}`. To branch on one answer, a [`route` step](/plans/branching) with a `decide` gate does the asking itself; use this tool when one call should answer several questions, or when a later step needs the probabilities.

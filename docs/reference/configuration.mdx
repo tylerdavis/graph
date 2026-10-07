@@ -96,7 +96,7 @@ description = "fast and cheap; small self-contained tasks like per-item map bodi
 | `judge` | yes/no verdicts for `infer` gates on [`exit`](/plans/exit-gates), [`route`](/plans/branching), and [`filter`](/plans/selection) |
 | `decider` | `decide` gates — must be on a `systemone` provider, and never falls back to `default` |
 
-Custom roles are selectable by name from a [prompt tool](/tools/user-defined)'s `model` field, [`builtin__infer`](/tools/builtins#builtin-infer)'s `model` input, an [`agent` step](/plans/agent-step)'s `model`, an `infer` gate's `model` override, and the `model` inside a `decide` gate; they never fall back. Where each role fires, the usual cost setup, and the selection rules are in [Models & providers](/models/models-and-providers#roles).
+Custom roles are selectable by name from a [prompt tool](/tools/user-defined)'s `model` field, [`builtin__infer`](/tools/builtins#builtin-infer)'s `model` input, an [`agent` step](/plans/agent-step)'s `model`, an `infer` gate's `model` override, the `model` inside a `decide` gate, and a `decision` tool's `model`; they never fall back. Where each role fires, the usual cost setup, and the selection rules are in [Models & providers](/models/models-and-providers#roles).
 
 ### `fallbacks` — provider failover
 
