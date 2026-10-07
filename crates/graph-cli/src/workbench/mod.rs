@@ -5,6 +5,7 @@
 pub(crate) mod agents;
 mod answer;
 mod app;
+mod artifact;
 mod chat;
 mod edit;
 mod editor;
@@ -193,12 +194,18 @@ async fn run_plan_workbench(
         &agents::builtin_sources(),
         &graph_core::agent::doc::agent_dirs(),
     );
+    let agent_set = agent_set.with_drafted(runtime.drafted().agents());
     for error in errors {
         tracing::warn!("skipping agent file — {error}");
     }
     let mut conversation =
         runtime.conversation_over(Arc::new(agent_set), registry, pipeline.clone(), agent_sink);
     conversation.context = Some(agents::context_hook(draft.clone()));
+    conversation.handoff_guard = Some(artifact::handoff_guard(
+        draft.clone(),
+        pipeline.clone(),
+        tx.clone(),
+    ));
     conversation.progress_tools = tools::progress_tools();
     if let Some(prompt) = crate::runtime::deprecated_prompt(
         &conversation.agents,
@@ -209,7 +216,7 @@ async fn run_plan_workbench(
     ) {
         if let Some(doc) = conversation.agents.get(agents::PLAN_EDITOR) {
             if let Ok(rendered) = graph_core::agent::doc::render_system_prompt(
-                doc,
+                &doc,
                 &graph_core::agent::doc::global_fragments(),
                 &conversation.session,
             ) {

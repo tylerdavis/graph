@@ -414,6 +414,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         agents: agent_set.clone(),
         agent_depth: 0,
         always_loaded: Default::default(),
+        drafted: Default::default(),
     });
 
     let debug = Arc::new(DebugControls::default());
@@ -452,6 +453,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         context: Some(super::agents::context_hook(draft.clone())),
         default_max_iterations: 8,
         progress_tools: progress_tools(),
+        handoff_guard: None,
     };
 
     let context = Arc::new(WorkbenchContext {

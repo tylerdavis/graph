@@ -196,6 +196,8 @@ pub struct App {
     /// The terminal reports Shift+Enter distinctly (keyboard-enhancement
     /// protocol); otherwise only Alt+Enter can insert a newline.
     pub enhanced_keys: bool,
+    pub artifact: Option<super::artifact::ArtifactView>,
+    pub discard_armed: bool,
 }
 
 impl App {
@@ -224,6 +226,8 @@ impl App {
             regions: RefCell::new(Regions::default()),
             last_click: None,
             enhanced_keys: false,
+            artifact: None,
+            discard_armed: false,
         }
     }
 
@@ -356,6 +360,7 @@ pub enum Msg {
         shapes: Vec<ToolShape>,
     },
     Saved(Result<String, String>),
+    ArtifactChanged(Option<Box<super::artifact::ArtifactView>>),
     /// A one-line status from the effect executor (e.g. an undo miss).
     Status(String),
     EditOutcome {
@@ -472,6 +477,10 @@ impl Msg {
                 Err(error) => format!("save failed: {error}"),
             },
             Msg::Status(text) => format!("status: {text}"),
+            Msg::ArtifactChanged(view) => match view {
+                Some(view) => format!("artifact: {} draft shown", view.kind.label()),
+                None => "artifact: none".to_string(),
+            },
             Msg::EditOutcome {
                 committed,
                 introduced,
@@ -503,6 +512,8 @@ pub enum Effect {
     Validate,
     LoadContext,
     SavePlan,
+    SaveArtifact,
+    DiscardArtifact,
     /// One-level undo of the last draft replacement (again to redo).
     RestoreDraft,
     /// Mirror the display breakpoints into the shared debug controls.
@@ -526,6 +537,8 @@ impl Effect {
             Effect::Validate => "validate",
             Effect::LoadContext => "load-context",
             Effect::SavePlan => "save-plan",
+            Effect::SaveArtifact => "save-artifact",
+            Effect::DiscardArtifact => "discard-artifact",
             Effect::RestoreDraft => "restore-draft",
             Effect::SyncDebug { .. } => "sync-debug",
             Effect::ApplyEdit { commit: true, .. } => "apply-edit",
@@ -817,6 +830,14 @@ pub fn update(app: &mut App, msg: Msg) -> Vec<Effect> {
         }
         Msg::Status(text) => {
             app.status = text;
+            Vec::new()
+        }
+        Msg::ArtifactChanged(view) => {
+            app.discard_armed = false;
+            app.artifact = view.map(|view| *view);
+            if app.artifact.is_some() {
+                app.ws.tab = WsTab::Plan;
+            }
             Vec::new()
         }
         Msg::EditOutcome {
@@ -1212,6 +1233,9 @@ fn request_quit(app: &mut App) -> Vec<Effect> {
 }
 
 fn save(app: &mut App) -> Vec<Effect> {
+    if app.artifact.is_some() {
+        return vec![Effect::SaveArtifact];
+    }
     if app.ws.doc.is_none() {
         app.status = "nothing to save — no draft yet".to_string();
         return Vec::new();
@@ -1270,6 +1294,19 @@ fn on_chat_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
 }
 
 fn on_workspace_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
+    if let (Some(view), KeyCode::Char('x')) = (&app.artifact, key.code) {
+        if app.discard_armed {
+            app.discard_armed = false;
+            return vec![Effect::DiscardArtifact];
+        }
+        app.discard_armed = true;
+        app.status = format!(
+            "discard the {} draft? x again to discard · any other key keeps it",
+            view.kind.label()
+        );
+        return Vec::new();
+    }
+    app.discard_armed = false;
     if let Some(effects) = on_workspace_nav(app, key) {
         return effects;
     }
@@ -2011,6 +2048,40 @@ steps:
             },
             receiver,
         )
+    }
+
+    #[test]
+    fn an_open_draft_takes_the_pane_and_the_save_and_discard_keys() {
+        use crate::workbench::artifact::{ArtifactKind, ArtifactView};
+        let mut app = App::new(Some(two_step_doc()));
+        app.ws.tab = WsTab::Run;
+        update(
+            &mut app,
+            Msg::ArtifactChanged(Some(Box::new(ArtifactView {
+                kind: ArtifactKind::Agent,
+                yaml: "name: triager\n".to_string(),
+                problems: Vec::new(),
+                last_run: None,
+                tested: false,
+                parked: None,
+            }))),
+        );
+        assert!(app.artifact.is_some());
+        assert_eq!(app.ws.tab, WsTab::Plan, "the draft is shown");
+
+        assert_eq!(update(&mut app, ctrl('s')), vec![Effect::SaveArtifact]);
+
+        app.focus = Focus::Workspace;
+        assert!(update(&mut app, key(KeyCode::Char('x'))).is_empty());
+        assert!(app.status.contains("discard"), "{}", app.status);
+        assert_eq!(
+            update(&mut app, key(KeyCode::Char('x'))),
+            vec![Effect::DiscardArtifact]
+        );
+
+        update(&mut app, Msg::ArtifactChanged(None));
+        assert!(app.artifact.is_none());
+        assert_eq!(update(&mut app, ctrl('s')), vec![Effect::SavePlan]);
     }
 
     #[test]

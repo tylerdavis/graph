@@ -34,7 +34,7 @@ impl Pipeline {
         self.agents
             .iter()
             .filter(|doc| doc.name != CHAT_AGENT)
-            .map(named_agent_tool_def)
+            .map(|doc| named_agent_tool_def(&doc))
             .collect()
     }
 
@@ -73,7 +73,7 @@ impl Pipeline {
             ("date", self.current_date.clone()),
             ("user", self.user_context.clone()),
         ]);
-        let system = match render_system_prompt(doc, &global_fragments(), &session) {
+        let system = match render_system_prompt(&doc, &global_fragments(), &session) {
             Ok(system) => system,
             Err(error) => return failed(error),
         };
@@ -81,7 +81,7 @@ impl Pipeline {
             None => input["prompt"].as_str().unwrap_or_default().to_string(),
             Some(_) => serde_json::to_string_pretty(&input).unwrap_or_default(),
         };
-        let tools = self.agent_tools(doc).await;
+        let tools = self.agent_tools(&doc).await;
         let allowed: BTreeSet<String> = tools.iter().map(|tool| tool.name.clone()).collect();
         let spec = TaskSpec {
             model: doc.model.clone(),
@@ -147,7 +147,7 @@ impl Pipeline {
             doc.subagents
                 .iter()
                 .filter_map(|target| self.agents.get(target))
-                .map(|target| to_spec(named_agent_tool_def(target))),
+                .map(|target| to_spec(named_agent_tool_def(&target))),
         );
         specs
     }

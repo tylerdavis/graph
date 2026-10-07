@@ -17,11 +17,16 @@ struct Handoff {
     target: String,
     message: String,
     wait_for_user: bool,
+    via: String,
 }
+
+pub const TRANSFER_BACK: &str = "transfer_back";
 
 pub const MAX_HANDOFFS_PER_TURN: usize = 4;
 
 pub type ContextHook = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
+
+pub type HandoffGuard = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct Conversation {
@@ -34,6 +39,7 @@ pub struct Conversation {
     pub context: Option<ContextHook>,
     pub default_max_iterations: u32,
     pub progress_tools: Vec<String>,
+    pub handoff_guard: Option<HandoffGuard>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -61,7 +67,7 @@ pub struct ConversationTurn {
 }
 
 impl Conversation {
-    pub fn agent(&self, name: &str) -> Result<&AgentDoc, ConversationError> {
+    pub fn agent(&self, name: &str) -> Result<AgentDoc, ConversationError> {
         self.agents
             .get(name)
             .ok_or_else(|| ConversationError::UnknownAgent {
@@ -69,7 +75,7 @@ impl Conversation {
                 available: self
                     .agents
                     .iter()
-                    .map(|doc| doc.name.as_str())
+                    .map(|doc| doc.name)
                     .collect::<Vec<_>>()
                     .join(", "),
             })
@@ -92,9 +98,15 @@ impl Conversation {
         let mut tools_used: Vec<String> = Vec::new();
         let mut handoffs = 0;
         loop {
-            let doc = self.agent(&active)?;
+            let doc = &self.agent(&active)?;
             let may_hand_off = handoffs < MAX_HANDOFFS_PER_TURN;
-            let tools = Arc::new(ConversationTools::new(self, doc, 0, may_hand_off));
+            let back_to = if may_hand_off {
+                self.handed_over_by(&active, history.iter().chain(entries.iter()))
+            } else {
+                None
+            };
+            let tools =
+                Arc::new(ConversationTools::new(self, doc, 0, may_hand_off).back_to(back_to));
             let agent = self.build_agent(doc, tools.clone())?;
             let mut messages = view(&active, history.iter().chain(entries.iter()));
             let before = messages.len();
@@ -121,6 +133,7 @@ impl Conversation {
                 target,
                 message,
                 wait_for_user,
+                via,
             }) = tools.take_handoff()
             else {
                 return Ok(ConversationTurn {
@@ -138,7 +151,7 @@ impl Conversation {
                     from: active.clone(),
                     to: target.clone(),
                     message: message.clone(),
-                    via: Some(format!("{HANDOFF_PREFIX}{target}")),
+                    via: Some(via),
                 },
             });
             if wait_for_user {
@@ -230,6 +243,7 @@ impl Conversation {
             Ok(doc) => doc,
             Err(error) => return refuse(error.to_string()),
         };
+        let doc = &doc;
         let problems = input_problems(&doc.subagent_input_schema(), &input);
         if !problems.is_empty() {
             return refuse(format!(
@@ -393,13 +407,39 @@ struct ConversationTools {
     base: AllowlistRegistry,
     subagents: Vec<ToolDef>,
     handoffs: Vec<String>,
+    back_to: Option<String>,
     caller: String,
     depth: usize,
     runs: Mutex<Vec<NewEntry>>,
     handoff: Mutex<Option<Handoff>>,
 }
 
+impl Conversation {
+    fn handed_over_by<'a>(
+        &self,
+        active: &str,
+        entries: impl Iterator<Item = &'a NewEntry>,
+    ) -> Option<String> {
+        let last = entries
+            .filter_map(|entry| match &entry.body {
+                EntryBody::Handoff { from, to, via, .. } if to == active => {
+                    Some((from.clone(), via.clone()))
+                }
+                _ => None,
+            })
+            .last()?;
+        let (from, via) = last;
+        let returned = via.as_deref() == Some(TRANSFER_BACK);
+        (!returned && from != active && self.agents.get(&from).is_some()).then_some(from)
+    }
+}
+
 impl ConversationTools {
+    fn back_to(mut self, caller: Option<String>) -> Self {
+        self.back_to = caller;
+        self
+    }
+
     fn new(conversation: &Conversation, doc: &AgentDoc, depth: usize, may_hand_off: bool) -> Self {
         Self {
             conversation: conversation.clone(),
@@ -408,7 +448,7 @@ impl ConversationTools {
                 .subagents
                 .iter()
                 .filter_map(|name| conversation.agents.get(name))
-                .map(named_agent_tool_def)
+                .map(|doc| named_agent_tool_def(&doc))
                 .collect(),
             handoffs: doc
                 .handoffs
@@ -416,6 +456,7 @@ impl ConversationTools {
                 .filter(|name| may_hand_off && conversation.agents.get(name).is_some())
                 .cloned()
                 .collect(),
+            back_to: None,
             caller: doc.name.clone(),
             depth,
             runs: Mutex::new(Vec::new()),
@@ -424,10 +465,44 @@ impl ConversationTools {
     }
 
     fn handoff_tools(&self) -> Vec<String> {
-        self.handoffs
+        let mut tools: Vec<String> = self
+            .handoffs
             .iter()
             .map(|name| format!("{HANDOFF_PREFIX}{name}"))
-            .collect()
+            .collect();
+        if self.back_to.is_some() {
+            tools.push(TRANSFER_BACK.to_string());
+        }
+        tools
+    }
+
+    fn back_def(caller: &str) -> ToolDef {
+        ToolDef {
+            name: TRANSFER_BACK.to_string(),
+            description: format!(
+                "Hand the conversation back to {caller}, the agent that handed it to you, once \
+                 you've done what it handed over. {caller} continues this turn with your \
+                 message; say what you did and anything it needs to pick up from here. Your \
+                 turn ends when you call it."
+            ),
+            input_schema: json!({
+                "type": "object",
+                "required": ["message"],
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": format!("What you did and what {caller} needs to continue")
+                    },
+                    "wait_for_user": {
+                        "type": "boolean",
+                        "description": format!("True to end the turn here and let {caller} answer the user's next message; false (the default) to have {caller} continue this turn now")
+                    }
+                }
+            }),
+            output_schema: None,
+            output_example: None,
+            read_only: Some(true),
+        }
     }
 
     fn take_runs(&self) -> Vec<NewEntry> {
@@ -475,10 +550,40 @@ impl ToolRegistry for ConversationTools {
         let mut defs = self.base.tools().await?;
         defs.extend(self.subagents.iter().cloned());
         defs.extend(self.handoffs.iter().map(|name| Self::handoff_def(name)));
+        if let Some(caller) = &self.back_to {
+            defs.push(Self::back_def(caller));
+        }
         Ok(defs)
     }
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
+        let target = match (name, &self.back_to) {
+            (TRANSFER_BACK, Some(caller)) => Some(caller.clone()),
+            _ => name
+                .strip_prefix(HANDOFF_PREFIX)
+                .filter(|target| self.handoffs.iter().any(|handoff| handoff == target))
+                .map(str::to_string),
+        };
+        if let (Some(target), Some(guard)) = (&target, &self.conversation.handoff_guard) {
+            if let Some(refusal) = guard(&self.caller, target) {
+                return Ok(ToolOutcome {
+                    result: json!({ "error": refusal }),
+                    is_error: true,
+                });
+            }
+        }
+        if let (TRANSFER_BACK, Some(caller)) = (name, &self.back_to) {
+            *self.handoff.lock().unwrap() = Some(Handoff {
+                target: caller.clone(),
+                message: input["message"].as_str().unwrap_or_default().to_string(),
+                wait_for_user: input["wait_for_user"].as_bool().unwrap_or(false),
+                via: TRANSFER_BACK.to_string(),
+            });
+            return Ok(ToolOutcome {
+                result: json!({ "transferred_to": caller }),
+                is_error: false,
+            });
+        }
         if let Some(target) = name.strip_prefix(HANDOFF_PREFIX) {
             if self.handoffs.iter().any(|handoff| handoff == target) {
                 let message = input["message"].as_str().unwrap_or_default().to_string();
@@ -487,6 +592,7 @@ impl ToolRegistry for ConversationTools {
                     target: target.to_string(),
                     message,
                     wait_for_user,
+                    via: name.to_string(),
                 });
                 return Ok(ToolOutcome {
                     result: json!({ "transferred_to": target }),
@@ -601,7 +707,8 @@ mod tests {
     }
 
     const AGENTS: &[&str] = &[
-        "name: front\ndescription: routes\nmodel: chat\ntools: [t__echo]\nhandoffs: [back]\nsubagents: [helper]\nsystem_prompt: You are front.\n",
+        "name: front\ndescription: routes\nmodel: chat\ntools: [t__echo]\nhandoffs: [back, drafter]\nsubagents: [helper]\nsystem_prompt: You are front.\n",
+        "name: drafter\ndescription: drafts\nmodel: chat\ntools: []\nsystem_prompt: You draft.\n",
         "name: back\ndescription: works\nmodel: chat\ntools: []\nhandoffs: [front]\nsystem_prompt: You are back.\n",
         "name: helper\ndescription: helps\nmodel: chat\ntools: [t__echo]\nsystem_prompt: You help.\n",
     ];
@@ -645,6 +752,7 @@ mod tests {
             agents: agents.clone(),
             agent_depth: 0,
             always_loaded: Default::default(),
+            drafted: Default::default(),
         });
         let conversation = Conversation {
             agents,
@@ -656,6 +764,7 @@ mod tests {
             context: None,
             default_max_iterations: 8,
             progress_tools: Vec::new(),
+            handoff_guard: None,
         };
         (conversation, provider)
     }
@@ -744,7 +853,12 @@ mod tests {
         let front_tools: Vec<&str> = requests[0].tools.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(
             front_tools,
-            ["t__echo", "agent__helper", "transfer_to_back"]
+            [
+                "t__echo",
+                "agent__helper",
+                "transfer_to_back",
+                "transfer_to_drafter"
+            ]
         );
         assert_eq!(requests[1].system, "You are back.");
         assert_eq!(requests[1].messages.len(), 1, "back sees one merged note");
@@ -754,6 +868,109 @@ mod tests {
             note.contains("[front handed the conversation to back] they need the report"),
             "{note}"
         );
+    }
+
+    fn tool_names(request: &ChatRequest) -> Vec<String> {
+        request.tools.iter().map(|tool| tool.name.clone()).collect()
+    }
+
+    #[tokio::test]
+    async fn an_agent_handed_the_conversation_can_hand_it_back() {
+        let (conversation, provider) = conversation(vec![
+            call(
+                "c1",
+                "transfer_to_drafter",
+                json!({"message": "make a weather tool"}),
+            ),
+            call(
+                "c2",
+                "transfer_back",
+                json!({"message": "saved user__weather"}),
+            ),
+            text("redrafting with user__weather"),
+        ]);
+        let turn = conversation
+            .run_turn(&[], "front", "plan my day around the weather")
+            .await
+            .unwrap();
+
+        assert_eq!(turn.active, "front");
+        assert_eq!(turn.text, "redrafting with user__weather");
+        let requests = provider.requests.lock().unwrap();
+        assert!(tool_names(&requests[1]).contains(&"transfer_back".to_string()));
+        assert!(
+            !tool_names(&requests[2]).contains(&"transfer_back".to_string()),
+            "handing back doesn't give the caller a way back to the drafter"
+        );
+        let note = user_text(&requests[2]);
+        assert!(
+            note.contains("[drafter handed the conversation to front] saved user__weather"),
+            "{note}"
+        );
+        let back = turn
+            .entries
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.body {
+                EntryBody::Handoff { via, .. } => via.clone(),
+                _ => None,
+            });
+        assert_eq!(back.as_deref(), Some(TRANSFER_BACK));
+    }
+
+    #[tokio::test]
+    async fn a_guard_can_refuse_a_handoff_and_the_agent_carries_on() {
+        let (mut conversation, provider) = conversation(vec![
+            call(
+                "c1",
+                "transfer_to_drafter",
+                json!({"message": "make a tool"}),
+            ),
+            text("I'll save the draft first."),
+        ]);
+        conversation.handoff_guard = Some(Arc::new(|from, to| {
+            (from == "front" && to == "drafter")
+                .then(|| "save or discard the draft first".to_string())
+        }));
+        let turn = conversation.run_turn(&[], "front", "go").await.unwrap();
+        assert_eq!(turn.active, "front");
+        assert_eq!(turn.text, "I'll save the draft first.");
+        let requests = provider.requests.lock().unwrap();
+        assert!(format!("{:?}", requests[1].messages).contains("save or discard the draft first"));
+    }
+
+    #[tokio::test]
+    async fn an_agent_started_directly_has_no_one_to_hand_back_to() {
+        let (conversation, provider) = conversation(vec![text("drafting")]);
+        conversation
+            .run_turn(&[], "drafter", "make a tool")
+            .await
+            .unwrap();
+        let requests = provider.requests.lock().unwrap();
+        assert!(!tool_names(&requests[0]).contains(&"transfer_back".to_string()));
+    }
+
+    #[tokio::test]
+    async fn the_way_back_survives_across_turns() {
+        let (conversation, provider) = conversation(vec![
+            call(
+                "c1",
+                "transfer_to_drafter",
+                json!({"message": "make a weather tool", "wait_for_user": true}),
+            ),
+            text("which city?"),
+        ]);
+        let first = conversation
+            .run_turn(&[], "front", "plan my day around the weather")
+            .await
+            .unwrap();
+        assert_eq!(first.active, "drafter");
+        conversation
+            .run_turn(&first.entries, "drafter", "Denver")
+            .await
+            .unwrap();
+        let requests = provider.requests.lock().unwrap();
+        assert!(tool_names(&requests[1]).contains(&"transfer_back".to_string()));
     }
 
     #[tokio::test]

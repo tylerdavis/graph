@@ -72,9 +72,13 @@ impl CompositeRegistry {
 #[async_trait]
 impl ToolRegistry for CompositeRegistry {
     async fn tools(&self) -> Result<Vec<ToolDef>, ToolError> {
-        let mut all = Vec::new();
+        let mut all: Vec<ToolDef> = Vec::new();
         for registry in &self.registries {
-            all.extend(registry.tools().await?);
+            for def in registry.tools().await? {
+                if !all.iter().any(|seen| seen.name == def.name) {
+                    all.push(def);
+                }
+            }
         }
         Ok(all)
     }

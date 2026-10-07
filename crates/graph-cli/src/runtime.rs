@@ -33,6 +33,7 @@ pub struct Runtime {
     /// One warning per skipped plan file per command, even though several
     /// components (pipeline, toolbox, commands) each load the catalog.
     plans_warned: std::sync::atomic::AtomicBool,
+    drafted: Arc<graph_core::pipeline::Drafted>,
 }
 
 impl Runtime {
@@ -63,12 +64,22 @@ impl Runtime {
         );
         let router = ModelRouter::from_config(&loaded.config)?.with_meter(usage.clone());
         let registry = Arc::new(McpManager::new(loaded.config.mcp.clone()));
+        let drafted = Arc::new(graph_core::pipeline::Drafted::new(
+            loaded
+                .config
+                .tools
+                .paths
+                .first()
+                .map(|p| graph_config::expand_tilde(p)),
+            graph_core::agent::doc::agent_dirs().into_iter().next(),
+        ));
         Ok(Self {
             config: loaded.config,
             registry,
             router: Arc::new(router),
             usage,
             plans_warned: std::sync::atomic::AtomicBool::new(false),
+            drafted,
         })
     }
 
@@ -89,6 +100,10 @@ impl Runtime {
     pub fn recording_registry(&self, store: &Arc<dyn Store>) -> Result<Arc<dyn ToolRegistry>> {
         let docs = self.tool_docs()?;
         let base: Arc<dyn ToolRegistry> = Arc::new(CompositeRegistry::new(vec![
+            Arc::new(graph_core::pipeline::DraftedTools::new(
+                self.drafted.clone(),
+                self.router.clone(),
+            )) as Arc<dyn ToolRegistry>,
             self.registry.clone() as Arc<dyn ToolRegistry>,
             Arc::new(UserToolRegistry::builtins(
                 docs.builtins,
@@ -185,7 +200,11 @@ impl Runtime {
         for error in errors {
             tracing::warn!("skipping agent file — {error}");
         }
-        set
+        set.with_drafted(self.drafted.agents())
+    }
+
+    pub fn drafted(&self) -> Arc<graph_core::pipeline::Drafted> {
+        self.drafted.clone()
     }
 
     /// Where new plan files are written: the first configured
@@ -340,6 +359,7 @@ impl Runtime {
             agents: Arc::new(self.agent_set()),
             agent_depth: 0,
             always_loaded: Arc::new(self.config.tools.always_loaded.clone()),
+            drafted: self.drafted.clone(),
         }))
     }
 
@@ -390,6 +410,7 @@ impl Runtime {
             context: None,
             default_max_iterations: self.config.settings.max_agent_iterations,
             progress_tools: Vec::new(),
+            handoff_guard: None,
         }
     }
 

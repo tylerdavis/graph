@@ -1,0 +1,38 @@
+name: agent-draft
+title: graph workbench — drafting an agent
+grid: { cols: 120, rows: 36 }
+
+chat: "make an agent that writes release notes from the commits since a tag"
+
+llm:
+  - call: transfer_to_agent_drafter
+    input:
+      message: Draft an agent that writes release notes from the commits since a tag.
+  - call: workbench__set_artifact
+    input:
+      kind: agent
+      yaml: |
+        name: release_notes_writer
+        description: Writes customer-facing release notes from the commits since a tag.
+        model: chat
+        tools: [builtin__git_log, builtin__gh_release]
+        input_schema:
+          type: object
+          required: [since]
+          properties:
+            since: { type: string, description: The tag to start from, such as v0.15.0 }
+        output_schema:
+          type: object
+          required: [notes]
+          properties:
+            notes: { type: string, description: The release notes in markdown }
+        system_prompt: |
+          You write release notes for one release. Read the commits since the given tag with
+          builtin__git_log, group them into features and fixes, and write short, customer-facing
+          notes. Leave out internal changes such as CI and tooling.
+  - text: >-
+      There's a first draft in the pane. Should it also be usable in chat, or only as a
+      plan step taking the tag as input?
+
+capture:
+  at: loaded

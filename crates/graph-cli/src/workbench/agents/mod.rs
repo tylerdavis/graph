@@ -8,6 +8,8 @@ pub const WORKBENCH_AGENTS: &[&str] = &[
     include_str!("orchestrator.yaml"),
     include_str!("plan_loader.yaml"),
     include_str!("plan_editor.yaml"),
+    include_str!("tool_drafter.yaml"),
+    include_str!("agent_drafter.yaml"),
 ];
 
 pub const ORCHESTRATOR: &str = "orchestrator";
@@ -32,12 +34,14 @@ pub fn starting_agent(doc: Option<&PlanDoc>) -> &'static str {
 enum Section {
     CurrentDraft,
     DraftSummary,
+    Artifact,
 }
 
 fn sections(agent: &str) -> &'static [Section] {
     match agent {
         "plan_editor" => &[Section::CurrentDraft],
         "orchestrator" => &[Section::DraftSummary],
+        "tool_drafter" | "agent_drafter" => &[Section::Artifact],
         _ => &[],
     }
 }
@@ -50,6 +54,7 @@ pub fn context_hook(draft: Arc<Mutex<DraftState>>) -> ContextHook {
             .map(|section| match section {
                 Section::CurrentDraft => current_draft(&doc),
                 Section::DraftSummary => draft_summary(&doc),
+                Section::Artifact => super::artifact::context_section(&draft),
             })
             .collect()
     })
