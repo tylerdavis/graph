@@ -339,6 +339,7 @@ impl Runtime {
             usage: self.usage.clone(),
             agents: Arc::new(self.agent_set()),
             agent_depth: 0,
+            always_loaded: Arc::new(self.config.tools.always_loaded.clone()),
         }))
     }
 

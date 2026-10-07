@@ -195,6 +195,14 @@ const PACK_SUMMARIES: &[(&str, &str)] = &[
         "local git history, diffs, file contents, and grep, plus GitHub pull requests, review threads, comments, and releases.",
     ),
     ("slack", "posts messages and threaded replies to Slack channels."),
+    (
+        "llm",
+        "model calls inside a plan: structured inference with a chosen model, and decision-model questions answered with calibrated probabilities.",
+    ),
+    (
+        "data",
+        "reshapes JSON: builds new objects and lists from earlier results with templates, no model call.",
+    ),
 ];
 
 pub fn pack_summary(pack: &str) -> Option<&'static str> {
@@ -564,6 +572,8 @@ impl UserToolRegistry {
             } => input.get("output_schema").cloned(),
             _ => None,
         };
+        let return_mismatch = caller_schema.is_some()
+            && input.get("on_mismatch").and_then(Value::as_str) == Some("return");
         let caller_system = match &doc.kind {
             ToolKind::Prompt {
                 caller_system: true,
@@ -668,8 +678,13 @@ impl UserToolRegistry {
                 // Call-level model wins over the doc's pin.
                 let model = caller_model.as_deref().or(model.as_deref());
                 let system = caller_system.as_deref().or(system.as_deref());
-                self.run_prompt(doc, prompt, system, model, caller_schema, &roots)
-                    .await
+                let call = PromptCall {
+                    system,
+                    model,
+                    caller_schema,
+                    return_mismatch,
+                };
+                self.run_prompt(doc, prompt, call, &roots).await
             }
             ToolKind::Decision { .. } => unreachable!("decision tools return above"),
             ToolKind::Reshape { caller_shape, .. } => {
@@ -869,11 +884,15 @@ impl UserToolRegistry {
         &self,
         doc: &UserToolDoc,
         prompt: &str,
-        system: Option<&str>,
-        model: Option<&str>,
-        caller_schema: Option<Value>,
+        call: PromptCall<'_>,
         roots: &Roots<'_>,
     ) -> Result<ToolOutcome, ToolError> {
+        let PromptCall {
+            system,
+            model,
+            caller_schema,
+            return_mismatch,
+        } = call;
         // The doc's schema wins; a caller-supplied one applies only when
         // the tool opted in (see `caller_output_schema`). Normalize it so a
         // caller who wrote just `{properties, required}` still gets valid
@@ -911,7 +930,7 @@ impl UserToolRegistry {
         // rely on every declared field existing (a missing key is a hard
         // template error downstream).
         let result = match &schema {
-            Some(schema) => self.enforce_schema(result, schema).await?,
+            Some(schema) => self.enforce_schema(result, schema, return_mismatch).await?,
             None => result,
         };
         Ok(ToolOutcome {
@@ -923,7 +942,12 @@ impl UserToolRegistry {
     /// Validate `value` against `schema`; on mismatch, run one repair pass
     /// and re-validate. A value that still doesn't conform is a tool error —
     /// better a failed step than a silently missing field.
-    async fn enforce_schema(&self, value: Value, schema: &Value) -> Result<Value, ToolError> {
+    async fn enforce_schema(
+        &self,
+        value: Value,
+        schema: &Value,
+        return_mismatch: bool,
+    ) -> Result<Value, ToolError> {
         let validator = jsonschema::validator_for(schema)
             .map_err(|e| ToolError::Transport(format!("invalid output_schema: {e}")))?;
         let problems = |value: &Value| -> Option<String> {
@@ -933,21 +957,186 @@ impl UserToolRegistry {
                 .collect();
             (!errors.is_empty()).then(|| errors.join("; "))
         };
+        if problems(&value).is_none() {
+            return Ok(value);
+        }
+        let value = coerce_to_schema(value, schema);
         let Some(error) = problems(&value) else {
             return Ok(value);
         };
-        let repaired = self
-            .router
-            .repair_structured(&value, schema, &error)
-            .await
-            .map_err(|e| ToolError::Transport(format!("output repair failed: {e}")))?;
+        let repaired = match self.router.repair_structured(&value, schema, &error).await {
+            Ok(repaired) => repaired,
+            Err(_) if return_mismatch => return Ok(value),
+            Err(e) => return Err(ToolError::Transport(format!("output repair failed: {e}"))),
+        };
+        let repaired = coerce_to_schema(repaired, schema);
         match problems(&repaired) {
             None => Ok(repaired),
+            Some(_) if return_mismatch => Ok(repaired),
             Some(still) => Err(ToolError::Transport(format!(
                 "output does not match output_schema after repair: {still}"
             ))),
         }
     }
+}
+
+struct PromptCall<'a> {
+    system: Option<&'a str>,
+    model: Option<&'a str>,
+    caller_schema: Option<Value>,
+    return_mismatch: bool,
+}
+
+pub(crate) fn coerce_to_schema(value: Value, schema: &Value) -> Value {
+    let mut value = match value {
+        Value::Object(map) if map.len() == 1 => {
+            let (key, inner) = map.into_iter().next().unwrap_or_default();
+            if key.starts_with("$PARAMETER") {
+                inner
+            } else {
+                Value::Object([(key, inner)].into_iter().collect())
+            }
+        }
+        other => other,
+    };
+    let (Some(map), Some(properties)) = (
+        value.as_object_mut(),
+        schema.get("properties").and_then(Value::as_object),
+    ) else {
+        return value;
+    };
+    pair_parameter_keys(map, properties);
+    let mut siblings = Vec::new();
+    for (name, property) in properties {
+        if let Some(Value::String(text)) = map.get(name) {
+            if accepts_string(property) {
+                continue;
+            }
+            if let Some((parsed, rest)) = leading_json(text) {
+                siblings.extend(trailing_fields(rest));
+                siblings.extend(parameter_tags(rest).into_iter().map(|(key, raw)| {
+                    let parsed = serde_json::from_str(&raw).unwrap_or(Value::String(raw));
+                    (key, parsed)
+                }));
+                map.insert(name.clone(), parsed);
+            }
+        }
+    }
+    for (name, sibling) in siblings {
+        if properties.contains_key(&name) && !map.contains_key(&name) {
+            map.insert(name, sibling);
+        }
+    }
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|names| names.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    for (name, property) in properties {
+        if !map.contains_key(name) && required.contains(&name.as_str()) {
+            if let Some(default) = property.get("default") {
+                map.insert(name.clone(), default.clone());
+            }
+        }
+    }
+    value
+}
+
+fn pair_parameter_keys(
+    map: &mut serde_json::Map<String, Value>,
+    properties: &serde_json::Map<String, Value>,
+) {
+    let keys: Vec<String> = map
+        .keys()
+        .filter(|key| key.starts_with("$PARAMETER"))
+        .cloned()
+        .collect();
+    if keys.is_empty() {
+        return;
+    }
+    let mut names = Vec::new();
+    let mut values = Vec::new();
+    for key in &keys {
+        match map.get(key) {
+            Some(Value::String(name)) if properties.contains_key(name) => names.push(name.clone()),
+            Some(other) => values.push(other.clone()),
+            None => {}
+        }
+    }
+    if names.len() != values.len() {
+        return;
+    }
+    for key in &keys {
+        map.remove(key);
+    }
+    for (name, value) in names.into_iter().zip(values) {
+        map.entry(name).or_insert(value);
+    }
+}
+
+fn leading_json(text: &str) -> Option<(Value, &str)> {
+    let mut stream = serde_json::Deserializer::from_str(text).into_iter::<Value>();
+    match stream.next() {
+        Some(Ok(parsed @ (Value::Object(_) | Value::Array(_)))) => {
+            Some((parsed, &text[stream.byte_offset()..]))
+        }
+        _ => None,
+    }
+}
+
+fn trailing_fields(text: &str) -> Vec<(String, Value)> {
+    let Some(fields) = text.trim_start().strip_prefix(',') else {
+        return Vec::new();
+    };
+    match serde_json::from_str::<Value>(&format!("{{{fields}")) {
+        Ok(Value::Object(fields)) => fields.into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn parameter_tags(text: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<parameter name=\"") {
+        let after = &rest[start + "<parameter name=\"".len()..];
+        let Some(name_end) = after.find("\">") else {
+            break;
+        };
+        let name = after[..name_end].to_string();
+        let body = &after[name_end + 2..];
+        let end = body.find('<').unwrap_or(body.len());
+        found.push((name, body[..end].trim().to_string()));
+        rest = &body[end..];
+    }
+    found
+}
+
+fn accepts_string(schema: &Value) -> bool {
+    let typed = match schema.get("type") {
+        Some(Value::String(kind)) => Some(kind == "string"),
+        Some(Value::Array(kinds)) => Some(kinds.iter().any(|kind| kind == "string")),
+        _ => None,
+    };
+    if let Some(typed) = typed {
+        return typed;
+    }
+    let branches = ["anyOf", "oneOf"]
+        .iter()
+        .filter_map(|key| schema.get(*key).and_then(Value::as_array))
+        .flatten()
+        .collect::<Vec<_>>();
+    if branches.is_empty() {
+        return !schema
+            .as_object()
+            .is_some_and(|map| map.contains_key("$ref"));
+    }
+    branches.iter().any(|branch| {
+        branch.get("type").is_some_and(|kind| match kind {
+            Value::String(kind) => kind == "string",
+            Value::Array(kinds) => kinds.iter().any(|kind| kind == "string"),
+            _ => false,
+        })
+    })
 }
 
 /// A structured-output schema authored as just `{ "properties": {...} }`

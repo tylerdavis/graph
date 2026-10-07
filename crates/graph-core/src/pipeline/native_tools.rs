@@ -3,6 +3,9 @@ use super::doc::{parse_plan_source, PlanDoc};
 use super::drafting::{
     accept_step_tool_def, draft_context_tool_def, ACCEPT_STEP_TOOL, DRAFT_CONTEXT_TOOL,
 };
+use super::search::{
+    search_tool_defs, CATALOG_TOOLS_TOOL, DESCRIBE_TOOLS_TOOL, SCORE_CANDIDATES_TOOL,
+};
 use super::{prompts, Draft, Pipeline, Step};
 use crate::tools::{ToolDef, ToolOutcome};
 use serde_json::{json, Value};
@@ -16,28 +19,32 @@ pub const PLAN_FROM_DRAFT_TOOL: &str = "builtin__plan_from_draft";
 
 pub const APPLY_EDITS_TOOL: &str = "builtin__apply_edits";
 
-pub const NATIVE_TOOLS: [&str; 6] = [
+pub const NATIVE_TOOLS: [&str; 9] = [
     CATALOG_OUTLINE_TOOL,
     DRAFT_CONTEXT_TOOL,
     ACCEPT_STEP_TOOL,
     VALIDATE_PLAN_TOOL,
     PLAN_FROM_DRAFT_TOOL,
     APPLY_EDITS_TOOL,
+    CATALOG_TOOLS_TOOL,
+    SCORE_CANDIDATES_TOOL,
+    DESCRIBE_TOOLS_TOOL,
 ];
 
-const CONTROL_TOOLS: &[&str] = &["exit", "decide", "filter", "map", "reduce", "agent", "ask"];
+const CONTROL_TOOLS: &[&str] = &["exit", "route", "filter", "map", "reduce", "agent", "ask"];
 
 pub fn is_native_tool(name: &str) -> bool {
     NATIVE_TOOLS.contains(&name)
 }
 
 pub fn native_tool_defs() -> Vec<ToolDef> {
-    vec![
+    let mut defs = vec![
         ToolDef {
             name: CATALOG_OUTLINE_TOOL.to_string(),
-            description: "Summarizes what a plan can use, in sections: MCP servers with their \
-                          descriptions, tool packs, builtin tools, agents, user tools and plans. \
-                          Names and one-line summaries only, never schemas."
+            description: "Summarizes what a plan can use, in sections: MCP servers and tool \
+                          packs by name and description, then built-in capabilities, agents, \
+                          project tools and saved plans as one-line descriptions. Never tool \
+                          names or schemas."
                 .to_string(),
             input_schema: json!({"type": "object", "properties": {}}),
             output_schema: Some(json!({
@@ -130,27 +137,34 @@ pub fn native_tool_defs() -> Vec<ToolDef> {
             output_example: None,
             read_only: Some(true),
         },
-    ]
+    ];
+    defs.extend(search_tool_defs());
+    defs
 }
 
 impl Pipeline {
     pub(super) async fn catalog_outline(&self) -> String {
-        let mut names: Vec<String> = self
+        let mut tools: Vec<(String, String)> = self
             .registry
             .tools()
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|tool| tool.name)
+            .map(|tool| (tool.name, tool.description))
             .collect();
-        names.extend(self.callable_plan_defs().into_iter().map(|tool| tool.name));
+        tools.extend(
+            self.callable_plan_defs()
+                .into_iter()
+                .map(|tool| (tool.name, tool.description)),
+        );
         let servers = self.registry.servers().await;
         let agents: Vec<(String, String)> = self
             .agents
             .iter()
+            .filter(|doc| doc.name != crate::agent::doc::CHAT_AGENT)
             .map(|doc| (doc.name.clone(), doc.description.clone()))
             .collect();
-        prompts::outliner_catalog(&names, &servers, &agents)
+        prompts::outliner_catalog(&tools, &servers, &agents)
     }
 
     pub(super) async fn call_native(&self, name: &str, input: Value) -> ToolOutcome {
@@ -161,6 +175,9 @@ impl Pipeline {
             VALIDATE_PLAN_TOOL => self.validate_plan_input(input).await,
             PLAN_FROM_DRAFT_TOOL => plan_from_draft(input),
             APPLY_EDITS_TOOL => apply_edits(input),
+            CATALOG_TOOLS_TOOL => self.catalog_tools().await,
+            SCORE_CANDIDATES_TOOL => self.score_candidates(input).await,
+            DESCRIBE_TOOLS_TOOL => self.describe_tools(input).await,
             _ => Err(format!("unknown native tool '{name}'")),
         };
         match result {
@@ -213,7 +230,7 @@ fn plan_json(doc: &PlanDoc) -> Result<Value, String> {
     authoring::to_json(doc).map_err(|e| e.to_string())
 }
 
-fn called_tools(value: &Value) -> BTreeSet<String> {
+pub(super) fn called_tools(value: &Value) -> BTreeSet<String> {
     let mut tools = BTreeSet::new();
     let mut stack = vec![value];
     while let Some(value) = stack.pop() {
