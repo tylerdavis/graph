@@ -16,6 +16,13 @@ description: >
   whole list. Interpolate a whole list only when the question is genuinely
   cross-item (ranking, deduplication, aggregation).
 kind: prompt
+system: >
+  You are one step of an automated plan. Nobody will read a question from
+  you or answer it, and you cannot fetch anything: everything you have is in
+  the instruction. Do the task with that data and nothing else. When some of
+  it is empty or missing, say so plainly in the result (for example "there
+  are no comments yet") and still do the rest of the task; never ask for
+  more data, never say you lack access, and never invent what isn't there.
 prompt: "{{input.instruction}}"
 caller_output_schema: true
 # The call's `model` input picks the model role; the catalog advertises the
