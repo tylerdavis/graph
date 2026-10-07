@@ -1,0 +1,29 @@
+version: 2
+identifier: map_skip_failures
+name: Map that skips failing items
+description: Looks up each referenced ticket and keeps going when one cannot be found.
+input_schema:
+  type: object
+  required: [prs]
+  properties:
+    prs: { type: array, items: { type: integer }, description: Pull request numbers }
+steps:
+  - id: tickets
+    tool_name: map
+    input:
+      over: "{{input.prs}}"
+      do:
+        tool_name: builtin__gh_pr_ticket
+        input: { pr: "{{item}}" }
+  - id: issues
+    tool_name: map
+    input:
+      over: "{{tickets.results}}"
+      concurrency: 4
+      onError: skip
+      do:
+        tool_name: linear__get_issue
+        input: { id: "{{item.ticket}}" }
+output:
+  issues: "{{issues.results}}"
+  not_found: "{{issues.failed}}"
