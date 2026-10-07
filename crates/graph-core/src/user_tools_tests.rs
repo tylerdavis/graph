@@ -222,21 +222,76 @@ fn github_pack_loads_and_validates() {
     }
 }
 
-#[test]
-fn gh_pr_ticket_default_pattern_requires_a_separator() {
-    // Regression: the original default `[A-Za-z]{2,6}[- ]?[0-9]+` matched
-    // glued technical words (arm64, utf8, sha256), so ticket-free PRs came
-    // back `found: true` with a bogus ID. The separator between letters and
-    // digits must be mandatory, not optional, so those words don't match.
-    let docs = load_pack_tools(&["github".to_string()]).unwrap();
-    let ticket = docs.iter().find(|d| d.name == "gh_pr_ticket").unwrap();
-    let default = ticket.input_schema.as_ref().unwrap()["properties"]["pattern"]["default"]
-        .as_str()
+fn gh_pr_ticket_with(dir: &std::path::Path, pr_json: &str) -> UserToolDoc {
+    use std::os::unix::fs::PermissionsExt;
+    let shim = dir.join("gh");
+    std::fs::write(&shim, "#!/bin/sh\nprintf '%s' \"$FAKE_PR\"\n").unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut doc = load_pack_tools(&["github".to_string()])
+        .unwrap()
+        .into_iter()
+        .find(|d| d.name == "gh_pr_ticket")
+        .expect("github pack ships gh_pr_ticket");
+    let ToolKind::Exec { env, .. } = &mut doc.kind else {
+        panic!("gh_pr_ticket must be an exec tool")
+    };
+    env.insert(
+        "PATH".to_string(),
+        format!(
+            "{}:{}",
+            dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+    env.insert("FAKE_PR".to_string(), pr_json.to_string());
+    doc
+}
+
+async fn ticket_for(pr_json: Value, pattern: Option<&str>) -> Value {
+    let dir = tempfile::tempdir().unwrap();
+    let doc = gh_pr_ticket_with(dir.path(), &pr_json.to_string());
+    let registry = UserToolRegistry::builtins(vec![doc], router());
+    let mut input = json!({"pr": 1});
+    if let Some(pattern) = pattern {
+        input["pattern"] = json!(pattern);
+    }
+    let outcome = registry
+        .invoke("builtin__gh_pr_ticket", input)
+        .await
         .unwrap();
-    assert_eq!(default, r"\b[A-Za-z]{2,6}[- ][0-9]+\b");
-    assert!(
-        !default.contains("[- ]?"),
-        "default pattern must require a separator, not make it optional: {default}"
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    outcome.result
+}
+
+#[tokio::test]
+async fn gh_pr_ticket_ignores_prose_and_standard_names_by_default() {
+    let prose = json!({
+        "headRefName": "agents/drafting",
+        "title": "feat: run every 2 hours, up to 3 times",
+        "body": "Encodes UTF-8 and checks SHA-256 per ISO-8601 dates. Every 2 runs."
+    });
+    assert_eq!(
+        ticket_for(prose, None).await,
+        json!({"found": false, "ticket": null, "source": null})
+    );
+}
+
+#[tokio::test]
+async fn gh_pr_ticket_reads_lowercase_branches_and_uppercase_titles() {
+    let branch = json!({"headRefName": "ln-9418/hub-renderer", "title": "feat: hubs", "body": ""});
+    assert_eq!(
+        ticket_for(branch, None).await,
+        json!({"found": true, "ticket": "LN-9418", "source": "branch"})
+    );
+    let title = json!({"headRefName": "portfolio", "title": "feat: render hubs (LN-9418)", "body": "every 2"});
+    assert_eq!(
+        ticket_for(title, None).await,
+        json!({"found": true, "ticket": "LN-9418", "source": "title"})
+    );
+    let explicit = json!({"headRefName": "x", "title": "y", "body": "fixes proj-12"});
+    assert_eq!(
+        ticket_for(explicit, Some("[a-z]+-[0-9]+")).await,
+        json!({"found": true, "ticket": "PROJ-12", "source": "body"})
     );
 }
 
@@ -412,7 +467,8 @@ async fn llm_pack_infer_returns_text_or_caller_structured_output() {
     assert!(!outcome.is_error, "{:?}", outcome.result);
     let text = outcome.result["text"].as_str().unwrap();
     assert!(
-        text.starts_with("echo [You are one step of an automated plan.") && text.ends_with("]: Summarize X"),
+        text.starts_with("echo [You are one step of an automated plan.")
+            && text.ends_with("]: Summarize X"),
         "infer runs as a non-interactive plan step by default: {text}"
     );
 
