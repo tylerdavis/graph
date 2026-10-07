@@ -24,7 +24,7 @@ graph stores its runtime state as plain JSON and JSONL files under the data dire
 
 Everything is directly inspectable with `cat` and `jq`, and `graph threads` / `graph shapes` render the same data from the CLI. Shape filenames percent-encode characters outside `[A-Za-z0-9_.-]`; the authoritative tool name lives inside the file.
 
-`FORMAT` is the store's [file version](/reference/file-versions#data-directory). graph writes it the first time it opens a data directory and refuses to open one whose marker is outside the versions it reads — an older binary must never append to a layout it does not understand.
+`FORMAT` is the store's [file version](/reference/file-versions#data-directory). graph writes it the first time it opens a data directory, migrates an older directory in place when it opens one (threads written before agents, as a `messages.jsonl` log, become `entries.jsonl` entries authored by `chat`), and refuses to open one whose marker is outside the versions it reads — an older binary must never append to a layout it does not understand.
 
 ## Concurrency
 

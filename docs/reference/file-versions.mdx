@@ -27,7 +27,7 @@ Each file kind has a **support window**: the oldest version this binary still re
 ## The compatibility promise
 
 - **Every schema change bumps the file version.** A new optional key, a removed key, a rename, a changed shape: all of them. The version is the schema's generation number, so two binaries that agree on it agree on every key.
-- **A binary reads every version in its window, and nothing outside it.** Older files inside the window are migrated in memory as they load; the file on disk is not modified until you run a `migrate` command. Upgrading graph within a window never requires touching a file first.
+- **A binary reads every version in its window, and nothing outside it.** Older files inside the window are migrated in memory as they load; the file on disk is not modified until you run a `migrate` command. The data directory is the exception: graph wrote it, so graph migrates it in place (see [Data directory](#data-directory)). Upgrading graph within a window never requires touching a file first.
 - **A file outside the window fails, by name, before the schema is consulted.** The message says which file, which version it found, which versions this binary reads, and what to do: upgrade graph for a newer file, or migrate an older file with a release that still reads it. Never an "unknown field" for a key that is correct.
 - **The window narrows only at a major release**, announced one minor release ahead. `graph config check` reports files that would fall outside it.
 
@@ -79,4 +79,6 @@ Every plan, tool, and agent file is read strictly: an unknown key anywhere in a 
 
 ## Data directory
 
-`FileStore` writes `<data_dir>/FORMAT` holding the store version on first open and refuses to open a directory whose marker is outside its window. That refusal matters more here than anywhere else: thread messages are appended under a lock without re-reading the file, so an older graph must never write into a layout it does not understand. Records inside the directory carry their own `version` field for per-record migration.
+`FileStore` writes `<data_dir>/FORMAT` holding the store version on first open and refuses to open a directory whose marker is outside its window. That refusal matters more here than anywhere else: thread entries are appended under a lock without re-reading the file, so an older graph must never write into a layout it does not understand.
+
+A directory at an older version inside the window is migrated **in place** the first time a newer graph opens it, with no command to run. The migration holds a lock on `FORMAT`, so concurrent graph processes wait for it rather than run it twice, and it raises the marker as each step finishes. After that, older binaries refuse the directory by name. Keep a copy of the data directory if you may need to go back to an older graph.

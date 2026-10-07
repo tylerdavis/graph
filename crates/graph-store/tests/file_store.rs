@@ -195,3 +195,87 @@ async fn scan_skips_incomplete_thread_dirs() {
     std::fs::create_dir_all(dir.path().join("threads").join("halfmade")).unwrap();
     assert_eq!(store.list_threads().await.unwrap().len(), 1);
 }
+
+fn fixture_dir(version: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(version)
+}
+
+fn data_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.file_name().unwrap() != ".lock" {
+                files.push(path.strip_prefix(root).unwrap().to_path_buf());
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+fn copy_fixture(version: &str) -> tempfile::TempDir {
+    let from = fixture_dir(version);
+    let dir = tempfile::tempdir().unwrap();
+    for file in data_files(&from) {
+        let to = dir.path().join(&file);
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::copy(from.join(&file), to).unwrap();
+    }
+    dir
+}
+
+fn contents(path: &std::path::Path) -> Vec<serde_json::Value> {
+    let raw = std::fs::read_to_string(path).unwrap();
+    if path.extension().is_some_and(|ext| ext == "jsonl") {
+        return raw
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+    }
+    vec![serde_json::from_str(&raw).unwrap_or_else(|_| json!(raw.trim()))]
+}
+
+#[test]
+fn a_version_1_data_directory_migrates_to_the_frozen_version_2_layout() {
+    let dir = copy_fixture("v1");
+    FileStore::open(dir.path()).unwrap();
+    let expected = fixture_dir("v2");
+    assert_eq!(data_files(dir.path()), data_files(&expected));
+    for file in data_files(&expected) {
+        assert_eq!(
+            contents(&dir.path().join(&file)),
+            contents(&expected.join(&file)),
+            "{}",
+            file.display()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_frozen_version_2_data_directory_opens_as_is() {
+    let dir = copy_fixture("v2");
+    let store = FileStore::open(dir.path()).unwrap();
+    let thread = store.get_thread("a1b2c3d4e5f6").await.unwrap().unwrap();
+    assert_eq!((thread.owner.as_str(), thread.message_count), ("chat", 4));
+    let authors: Vec<String> = store
+        .load_entries("a1b2c3d4e5f6")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.author)
+        .collect();
+    assert_eq!(authors, ["user", "chat", "chat", "chat"]);
+    assert_eq!(store.tool_shapes().await.unwrap().len(), 1);
+    assert_eq!(
+        data_files(dir.path()),
+        data_files(&fixture_dir("v2")),
+        "opening a current store writes nothing new"
+    );
+}
