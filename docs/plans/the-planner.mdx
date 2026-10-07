@@ -59,3 +59,15 @@ First, `draft_outline` sketches an **outline**: a flat list of entries, each one
 <Frame caption="The planner drafting in the workbench: two steps accepted, the third being drafted, the outline's last stage still pending.">
   ![The planner drafting in the workbench: two steps accepted, the third being drafted, the outline's last stage still pending.](/images/workbench/drafting-overlay.svg)
 </Frame>
+
+### Composing a whole plan in one call
+
+The built-in plan `compose_plan` is a second, faster way to draft. It is not wired into `graph plan draft` or the workbench yet; run it with `graph plan run compose_plan --input goal="…"`. It returns `{plan, valid, problems, yaml, needs}`, or `{plan: null, missing}` when no tool can do part of the goal.
+
+1. **Needs.** One `builtin__infer` call on the `outliner` role (`needs_model` picks another) lists the plan's inputs, its capabilities in order (each `data`, `judgment` or `control`), and the details the goal states, such as an identifier format or a path.
+2. **Tools.** [`search_tools`](/tools/finding-tools) runs once per `data` capability, in parallel.
+3. **Missing capabilities.** When search finds nothing for a `data` capability, the plan stops with `missing` before any drafting, so a gap is reported instead of being filled with an `agent` or `builtin__infer` step.
+4. **Draft.** One `builtin__infer` call on the `planner` role (`model` picks another) writes the whole plan as YAML. Its system prompt holds the composing rules, a worked example, the template rules and the tools every plan can use, so it caches; the request holds the goal, its needs and the tools search found, described with their schemas by `builtin__compose_context`.
+5. **Check and fix.** `builtin__check_plan` parses the YAML and validates it: structure, templates, the catalog, a tool's required inputs, plan inputs passed to a parameter of another type, `exit`/`route`/`filter` conditions with an unknown operator, steps whose result nothing uses, and the composing rules (an `agent` step lists its tools; `agent__chat` is never used). When there are problems, one more call returns a YAML patch of only the steps that need to change, matched by id, and `builtin__check_plan` applies it and validates again, at most twice. The whole plan is never redrafted.
+
+The plan it writes takes the values the user supplies as `input_schema` inputs and finishes with an `output` map.

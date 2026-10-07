@@ -17,6 +17,9 @@ pub const CONTROL_STEP_RULES: &str = include_str!("prompts/control_step_rules.md
 
 /// Planning rules shared verbatim by the planner and drafting
 /// prompts, which differ only in how they are called.
+pub(super) const COMPOSING_RULES: &str =
+    include_str!("prompts/composing_rules.md").trim_ascii_end();
+
 pub(super) const PLANNING_RULES: &str = include_str!("prompts/planning_rules.md").trim_ascii_end();
 
 const BUILTIN_SUMMARIES: &[(&str, &str)] = &[

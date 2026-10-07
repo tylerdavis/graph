@@ -174,6 +174,7 @@ pub const BUILTIN_PLANS: &[&str] = &[
     include_str!("../plans/draft_step.yaml"),
     include_str!("../plans/draft_expand.yaml"),
     include_str!("../plans/author_plan.yaml"),
+    include_str!("../plans/compose_plan.yaml"),
 ];
 
 pub fn builtin_plan_docs() -> Vec<PlanDoc> {
