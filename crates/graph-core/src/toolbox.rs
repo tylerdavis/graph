@@ -72,10 +72,14 @@ impl ToolRegistry for AgentToolbox {
             });
         }
         defs.push(self.plan_and_execute_def());
+        defs.extend(crate::pipeline::drafter_tool_defs());
         Ok(defs)
     }
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
+        if let Some(outcome) = self.pipeline.call_drafter_tool(name, input.clone()).await {
+            return Ok(outcome);
+        }
         if name == PLAN_AND_EXECUTE {
             let call = self.pipeline.call_planner(&input).await;
             return Ok(ToolOutcome {
@@ -195,6 +199,7 @@ mod tests {
             agents: Arc::new(crate::agent::doc::AgentSet::default()),
             agent_depth: 0,
             always_loaded: Default::default(),
+            drafted: Default::default(),
         });
         (AgentToolbox::new(base.clone(), pipeline, vec![doc]), base)
     }

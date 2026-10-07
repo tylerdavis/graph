@@ -4,6 +4,7 @@ use super::compose::{
     QUESTION_FORM_TOOL,
 };
 use super::doc::{parse_plan_source, PlanDoc};
+use super::drafter::{drafter_tool_defs, SAVE_AGENT_TOOL, SAVE_TOOL_TOOL, TRY_TOOL_TOOL};
 use super::drafting::{
     accept_step_tool_def, draft_context_tool_def, ACCEPT_STEP_TOOL, DRAFT_CONTEXT_TOOL,
 };
@@ -23,7 +24,7 @@ pub const PLAN_FROM_DRAFT_TOOL: &str = "builtin__plan_from_draft";
 
 pub const APPLY_EDITS_TOOL: &str = "builtin__apply_edits";
 
-pub const NATIVE_TOOLS: [&str; 13] = [
+pub const NATIVE_TOOLS: [&str; 16] = [
     CATALOG_OUTLINE_TOOL,
     DRAFT_CONTEXT_TOOL,
     ACCEPT_STEP_TOOL,
@@ -37,6 +38,9 @@ pub const NATIVE_TOOLS: [&str; 13] = [
     CHECK_PLAN_TOOL,
     QUESTION_FORM_TOOL,
     FIND_TOOLS_TOOL,
+    TRY_TOOL_TOOL,
+    SAVE_TOOL_TOOL,
+    SAVE_AGENT_TOOL,
 ];
 
 const CONTROL_TOOLS: &[&str] = &["exit", "route", "filter", "map", "reduce", "agent", "ask"];
@@ -148,6 +152,7 @@ pub fn native_tool_defs() -> Vec<ToolDef> {
     ];
     defs.extend(search_tool_defs());
     defs.extend(compose_tool_defs());
+    defs.extend(drafter_tool_defs());
     defs
 }
 
@@ -191,6 +196,9 @@ impl Pipeline {
             CHECK_PLAN_TOOL => self.check_plan(input).await,
             QUESTION_FORM_TOOL => question_form(input),
             FIND_TOOLS_TOOL => self.find_tools(input).await,
+            TRY_TOOL_TOOL => self.try_tool(input).await,
+            SAVE_TOOL_TOOL => self.save_tool(input).await,
+            SAVE_AGENT_TOOL => self.save_agent(input).await,
             _ => Err(format!("unknown native tool '{name}'")),
         };
         match result {
@@ -206,7 +214,8 @@ impl Pipeline {
         let (problems, steps) = match input.get("plan") {
             Some(plan) => {
                 let doc = plan_doc(plan)?;
-                let problems = authoring::plan_problems(&doc, &self.plans, self.catalog.as_deref());
+                let catalog = self.live_catalog();
+                let problems = authoring::plan_problems(&doc, &self.plans, catalog.as_ref());
                 (problems, json!(doc.steps))
             }
             None => {

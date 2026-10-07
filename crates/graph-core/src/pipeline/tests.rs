@@ -167,6 +167,7 @@ fn pipeline_with_named(
             agents: Arc::new(crate::agent::doc::AgentSet::default()),
             agent_depth: 0,
             always_loaded: Default::default(),
+            drafted: Default::default(),
         },
         provider,
     )
@@ -6362,4 +6363,199 @@ async fn each_draft_step_sees_only_its_searched_tools() {
         requests[1..].iter().all(|r| r.system == requests[1].system),
         "the cached system prompt is identical across steps"
     );
+}
+
+const WEATHER_TOOL: &str = "name: weather\ndescription: Current weather for a city\nkind: exec\ncommand: printf\nargs: ['{\"city\":\"%s\",\"sky\":\"clear\"}', '{{input.city}}']\ninput_schema:\n  type: object\n  required: [city]\n  properties:\n    city: {type: string, description: The city}\n";
+
+fn drafting_pipeline(
+    answers: Vec<AskOutcome>,
+) -> (Pipeline, tempfile::TempDir, Arc<ScriptedHuman>) {
+    let (mut pipeline, _) = pipeline(vec![], search_registry(json!({})), 1);
+    let dir = tempfile::tempdir().unwrap();
+    pipeline.drafted = Arc::new(super::Drafted::new(
+        Some(dir.path().join("tools")),
+        Some(dir.path().join("agents")),
+    ));
+    pipeline.agents =
+        Arc::new(crate::agent::doc::AgentSet::builtin().with_drafted(pipeline.drafted.agents()));
+    pipeline.catalog = Some(Arc::new(super::ToolCatalog::default()));
+    let human = ScriptedHuman::new(answers);
+    let pipeline = pipeline.with_interlocutor(human.clone());
+    (pipeline, dir, human)
+}
+
+#[tokio::test]
+async fn a_drafted_tool_runs_only_after_the_user_approves() {
+    let (pipeline, _dir, human) =
+        drafting_pipeline(vec![AskOutcome::Answered(json!({"run": false}))]);
+    let tried = pipeline
+        .call_native(
+            "builtin__try_tool",
+            json!({"yaml": WEATHER_TOOL, "input": {"city": "Denver"}}),
+        )
+        .await;
+    assert_eq!(tried.result["ran"], json!(false), "{}", tried.result);
+    assert!(
+        human.prompts()[0].contains("printf"),
+        "{:?}",
+        human.prompts()
+    );
+
+    let saved = pipeline
+        .call_native("builtin__save_tool", json!({"yaml": WEATHER_TOOL}))
+        .await;
+    assert!(
+        saved.result["error"].as_str().unwrap().contains("test run"),
+        "{}",
+        saved.result
+    );
+}
+
+#[tokio::test]
+async fn a_tested_tool_saves_and_is_usable_in_the_same_session() {
+    let (pipeline, dir, _) = drafting_pipeline(vec![
+        AskOutcome::Answered(json!({"run": true})),
+        AskOutcome::Answered(json!({"save": true})),
+    ]);
+    let tried = pipeline
+        .call_native(
+            "builtin__try_tool",
+            json!({"yaml": WEATHER_TOOL, "input": {"city": "Denver"}}),
+        )
+        .await;
+    assert_eq!(tried.result["ran"], json!(true), "{}", tried.result);
+    assert_eq!(tried.result["result"]["city"], "Denver");
+    assert!(tried.result["shape"]["properties"]["sky"].is_object());
+
+    let saved = pipeline
+        .call_native("builtin__save_tool", json!({"yaml": WEATHER_TOOL}))
+        .await;
+    assert_eq!(saved.result["saved"], "user__weather", "{}", saved.result);
+    let written = std::fs::read_to_string(dir.path().join("tools/weather.yaml")).unwrap();
+    assert!(written.starts_with("version: "), "{written}");
+
+    let live = super::DraftedTools::new(pipeline.drafted.clone(), pipeline.router.clone());
+    let names: Vec<String> = live
+        .tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|def| def.name)
+        .collect();
+    assert_eq!(names, ["user__weather"]);
+    assert!(pipeline
+        .live_catalog()
+        .unwrap()
+        .user_tools
+        .contains("user__weather"));
+
+    let again = pipeline
+        .call_native("builtin__save_tool", json!({"yaml": WEATHER_TOOL}))
+        .await;
+    assert!(
+        again.result["error"]
+            .as_str()
+            .unwrap()
+            .contains("already exists"),
+        "{}",
+        again.result
+    );
+}
+
+#[tokio::test]
+async fn the_user_can_have_a_tool_saved_untested() {
+    let (pipeline, _dir, human) = drafting_pipeline(vec![]);
+    let saved = pipeline
+        .call_native(
+            "builtin__save_tool",
+            json!({"yaml": WEATHER_TOOL, "untested": true}),
+        )
+        .await;
+    assert_eq!(saved.result["saved"], "user__weather", "{}", saved.result);
+    assert_eq!(saved.result["untested"], json!(true));
+    let prompts = human.prompts();
+    assert_eq!(
+        prompts.len(),
+        1,
+        "nothing ran; only the save was asked about"
+    );
+    assert!(prompts[0].starts_with("Save user__weather"), "{prompts:?}");
+}
+
+#[tokio::test]
+async fn a_declined_save_writes_nothing() {
+    let (pipeline, dir, _) = drafting_pipeline(vec![AskOutcome::Answered(json!({"save": false}))]);
+    let saved = pipeline
+        .call_native(
+            "builtin__save_tool",
+            json!({"yaml": WEATHER_TOOL, "untested": true}),
+        )
+        .await;
+    assert!(
+        saved.result["error"]
+            .as_str()
+            .unwrap()
+            .contains("didn't want"),
+        "{}",
+        saved.result
+    );
+    assert!(!dir.path().join("tools/weather.yaml").exists());
+    assert!(pipeline.drafted.tools().is_empty());
+}
+
+#[tokio::test]
+async fn an_invalid_tool_file_is_never_run_or_saved() {
+    let (pipeline, dir, human) = drafting_pipeline(vec![]);
+    let broken = "name: weather\ndescription: x\nkind: exec\ncommand: printf\nbogus: 1\n";
+    let tried = pipeline
+        .call_native("builtin__try_tool", json!({"yaml": broken, "input": {}}))
+        .await;
+    assert_eq!(tried.result["ran"], json!(false));
+    assert!(tried.result["problems"][0]
+        .as_str()
+        .unwrap()
+        .contains("bogus"));
+    let saved = pipeline
+        .call_native(
+            "builtin__save_tool",
+            json!({"yaml": broken, "untested": true}),
+        )
+        .await;
+    assert!(saved.result["error"].is_string());
+    assert!(!dir.path().join("tools").exists());
+    assert!(human.prompts().is_empty());
+}
+
+#[tokio::test]
+async fn a_drafted_agent_is_validated_saved_and_callable_right_away() {
+    let (pipeline, dir, _) = drafting_pipeline(vec![]);
+    let unknown_role = "name: triager\ndescription: Triages issues\nmodel: nonsense\ntools: [t__search]\nsystem_prompt: You triage.\n";
+    let refused = pipeline
+        .call_native("builtin__save_agent", json!({"yaml": unknown_role}))
+        .await;
+    let problems = refused.result["problems"].to_string();
+    assert!(problems.contains("nonsense"), "{problems}");
+
+    let workbench = "name: plan_editor\ndescription: x\nmodel: chat\ntools: []\nsystem_prompt: x\n";
+    let refused = pipeline
+        .call_native("builtin__save_agent", json!({"yaml": workbench}))
+        .await;
+    assert!(refused.result["problems"]
+        .to_string()
+        .contains("workbench agent"));
+
+    let no_match = "name: triager\ndescription: Triages issues\nmodel: chat\ntools: [t__nope]\nsystem_prompt: You triage.\n";
+    let refused = pipeline
+        .call_native("builtin__save_agent", json!({"yaml": no_match}))
+        .await;
+    assert!(refused.result["problems"].to_string().contains("t__nope"));
+
+    let good = "name: triager\ndescription: Triages issues\nmodel: chat\ntools: [t__search]\nsystem_prompt: You triage.\n";
+    let saved = pipeline
+        .call_native("builtin__save_agent", json!({"yaml": good}))
+        .await;
+    assert_eq!(saved.result["saved"], "triager", "{}", saved.result);
+    assert!(dir.path().join("agents/triager.yaml").exists());
+    assert!(pipeline.agents.get("triager").is_some());
+    assert!(pipeline.live_catalog().unwrap().agents.contains("triager"));
 }

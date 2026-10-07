@@ -39,7 +39,7 @@ fn summary(doc: &AgentDoc) -> Value {
 
 pub(crate) fn list(dirs: &[PathBuf]) -> Outcome {
     let (set, errors) = AgentSet::load(&crate::workbench::agents::builtin_sources(), dirs);
-    let agents: Vec<Value> = set.iter().map(summary).collect();
+    let agents: Vec<Value> = set.iter().map(|doc| summary(&doc)).collect();
     let text: String = set
         .iter()
         .map(|doc| {
@@ -68,14 +68,14 @@ pub(crate) fn list(dirs: &[PathBuf]) -> Outcome {
 pub(crate) fn show(dirs: &[PathBuf], name: &str) -> Result<Outcome> {
     let (set, _) = AgentSet::load(&crate::workbench::agents::builtin_sources(), dirs);
     let Some(doc) = set.get(name) else {
-        let known: Vec<&str> = set.iter().map(|d| d.name.as_str()).collect();
+        let known: Vec<String> = set.iter().map(|d| d.name).collect();
         bail!("unknown agent '{name}' (defined: {})", known.join(", "));
     };
-    let mut value = serde_yaml::to_value(doc)?;
+    let mut value = serde_yaml::to_value(&doc)?;
     stamp(Kind::Agent, &mut value);
     let yaml = serde_yaml::to_string(&value)?;
     let body = json!({
-        "agent": serde_json::to_value(doc)?,
+        "agent": serde_json::to_value(&doc)?,
         "source": doc.source.describe(),
         "yaml": yaml,
     });
@@ -94,7 +94,7 @@ pub(crate) fn validate(dirs: &[PathBuf], path: Option<&Path>) -> Result<Outcome>
         match load_agent_file(path) {
             Ok(doc) => {
                 let name = doc.name.clone();
-                set = AgentSet::layered(set.iter().cloned().collect(), vec![vec![doc]]);
+                set = AgentSet::layered(set.iter().collect(), vec![vec![doc]]);
                 problems = set.agent_problems(&name, &fragment_names());
             }
             Err(error) => problems = vec![error],
@@ -160,21 +160,23 @@ mod tests {
         assert_eq!(
             names,
             [
+                "agent_drafter",
                 "chat",
                 "orchestrator",
                 "plan_editor",
                 "plan_loader",
                 "plan_refiner",
-                "search_bot"
+                "search_bot",
+                "tool_drafter"
             ]
         );
         assert_eq!(outcome.body["agents"][0]["source"], "built-in");
         assert_eq!(
-            outcome.body["agents"][5]["subagentIo"],
+            outcome.body["agents"][6]["subagentIo"],
             "{prompt} -> {result}"
         );
         assert_eq!(
-            outcome.body["agents"][4]["subagentIo"],
+            outcome.body["agents"][5]["subagentIo"],
             "typed input -> typed output"
         );
     }

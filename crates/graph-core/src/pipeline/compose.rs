@@ -290,7 +290,7 @@ impl Pipeline {
             }
         };
         let mut problems: Vec<String> =
-            authoring::plan_problems(&doc, &self.plans, self.catalog.as_deref())
+            authoring::plan_problems(&doc, &self.plans, self.live_catalog().as_ref())
                 .into_iter()
                 .filter(|problem| !problem.starts_with("note:"))
                 .collect();

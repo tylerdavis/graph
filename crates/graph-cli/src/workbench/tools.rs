@@ -65,6 +65,8 @@ pub struct DraftState {
     /// it with the current draft, so calling it twice is redo.
     pub undo: Option<(PlanDoc, bool)>,
     pub composed: Option<Value>,
+    pub artifact: Option<super::artifact::Artifact>,
+    pub parked: Option<super::artifact::Artifact>,
 }
 
 impl DraftState {
@@ -74,6 +76,8 @@ impl DraftState {
             dirty: false,
             undo: None,
             composed: None,
+            artifact: None,
+            parked: None,
         }
     }
 
@@ -582,7 +586,7 @@ impl WorkbenchTools {
 /// catalog. See [`authoring::plan_problems`] for why the catalog is
 /// reporting-only and never gates an edit.
 pub(super) fn plan_problems(pipeline: &Pipeline, doc: &PlanDoc) -> Vec<String> {
-    authoring::plan_problems(doc, &pipeline.plans, pipeline.catalog.as_deref())
+    authoring::plan_problems(doc, &pipeline.plans, pipeline.live_catalog().as_ref())
 }
 
 fn unknown_tool_message(
@@ -927,6 +931,7 @@ impl ToolRegistry for WorkbenchTools {
                 read_only: None,
             },
         ];
+        defs.extend(super::artifact::tool_defs());
         for def in &mut defs {
             def.description.push_str(WORKBENCH_ONLY_NOTE);
         }
@@ -938,6 +943,7 @@ impl ToolRegistry for WorkbenchTools {
             SET_DRAFT | DESCRIBE_TOOL | GET_PLAN | LOAD_PLAN | LIST_PLANS | VALIDATE_PLAN
             | RUN_PLAN | SAVE_PLAN | UPDATE_METADATA | ADD_STEP | UPDATE_STEP | DELETE_STEP
             | RESTORE_DRAFT | SHOW_PLAN => {}
+            name if super::artifact::ARTIFACT_TOOLS.contains(&name) => {}
             // Not ours: stay silent, or the composite registry's fallthrough
             // (the fs tools are also workbench__*) double-logs the call.
             other => return Err(ToolError::Unknown(other.to_string())),
@@ -963,6 +969,44 @@ impl ToolRegistry for WorkbenchTools {
             DELETE_STEP => Ok(self.delete_step(&input)),
             RESTORE_DRAFT => Ok(self.restore_draft()),
             SHOW_PLAN => Ok(self.show_plan(&input)),
+            super::artifact::SET_ARTIFACT => {
+                Ok(
+                    super::artifact::set_artifact(&self.draft, &self.pipeline, &self.tx, &input)
+                        .await,
+                )
+            }
+            super::artifact::TRY_ARTIFACT => {
+                Ok(
+                    super::artifact::try_artifact(&self.draft, &self.pipeline, &self.tx, &input)
+                        .await,
+                )
+            }
+            super::artifact::SAVE_ARTIFACT => Ok(
+                match super::artifact::save_artifact(
+                    &self.draft,
+                    &self.pipeline,
+                    &self.tx,
+                    input["overwrite"].as_bool().unwrap_or(false),
+                    input["untested"].as_bool().unwrap_or(false),
+                )
+                .await
+                {
+                    Ok(message) => ToolOutcome {
+                        result: json!({ "saved": message }),
+                        is_error: false,
+                    },
+                    Err(error) => error_outcome(&error),
+                },
+            ),
+            super::artifact::DISCARD_ARTIFACT => Ok(
+                match super::artifact::discard_artifact(&self.draft, &self.pipeline, &self.tx) {
+                    Some(message) => ToolOutcome {
+                        result: json!({ "discarded": message }),
+                        is_error: false,
+                    },
+                    None => error_outcome("there is no draft to discard"),
+                },
+            ),
             other => Err(ToolError::Unknown(other.to_string())),
         };
         if let Ok(outcome) = &outcome {
@@ -1036,6 +1080,7 @@ mod tests {
             agents: Arc::new(graph_core::agent::doc::AgentSet::default()),
             agent_depth: 0,
             always_loaded: Default::default(),
+            drafted: Default::default(),
         })
     }
 
@@ -1988,6 +2033,7 @@ steps:
             agents: Arc::new(graph_core::agent::doc::AgentSet::default()),
             agent_depth: 0,
             always_loaded: Default::default(),
+            drafted: Default::default(),
         });
         (pipeline, provider)
     }
@@ -2108,5 +2154,134 @@ steps:
         );
         let confirmed = tools.set_draft(&json!({"plan": report_plan(), "overwrite_draft": true}));
         assert!(!confirmed.is_error, "{:?}", confirmed.result);
+    }
+
+    const WEATHER_TOOL: &str = "name: weather\ndescription: Current weather for a city\nkind: exec\ncommand: printf\nargs: ['{\"city\":\"%s\"}', '{{input.city}}']\ninput_schema:\n  type: object\n  required: [city]\n  properties:\n    city: {type: string, description: The city}\n";
+
+    fn drafting_tools() -> (
+        WorkbenchTools,
+        tokio::sync::mpsc::UnboundedReceiver<Msg>,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pipeline = (*test_pipeline(Vec::new())).clone();
+        pipeline.drafted = Arc::new(graph_core::pipeline::Drafted::new(
+            Some(dir.path().join("tools")),
+            Some(dir.path().join("agents")),
+        ));
+        let (tools, rx) = draft_tools(Arc::new(pipeline));
+        (tools, rx, dir)
+    }
+
+    fn shown(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Msg>) -> Option<bool> {
+        let mut last = None;
+        while let Ok(msg) = rx.try_recv() {
+            if let Msg::ArtifactChanged(view) = msg {
+                last = Some(view.is_some());
+            }
+        }
+        last
+    }
+
+    #[tokio::test]
+    async fn a_tool_draft_lives_in_the_pane_until_it_is_saved() {
+        let (tools, mut rx, dir) = drafting_tools();
+        let set = tools
+            .invoke(
+                crate::workbench::artifact::SET_ARTIFACT,
+                json!({"kind": "tool", "yaml": WEATHER_TOOL}),
+            )
+            .await
+            .unwrap();
+        assert!(!set.is_error, "{}", set.result);
+        assert_eq!(set.result["problems"], json!([]));
+        assert_eq!(shown(&mut rx), Some(true));
+
+        let refused = tools
+            .invoke(crate::workbench::artifact::SAVE_ARTIFACT, json!({}))
+            .await
+            .unwrap();
+        assert!(refused.is_error);
+        assert!(
+            refused.result.to_string().contains("test run"),
+            "{}",
+            refused.result
+        );
+        assert!(!dir.path().join("tools/weather.yaml").exists());
+
+        let saved = tools
+            .invoke(
+                crate::workbench::artifact::SAVE_ARTIFACT,
+                json!({"untested": true}),
+            )
+            .await
+            .unwrap();
+        assert!(!saved.is_error, "{}", saved.result);
+        assert!(dir.path().join("tools/weather.yaml").exists());
+        assert!(tools.draft.lock().unwrap().artifact.is_none());
+        assert_eq!(shown(&mut rx), Some(false));
+    }
+
+    #[tokio::test]
+    async fn an_invalid_draft_shows_its_problems_and_can_be_discarded() {
+        let (tools, mut rx, _dir) = drafting_tools();
+        let set = tools
+            .invoke(
+                crate::workbench::artifact::SET_ARTIFACT,
+                json!({"kind": "tool", "yaml": "name: weather\ndescription: x\nkind: exec\ncommand: printf\nbogus: 1\n"}),
+            )
+            .await
+            .unwrap();
+        assert!(set.result["problems"].to_string().contains("bogus"));
+        let discarded = tools
+            .invoke(crate::workbench::artifact::DISCARD_ARTIFACT, json!({}))
+            .await
+            .unwrap();
+        assert!(!discarded.is_error);
+        assert_eq!(shown(&mut rx), Some(false));
+    }
+
+    #[test]
+    fn the_guard_parks_an_agent_draft_for_the_tool_drafter_and_restores_it() {
+        use crate::workbench::artifact::{handoff_guard, Artifact, ArtifactKind};
+        let (tools, _rx) = draft_tools(test_pipeline(Vec::new()));
+        let draft = tools.draft.clone();
+        let (tx, _rx2) = tokio::sync::mpsc::unbounded_channel();
+        let guard = handoff_guard(draft.clone(), test_pipeline(Vec::new()), tx);
+        let agent = Artifact {
+            kind: ArtifactKind::Agent,
+            yaml: "name: triager\n".to_string(),
+            problems: Vec::new(),
+            last_run: None,
+        };
+        draft.lock().unwrap().artifact = Some(agent);
+
+        assert!(
+            guard("agent_drafter", "orchestrator").is_some(),
+            "an open draft blocks leaving"
+        );
+        assert!(guard("agent_drafter", "tool_drafter").is_none());
+        assert!(draft.lock().unwrap().artifact.is_none());
+        assert_eq!(
+            draft.lock().unwrap().parked.as_ref().unwrap().name(),
+            "triager"
+        );
+
+        draft.lock().unwrap().artifact = Some(Artifact {
+            kind: ArtifactKind::Tool,
+            yaml: "name: lookup\n".to_string(),
+            problems: Vec::new(),
+            last_run: None,
+        });
+        assert!(
+            guard("tool_drafter", "agent_drafter").is_some(),
+            "the tool draft has to be saved or discarded first"
+        );
+
+        draft.lock().unwrap().artifact = None;
+        assert!(guard("tool_drafter", "agent_drafter").is_none());
+        let state = draft.lock().unwrap();
+        assert_eq!(state.artifact.as_ref().unwrap().name(), "triager");
+        assert!(state.parked.is_none());
     }
 }

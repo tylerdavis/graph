@@ -81,8 +81,18 @@ resume with `graph chat --thread 8d36b7003df9`
 
 - **Subagents** (`subagents`): the agent calls `agent__<name>` and another agent runs the request in its own fresh context, then returns its answer. The run is kept in the thread but never shown to the caller, which sees only the answer.
 - **Handoffs** (`handoffs`): the agent calls `transfer_to_<name>` and the other agent takes over the conversation, picking up the current turn with a note on what is needed. With `wait_for_user: true` the turn ends at the handoff instead: the handing-off agent's reply is what the user sees, and the other agent answers from the user's next message. The thread remembers who is active, so a resumed thread continues with the agent that last had the conversation.
+- **Handing back** (`transfer_back`): an agent that was handed the conversation can hand it back to the agent that handed it over, with a message saying what it did. It doesn't list that agent anywhere: every agent gets `transfer_back` whenever another agent handed it the conversation, and not when you started it directly. This is how a [drafter](#drafting-tools-and-agents) returns to whoever sent you to it.
 
-Each agent sees your messages, what the other agents said, the handoffs, and its own tool calls, but not other agents' tool traffic. A turn hands off at most 4 times; after that, whoever holds the conversation answers.
+Each agent sees your messages, what the other agents said, the handoffs, and its own tool calls, but not other agents' tool traffic. A turn hands off at most 4 times, handing back included; after that, whoever holds the conversation answers.
+
+### Drafting tools and agents
+
+Two built-in agents write new files with you, over as many turns as it takes:
+
+- `graph chat tool_drafter` writes a [user tool](/tools/user-defined). It checks the catalog for an existing tool first, then writes the file, and test-runs it once on a sample input with `builtin__try_tool`, which asks you before anything runs and shows the command. A tool is saved only after a successful test run, or untested when you say you don't want it tested.
+- `graph chat agent_drafter` writes an [agent](/reference/agent-schema), for conversation, for plan steps, or both. It picks the agent's tools from the catalog and saves the file once it validates against the catalog and your configured models; there's no test run, so try it yourself with `graph chat <name>` or an `agent__<name>` step.
+
+Both save to the project (`./.graph/tools/` and `./.graph/agents/`), ask "Save it?" before writing anything, and never replace an existing file unless you agree. `graph ask`, which has no terminal to ask in, saves without asking. A saved tool or agent is usable right away in the same session. In the [workbench](/workbench/plan-workbench#drafting-a-tool-or-an-agent) the drafters work on a draft in the pane instead, which you save yourself.
 
 A thread belongs to the agent it was started with. `graph chat <agent> --thread <id>` is refused when `<agent>` isn't that owner. Leave the agent out to resume, or switch with `/agent <name>` inside the REPL.
 

@@ -18,6 +18,7 @@ pub mod catalog;
 mod compose;
 pub mod condition;
 pub mod doc;
+mod drafter;
 mod drafting;
 pub mod exit;
 pub mod filter;
@@ -39,6 +40,7 @@ pub use ask::{ask_tool_def, AskResult, WhenUnanswered, ASK_TOOL};
 pub use authoring::{EditAccepted, EditRejected, WriteError};
 pub use catalog::{CatalogCheck, ToolCatalog};
 pub use compose::COMPOSE_PLAN;
+pub use drafter::{drafter_tool_defs, Drafted, DraftedTools};
 pub use drafting::{draft_input, Draft, DraftState, StepDraft, AUTHOR_PLAN, MAX_STEP_ATTEMPTS};
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
 pub use filter::FILTER_TOOL;
@@ -115,6 +117,7 @@ pub struct Pipeline {
     pub agents: Arc<crate::agent::doc::AgentSet>,
     pub agent_depth: usize,
     pub always_loaded: Arc<Vec<String>>,
+    pub drafted: Arc<drafter::Drafted>,
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 pub const BUILTINS: &[&str] = &[
     include_str!("../agents/chat.yaml"),
     include_str!("../agents/plan_refiner.yaml"),
+    include_str!("../agents/tool_drafter.yaml"),
+    include_str!("../agents/agent_drafter.yaml"),
 ];
 
 pub const CHAT_AGENT: &str = "chat";
@@ -205,6 +207,8 @@ pub fn global_fragments() -> BTreeMap<&'static str, &'static str> {
     BTreeMap::from([
         ("control_steps", crate::pipeline::CONTROL_STEP_RULES),
         ("templating", crate::pipeline::TEMPLATING_RULES),
+        ("tool_format", crate::prompts::TOOL_FORMAT),
+        ("agent_format", crate::prompts::AGENT_FORMAT),
     ])
 }
 
@@ -218,6 +222,7 @@ pub fn builtin_agents(sources: &[&str]) -> Vec<AgentDoc> {
 #[derive(Debug, Clone, Default)]
 pub struct AgentSet {
     agents: BTreeMap<String, AgentDoc>,
+    drafted: Option<std::sync::Arc<std::sync::RwLock<Vec<AgentDoc>>>>,
 }
 
 impl AgentSet {
@@ -229,7 +234,18 @@ impl AgentSet {
         {
             agents.insert(doc.name.clone(), doc);
         }
-        Self { agents }
+        Self {
+            agents,
+            drafted: None,
+        }
+    }
+
+    pub fn with_drafted(
+        mut self,
+        drafted: std::sync::Arc<std::sync::RwLock<Vec<AgentDoc>>>,
+    ) -> Self {
+        self.drafted = Some(drafted);
+        self
     }
 
     pub fn load(builtin_sources: &[&str], dirs_highest_first: &[PathBuf]) -> (Self, Vec<String>) {
@@ -250,12 +266,23 @@ impl AgentSet {
         Self::layered(builtin_agents(BUILTINS), Vec::new())
     }
 
-    pub fn get(&self, name: &str) -> Option<&AgentDoc> {
-        self.agents.get(name)
+    pub fn get(&self, name: &str) -> Option<AgentDoc> {
+        if let Some(drafted) = &self.drafted {
+            if let Some(doc) = drafted.read().unwrap().iter().find(|doc| doc.name == name) {
+                return Some(doc.clone());
+            }
+        }
+        self.agents.get(name).cloned()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &AgentDoc> {
-        self.agents.values()
+    pub fn iter(&self) -> impl Iterator<Item = AgentDoc> {
+        let mut merged = self.agents.clone();
+        if let Some(drafted) = &self.drafted {
+            for doc in drafted.read().unwrap().iter() {
+                merged.insert(doc.name.clone(), doc.clone());
+            }
+        }
+        merged.into_values()
     }
 
     pub fn validate(&self, fragments: &[&str]) -> Vec<String> {

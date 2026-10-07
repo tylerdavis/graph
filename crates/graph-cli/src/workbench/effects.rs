@@ -242,6 +242,31 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
             let _ = ctx.tx.send(Msg::Saved(result));
         }
 
+        Effect::SaveArtifact => {
+            let ctx = context.clone();
+            tokio::spawn(async move {
+                let saved = super::artifact::save_artifact(
+                    &ctx.draft,
+                    &ctx.pipeline,
+                    &ctx.tx,
+                    false,
+                    false,
+                )
+                .await;
+                let status = match saved {
+                    Ok(message) => message,
+                    Err(error) => format!("not saved: {error}"),
+                };
+                let _ = ctx.tx.send(Msg::Status(status));
+            });
+        }
+
+        Effect::DiscardArtifact => {
+            let status = super::artifact::discard_artifact(&ctx.draft, &ctx.pipeline, &ctx.tx)
+                .unwrap_or_else(|| "nothing to discard".to_string());
+            let _ = ctx.tx.send(Msg::Status(status));
+        }
+
         Effect::RestoreDraft => {
             let restored = ctx.draft.lock().unwrap().restore();
             match restored {

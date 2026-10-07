@@ -411,7 +411,11 @@ fn draw_workspace(frame: &mut Frame, app: &App, area: Rect, regions: &mut Region
         WsTab::Context => 1,
         WsTab::Run => 2,
     };
-    let titles = ["1 plan", "2 context", "3 run"];
+    let first = match &app.artifact {
+        Some(view) => format!("1 {}", view.kind.label()),
+        None => "1 plan".to_string(),
+    };
+    let titles = [first.as_str(), "2 context", "3 run"];
     // Mirror how `Tabs` lays labels out (a leading+trailing space of padding
     // per title, a one-cell divider between) so a click maps to a tab. The
     // clickable rect covers the padded label, matching what the eye sees.
@@ -433,7 +437,10 @@ fn draw_workspace(frame: &mut Frame, app: &App, area: Rect, regions: &mut Region
     frame.render_widget(tabs, tabs_area);
 
     match app.ws.tab {
-        WsTab::Plan => draw_plan_tab(frame, app, body, regions),
+        WsTab::Plan => match &app.artifact {
+            Some(view) => draw_artifact(frame, app, view, body),
+            None => draw_plan_tab(frame, app, body, regions),
+        },
         WsTab::Context => draw_context_tab(frame, &app.ws, body, regions),
         WsTab::Run => draw_run_tab(frame, &app.ws, body),
     }
@@ -1543,6 +1550,176 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
         out.push(String::new());
     }
     out
+}
+
+fn yaml_text(value: Option<&serde_yaml::Value>) -> Option<String> {
+    match value? {
+        serde_yaml::Value::String(text) => Some(text.clone()),
+        serde_yaml::Value::Bool(flag) => Some(flag.to_string()),
+        serde_yaml::Value::Number(number) => Some(number.to_string()),
+        serde_yaml::Value::Null => None,
+        other => serde_json::to_string(other).ok(),
+    }
+}
+
+fn yaml_list(value: Option<&serde_yaml::Value>) -> Vec<String> {
+    value
+        .and_then(serde_yaml::Value::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| yaml_text(Some(item)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn artifact_field(lines: &mut Vec<Line<'static>>, label: &str, value: Option<String>) {
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{label}: "), DIM),
+            Span::raw(value),
+        ]));
+    }
+}
+
+fn artifact_list(lines: &mut Vec<Line<'static>>, label: &str, items: Vec<String>) {
+    if items.is_empty() {
+        return;
+    }
+    lines.push(Line::styled(format!("{label}:"), DIM));
+    for item in items {
+        lines.push(Line::from(format!("  · {item}")));
+    }
+}
+
+fn artifact_schema(
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    schema: Option<&serde_yaml::Value>,
+) {
+    let Some(properties) = schema
+        .and_then(|schema| schema.get("properties"))
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return;
+    };
+    let required = yaml_list(schema.and_then(|schema| schema.get("required")));
+    lines.push(Line::styled(format!("{label}:"), DIM));
+    for (key, property) in properties {
+        let key = yaml_text(Some(key)).unwrap_or_default();
+        let kind = yaml_text(property.get("type")).unwrap_or_else(|| "any".to_string());
+        let marker = if required.contains(&key) { "" } else { "?" };
+        let mut line = format!("  · {key}{marker} ({kind})");
+        if let Some(description) = yaml_text(property.get("description")) {
+            line.push_str(&format!(" — {description}"));
+        }
+        lines.push(Line::from(line));
+    }
+}
+
+fn artifact_block(lines: &mut Vec<Line<'static>>, label: &str, text: Option<String>) {
+    let Some(text) = text.filter(|text| !text.trim().is_empty()) else {
+        return;
+    };
+    lines.push(Line::styled(format!("{label}:"), DIM));
+    for line in text.lines() {
+        lines.push(Line::from(format!("  {line}")));
+    }
+}
+
+fn artifact_lines(view: &super::artifact::ArtifactView) -> Vec<Line<'static>> {
+    use super::artifact::ArtifactKind;
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(&view.yaml).unwrap_or(serde_yaml::Value::Null);
+    let field = |key: &str| doc.get(key);
+    let name = yaml_text(field("name")).unwrap_or_else(|| "unnamed".to_string());
+    let mut lines = vec![Line::styled(name, ACCENT.add_modifier(Modifier::BOLD))];
+    if let Some(parked) = &view.parked {
+        lines.push(Line::styled(format!("⏸ waiting: {parked}"), DIM));
+    }
+    lines.push(Line::default());
+    artifact_field(&mut lines, "description", yaml_text(field("description")));
+    match view.kind {
+        ArtifactKind::Agent => {
+            artifact_field(&mut lines, "model", yaml_text(field("model")));
+            artifact_list(&mut lines, "tools", yaml_list(field("tools")));
+            artifact_list(&mut lines, "subagents", yaml_list(field("subagents")));
+            artifact_list(&mut lines, "handoffs", yaml_list(field("handoffs")));
+            artifact_schema(&mut lines, "input", field("input_schema"));
+            artifact_schema(&mut lines, "output", field("output_schema"));
+            artifact_field(
+                &mut lines,
+                "max iterations",
+                yaml_text(field("max_iterations")),
+            );
+            artifact_block(
+                &mut lines,
+                "system prompt",
+                yaml_text(field("system_prompt")),
+            );
+        }
+        ArtifactKind::Tool => {
+            artifact_field(&mut lines, "kind", yaml_text(field("kind")));
+            if let Some(command) = yaml_text(field("command")) {
+                let mut run = vec![command];
+                run.extend(yaml_list(field("args")));
+                artifact_field(&mut lines, "runs", Some(run.join(" ")));
+            }
+            artifact_block(&mut lines, "prompt", yaml_text(field("prompt")));
+            artifact_field(&mut lines, "model", yaml_text(field("model")));
+            artifact_field(&mut lines, "read only", yaml_text(field("read_only")));
+            artifact_schema(&mut lines, "input", field("input_schema"));
+            artifact_schema(&mut lines, "output", field("output_schema"));
+        }
+    }
+    lines.push(Line::default());
+    if view.problems.is_empty() {
+        lines.push(Line::styled("✓ no problems", OK));
+    } else {
+        for problem in &view.problems {
+            lines.push(Line::styled(format!("✗ {problem}"), ERROR));
+        }
+    }
+    if view.kind == ArtifactKind::Tool {
+        match &view.last_run {
+            None => lines.push(Line::styled("not tested yet", DIM)),
+            Some(run) if run["ran"] == serde_json::json!(true) => {
+                let (mark, style) = if run["is_error"] == serde_json::json!(true) {
+                    ("✗ test run failed", ERROR)
+                } else {
+                    ("✓ test run passed", OK)
+                };
+                lines.push(Line::styled(mark, style));
+                let pretty = serde_json::to_string_pretty(&run["result"]).unwrap_or_default();
+                for line in pretty.lines().take(20) {
+                    lines.push(Line::styled(format!("  {line}"), DIM));
+                }
+            }
+            Some(run) => {
+                let why = run["reason"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| run["problems"].to_string());
+                lines.push(Line::styled(format!("not run: {why}"), DIM));
+            }
+        }
+    }
+    lines.push(Line::default());
+    lines.push(Line::styled("Ctrl+S save · x twice discard", DIM));
+    lines
+}
+
+fn draw_artifact(frame: &mut Frame, app: &App, view: &super::artifact::ArtifactView, area: Rect) {
+    let title = format!(" {} draft ", view.kind.label());
+    let block = Block::bordered().title(title).border_style(DIM);
+    render_scrolled(
+        frame,
+        artifact_lines(view),
+        block,
+        area,
+        &app.ws.detail_scroll,
+    );
 }
 
 #[cfg(test)]
