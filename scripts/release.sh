@@ -46,6 +46,7 @@ format_table() {
     "config crates/graph-config/src/format.rs CONFIG_FORMAT" \
     "plan crates/graph-core/src/format.rs PLAN_FORMAT" \
     "tool crates/graph-core/src/format.rs TOOL_FORMAT" \
+    "agent crates/graph-core/src/format.rs AGENT_FORMAT" \
     "store crates/graph-store/src/file.rs STORE_FORMAT"; do
     set -- $spec
     source=$(git show "$ref:$2" 2>/dev/null || true)

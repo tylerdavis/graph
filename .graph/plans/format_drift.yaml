@@ -26,7 +26,7 @@ steps:
     input:
       base: "{{input.base}}"
       head: "{{input.head}}"
-      paths: "crates/graph-config/src/model.rs crates/graph-core/src/pipeline/doc.rs crates/graph-core/src/pipeline/plan.rs crates/graph-core/src/pipeline/condition.rs crates/graph-core/src/pipeline/body.rs crates/graph-core/src/pipeline/exit.rs crates/graph-core/src/pipeline/decision.rs crates/graph-core/src/pipeline/filter.rs crates/graph-core/src/pipeline/iterate.rs crates/graph-core/src/pipeline/agent.rs crates/graph-core/src/pipeline/ask.rs crates/graph-core/src/user_tools.rs crates/graph-store/src/file.rs"
+      paths: "crates/graph-config/src/model.rs crates/graph-core/src/pipeline/doc.rs crates/graph-core/src/pipeline/plan.rs crates/graph-core/src/pipeline/condition.rs crates/graph-core/src/pipeline/body.rs crates/graph-core/src/pipeline/exit.rs crates/graph-core/src/pipeline/decision.rs crates/graph-core/src/pipeline/filter.rs crates/graph-core/src/pipeline/iterate.rs crates/graph-core/src/pipeline/agent.rs crates/graph-core/src/pipeline/ask.rs crates/graph-core/src/user_tools.rs crates/graph-core/src/agent/doc.rs crates/graph-store/src/file.rs"
       exclude: ""
       max_bytes: 150000
     reasoning: The diff over every file that defines a versioned format's shape — config structs, plan and control-step grammars, tool docs, the store layout.
@@ -59,6 +59,7 @@ steps:
         - config: crates/graph-config/src/model.rs — `CONFIG_FORMAT`
         - plan documents: crates/graph-core/src/pipeline/*.rs — `PLAN_FORMAT`
         - tool documents: crates/graph-core/src/user_tools.rs — `TOOL_FORMAT`
+        - agent documents: crates/graph-core/src/agent/doc.rs — `AGENT_FORMAT`
         - store: crates/graph-store/src/file.rs — `STORE_FORMAT`
 
         For each kind whose model files appear in the MODEL DIFF, in order:
