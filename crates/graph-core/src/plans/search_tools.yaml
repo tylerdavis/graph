@@ -1,0 +1,57 @@
+version: 2
+identifier: search_tools
+name: Search tools
+description: Finds the catalog tools a task needs by asking which tool best accomplishes it — a decision model chooses among every tool when one is configured, otherwise keywords rank them — and returns the ones that fit, most likely first, or none when nothing fits.
+input_schema:
+  type: object
+  required: [query]
+  properties:
+    query:
+      type: string
+      description: The task the tools are for, as one step
+    min_probability:
+      type: number
+      description: Minimum probability for a tool to be returned
+      default: 0.1
+    limit:
+      type: integer
+      description: Most tools to return
+      default: 10
+    model:
+      type: string
+      description: The decision model role that chooses
+      default: decider
+    chunk_size:
+      type: integer
+      description: Most tools per choice question, up to 255; larger catalogs are split, then every tool reaching min_probability meets the others in a final choice
+      default: 250
+    schemas:
+      type: boolean
+      description: Include each tool's input schema and output shape
+      default: true
+steps:
+  - id: catalog
+    tool_name: builtin__catalog_tools
+    input: {}
+    reasoning: Every tool in the catalog with its description; always-loaded tools are left out.
+  - id: picked
+    tool_name: builtin__score_candidates
+    input:
+      query: "{{input.query}}"
+      candidates: "{{catalog.tools}}"
+      question: "What tool would best accomplish the following task?"
+      threshold: "{{input.min_probability}}"
+      limit: "{{input.limit}}"
+      model: "{{input.model}}"
+      chunk_size: "{{input.chunk_size}}"
+    reasoning: One choice among every tool; its probabilities rank them.
+  - id: described
+    tool_name: builtin__describe_tools
+    input:
+      tools: "{{picked.selected}}"
+      schemas: "{{input.schemas}}"
+    reasoning: The returned tools with their scores and, when asked, their schemas.
+output:
+  mode: "{{picked.mode}}"
+  tools: "{{described.tools}}"
+  always: "{{catalog.always}}"

@@ -49,6 +49,7 @@
               "tools/overview",
               "tools/mcp-servers",
               "tools/user-defined",
+              "tools/finding-tools",
               {
                 "group": "Standard library",
                 "icon": "books",

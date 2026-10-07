@@ -31,9 +31,15 @@ steps:
         - `ask`: gets a value that only the user can provide.
 
         ## Outline
-        - Write an ordered list of entries, one per stage of the system, in the order the stages run.
-        - Keep each entry to one or two plain sentences.
-        - Say where work fans out per item, runs in parallel, branches, or stops early.
+        - Write an ordered list of entries, one per action, in the order the actions run.
+        - Each entry is one sentence describing one action against one system or capability: one fetch, one transform, one judgment, or one write. If a stage does two things (fetches from two systems, fetches then reshapes, reduces then exits), write two entries.
+        - Commit to one approach per entry. No "or", "optionally", or alternatives in parentheses. If the system must choose at run time, write that choice as its own route entry.
+        - Your outline should be terse and direct, without writing code.  This is a system design exercise, not a development exercise
+        - Bring precision where it counts: data flow, concurrent/parallel processing, using inference where appropriate
+        - inference is expensive.  llm tokens are expensive.  We should always try to optimize the context we pass into an inference step to ensure fast, affordable inference
+        - When work fans out per item, write the fan-out as its own entry, naming the list and the single action each item gets (for example "For each project, in parallel, fetch its issues from Linear").
+        - Say where the system branches or stops early.
+        - Describe what each stage does and which system or kind of capability it uses (for example Linear, GitHub, Slack, inference, or reshaping data).
 
         # Goal
         {{input.goal}}
@@ -47,7 +53,7 @@ steps:
             type: array
             items:
               type: string
-            description: The plan's stages in the order they run, each a one- or two-sentence brief on what that stage of the system is responsible for
+            description: The plan's actions in the order they run, each a one-sentence brief on one action against one system or capability
     reasoning: One isolated inference on the outliner role; it sees the goal and the catalog summary, never tool schemas.
 output:
   entries: "{{outline.entries}}"

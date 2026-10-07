@@ -930,6 +930,48 @@ async fn prompt_output_unrepairable_is_an_error() {
 }
 
 #[tokio::test]
+async fn a_caller_can_take_an_unrepairable_output_back() {
+    let router = schema_router(json!({"category": "bug"}), json!({"category": "bug"}));
+    let tool = doc(r#"
+name: infer
+description: generic inference
+kind: prompt
+prompt: "{{input.instruction}}"
+caller_output_schema: true
+input_schema:
+  type: object
+  required: [instruction]
+  properties:
+    instruction: { type: string }
+    output_schema: { type: object }
+    on_mismatch: { type: string }
+"#);
+    let registry = UserToolRegistry::new(vec![tool], router);
+    let schema = json!({
+        "type": "object",
+        "required": ["category", "severity"],
+        "properties": {"category": {"type": "string"}, "severity": {"type": "string"}},
+    });
+    let outcome = registry
+        .invoke(
+            "user__infer",
+            json!({"instruction": "classify", "output_schema": schema, "on_mismatch": "return"}),
+        )
+        .await
+        .unwrap();
+    assert!(!outcome.is_error);
+    assert_eq!(outcome.result, json!({"category": "bug"}));
+    let err = registry
+        .invoke(
+            "user__infer",
+            json!({"instruction": "classify", "output_schema": schema}),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("after repair"), "{err}");
+}
+
+#[tokio::test]
 async fn prompt_output_valid_passes_untouched() {
     let router = schema_router(
         json!({"category": "bug", "severity": "high"}), // already valid
@@ -1636,4 +1678,79 @@ fn a_top_level_tool_named_like_a_pack_tool_stays_a_user_tool() {
     );
     let overrides = load_user_tools(&builtin_override_dirs(&dirs)).unwrap();
     assert!(overrides.is_empty());
+}
+
+#[test]
+fn coercion_leaves_strings_where_the_schema_allows_them() {
+    let schema = json!({
+        "type": "object",
+        "required": ["note", "done"],
+        "properties": {
+            "note": {"type": "string"},
+            "items": {"type": "array"},
+            "done": {"type": "boolean", "default": false},
+        },
+    });
+    let coerced = crate::user_tools::coerce_to_schema(
+        json!({"note": "{\"a\": 1}", "items": "[1, 2]"}),
+        &schema,
+    );
+    assert_eq!(
+        coerced,
+        json!({"note": "{\"a\": 1}", "items": [1, 2], "done": false})
+    );
+}
+
+#[test]
+fn coercion_pairs_parameter_names_with_their_values() {
+    let schema = json!({
+        "type": "object",
+        "required": ["step", "planComplete"],
+        "properties": {
+            "step": {"type": "object"},
+            "planComplete": {"type": "boolean", "default": false},
+        },
+    });
+    let coerced = crate::user_tools::coerce_to_schema(
+        json!({"$PARAMETER_NAME": "step", "$PARAMETER_NAME2": {"id": "E5"}}),
+        &schema,
+    );
+    assert_eq!(
+        coerced,
+        json!({"step": {"id": "E5"}, "planComplete": false})
+    );
+}
+
+#[test]
+fn coercion_reads_a_json_string_with_trailing_parameter_tags() {
+    let schema = json!({
+        "type": "object",
+        "required": ["step", "planComplete"],
+        "properties": {
+            "step": {"type": "object"},
+            "planComplete": {"type": "boolean", "default": false},
+        },
+    });
+    let coerced = crate::user_tools::coerce_to_schema(
+        json!({"step": "{\"id\": \"E0\"}\n<parameter name=\"planComplete\">true"}),
+        &schema,
+    );
+    assert_eq!(coerced, json!({"step": {"id": "E0"}, "planComplete": true}));
+}
+
+#[test]
+fn coercion_recovers_parent_fields_leaked_into_a_json_string() {
+    let schema = json!({
+        "type": "object",
+        "required": ["step", "planComplete"],
+        "properties": {
+            "step": {"type": "object"},
+            "planComplete": {"type": "boolean", "default": false},
+        },
+    });
+    let coerced = crate::user_tools::coerce_to_schema(
+        json!({"step": "{\"id\": \"E1\"},\"planComplete\":true}"}),
+        &schema,
+    );
+    assert_eq!(coerced, json!({"step": {"id": "E1"}, "planComplete": true}));
 }

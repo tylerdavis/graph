@@ -145,9 +145,12 @@ paths = ["./.graph/plans", "~/.config/graph/plans"]
 [tools]
 paths = ["./.graph/tools", "~/.config/graph/tools"]
 packs = []              # bundled tool packs to enable, e.g. ["github", "slack"]
+always_loaded = ["builtin__infer", "builtin__reshape"]   # tools never searched for, always offered
 ```
 
 `packs` enables the opt-in [built-in tool packs](/tools/builtins) — tool definitions that ship inside the binary, served under the `builtin__` namespace. The `llm` and `data` packs are always on; `packs` adds the rest (`github`, `slack`).
+
+`always_loaded` lists tools, by exact name or with `*` globs, that [tool search](/tools/finding-tools) never searches for and drafting always offers. The default keeps `builtin__infer` and `builtin__reshape`, the glue most steps can use, always offered; setting the list replaces it, so include them if you want to keep them. Control steps are always offered and never searched for, whatever the list says.
 
 ## `[pricing]` — per-model token prices
 

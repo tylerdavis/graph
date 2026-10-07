@@ -38,7 +38,7 @@ fn described(name: &str, description: Option<&str>) -> String {
 }
 
 pub fn outliner_catalog(
-    names: &[String],
+    tools: &[(String, String)],
     servers: &[crate::tools::ToolServer],
     agents: &[(String, String)],
 ) -> String {
@@ -49,7 +49,7 @@ pub fn outliner_catalog(
     let mut plans: Vec<String> = Vec::new();
     let mut seen_packs: HashSet<&str> = HashSet::new();
     let mut seen_servers: HashSet<&str> = HashSet::new();
-    for name in names {
+    for (name, description) in tools {
         let summary = BUILTIN_SUMMARIES
             .iter()
             .find(|(tool, _)| tool == name)
@@ -63,10 +63,10 @@ pub fn outliner_catalog(
                         packs.push(described(pack, crate::user_tools::pack_summary(pack)));
                     }
                 }
-                _ => builtins.push(described(name, summary)),
+                _ => builtins.push(capability(summary.unwrap_or(description))),
             },
-            Some(("user", _)) => user.push(format!("- {name}")),
-            Some(("plan", _)) => plans.push(format!("- {name}")),
+            Some(("user", bare)) => user.push(named(bare, &capability(description))),
+            Some(("plan", bare)) => plans.push(named(bare, &capability(description))),
             Some((server, _)) => {
                 if seen_servers.insert(server) {
                     let description = servers
@@ -76,24 +76,22 @@ pub fn outliner_catalog(
                     mcp.push(described(server, description));
                 }
             }
-            None => builtins.push(described(name, summary)),
+            None => builtins.push(capability(summary.unwrap_or(description))),
         }
     }
     let sections: Vec<String> = [
         ("MCP Servers", mcp),
         ("Tool packs", packs),
-        ("Builtin tools", builtins),
+        ("Built-in capabilities", builtins),
         (
             "Agents",
             agents
                 .iter()
-                .map(|(name, description)| {
-                    described(&format!("agent__{name}"), Some(description.as_str()))
-                })
+                .map(|(_, description)| capability(description))
                 .collect(),
         ),
-        ("User tools", user),
-        ("Plans", plans),
+        ("Project tools", user),
+        ("Saved plans", plans),
     ]
     .into_iter()
     .filter(|(_, lines)| !lines.is_empty())
@@ -103,6 +101,32 @@ pub fn outliner_catalog(
         return "## Tools\nNo tools are configured.".to_string();
     }
     sections.join("\n\n")
+}
+
+pub(super) fn summary_line(description: &str) -> String {
+    capability(description).trim_start_matches("- ").to_string()
+}
+
+fn capability(description: &str) -> String {
+    let text = description.trim();
+    let text = match text.split_once(" — ") {
+        Some((head, rest)) if head.len() <= 60 => rest.trim(),
+        _ => text,
+    };
+    let first_line = text.lines().next().unwrap_or_default();
+    let sentence = match first_line.find(". ") {
+        Some(end) => &first_line[..=end],
+        None => first_line,
+    };
+    let mut line: String = sentence.chars().take(200).collect();
+    if sentence.chars().count() > 200 {
+        line.push('…');
+    }
+    format!("- {}", line.trim())
+}
+
+fn named(name: &str, line: &str) -> String {
+    format!("- {name}: {}", line.trim_start_matches("- "))
 }
 
 pub struct PlannerPromptArgs<'a> {
@@ -260,20 +284,27 @@ mod tests {
     }
 
     #[test]
-    fn the_outliner_catalog_sections_servers_packs_builtins_user_tools_and_plans() {
-        let names: Vec<String> = [
-            "builtin__git_diff",
-            "linear__list_issues",
-            "builtin__infer",
-            "user__summarize",
-            "linear__get_issue",
-            "github__search_code",
-            "plan__sprint_analysis",
-            "builtin__reshape",
-            "builtin__git_log",
-            "builtin__slack_post_message",
+    fn the_outliner_catalog_describes_capabilities_without_tool_names() {
+        let tools: Vec<(String, String)> = [
+            ("builtin__git_diff", "Unified diff between two git refs."),
+            ("linear__list_issues", "List issues."),
+            ("builtin__infer", "Run an LLM inference."),
+            (
+                "user__summarize",
+                "Summarize a file in two sentences. Uses the solver model.",
+            ),
+            ("user__review_thread", "Turn findings into review comments."),
+            ("linear__get_issue", "Get an issue."),
+            ("github__search_code", "Search code."),
+            (
+                "plan__sprint_analysis",
+                "sprint_analysis — Reports how the current sprint is going.",
+            ),
+            ("builtin__reshape", "Reshape JSON."),
+            ("builtin__git_log", "Commits between refs."),
+            ("builtin__slack_post_message", "Post to Slack."),
         ]
-        .map(String::from)
+        .map(|(name, description)| (name.to_string(), description.to_string()))
         .to_vec();
         let servers = [
             crate::tools::ToolServer {
@@ -286,7 +317,7 @@ mod tests {
             },
         ];
         let agents = [("outliner".to_string(), "Writes outlines".to_string())];
-        let catalog = outliner_catalog(&names, &servers, &agents);
+        let catalog = outliner_catalog(&tools, &servers, &agents);
         let sections: Vec<&str> = catalog.split("\n\n").collect();
         assert_eq!(
             sections[0],
@@ -300,24 +331,34 @@ mod tests {
             sections[1].contains("\n- slack: posts messages"),
             "{catalog}"
         );
-        assert_eq!(sections[1].lines().count(), 3, "one line per pack");
         assert!(
-            sections[2].starts_with("## Builtin tools\n- builtin__infer: one LLM call"),
+            sections[2].starts_with("## Built-in capabilities\n- one LLM call"),
             "{catalog}"
         );
-        assert!(
-            sections[2].contains("\n- builtin__reshape: deterministically"),
-            "{catalog}"
+        assert!(sections[2].contains("\n- deterministically"), "{catalog}");
+        assert_eq!(sections[3], "## Agents\n- Writes outlines");
+        assert_eq!(
+            sections[4],
+            "## Project tools\n- summarize: Summarize a file in two sentences.\n- review_thread: Turn findings into review comments."
         );
-        assert_eq!(sections[3], "## Agents\n- agent__outliner: Writes outlines");
-        assert_eq!(sections[4], "## User tools\n- user__summarize");
-        assert_eq!(sections[5], "## Plans\n- plan__sprint_analysis");
+        assert_eq!(
+            sections[5],
+            "## Saved plans\n- sprint_analysis: Reports how the current sprint is going."
+        );
         assert_eq!(sections.len(), 6);
-        assert!(
-            !catalog.contains("list_issues"),
-            "MCP tool lists are dropped"
-        );
-        assert!(!catalog.contains("git_diff"), "pack tool lists are dropped");
+        for name in [
+            "builtin__",
+            "user__",
+            "plan__",
+            "agent__",
+            "list_issues",
+            "git_diff",
+        ] {
+            assert!(
+                !catalog.contains(name),
+                "{name} leaked into the outline catalog: {catalog}"
+            );
+        }
         assert_eq!(
             outliner_catalog(&[], &[], &[]),
             "## Tools\nNo tools are configured."

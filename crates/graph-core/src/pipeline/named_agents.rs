@@ -3,7 +3,9 @@ use super::catalog::glob_matches;
 use super::gate::StepPath;
 use super::native_tools::{native_tool_defs, tool_error};
 use super::{DispatchError, Pipeline};
-use crate::agent::doc::{global_fragments, input_problems, render_system_prompt, AgentDoc};
+use crate::agent::doc::{
+    global_fragments, input_problems, render_system_prompt, AgentDoc, CHAT_AGENT,
+};
 use crate::agent::task::{run_task_agent, TaskError, TaskSpec, TaskTools};
 use crate::tools::{ToolDef, ToolOutcome};
 use crate::usage::CallSite;
@@ -29,7 +31,11 @@ pub fn named_agent_tool_def(doc: &AgentDoc) -> ToolDef {
 
 impl Pipeline {
     pub(super) fn agent_tool_defs(&self) -> Vec<ToolDef> {
-        self.agents.iter().map(named_agent_tool_def).collect()
+        self.agents
+            .iter()
+            .filter(|doc| doc.name != CHAT_AGENT)
+            .map(named_agent_tool_def)
+            .collect()
     }
 
     pub(super) async fn call_agent(
