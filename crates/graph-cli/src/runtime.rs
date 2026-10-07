@@ -113,6 +113,8 @@ impl Runtime {
             // budget is a plain hard cap. The workbench opts into progress
             // resetting when it rebuilds the agent (see workbench effects).
             progress_tools: Vec::new(),
+            stop_tools: Vec::new(),
+            call_site: graph_core::CallSite::role("chat"),
         })
     }
 

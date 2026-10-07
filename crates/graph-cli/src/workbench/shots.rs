@@ -413,6 +413,8 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         system_prompt,
         max_iterations: 8,
         progress_tools: progress_tools(),
+        stop_tools: Vec::new(),
+        call_site: graph_core::CallSite::role("chat"),
     };
 
     let context = Arc::new(WorkbenchContext {

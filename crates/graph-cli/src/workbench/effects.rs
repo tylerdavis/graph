@@ -89,6 +89,8 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                     // long fix-forward loop (draft → validate → run → patch)
                     // isn't cut off mid-repair the way a plain hard cap does.
                     progress_tools: super::tools::progress_tools(),
+                    stop_tools: Vec::new(),
+                    call_site: graph_core::CallSite::role("chat"),
                 };
                 let mut history = ctx.history.lock().await;
                 let pre_len = history.len();

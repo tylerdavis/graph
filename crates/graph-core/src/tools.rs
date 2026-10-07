@@ -131,6 +131,41 @@ impl ToolRegistry for ExcludingRegistry {
     }
 }
 
+pub struct AllowlistRegistry {
+    inner: std::sync::Arc<dyn ToolRegistry>,
+    patterns: Vec<String>,
+}
+
+impl AllowlistRegistry {
+    pub fn new(inner: std::sync::Arc<dyn ToolRegistry>, patterns: Vec<String>) -> Self {
+        Self { inner, patterns }
+    }
+
+    fn allows(&self, name: &str) -> bool {
+        self.patterns
+            .iter()
+            .any(|pattern| crate::pipeline::catalog::glob_matches(pattern, name))
+    }
+}
+
+#[async_trait]
+impl ToolRegistry for AllowlistRegistry {
+    async fn tools(&self) -> Result<Vec<ToolDef>, ToolError> {
+        let mut defs = self.inner.tools().await?;
+        defs.retain(|d| self.allows(&d.name));
+        Ok(defs)
+    }
+    async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
+        if !self.allows(name) {
+            return Err(ToolError::Unknown(name.to_string()));
+        }
+        self.inner.invoke(name, input).await
+    }
+    async fn servers(&self) -> Vec<ToolServer> {
+        self.inner.servers().await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +201,36 @@ mod tests {
                 Err(ToolError::Unknown(name.to_string()))
             }
         }
+    }
+
+    #[tokio::test]
+    async fn allowlist_registry_exposes_and_invokes_only_matching_tools() {
+        let inner: std::sync::Arc<dyn ToolRegistry> = std::sync::Arc::new(MockRegistry {
+            defs: vec![
+                def("linear__get_issue"),
+                def("linear__list_issues"),
+                def("user__grep"),
+            ],
+        });
+        let allowed = AllowlistRegistry::new(
+            inner.clone(),
+            vec!["linear__get_*".to_string(), "user__grep".to_string()],
+        );
+        let names: Vec<String> = allowed
+            .tools()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(names, ["linear__get_issue", "user__grep"]);
+        assert!(allowed.invoke("user__grep", Value::Null).await.is_ok());
+        assert!(matches!(
+            allowed.invoke("linear__list_issues", Value::Null).await,
+            Err(ToolError::Unknown(_))
+        ));
+        let none = AllowlistRegistry::new(inner, Vec::new());
+        assert!(none.tools().await.unwrap().is_empty());
     }
 
     #[tokio::test]
