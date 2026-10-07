@@ -1827,6 +1827,43 @@ async fn map_item_failure_fails_the_step_with_index_attribution() {
 }
 
 #[tokio::test]
+async fn map_on_error_skip_records_failed_items_and_continues() {
+    let registry = Arc::new(MockRegistry {
+        search_result: json!({"values": [{"id": "a"}, {"id": "b"}]}),
+        invocations: Mutex::new(Vec::new()),
+        fail_tools: vec!["t__issues".to_string()],
+    });
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "onError": "skip",
+            "do": {"toolName": "t__issues", "input": {"q": "{{item.id}}"}},
+        }},
+        {"id": "E2", "toolName": "t__search", "input": {"query": "{{E1.failed_count}}"}},
+    ]))
+    .unwrap();
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap();
+    let map = &outcome.state.results["E1"];
+    assert_eq!(map["count"], json!(0));
+    assert_eq!(map["failed_count"], json!(2));
+    assert_eq!(map["failed"][1]["index"], json!(1));
+    assert_eq!(map["failed"][1]["item"], json!({"id": "b"}));
+    let searches = registry
+        .invocations
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(n, _)| n == "t__search")
+        .count();
+    assert_eq!(searches, 2, "the plan continued past the map");
+}
+
+#[tokio::test]
 async fn empty_over_continues_with_zero_count() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, _) = pipeline(vec![], registry, 1);

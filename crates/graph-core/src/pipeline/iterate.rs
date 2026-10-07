@@ -35,6 +35,18 @@ pub struct MapSpec {
     /// Maximum items in flight; 1 (the default) runs items sequentially.
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
+    /// What a failing item does: `fail` (the default) fails the step;
+    /// `skip` leaves it out of `results` and records it under `failed`.
+    #[serde(default)]
+    pub on_error: OnItemError,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnItemError {
+    #[default]
+    Fail,
+    Skip,
 }
 
 fn default_concurrency() -> usize {
@@ -64,7 +76,11 @@ pub fn map_tool_def() -> crate::tools::ToolDef {
                       available alongside earlier step results. Per-item results are \
                       collected in input order: later steps reference {{Ex.results}} for \
                       the list and {{Ex.count}} for how many ran. Set `concurrency` above \
-                      1 only when the per-item calls are independent. The body may contain \
+                      1 only when the per-item calls are independent. Set `onError: skip` \
+                      when one item failing (a lookup that finds nothing, a call that \
+                      errors) shouldn't fail the whole plan: failed items are left out of \
+                      {{Ex.results}} and listed in {{Ex.failed}} as {index, item, error}, \
+                      with {{Ex.failed_count}}. The body may contain \
                       `agent`, `ask`, `filter`, `route`, and `exit` steps (an `ask` is put \
                       to the user once per item, always serialized; a fired exit ends the \
                       WHOLE plan), but never `map` or `reduce` — call a plan (plan__*) for \
@@ -76,7 +92,8 @@ pub fn map_tool_def() -> crate::tools::ToolDef {
             "properties": {
                 "over": {"description": "The list to iterate — usually a template like {{E0.issues}} that resolves to an array."},
                 "do": body_schema(),
-                "concurrency": {"type": "integer", "minimum": 1, "description": "Maximum items in flight; 1 (default) runs items one at a time."}
+                "concurrency": {"type": "integer", "minimum": 1, "description": "Maximum items in flight; 1 (default) runs items one at a time."},
+                "onError": {"type": "string", "enum": ["fail", "skip"], "description": "fail (default): a failing item fails the step. skip: failed items are left out of results and listed in failed."}
             }
         }),
         output_schema: None,
@@ -262,6 +279,7 @@ impl Pipeline {
         let spec: MapSpec = serde_json::from_value(Value::Object(step.input.clone()))
             .map_err(|e| failed(format!("invalid map step input: {e}")))?;
         let concurrency = spec.concurrency.max(1);
+        let skip_failures = spec.on_error == OnItemError::Skip;
 
         // Render only `over`; the body renders per item.
         let over = render_input(&spec.over, &Roots::new(&state.results)).map_err(render_end)?;
@@ -312,8 +330,12 @@ impl Pipeline {
                                 &extras,
                             )
                             .await;
-                        if run.is_err() {
-                            halted_ref.store(true, Ordering::Relaxed);
+                        if let Err(error) = &run {
+                            let skippable = skip_failures
+                                && matches!(error.fail, BodyFail::Tool(_) | BodyFail::Render(_));
+                            if !skippable {
+                                halted_ref.store(true, Ordering::Relaxed);
+                            }
                         }
                         Some(run)
                     };
@@ -329,8 +351,12 @@ impl Pipeline {
         // yields outputs in stream order, so `results` needs no sorting and
         // the reported failure is the lowest-index one.
         let mut results = Vec::with_capacity(items.len());
+        let mut skipped = Vec::new();
         let mut failure: Option<BodyFail> = None;
-        for outcome in outcomes.into_iter().flatten() {
+        for (index, outcome) in outcomes.into_iter().enumerate() {
+            let Some(outcome) = outcome else {
+                continue;
+            };
             match outcome {
                 Ok(run) => {
                     state.branch_steps_executed += run.steps_executed;
@@ -340,7 +366,19 @@ impl Pipeline {
                 Err(e) => {
                     state.branch_steps_executed += e.steps_executed;
                     state.bus.extend(e.bus);
-                    failure.get_or_insert(e.fail);
+                    match e.fail {
+                        BodyFail::Tool(message) if skip_failures => {
+                            skipped.push(
+                                json!({"index": index, "item": items[index], "error": message}),
+                            );
+                        }
+                        BodyFail::Render(error) if skip_failures => {
+                            skipped.push(json!({"index": index, "item": items[index], "error": error.to_string()}));
+                        }
+                        fail => {
+                            failure.get_or_insert(fail);
+                        }
+                    }
                 }
             }
         }
@@ -361,8 +399,24 @@ impl Pipeline {
         state.push_bus(
             &step.id,
             BusKind::Info,
-            format!("map: {} items", results.len()),
+            if skipped.is_empty() {
+                format!("map: {} items", results.len())
+            } else {
+                format!(
+                    "map: {} items, {} skipped after failing",
+                    results.len(),
+                    skipped.len()
+                )
+            },
         );
+        if skip_failures {
+            return Ok(json!({
+                "count": results.len(),
+                "results": results,
+                "failed_count": skipped.len(),
+                "failed": skipped,
+            }));
+        }
         Ok(json!({"count": results.len(), "results": results}))
     }
 
