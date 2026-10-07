@@ -1,0 +1,36 @@
+version: 1
+name: plan_loader
+description: Finds an existing plan in the catalog from a name or description and loads it into the workbench draft.
+model: chat
+tools: [workbench__list_plans, workbench__show_plan, workbench__load_plan]
+input_schema:
+  type: object
+  required: [request]
+  properties:
+    request:
+      type: string
+      description: What the user asked for, in their words, naming or describing the plan
+output_schema:
+  type: object
+  required: [loaded, identifier, candidates, note]
+  properties:
+    loaded:
+      type: boolean
+      description: True when exactly one plan matched and it is now the draft
+    identifier:
+      type: string
+      description: The loaded plan's identifier, or empty when nothing was loaded
+    candidates:
+      type: array
+      items:
+        type: string
+      description: Identifiers of the plans that could match when the request was ambiguous
+    note:
+      type: string
+      description: One sentence on what happened, for the agent that asked
+system_prompt: |
+  You load a plan into the graph plan workbench. List the catalog with workbench__list_plans, read likely matches with workbench__show_plan when the name alone doesn't settle it, and load the single best match with workbench__load_plan.
+
+  - Load only when one plan clearly matches the request. When several could match, load nothing and return them as candidates.
+  - When nothing matches, load nothing and say so in the note.
+  - workbench__load_plan fails when the current draft has unsaved changes. Never pass overwrite_draft; report the failure in the note so the user can decide.

@@ -1,4 +1,4 @@
-version: 1
+version: 2
 identifier: draft_expand
 name: Draft plan from outline
 description: Turns an outline into validated plan steps, one outline entry at a time.
@@ -14,10 +14,6 @@ input_schema:
       items:
         type: string
       description: Outline entries, in order
-    revising:
-      type: string
-      description: A draft plan being revised, as YAML; every step is regenerated
-      default: ""
 steps:
   - id: expand
     tool_name: reduce
@@ -31,7 +27,6 @@ steps:
           outline: "{{input.outline}}"
           entry: "{{item}}"
           state: "{{accumulator}}"
-          revising: "{{input.revising}}"
     reasoning: One validated step per outline entry; the state carries accepted steps forward.
   - id: close
     tool_name: plan__draft_step
@@ -40,7 +35,6 @@ steps:
       outline: "{{input.outline}}"
       entry: ""
       state: "{{expand.result}}"
-      revising: "{{input.revising}}"
     reasoning: Finishes the plan, or confirms it is complete, once every entry has been advanced.
 output:
   steps: "{{close.steps}}"

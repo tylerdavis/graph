@@ -34,10 +34,11 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use graph_config::{ModelChoice, ModelRoles};
+use graph_core::agent::conversation::Conversation;
 use graph_core::pipeline::doc::load_plan_doc;
 use graph_core::pipeline::{Pipeline, ToolCatalog};
 use graph_core::user_tools::{available_packs, load_pack_tools, load_user_tools, UserToolRegistry};
-use graph_core::{Agent, CompositeRegistry, Store, ToolDef, ToolError, ToolOutcome, ToolRegistry};
+use graph_core::{CompositeRegistry, Store, ToolDef, ToolError, ToolOutcome, ToolRegistry};
 use graph_llm::types::{
     ChatRequest, ChatResponse, EventStream, StopReason, StreamEvent, ToolCall, Usage,
 };
@@ -77,6 +78,8 @@ struct ShotSpec {
     /// interleave agent, solver, and planner responses in call order.
     #[serde(default)]
     llm: Vec<LlmScript>,
+    #[serde(default)]
+    answers: VecDeque<Value>,
     /// Scripted tool outcomes per namespaced tool name, consumed in call
     /// order. Every name must resolve in the real catalog; outcomes are
     /// validated against the tool's declared output schema.
@@ -352,6 +355,15 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
             problems.join("\n  ")
         );
     }
+    let (agent_set, agent_errors) =
+        graph_core::agent::doc::AgentSet::load(&super::agents::builtin_sources(), &[]);
+    if !agent_errors.is_empty() {
+        bail!(
+            "built-in agents failed to load: {}",
+            agent_errors.join("; ")
+        );
+    }
+    let agent_set = Arc::new(agent_set);
     let catalog = ToolCatalog {
         builtin_tools: defs
             .iter()
@@ -363,10 +375,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
             .filter(|d| d.name.starts_with("user__"))
             .map(|d| d.name.clone())
             .collect(),
-        agents: graph_core::agent::doc::AgentSet::builtin()
-            .iter()
-            .map(|doc| doc.name.clone())
-            .collect(),
+        agents: agent_set.iter().map(|doc| doc.name.clone()).collect(),
         plans: graph_core::pipeline::doc::builtin_plan_docs()
             .into_iter()
             .map(|doc| doc.identifier)
@@ -402,7 +411,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         current_date: "2026-07-19".to_string(),
         max_attempts: 2,
         usage: std::sync::Arc::new(graph_core::usage::UsageLedger::unpriced()),
-        agents: Arc::new(graph_core::agent::doc::AgentSet::builtin()),
+        agents: agent_set.clone(),
         agent_depth: 0,
     });
 
@@ -415,28 +424,38 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         debug.clone(),
         tx.clone(),
     ));
-    let registry: Arc<dyn ToolRegistry> = Arc::new(CompositeRegistry::new(vec![
-        scripted.clone(),
-        workbench_tools,
-    ]));
+    let asking = Arc::new(
+        pipeline
+            .as_ref()
+            .clone()
+            .with_interlocutor(Arc::new(super::runner::UiInterlocutor::new(tx.clone()))),
+    );
+    let toolbox: Arc<dyn ToolRegistry> = Arc::new(graph_core::ExcludingRegistry::new(
+        Arc::new(graph_core::toolbox::AgentToolbox::new(
+            asking.registry.clone(),
+            asking.clone(),
+            asking.plans.as_ref().clone(),
+        )),
+        vec!["plan_and_execute".to_string()],
+    ));
+    let registry: Arc<dyn ToolRegistry> =
+        Arc::new(CompositeRegistry::new(vec![toolbox, workbench_tools]));
 
-    // The real workbench system prompt, minus the config-derived base.
-    let system_prompt = super::workbench_system_prompt("", None);
-    let agent = Agent {
-        provider: chat_provider,
-        registry: registry.clone(),
+    let conversation = Conversation {
+        agents: agent_set,
+        catalog: registry,
+        pipeline: pipeline.clone(),
         events: Arc::new(ChannelSink::agent(tx.clone())),
-        model: "scripted".to_string(),
-        temperature: None,
-        system_prompt,
-        max_iterations: 8,
+        session: BTreeMap::from([("date", "2026-07-19".to_string()), ("user", String::new())]),
+        prompt_overrides: BTreeMap::new(),
+        context: Some(super::agents::context_hook(draft.clone())),
+        default_max_iterations: 8,
         progress_tools: progress_tools(),
-        stop_tools: Vec::new(),
-        call_site: graph_core::CallSite::role("chat"),
     };
 
     let context = Arc::new(WorkbenchContext {
-        agent,
+        active: Mutex::new(super::agents::starting_agent(doc.as_ref()).to_string()),
+        conversation,
         pipeline,
         history: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         draft,
@@ -464,6 +483,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
     // Drain engine messages through the reducer until the capture point.
     // Pauses before a `pause_at` target are answered with a real `c`
     // keypress — the user's continue — so the run steps to the target.
+    let mut answers = spec.answers;
     let mut context_loaded = false;
     let mut validated = spec.plan.is_none();
     let mut turn_done = spec.chat.is_none();
@@ -487,6 +507,20 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         };
         for effect in app::update(&mut app, msg) {
             run_effect(effect, &context);
+        }
+        if let Mode::Editing(editor) = &mut app.mode {
+            let asking = matches!(
+                &editor.context,
+                super::editor::EditorContext::InjectResult { prompt }
+                    if matches!(prompt.kind, app::GateKind::Ask { .. })
+            );
+            if asking {
+                if let Some(answer) = answers.pop_front() {
+                    editor.textarea = super::editor::json_textarea(&answer);
+                    feed_key(&mut app, KeyCode::F(2), &context);
+                    continue;
+                }
+            }
         }
         if let Some(target) = &spec.capture.pause_at {
             match &app.mode {

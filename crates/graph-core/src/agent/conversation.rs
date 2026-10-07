@@ -1,11 +1,12 @@
-use super::doc::{global_fragments, render_system_prompt, AgentDoc, AgentSet};
+use super::doc::{global_fragments, input_problems, render_system_prompt, AgentDoc, AgentSet};
+use super::task::{run_task_agent, TaskError, TaskSpec, TaskTools};
 use super::{Agent, AgentError, EventSink};
-use crate::pipeline::{named_agent_tool_def, DispatchError, Pipeline, StepPath, AGENT_TOOL_PREFIX};
+use crate::pipeline::{named_agent_tool_def, Pipeline, AGENT_TOOL_PREFIX, MAX_SUBAGENT_DEPTH};
 use crate::store::{EntryBody, NewEntry, USER_AUTHOR};
 use crate::tools::{AllowlistRegistry, ToolDef, ToolError, ToolOutcome, ToolRegistry, ToolServer};
 use crate::usage::CallSite;
 use async_trait::async_trait;
-use graph_llm::types::ChatMessage;
+use graph_llm::types::{ChatMessage, ToolCall, ToolSpec};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -16,6 +17,7 @@ pub const MAX_HANDOFFS_PER_TURN: usize = 4;
 
 pub type ContextHook = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
 
+#[derive(Clone)]
 pub struct Conversation {
     pub agents: Arc<AgentSet>,
     pub catalog: Arc<dyn ToolRegistry>,
@@ -25,6 +27,7 @@ pub struct Conversation {
     pub prompt_overrides: BTreeMap<String, String>,
     pub context: Option<ContextHook>,
     pub default_max_iterations: u32,
+    pub progress_tools: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -38,6 +41,7 @@ pub enum ConversationError {
         agent: String,
         #[source]
         source: AgentError,
+        partial: Vec<NewEntry>,
     },
 }
 
@@ -84,18 +88,11 @@ impl Conversation {
         loop {
             let doc = self.agent(&active)?;
             let may_hand_off = handoffs < MAX_HANDOFFS_PER_TURN;
-            let tools = Arc::new(ConversationTools::new(self, doc, may_hand_off));
+            let tools = Arc::new(ConversationTools::new(self, doc, 0, may_hand_off));
             let agent = self.build_agent(doc, tools.clone())?;
             let mut messages = view(&active, history.iter().chain(entries.iter()));
             let before = messages.len();
-            let outcome =
-                agent
-                    .run_turn(&mut messages)
-                    .await
-                    .map_err(|source| ConversationError::Turn {
-                        agent: active.clone(),
-                        source,
-                    })?;
+            let result = agent.run_turn(&mut messages).await;
             entries.extend(
                 messages[before..]
                     .iter()
@@ -103,6 +100,11 @@ impl Conversation {
                     .map(|message| NewEntry::message(&active, message)),
             );
             entries.extend(tools.take_runs());
+            let outcome = result.map_err(|source| ConversationError::Turn {
+                agent: active.clone(),
+                source,
+                partial: entries.clone(),
+            })?;
             tool_calls_made += outcome.tool_calls_made;
             for tool in outcome.tools_used {
                 if !tools_used.contains(&tool) {
@@ -132,30 +134,38 @@ impl Conversation {
         }
     }
 
+    fn system_prompt(&self, doc: &AgentDoc) -> Result<String, ConversationError> {
+        let mut prompt = match self.prompt_overrides.get(&doc.name) {
+            Some(prompt) => prompt.clone(),
+            None => render_system_prompt(doc, &global_fragments(), &self.session).map_err(
+                |message| ConversationError::Setup {
+                    agent: doc.name.clone(),
+                    message,
+                },
+            )?,
+        };
+        if let Some(context) = &self.context {
+            for section in context(&doc.name) {
+                prompt.push_str("\n\n");
+                prompt.push_str(&section);
+            }
+        }
+        Ok(prompt)
+    }
+
     fn build_agent(
         &self,
         doc: &AgentDoc,
         tools: Arc<ConversationTools>,
     ) -> Result<Agent, ConversationError> {
-        let setup = |message: String| ConversationError::Setup {
-            agent: doc.name.clone(),
-            message,
-        };
         let (provider, choice) = self
             .pipeline
             .router
             .resolve_named(&doc.model)
-            .map_err(|e| setup(e.to_string()))?;
-        let mut system_prompt = match self.prompt_overrides.get(&doc.name) {
-            Some(prompt) => prompt.clone(),
-            None => render_system_prompt(doc, &global_fragments(), &self.session).map_err(setup)?,
-        };
-        if let Some(context) = &self.context {
-            for section in context(&doc.name) {
-                system_prompt.push_str("\n\n");
-                system_prompt.push_str(&section);
-            }
-        }
+            .map_err(|e| ConversationError::Setup {
+                agent: doc.name.clone(),
+                message: e.to_string(),
+            })?;
         Ok(Agent {
             provider,
             model: choice.model.clone(),
@@ -163,11 +173,119 @@ impl Conversation {
             stop_tools: tools.handoff_tools(),
             registry: tools,
             events: self.events.clone(),
-            system_prompt,
+            system_prompt: self.system_prompt(doc)?,
             max_iterations: doc.max_iterations.unwrap_or(self.default_max_iterations),
-            progress_tools: Vec::new(),
+            progress_tools: self.progress_tools.clone(),
             call_site: CallSite::role(doc.model.clone()).at(format!("agent:{}", doc.name)),
         })
+    }
+
+    async fn run_subagent(
+        &self,
+        caller: &str,
+        name: &str,
+        input: Value,
+        depth: usize,
+    ) -> (ToolOutcome, Option<NewEntry>) {
+        let refuse = |message: String| {
+            (
+                ToolOutcome {
+                    result: json!({ "error": message }),
+                    is_error: true,
+                },
+                None,
+            )
+        };
+        if depth > MAX_SUBAGENT_DEPTH {
+            return refuse(format!(
+                "agent '{name}' not started: subagents nest at most {MAX_SUBAGENT_DEPTH} deep"
+            ));
+        }
+        let doc = match self.agent(name) {
+            Ok(doc) => doc,
+            Err(error) => return refuse(error.to_string()),
+        };
+        let problems = input_problems(&doc.subagent_input_schema(), &input);
+        if !problems.is_empty() {
+            return refuse(format!(
+                "invalid input for agent '{name}': {}",
+                problems.join("; ")
+            ));
+        }
+        let system = match self.system_prompt(doc) {
+            Ok(system) => system,
+            Err(error) => return refuse(error.to_string()),
+        };
+        let prompt = match &doc.input_schema {
+            None => input["prompt"].as_str().unwrap_or_default().to_string(),
+            Some(_) => serde_json::to_string_pretty(&input).unwrap_or_default(),
+        };
+        let tools = ConversationTools::new(self, doc, depth, false);
+        let specs: Vec<ToolSpec> = tools
+            .tools()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|def| ToolSpec {
+                name: def.name,
+                description: def.description,
+                input_schema: def.input_schema,
+            })
+            .collect();
+        let spec = TaskSpec {
+            model: doc.model.clone(),
+            system,
+            prompt,
+            tools: specs,
+            max_iterations: doc.max_iterations,
+            output_schema: doc.output_schema.clone(),
+        };
+        let site = CallSite::role(doc.model.clone()).at(format!("agent:{caller}/agent__{name}"));
+        let runner = RegistryTools {
+            registry: &tools,
+            events: self.events.as_ref(),
+        };
+        let run = run_task_agent(
+            &spec,
+            &self.pipeline.router,
+            &site,
+            self.events.as_ref(),
+            &runner,
+        )
+        .await;
+        let outcome = match run {
+            Ok(outcome) => outcome,
+            Err(TaskError::Failed(message)) => {
+                return refuse(format!("agent '{name}' failed: {message}"))
+            }
+            Err(TaskError::Aborted(_)) => return refuse(format!("agent '{name}' was aborted")),
+        };
+        let result = if outcome.final_ {
+            ToolOutcome {
+                result: outcome.output.clone(),
+                is_error: false,
+            }
+        } else {
+            ToolOutcome {
+                result: json!({
+                    "error": format!("agent '{name}' ran out of rounds before answering"),
+                    "partial": outcome.output,
+                }),
+                is_error: true,
+            }
+        };
+        let entry = NewEntry {
+            author: caller.to_string(),
+            body: EntryBody::SubagentRun {
+                agent: name.to_string(),
+                caller: caller.to_string(),
+                input,
+                messages: outcome.messages,
+                output: outcome.output,
+                final_: outcome.final_,
+            },
+        };
+        (result, Some(entry))
     }
 }
 
@@ -210,19 +328,56 @@ pub fn view<'a>(agent: &str, entries: impl Iterator<Item = &'a NewEntry>) -> Vec
     messages
 }
 
+struct RegistryTools<'a> {
+    registry: &'a dyn ToolRegistry,
+    events: &'a dyn EventSink,
+}
+
+#[async_trait]
+impl TaskTools for RegistryTools<'_> {
+    async fn execute(
+        &self,
+        calls: &[ToolCall],
+        _round: u32,
+    ) -> Result<Vec<ChatMessage>, TaskError> {
+        let runs = calls.iter().map(|call| async {
+            self.events.tool_started(&call.name, &call.arguments);
+            let started = std::time::Instant::now();
+            let outcome = self
+                .registry
+                .invoke(&call.name, call.arguments.clone())
+                .await
+                .unwrap_or_else(|e| ToolOutcome {
+                    result: json!({ "error": e.to_string() }),
+                    is_error: true,
+                });
+            self.events
+                .tool_finished(&call.name, started.elapsed(), outcome.is_error);
+            ChatMessage::ToolResult {
+                tool_call_id: call.id.clone(),
+                content: outcome.result,
+                is_error: outcome.is_error,
+            }
+        });
+        Ok(futures::future::join_all(runs).await)
+    }
+}
+
 struct ConversationTools {
+    conversation: Conversation,
     base: AllowlistRegistry,
     subagents: Vec<ToolDef>,
     handoffs: Vec<String>,
-    pipeline: Arc<Pipeline>,
     caller: String,
+    depth: usize,
     runs: Mutex<Vec<NewEntry>>,
     handoff: Mutex<Option<(String, String)>>,
 }
 
 impl ConversationTools {
-    fn new(conversation: &Conversation, doc: &AgentDoc, may_hand_off: bool) -> Self {
+    fn new(conversation: &Conversation, doc: &AgentDoc, depth: usize, may_hand_off: bool) -> Self {
         Self {
+            conversation: conversation.clone(),
             base: AllowlistRegistry::new(conversation.catalog.clone(), doc.tools.clone()),
             subagents: doc
                 .subagents
@@ -236,8 +391,8 @@ impl ConversationTools {
                 .filter(|name| may_hand_off && conversation.agents.get(name).is_some())
                 .cloned()
                 .collect(),
-            pipeline: conversation.pipeline.clone(),
             caller: doc.name.clone(),
+            depth,
             runs: Mutex::new(Vec::new()),
             handoff: Mutex::new(None),
         }
@@ -281,36 +436,6 @@ impl ConversationTools {
             read_only: Some(true),
         }
     }
-
-    async fn run_subagent(&self, name: &str, input: Value) -> ToolOutcome {
-        let path = StepPath::top(&format!("agent:{}", self.caller));
-        match self.pipeline.run_subagent(&path, name, input.clone()).await {
-            Ok(run) => {
-                if !run.messages.is_empty() {
-                    self.runs.lock().unwrap().push(NewEntry {
-                        author: self.caller.clone(),
-                        body: EntryBody::SubagentRun {
-                            agent: name.to_string(),
-                            caller: self.caller.clone(),
-                            input,
-                            messages: run.messages,
-                            output: run.output,
-                            final_: run.final_,
-                        },
-                    });
-                }
-                run.outcome
-            }
-            Err(DispatchError::Failed(message)) => ToolOutcome {
-                result: json!({ "error": message }),
-                is_error: true,
-            },
-            Err(DispatchError::Aborted { error }) => ToolOutcome {
-                result: json!({ "error": "aborted", "cause": error }),
-                is_error: true,
-            },
-        }
-    }
 }
 
 #[async_trait]
@@ -335,7 +460,17 @@ impl ToolRegistry for ConversationTools {
         }
         if let Some(agent) = name.strip_prefix(AGENT_TOOL_PREFIX) {
             if self.subagents.iter().any(|def| def.name == name) {
-                return Ok(self.run_subagent(agent, input).await);
+                let (outcome, entry) = Box::pin(self.conversation.run_subagent(
+                    &self.caller,
+                    agent,
+                    input,
+                    self.depth + 1,
+                ))
+                .await;
+                if let Some(entry) = entry {
+                    self.runs.lock().unwrap().push(entry);
+                }
+                return Ok(outcome);
             }
         }
         self.base.invoke(name, input).await
@@ -432,7 +567,7 @@ mod tests {
     const AGENTS: &[&str] = &[
         "name: front\ndescription: routes\nmodel: chat\ntools: [t__echo]\nhandoffs: [back]\nsubagents: [helper]\nsystem_prompt: You are front.\n",
         "name: back\ndescription: works\nmodel: chat\ntools: []\nhandoffs: [front]\nsystem_prompt: You are back.\n",
-        "name: helper\ndescription: helps\nmodel: chat\ntools: []\nsystem_prompt: You help.\n",
+        "name: helper\ndescription: helps\nmodel: chat\ntools: [t__echo]\nsystem_prompt: You help.\n",
     ];
 
     fn conversation(responses: Vec<ChatResponse>) -> (Conversation, Arc<Scripted>) {
@@ -483,6 +618,7 @@ mod tests {
             prompt_overrides: BTreeMap::new(),
             context: None,
             default_max_iterations: 8,
+            progress_tools: Vec::new(),
         };
         (conversation, provider)
     }
@@ -605,6 +741,33 @@ mod tests {
             4,
             "the caller sees its own call and result, never the subagent's messages"
         );
+    }
+
+    #[tokio::test]
+    async fn a_subagent_gets_the_conversation_catalog_and_its_context() {
+        let (mut conversation, provider) = conversation(vec![
+            call("c1", "agent__helper", json!({"prompt": "look it up"})),
+            text("found it"),
+            text("the answer"),
+        ]);
+        conversation.context = Some(Arc::new(|agent: &str| {
+            if agent == "helper" {
+                vec!["## Current draft\n(the draft)".to_string()]
+            } else {
+                Vec::new()
+            }
+        }));
+        conversation
+            .run_turn(&[], "front", "question")
+            .await
+            .unwrap();
+        let requests = provider.requests.lock().unwrap();
+        assert!(requests[1]
+            .system
+            .ends_with("## Current draft\n(the draft)"));
+        assert!(!requests[0].system.contains("Current draft"));
+        let tools: Vec<&str> = requests[1].tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(tools, ["t__echo"]);
     }
 
     #[test]

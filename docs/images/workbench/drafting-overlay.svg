@@ -9,7 +9,9 @@
 <rect x="18.0" y="684.0" width="67.2" height="18" fill="#56b6c2"/>
 <text x="18.0" y="67.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">┌</text>
 <text x="34.8" y="67.5" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">chat</text>
-<text x="76.8" y="67.5" textLength="344.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">────────────────────────────────────────┐</text>
+<text x="76.8" y="67.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">·</text>
+<text x="93.6" y="67.5" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">orchestrator</text>
+<text x="202.8" y="67.5" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">─────────────────────────┐</text>
 <text x="421.2" y="67.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">┌</text>
 <text x="438.0" y="67.5" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">workspace</text>
 <text x="522.0" y="67.5" textLength="504.0" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">───────────────────────────────────────────────────────────┐</text>
@@ -66,7 +68,7 @@
 <text x="1009.2" y="121.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">││</text>
 <text x="18.0" y="139.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="34.8" y="139.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">→</text>
-<text x="51.6" y="139.5" textLength="176.4" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">workbench__draft_plan</text>
+<text x="51.6" y="139.5" textLength="142.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">plan__author_plan</text>
 <text x="412.8" y="139.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#56b6c2">│</text>
 <text x="421.2" y="139.5" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#c6cad3" opacity="0.55">││</text>
 <text x="438.0" y="139.5" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#98c379">✓</text>

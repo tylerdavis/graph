@@ -3,7 +3,7 @@ use super::catalog::glob_matches;
 use super::gate::StepPath;
 use super::native_tools::{native_tool_defs, tool_error};
 use super::{DispatchError, Pipeline};
-use crate::agent::doc::{global_fragments, render_system_prompt, AgentDoc};
+use crate::agent::doc::{global_fragments, input_problems, render_system_prompt, AgentDoc};
 use crate::agent::task::{run_task_agent, TaskError, TaskSpec, TaskTools};
 use crate::tools::{ToolDef, ToolOutcome};
 use crate::usage::CallSite;
@@ -170,16 +170,6 @@ fn to_spec(tool: ToolDef) -> ToolSpec {
         name: tool.name,
         description: tool.description,
         input_schema: tool.input_schema,
-    }
-}
-
-fn input_problems(schema: &Value, input: &Value) -> Vec<String> {
-    match jsonschema::validator_for(schema) {
-        Ok(validator) => validator
-            .iter_errors(input)
-            .map(|e| e.to_string())
-            .collect(),
-        Err(error) => vec![error.to_string()],
     }
 }
 

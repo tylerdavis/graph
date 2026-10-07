@@ -2,6 +2,7 @@
 //! chat agent on the left and the plan workspace (structure, context, runs)
 //! on the right. See docs/workbench/plan-workbench.mdx.
 
+pub(crate) mod agents;
 mod app;
 mod chat;
 mod edit;
@@ -40,30 +41,7 @@ use std::io::{IsTerminal, Stdout};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-/// Appended to the chat agent's system prompt inside the workbench;
-/// `[prompts].workbench` in config replaces it. Also written into the
-/// `config init` starter so users tune a copy instead of starting blank.
 pub(crate) const WORKBENCH_SYSTEM_PROMPT: &str = include_str!("prompts/system.md").trim_ascii_end();
-
-pub(crate) const WORKBENCH_TOOL_RULES: &str =
-    include_str!("prompts/tool_rules.md").trim_ascii_end();
-
-/// Control-step reference for the chat agent: the naming rules, then the
-/// same usage rules the draft_plan planner sees (shared so they can't
-/// drift) — the agent has the full schema and edits control flow directly.
-const CONTROL_STEP_NAMING: &str = include_str!("prompts/control_step_naming.md").trim_ascii_end();
-
-pub(crate) fn workbench_system_prompt(base: &str, override_text: Option<&str>) -> String {
-    [
-        base,
-        override_text.unwrap_or(WORKBENCH_SYSTEM_PROMPT),
-        WORKBENCH_TOOL_RULES,
-        CONTROL_STEP_NAMING,
-        graph_core::pipeline::CONTROL_STEP_RULES,
-    ]
-    .map(str::trim_end)
-    .join("\n\n")
-}
 
 pub async fn run(command: WorkbenchCommand, verbosity: u8) -> Result<()> {
     let WorkbenchCommand::Plan { name_or_path } = command;
@@ -173,12 +151,17 @@ async fn run_plan_workbench(
     // workbench tools, and the effect executor.
     let draft = Arc::new(std::sync::Mutex::new(tools::DraftState::new(doc.clone())));
 
-    // The chat agent: normal catalog + the workbench draft tools.
     let agent_sink: Arc<dyn EventSink> =
         crate::telemetry::tee(Arc::new(chat::ChannelSink::agent(tx.clone())), exporter);
-    let toolbox = runtime.toolbox(&store, agent_sink.clone()).await?;
+    let hooks = crate::runtime::PipelineHooks {
+        interlocutor: Some(Arc::new(runner::UiInterlocutor::new(tx.clone()))),
+        ..Default::default()
+    };
+    let toolbox = runtime
+        .toolbox_with(&store, agent_sink.clone(), hooks)
+        .await?;
     // The workbench doesn't yet support open-ended sub-tasks, so hide
-    // `plan_and_execute` from both the chat agent's tool list and the
+    // `plan_and_execute` from both the agents' tool lists and the
     // Context tab's catalog view without removing it from the shared catalog.
     let visible_catalog: Arc<dyn ToolRegistry> = Arc::new(ExcludingRegistry::new(
         toolbox.clone() as Arc<dyn ToolRegistry>,
@@ -202,14 +185,41 @@ async fn run_plan_workbench(
         workbench_tools,
         fs_tools,
     ]));
-    let mut agent = runtime.agent(agent_sink, registry)?;
-    agent.system_prompt = workbench_system_prompt(
-        &agent.system_prompt,
-        runtime.config.prompts.workbench.as_deref(),
+    let (agent_set, errors) = graph_core::agent::doc::AgentSet::load(
+        &agents::builtin_sources(),
+        &graph_core::agent::doc::agent_dirs(),
     );
+    for error in errors {
+        tracing::warn!("skipping agent file — {error}");
+    }
+    let mut conversation =
+        runtime.conversation_over(Arc::new(agent_set), registry, pipeline.clone(), agent_sink);
+    conversation.context = Some(agents::context_hook(draft.clone()));
+    conversation.progress_tools = tools::progress_tools();
+    if let Some(prompt) = crate::runtime::deprecated_prompt(
+        &conversation.agents,
+        agents::PLAN_EDITOR,
+        "workbench",
+        runtime.config.prompts.workbench.as_deref(),
+        WORKBENCH_SYSTEM_PROMPT,
+    ) {
+        if let Some(doc) = conversation.agents.get(agents::PLAN_EDITOR) {
+            if let Ok(rendered) = graph_core::agent::doc::render_system_prompt(
+                doc,
+                &graph_core::agent::doc::global_fragments(),
+                &conversation.session,
+            ) {
+                conversation.prompt_overrides.insert(
+                    agents::PLAN_EDITOR.to_string(),
+                    format!("{prompt}\n\n{rendered}"),
+                );
+            }
+        }
+    }
 
     let context = Arc::new(WorkbenchContext {
-        agent,
+        active: std::sync::Mutex::new(agents::starting_agent(doc.as_ref()).to_string()),
+        conversation,
         pipeline,
         history: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         draft,
@@ -393,22 +403,5 @@ mod tests {
         assert_eq!(default_log_filter(1), "info,workbench=debug");
         assert_eq!(default_log_filter(2), "debug,workbench=trace");
         assert_eq!(default_log_filter(9), "trace");
-    }
-
-    #[test]
-    fn tool_rules_and_control_steps_survive_a_prompt_override() {
-        let prompt = workbench_system_prompt("BASE", Some("# House style\nBe terse."));
-        assert!(prompt.starts_with("BASE\n\n# House style"));
-        assert!(!prompt.contains("# Plan workbench"));
-        assert!(prompt.contains(WORKBENCH_TOOL_RULES));
-        assert!(prompt.contains(CONTROL_STEP_NAMING));
-        assert!(prompt.contains(graph_core::pipeline::CONTROL_STEP_RULES));
-    }
-
-    #[test]
-    fn default_prompt_used_when_unset() {
-        let prompt = workbench_system_prompt("BASE", None);
-        assert!(prompt.contains(WORKBENCH_SYSTEM_PROMPT));
-        assert!(prompt.contains(WORKBENCH_TOOL_RULES));
     }
 }

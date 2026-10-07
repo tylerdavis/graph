@@ -97,7 +97,8 @@ fn pane_block(title: &str, focused: bool) -> Block<'_> {
 // ── Chat pane ────────────────────────────────────────────────────────────
 
 fn draw_chat(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions) {
-    let block = pane_block(" chat ", app.focus == Focus::Chat).padding(Padding::horizontal(1));
+    let title = format!(" chat · {} ", app.agent);
+    let block = pane_block(&title, app.focus == Focus::Chat).padding(Padding::horizontal(1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
