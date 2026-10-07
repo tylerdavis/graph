@@ -4,7 +4,10 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-pub const BUILTINS: &[&str] = &[include_str!("../agents/chat.yaml")];
+pub const BUILTINS: &[&str] = &[
+    include_str!("../agents/chat.yaml"),
+    include_str!("../agents/plan_refiner.yaml"),
+];
 
 pub const CHAT_AGENT: &str = "chat";
 
@@ -503,6 +506,16 @@ fn prompt_problems(prompt: &str, fragments: &[&str]) -> Vec<String> {
                 .collect::<Vec<_>>()
                 .join(", ")
         )],
+    }
+}
+
+pub fn input_problems(schema: &Value, input: &Value) -> Vec<String> {
+    match jsonschema::validator_for(schema) {
+        Ok(validator) => validator
+            .iter_errors(input)
+            .map(|e| e.to_string())
+            .collect(),
+        Err(error) => vec![error.to_string()],
     }
 }
 

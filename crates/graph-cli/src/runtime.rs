@@ -6,7 +6,7 @@ use graph_core::pipeline::{doc::LoadedPlans, ExecutionGate, Interlocutor, Pipeli
 use graph_core::toolbox::AgentToolbox;
 use graph_core::usage::UsageLedger;
 use graph_core::user_tools::UserToolRegistry;
-use graph_core::{Agent, CompositeRegistry, EventSink, NewEntry, Store, ThreadMeta, ToolRegistry};
+use graph_core::{CompositeRegistry, EventSink, NewEntry, Store, ThreadMeta, ToolRegistry};
 use graph_llm::ModelRouter;
 use graph_mcp::McpManager;
 use graph_store::{FileStore, MemoryStore, RecordingRegistry};
@@ -82,41 +82,6 @@ impl Runtime {
     /// Open the configured runtime-state store.
     pub fn store(&self) -> Result<Arc<dyn Store>> {
         open_store(&self.config)
-    }
-
-    /// Build the chat agent. Tool calls route through `registry` — pass a
-    /// `RecordingRegistry` to feed the observed-shape cache.
-    pub fn agent(
-        &self,
-        events: Arc<dyn EventSink>,
-        registry: Arc<dyn ToolRegistry>,
-    ) -> Result<Agent> {
-        let (provider, choice) = self
-            .router
-            .resolve(graph_config::Role::Chat)
-            .context("configure [models] chat or default in your config")?;
-        let now = chrono::Local::now()
-            .format("%A, %B %e %Y, %H:%M %Z")
-            .to_string();
-        Ok(Agent {
-            provider,
-            registry,
-            events,
-            model: choice.model.clone(),
-            temperature: choice.temperature,
-            system_prompt: graph_core::prompts::chat_system_prompt(
-                &self.config.user,
-                &now,
-                self.config.prompts.chat.as_deref(),
-            ),
-            max_iterations: self.config.settings.max_agent_iterations,
-            // `ask`/`chat` have no edit-then-verify loop to protect, so the
-            // budget is a plain hard cap. The workbench opts into progress
-            // resetting when it rebuilds the agent (see workbench effects).
-            progress_tools: Vec::new(),
-            stop_tools: Vec::new(),
-            call_site: graph_core::CallSite::role("chat"),
-        })
     }
 
     /// Base tool catalog (MCP servers + builtin packs + user-defined
@@ -385,18 +350,34 @@ impl Runtime {
     ) -> Result<Conversation> {
         let pipeline = self.pipeline_with(store, events.clone(), hooks).await?;
         let catalog: Arc<dyn ToolRegistry> = self.toolbox_over(store, &pipeline)?;
+        Ok(self.conversation_over(pipeline.agents.clone(), catalog, pipeline, events))
+    }
+
+    pub fn conversation_over(
+        &self,
+        agents: Arc<graph_core::agent::doc::AgentSet>,
+        catalog: Arc<dyn ToolRegistry>,
+        pipeline: Arc<Pipeline>,
+        events: Arc<dyn EventSink>,
+    ) -> Conversation {
         let now = chrono::Local::now()
             .format("%A, %B %e %Y, %H:%M %Z")
             .to_string();
         let mut prompt_overrides = std::collections::BTreeMap::new();
-        if let Some(prompt) = &self.config.prompts.chat {
+        if let Some(prompt) = deprecated_prompt(
+            &agents,
+            graph_core::agent::doc::CHAT_AGENT,
+            "chat",
+            self.config.prompts.chat.as_deref(),
+            graph_core::prompts::DEFAULT_CHAT_PROMPT,
+        ) {
             prompt_overrides.insert(
                 graph_core::agent::doc::CHAT_AGENT.to_string(),
                 graph_core::prompts::chat_system_prompt(&self.config.user, &now, Some(prompt)),
             );
         }
-        Ok(Conversation {
-            agents: pipeline.agents.clone(),
+        Conversation {
+            agents,
             catalog,
             pipeline,
             events,
@@ -407,7 +388,8 @@ impl Runtime {
             prompt_overrides,
             context: None,
             default_max_iterations: self.config.settings.max_agent_iterations,
-        })
+            progress_tools: Vec::new(),
+        }
     }
 
     /// The agent's full tool catalog: MCP + user tools + plan tools +
@@ -417,9 +399,17 @@ impl Runtime {
         store: &Arc<dyn Store>,
         events: Arc<dyn EventSink>,
     ) -> Result<Arc<AgentToolbox>> {
-        let pipeline = self
-            .pipeline_with(store, events, PipelineHooks::default())
-            .await?;
+        self.toolbox_with(store, events, PipelineHooks::default())
+            .await
+    }
+
+    pub async fn toolbox_with(
+        &self,
+        store: &Arc<dyn Store>,
+        events: Arc<dyn EventSink>,
+        hooks: PipelineHooks,
+    ) -> Result<Arc<AgentToolbox>> {
+        let pipeline = self.pipeline_with(store, events, hooks).await?;
         self.toolbox_over(store, &pipeline)
     }
 
@@ -488,6 +478,27 @@ pub async fn resolve_thread(
         }
         Some(None) => Ok(store.latest_thread().await?),
     }
+}
+
+pub fn deprecated_prompt<'a>(
+    agents: &graph_core::agent::doc::AgentSet,
+    agent: &str,
+    field: &str,
+    value: Option<&'a str>,
+    shipped_default: &str,
+) -> Option<&'a str> {
+    let value = value.filter(|value| value.trim() != shipped_default.trim())?;
+    let builtin = agents
+        .get(agent)
+        .is_some_and(|doc| doc.source == graph_core::agent::doc::AgentSource::Builtin);
+    if !builtin {
+        return None;
+    }
+    tracing::warn!(
+        "[prompts].{field} is deprecated: run `graph agents show {agent}`, save it as \
+         ./.graph/agents/{agent}.yaml, and edit its system_prompt instead"
+    );
+    Some(value)
 }
 
 pub async fn load_history(store: &dyn Store, thread_id: &str) -> Result<Vec<NewEntry>> {

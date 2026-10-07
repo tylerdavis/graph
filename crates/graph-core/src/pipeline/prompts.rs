@@ -132,19 +132,6 @@ pub fn planner_prompt(args: &PlannerPromptArgs) -> String {
     )
 }
 
-pub fn revision_section(draft: &str) -> String {
-    if draft.is_empty() {
-        return String::new();
-    }
-    format!(
-        "### Draft Under Revision\nThe following draft plan has NOT been executed. \
-         Revise it according to the user's request — you may modify, reorder, \
-         remove, or replace any step. Output the COMPLETE revised plan, not a diff: \
-         every step, starting from the first.\n\
-         <draft_plan>\n{draft}\n</draft_plan>\n\n"
-    )
-}
-
 pub fn drafting_preamble(query: &str, entries: &[String]) -> String {
     let outline: Vec<String> = entries
         .iter()
@@ -250,14 +237,6 @@ mod tests {
         });
         assert!(prompt.contains(CONTROL_STEP_RULES));
         assert!(prompt.contains(PLANNING_RULES));
-    }
-
-    #[test]
-    fn the_revision_section_carries_the_draft_only_when_revising() {
-        assert_eq!(revision_section(""), "");
-        let section = revision_section("{\"plan\": []}");
-        assert!(section.contains("Draft Under Revision"));
-        assert!(section.contains("{\"plan\": []}"));
     }
 
     #[test]

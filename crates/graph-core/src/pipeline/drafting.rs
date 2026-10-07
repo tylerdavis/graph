@@ -9,7 +9,7 @@ pub const DRAFT_CONTEXT_TOOL: &str = "builtin__draft_context";
 
 pub const ACCEPT_STEP_TOOL: &str = "builtin__accept_step";
 
-pub const DRAFT_PLAN: &str = "draft";
+pub const AUTHOR_PLAN: &str = "author_plan";
 
 /// One step-drafting response.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -72,7 +72,20 @@ pub struct Draft {
 }
 
 impl Draft {
-    pub fn from_result(result: &Value) -> Result<Self, String> {
+    pub fn from_authored(result: &Value) -> Result<Self, String> {
+        let doc = super::native_tools::plan_doc(&result["plan"])?;
+        Ok(Self {
+            output: PlannerOutput {
+                plan: doc.steps,
+                solver_data: doc.solver,
+            },
+            failed_step: result["failed_step"].as_str().map(str::to_string),
+            problems: serde_json::from_value(result["drafting_problems"].clone())
+                .unwrap_or_default(),
+        })
+    }
+
+    pub fn from_expanded(result: &Value) -> Result<Self, String> {
         let state: DraftState = serde_json::from_value(result.clone())
             .map_err(|e| format!("the draft plan returned an unexpected shape: {e}"))?;
         Ok(Self {
@@ -83,12 +96,8 @@ impl Draft {
     }
 }
 
-pub fn draft_input(goal: &str, existing: Option<&PlannerOutput>) -> Value {
-    let mut input = json!({ "goal": goal });
-    if let Some(existing) = existing {
-        input["revising"] = json!(serde_json::to_string_pretty(existing).unwrap_or_default());
-    }
-    input
+pub fn draft_input(goal: &str) -> Value {
+    json!({ "goal": goal })
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,8 +108,6 @@ struct DraftContextInput {
     entry: String,
     #[serde(default)]
     state: Option<DraftState>,
-    #[serde(default)]
-    revising: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,8 +133,7 @@ pub fn draft_context_tool_def() -> ToolDef {
                 "goal": {"type": "string", "description": "What the plan should accomplish"},
                 "outline": {"type": "array", "items": {"type": "string"}, "description": "The whole outline, in order"},
                 "entry": {"type": "string", "description": "The outline entry this step advances; empty to finish the plan"},
-                "state": {"type": "object", "description": "The drafting state so far"},
-                "revising": {"type": "string", "description": "A draft plan being revised, as YAML"}
+                "state": {"type": "object", "description": "The drafting state so far"}
             }
         }),
         output_schema: None,
@@ -198,7 +204,6 @@ impl Pipeline {
             "templating_rules": prompts::TEMPLATING_RULES,
             "planning_rules": prompts::PLANNING_RULES,
             "control_step_rules": prompts::CONTROL_STEP_RULES,
-            "revision": prompts::revision_section(input.revising.trim()),
         }))
     }
 
