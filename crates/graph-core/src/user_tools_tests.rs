@@ -410,7 +410,11 @@ async fn llm_pack_infer_returns_text_or_caller_structured_output() {
         .await
         .unwrap();
     assert!(!outcome.is_error, "{:?}", outcome.result);
-    assert_eq!(outcome.result, json!({"text": "echo: Summarize X"}));
+    let text = outcome.result["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("echo [You are one step of an automated plan.") && text.ends_with("]: Summarize X"),
+        "infer runs as a non-interactive plan step by default: {text}"
+    );
 
     // With an output_schema: structured, validated JSON.
     let outcome = registry
