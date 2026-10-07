@@ -171,10 +171,23 @@ pub(super) fn names_of(value: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+const AUTHORING_PLANS: &[&str] = &[
+    "search_tools",
+    "draft_outline",
+    "draft_step",
+    "draft_expand",
+    "author_plan",
+    "compose_plan",
+];
+
 impl Pipeline {
     pub(super) async fn searchable_tools(&self) -> Vec<ToolDef> {
         let mut tools = self.registry.tools().await.unwrap_or_default();
-        tools.extend(self.callable_plan_defs());
+        tools.extend(self.callable_plan_defs().into_iter().filter(|tool| {
+            !AUTHORING_PLANS
+                .iter()
+                .any(|plan| tool.name == format!("plan__{plan}"))
+        }));
         tools.extend(self.agent_tool_defs());
         tools
     }

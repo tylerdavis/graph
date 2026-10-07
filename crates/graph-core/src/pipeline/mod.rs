@@ -15,6 +15,7 @@ pub mod ask;
 pub mod authoring;
 pub mod body;
 pub mod catalog;
+mod compose;
 pub mod condition;
 pub mod doc;
 mod drafting;

@@ -48,7 +48,7 @@ The result is `{mode, tools, always}`: the returned tools, most likely first, ea
 
 Control steps (`route`, `map`, `exit`, …) are never searched for: every drafted step is offered all of them. So are the tools in [`[tools].always_loaded`](/reference/configuration#plans-and-tools), which defaults to `builtin__infer` and `builtin__reshape`. A choice question puts most of its probability on one tool, so a step that needs a second, general-purpose tool, such as `builtin__infer` to summarize what a Linear tool fetched, rarely gets it from search; keeping those tools always offered covers that. Drafting puts them in the cached system prompt, described by name, description and declared schemas only: an observed output shape changes as tools run, so it would break the cache on every step. A searched tool still gets its observed shape.
 
-Every other tool, built-in packs included, is searched for. To keep more tools out of the search and always offer them, list them by name or with `*` globs. The list replaces the default, so keep the two built-ins in it:
+Every other tool, built-in packs included, is searched for, except the built-in planning plans (`search_tools`, `author_plan`, `draft_outline`, `draft_expand`, `draft_step`, `compose_plan`), which a drafted plan never calls. To keep more tools out of the search and always offer them, list them by name or with `*` globs. The list replaces the default, so keep the two built-ins in it:
 
 ```toml
 [tools]

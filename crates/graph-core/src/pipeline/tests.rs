@@ -5930,8 +5930,8 @@ async fn search_chooses_among_every_tool_with_the_decision_model() {
     let catalog = pipeline.searchable_tools().await.len();
     assert_eq!(
         criteria.len(),
-        catalog,
-        "every catalog tool is an option except plan__search_tools itself, plus no-tool"
+        catalog + 1,
+        "every searchable tool is an option, plus no-tool"
     );
 }
 

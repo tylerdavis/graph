@@ -1,0 +1,207 @@
+version: 2
+identifier: compose_plan
+name: Compose plan
+description: Drafts a whole plan for a goal in one call, from the tools search finds for each capability it needs, then fixes only the steps that fail validation. Stops before drafting when a capability has no tool.
+input_schema:
+  type: object
+  required: [goal]
+  properties:
+    goal:
+      type: string
+      description: What the plan should accomplish
+    needs_model:
+      type: string
+      default: outliner
+      description: The model role that lists the plan's inputs and capabilities
+    model:
+      type: string
+      default: planner
+      description: The model role that writes and fixes the plan
+steps:
+  - id: needs
+    tool_name: builtin__infer
+    input:
+      model: "{{input.needs_model}}"
+      system: |-
+        You sketch a small automation before its steps are written. Given a goal, list three things.
+
+        inputs: the values the person running it supplies each time, each with a snake_case name, a JSON type and a one-line description. Only values the goal leaves open, such as "a release tag" or "a pull request". None when the goal names everything. Use integer for numbers such as a pull request number, and string for names, tags, keys and identifiers.
+
+        capabilities: the actions it performs, in order, each one action in one system.
+        - kind data: fetching, looking up, searching or writing something in a system. Say what and where, for example "Fetch the commits between two release tags from git" or "Fetch a Linear issue's comments".
+        - kind judgment: summarizing, grouping by meaning, classifying, or writing prose. Only when the goal asks for prose, a summary, a classification or a decision; finding, listing or fetching needs none, and never add one to double-check what a tool returned.
+        - kind control: doing something for each item, keeping only some items, counting, or stopping early. Only the fan-out, selection or stop itself: anything that has to be looked up, even a single value such as a release's previous tag or an id for a name, is a data capability of its own.
+        Usually two to four capabilities, never more than six. No validation, review, normalization, formatting or logging capabilities.
+
+        details: every specific the goal states that a step must honor, each as a short phrase: an identifier format ("Linear ticket ids look like LN-123"), a scope ("only files under crates/"), a state or label ("issues in the Needs verification state"), what the answer must include ("the issue's title and description as well as its comments"). Empty when there are none.
+      instruction: "{{input.goal}}"
+      output_schema:
+        type: object
+        required: [inputs, capabilities, details]
+        properties:
+          details:
+            type: array
+            items: { type: string }
+          inputs:
+            type: array
+            items:
+              type: object
+              required: [name, type, description]
+              properties:
+                name: { type: string }
+                type: { type: string }
+                description: { type: string }
+          capabilities:
+            type: array
+            items:
+              type: object
+              required: [does, kind]
+              properties:
+                does: { type: string }
+                kind: { type: string, enum: [data, judgment, control] }
+  - id: data
+    tool_name: filter
+    input:
+      over: "{{needs.capabilities}}"
+      where: { value: "{{item.kind}}", op: eq, to: data }
+  - id: found
+    tool_name: map
+    input:
+      over: "{{data.items}}"
+      concurrency: 8
+      do:
+        - id: search
+          tool_name: plan__search_tools
+          input:
+            query: "{{item.does}}"
+            schemas: false
+        - id: pair
+          tool_name: builtin__reshape
+          input:
+            shape:
+              does: "{{item.does}}"
+              tools: "{{search.tools}}"
+  - id: gaps
+    tool_name: filter
+    input:
+      over: "{{found.results}}"
+      where: { value: "{{item.tools}}", op: empty }
+  - id: stop
+    tool_name: exit
+    input:
+      when: { value: "{{gaps.count}}", op: gt, to: 0 }
+      status: success
+      message: "No tool in the catalog can do: {{gaps.items}}"
+      output:
+        plan: null
+        valid: false
+        problems: []
+        missing: "{{gaps.items}}"
+  - id: context
+    tool_name: builtin__compose_context
+    input:
+      found: "{{found.results}}"
+  - id: prompt
+    tool_name: builtin__reshape
+    input:
+      shape:
+        system: |-
+          You compose graph plans: YAML documents that run tool calls as a program. Write the whole plan for the goal in one response.
+
+          {{context.composing_rules}}
+
+          ## Template rules
+          {{context.templating_rules}}
+
+          ## Step schema
+          {{context.step_schema}}
+
+          ## Tools every plan can use
+          {{context.standing_tools}}
+  - id: draft
+    tool_name: builtin__infer
+    input:
+      model: "{{input.model}}"
+      system: "{{prompt.system}}"
+      instruction: |-
+        # Goal
+        {{input.goal}}
+
+        # Inputs the user supplies each run
+        {{needs.inputs}}
+
+        # Capabilities, in order
+        {{needs.capabilities}}
+
+        # Details the plan must honor, each as a tool argument or in what the plan fetches
+        {{needs.details}}
+
+        # Tools found for these capabilities
+        {{context.tools}}
+
+        Write the plan as YAML in `yaml`.
+      output_schema:
+        type: object
+        required: [yaml]
+        properties:
+          yaml: { type: string, description: The whole plan file as YAML }
+      on_mismatch: return
+  - id: checked
+    tool_name: builtin__check_plan
+    input:
+      yaml: "{{draft.yaml}}"
+  - id: fixed
+    tool_name: reduce
+    input:
+      over: "{{context.rounds}}"
+      initial: "{{checked}}"
+      do:
+        - id: round
+          tool_name: route
+          input:
+            if: { value: "{{accumulator.valid}}", op: eq, to: false }
+            then:
+              - id: fix
+                tool_name: builtin__infer
+                input:
+                  model: "{{input.model}}"
+                  system: "{{prompt.system}}"
+                  instruction: |-
+                    # Goal
+                    {{input.goal}}
+
+                    # Tools found for this plan
+                    {{context.tools}}
+
+                    # The plan
+                    {{accumulator.yaml}}
+
+                    # Its problems
+                    {{accumulator.problems}}
+
+                    Fix only what the problems name. Return `patch`: a YAML mapping with `steps` holding only the steps you replace (matched by id; a new step takes `after: <id of the step before it>`), `remove` with ids of steps to drop if any, and `input_schema` or `output` only if they change. Do not repeat steps that are fine.
+                  output_schema:
+                    type: object
+                    required: [patch]
+                    properties:
+                      patch: { type: string, description: The YAML patch }
+                  on_mismatch: return
+              - id: patched
+                tool_name: builtin__check_plan
+                input:
+                  yaml: "{{accumulator.yaml}}"
+                  patch: "{{fix.patch}}"
+            else:
+              tool_name: builtin__reshape
+              input:
+                shape: "{{accumulator}}"
+        - id: next
+          tool_name: builtin__reshape
+          input:
+            shape: "{{round.result}}"
+output:
+  needs: "{{needs}}"
+  plan: "{{fixed.result.plan}}"
+  valid: "{{fixed.result.valid}}"
+  problems: "{{fixed.result.problems}}"
+  yaml: "{{fixed.result.yaml}}"
