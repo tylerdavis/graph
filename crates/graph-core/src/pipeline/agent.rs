@@ -27,7 +27,7 @@ pub use crate::agent::task::ToolCallEntry;
 pub const AGENT_TOOL: &str = "agent";
 
 /// The planner tool, never reachable from inside an agent.
-const PLANNER_TOOL: &str = "plan_and_execute";
+pub(super) const PLANNER_TOOL: &str = "plan_and_execute";
 
 /// The agent step's input, parsed from the RAW (unrendered) step input:
 /// `prompt` and `systemPrompt` render against the step's scope when the
@@ -473,7 +473,7 @@ impl Pipeline {
     /// A tool *error* is not a step failure: it returns into the loop as an
     /// error result so the agent can explain or work around it. A gate
     /// *abort* is a hard stop and propagates.
-    async fn execute_agent_tools(
+    pub(super) async fn execute_agent_tools(
         &self,
         calls: &[ToolCall],
         path: &StepPath,

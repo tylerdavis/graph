@@ -17,13 +17,7 @@ pub const CONTROL_STEP_RULES: &str = include_str!("prompts/control_step_rules.md
 
 /// Planning rules shared verbatim by the planner and drafting
 /// prompts, which differ only in how they are called.
-const PLANNING_RULES: &str = include_str!("prompts/planning_rules.md").trim_ascii_end();
-
-pub fn outliner_prompt(tools: &str) -> String {
-    format!(include_str!("prompts/outliner.md"), tools = tools)
-        .trim_ascii_end()
-        .to_string()
-}
+pub(super) const PLANNING_RULES: &str = include_str!("prompts/planning_rules.md").trim_ascii_end();
 
 const BUILTIN_SUMMARIES: &[(&str, &str)] = &[
     (
@@ -43,7 +37,11 @@ fn described(name: &str, description: Option<&str>) -> String {
     }
 }
 
-pub fn outliner_catalog(names: &[String], servers: &[crate::tools::ToolServer]) -> String {
+pub fn outliner_catalog(
+    names: &[String],
+    servers: &[crate::tools::ToolServer],
+    agents: &[(String, String)],
+) -> String {
     let mut mcp: Vec<String> = Vec::new();
     let mut packs: Vec<String> = Vec::new();
     let mut builtins: Vec<String> = Vec::new();
@@ -85,6 +83,15 @@ pub fn outliner_catalog(names: &[String], servers: &[crate::tools::ToolServer]) 
         ("MCP Servers", mcp),
         ("Tool packs", packs),
         ("Builtin tools", builtins),
+        (
+            "Agents",
+            agents
+                .iter()
+                .map(|(name, description)| {
+                    described(&format!("agent__{name}"), Some(description.as_str()))
+                })
+                .collect(),
+        ),
         ("User tools", user),
         ("Plans", plans),
     ]
@@ -125,47 +132,17 @@ pub fn planner_prompt(args: &PlannerPromptArgs) -> String {
     )
 }
 
-pub struct DraftingPromptArgs<'a> {
-    pub current_date: &'a str,
-    pub tools: &'a str,
-    pub user_context: &'a str,
-    pub step_schema: &'a str,
-    /// A draft plan under revision (workbench). Nothing in it has
-    /// executed: every step is mutable, and the revision regenerates the
-    /// plan in full — outline first, then steps.
-    pub draft: Option<&'a str>,
-}
-
-/// The system prompt for plan drafting. Built once per drafting session
-/// and reused byte-identically for the outline call and every step call,
-/// so the provider's prompt-cache prefix stays stable.
-pub fn drafting_prompt(args: &DraftingPromptArgs) -> String {
-    let draft_section = match args.draft {
-        Some(draft) => format!(
-            "### Draft Under Revision\nThe following draft plan has NOT been executed. \
-             Revise it according to the user's request — you may modify, reorder, \
-             remove, or replace any step. Output the COMPLETE revised plan, not a diff: \
-             every step, starting from the first.\n\
-             <draft_plan>\n{draft}\n</draft_plan>\n\n"
-        ),
-        None => String::new(),
-    };
+pub fn revision_section(draft: &str) -> String {
+    if draft.is_empty() {
+        return String::new();
+    }
     format!(
-        include_str!("prompts/drafting.md"),
-        current_date = args.current_date,
-        tools = args.tools,
-        templating_rules = TEMPLATING_RULES,
-        user_context = args.user_context,
-        draft_section = draft_section,
-        step_schema = args.step_schema,
-        planning_rules = PLANNING_RULES,
-        control_step_rules = CONTROL_STEP_RULES,
+        "### Draft Under Revision\nThe following draft plan has NOT been executed. \
+         Revise it according to the user's request — you may modify, reorder, \
+         remove, or replace any step. Output the COMPLETE revised plan, not a diff: \
+         every step, starting from the first.\n\
+         <draft_plan>\n{draft}\n</draft_plan>\n\n"
     )
-}
-
-/// The outliner's only turn: the task, nothing else.
-pub fn outline_request(query: &str) -> String {
-    format!("# Task\n{query}")
 }
 
 pub fn drafting_preamble(query: &str, entries: &[String]) -> String {
@@ -275,56 +252,16 @@ mod tests {
         assert!(prompt.contains(PLANNING_RULES));
     }
 
-    fn drafting_prompt_for(draft: Option<&str>) -> String {
-        drafting_prompt(&DraftingPromptArgs {
-            current_date: "2026-01-01",
-            tools: "(no tools available)",
-            user_context: "(none)",
-            step_schema: "{}",
-            draft,
-        })
-    }
-
     #[test]
-    fn drafting_prompt_carries_the_shared_sections() {
-        let prompt = drafting_prompt_for(None);
-        assert!(prompt.contains(CONTROL_STEP_RULES));
-        assert!(prompt.contains(PLANNING_RULES));
-        assert!(prompt.contains(TEMPLATING_RULES));
-        assert!(!prompt.contains("Draft Under Revision"));
-    }
-
-    #[test]
-    fn drafting_prompt_teaches_the_drafting_protocol() {
-        let prompt = drafting_prompt_for(None);
-        assert!(
-            prompt.contains("is ONE step"),
-            "a control step must be exactly one step"
-        );
-        assert!(
-            prompt.contains("on your FIRST step response"),
-            "the solver brief rides on the first step draft"
-        );
-        assert!(
-            prompt.contains("`step: null` with `planComplete: true`"),
-            "the done-early convention must be taught"
-        );
-        assert!(
-            prompt.contains("Never re-emit accepted steps"),
-            "the correction protocol must be taught"
-        );
-    }
-
-    #[test]
-    fn drafting_prompt_revision_slot_carries_the_draft() {
-        let prompt = drafting_prompt_for(Some("{\"plan\": []}"));
-        assert!(prompt.contains("Draft Under Revision"));
-        assert!(prompt.contains("{\"plan\": []}"));
+    fn the_revision_section_carries_the_draft_only_when_revising() {
+        assert_eq!(revision_section(""), "");
+        let section = revision_section("{\"plan\": []}");
+        assert!(section.contains("Draft Under Revision"));
+        assert!(section.contains("{\"plan\": []}"));
     }
 
     #[test]
     fn request_helpers_name_ids_and_entries() {
-        assert_eq!(outline_request("do the thing"), "# Task\ndo the thing");
         let request = step_request("E2", 3, "fetch the issues");
         assert!(request.contains("step E2"));
         assert!(request.contains("outline entry 3:\nfetch the issues"));
@@ -341,23 +278,6 @@ mod tests {
             preamble,
             "# Task\nreport on x\n\n# Outline\n1. gather x\n2. summarize it"
         );
-    }
-
-    #[test]
-    fn the_outliner_prompt_carries_names_but_no_schemas() {
-        let tools = outliner_catalog(&["builtin__git_log".to_string()], &[]);
-        let prompt = outliner_prompt(&tools);
-        assert!(prompt.contains("## Tool packs\n- github: "), "{prompt}");
-        assert!(prompt.contains("principal engineer"));
-        for step in ["exit", "route", "filter", "map", "reduce", "agent", "ask"] {
-            assert!(
-                prompt.contains(&format!("- `{step}`: ")),
-                "{step} is described"
-            );
-            assert!(super::super::is_control_step(step));
-        }
-        assert!(!prompt.contains("inputSchema"));
-        assert!(!prompt.contains("templating_rules"));
     }
 
     #[test]
@@ -386,7 +306,8 @@ mod tests {
                 description: None,
             },
         ];
-        let catalog = outliner_catalog(&names, &servers);
+        let agents = [("outliner".to_string(), "Writes outlines".to_string())];
+        let catalog = outliner_catalog(&names, &servers, &agents);
         let sections: Vec<&str> = catalog.split("\n\n").collect();
         assert_eq!(
             sections[0],
@@ -409,16 +330,17 @@ mod tests {
             sections[2].contains("\n- builtin__reshape: deterministically"),
             "{catalog}"
         );
-        assert_eq!(sections[3], "## User tools\n- user__summarize");
-        assert_eq!(sections[4], "## Plans\n- plan__sprint_analysis");
-        assert_eq!(sections.len(), 5);
+        assert_eq!(sections[3], "## Agents\n- agent__outliner: Writes outlines");
+        assert_eq!(sections[4], "## User tools\n- user__summarize");
+        assert_eq!(sections[5], "## Plans\n- plan__sprint_analysis");
+        assert_eq!(sections.len(), 6);
         assert!(
             !catalog.contains("list_issues"),
             "MCP tool lists are dropped"
         );
         assert!(!catalog.contains("git_diff"), "pack tool lists are dropped");
         assert_eq!(
-            outliner_catalog(&[], &[]),
+            outliner_catalog(&[], &[], &[]),
             "## Tools\nNo tools are configured."
         );
     }

@@ -184,7 +184,7 @@ first. See [what a run spent](/reference/scripting-contract#what-a-run-spent).
 
 `{{item}}`, `{{index}}`, and `{{accumulator}}` all resolve. Note the multiplier: this runs one agent *per item*.
 
-The other control steps (`exit`, `route`, `map`, `reduce`) still cannot nest in a body — call a `plan__*` for that.
+`map` and `reduce` still cannot nest in a body — call a `plan__*` for that.
 
 ## Errors
 

@@ -71,7 +71,7 @@ pub async fn serve(dir: Option<PathBuf>) -> Result<()> {
              told why instead of seeing a dead connection: {error:#}"
         ),
         Ok(runtime) => {
-            let plans = runtime.plan_docs().docs.len();
+            let plans = served_plans(&runtime).len();
             match (&dir, plans) {
                 (Some(dir), _) => tracing::info!(
                     "serving {plans} plan(s) from {} plus the global config",
@@ -210,7 +210,7 @@ impl GraphServer {
     fn tools(&self) -> Vec<rmcp::model::Tool> {
         let mut tools = catalog::authoring_tools();
         if let Ok(runtime) = runtime() {
-            for doc in &runtime.plan_docs().docs {
+            for doc in &served_plans(&runtime) {
                 tools.push(catalog::plan_tool(doc));
             }
         }
@@ -394,7 +394,7 @@ impl ServerHandler for GraphServer {
                      editing the config file. No restart is needed once fixed."
                 ));
             }
-            Ok(runtime) if runtime.plan_docs().docs.is_empty() && !project::is_pinned() => {
+            Ok(runtime) if served_plans(&runtime).is_empty() && !project::is_pinned() => {
                 let instructions = info.instructions.take().unwrap_or_default();
                 info.instructions = Some(format!(
                     "{instructions}\n\nNOTE: no plans are available. This server was started \
@@ -424,6 +424,15 @@ impl ServerHandler for GraphServer {
     ) -> Result<CallToolResult, McpError> {
         self.dispatch(request, &context).await
     }
+}
+
+fn served_plans(runtime: &Runtime) -> Vec<graph_core::pipeline::doc::PlanDoc> {
+    runtime
+        .plan_docs()
+        .docs
+        .into_iter()
+        .filter(|doc| doc.path.is_some())
+        .collect()
 }
 
 #[cfg(test)]
