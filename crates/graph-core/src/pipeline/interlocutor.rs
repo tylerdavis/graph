@@ -33,6 +33,7 @@ pub struct AskRequest {
     /// a form should build it from this; hosts that take raw text should
     /// show it so the human knows the shape.
     pub schema: Value,
+    pub default: Option<Value>,
 }
 
 /// How a human responded — or didn't.

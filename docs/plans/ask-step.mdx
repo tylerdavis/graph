@@ -35,9 +35,9 @@ Use it sparingly. A human's attention is the most expensive thing a plan can spe
 | Field | Required | Meaning |
 |---|---|---|
 | `prompt` | yes | The question, as the user sees it. Renders against prior results like any step input. |
-| `output_schema` | yes | JSON Schema for the answer. Must be `type: object` with primitive-typed properties (see [Answer schemas](#answer-schemas)). |
+| `output_schema` | yes | JSON Schema for the answer. Must be `type: object` with primitive-typed properties (see [Answer schemas](#answer-schemas)). May be a template, or contain them (see [Schemas built from data](#schemas-built-from-data)). |
 | `when_unanswered` | no | `fail` (default) or `default` — what happens when nobody answers. |
-| `default` | with `when_unanswered: default` | The fallback answer. Must conform to `output_schema`. Renders like `prompt`. |
+| `default` | with `when_unanswered: default` | The fallback answer; the workbench also fills it into the answer form. Must conform to `output_schema`. Renders like `prompt`. |
 
 Field names are snake_case in a plan file, like every other step. The camelCase spellings (`outputSchema`, `whenUnanswered`) still load, and any authoring command that rewrites the file normalizes them.
 
@@ -84,7 +84,7 @@ Whether a human is reachable is a property of *where the plan runs*, not of the 
 |---|---|
 | `graph plan run` on a terminal | yes — prompts on stderr, reads stdin |
 | `graph chat` / `graph ask` | yes, for plans called as `plan__*` |
-| The [plan workbench](/workbench/plan-workbench) | yes — the question opens the answer editor |
+| The [plan workbench](/workbench/plan-workbench) | yes — the question opens a form generated from `outputSchema` |
 | `graph mcp serve` | only if the client advertised `elicitation` support |
 | CI, `graph plan run < /dev/null`, `GRAPH_EVENTS=jsonl` | no |
 
@@ -105,8 +105,22 @@ This is MCP's `elicitation/create` constraint, and graph enforces it for **every
 
 Two practical consequences:
 
-- **Describe every property.** The `description` is the field label the user sees.
+- **Describe every property, as a question.** The `description` is what the user reads for that field: the workbench shows it as the field's own question under the step's `prompt`, so write it as one ("Which release channel?").
 - **Prefer an enum over free text** when the options are known. Terminals render it as a choice list and clients render it as a picker, and neither can then produce a value the plan has to defend against.
+
+### Schemas built from data
+
+`output_schema` renders like any other input, so the questions themselves can come from an earlier step: a whole template (`output_schema: "{{E1.questions}}"`) or templates inside it (an `enum: "{{E1.names}}"`). Loading the plan checks only that the references exist; the rendered schema is held to the same rules when the step runs, before anyone is asked, and a step whose schema renders to something no host can show fails there.
+
+```yaml
+- id: clarify
+  tool_name: ask
+  input:
+    prompt: A few details before going on.
+    output_schema: "{{draft.questions}}"
+    when_unanswered: default
+    default: "{{draft.guesses}}"
+```
 
 An answer is validated against `output_schema` before it becomes a result, whatever host produced it — a hand-typed terminal answer and a client's form submission are equally untrusted. A non-conforming answer fails the step rather than propagating.
 

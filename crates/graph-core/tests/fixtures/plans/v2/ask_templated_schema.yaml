@@ -1,0 +1,21 @@
+version: 2
+identifier: ask_templated_schema
+name: Ask with a schema built from data
+description: Asks whichever questions an earlier step produced, with that step's guesses prefilled.
+input_schema:
+  type: object
+  required: [questions, guesses]
+  properties:
+    questions: { type: object, description: The answer schema to put to the user }
+    guesses: { type: object, description: The answers to offer prefilled }
+steps:
+  - id: clarify
+    tool_name: ask
+    input:
+      prompt: A few details before going on.
+      output_schema: "{{input.questions}}"
+      when_unanswered: default
+      default: "{{input.guesses}}"
+output:
+  answers: "{{clarify.answer}}"
+  answered: "{{clarify.answered}}"

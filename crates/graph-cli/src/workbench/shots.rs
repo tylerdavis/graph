@@ -509,23 +509,27 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         for effect in app::update(&mut app, msg) {
             run_effect(effect, &context);
         }
-        if let Mode::Editing(editor) = &mut app.mode {
-            let asking = matches!(
-                &editor.context,
-                super::editor::EditorContext::InjectResult { prompt }
-                    if matches!(prompt.kind, app::GateKind::Ask { .. })
-            );
-            if asking {
-                if let Some(answer) = answers.pop_front() {
-                    editor.textarea = super::editor::json_textarea(&answer);
-                    feed_key(&mut app, KeyCode::F(2), &context);
-                    continue;
+        if let Mode::Answering(state) = &mut app.mode {
+            if let Some(answer) = answers.pop_front() {
+                for field in &mut state.form.fields {
+                    match answer.get(&field.key) {
+                        Some(Value::String(text)) => field.set_text(text),
+                        Some(value) => field.set_text(&value.to_string()),
+                        None => {}
+                    }
                 }
+                feed(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                    &context,
+                );
+                continue;
             }
         }
         if let Some(target) = &spec.capture.pause_at {
             match &app.mode {
                 Mode::Paused(prompt) if prompt.path == *target => break,
+                Mode::Answering(state) if state.prompt.path == *target => break,
                 Mode::Paused(_) => feed_key(&mut app, KeyCode::Char('c'), &context),
                 _ => {}
             }
@@ -603,8 +607,11 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
 
 /// Feed one key through the reducer and run any effects it returns.
 fn feed_key(app: &mut App, code: KeyCode, context: &Arc<WorkbenchContext>) {
-    let msg = Msg::Term(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
-    for effect in app::update(app, msg) {
+    feed(app, KeyEvent::new(code, KeyModifiers::NONE), context);
+}
+
+fn feed(app: &mut App, key: KeyEvent, context: &Arc<WorkbenchContext>) {
+    for effect in app::update(app, Msg::Term(Event::Key(key))) {
         run_effect(effect, context);
     }
 }

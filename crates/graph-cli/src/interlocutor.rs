@@ -316,6 +316,7 @@ mod tests {
             call_stack: Vec::new(),
             prompt: "Pick one".to_string(),
             schema,
+            default: None,
         }
     }
 

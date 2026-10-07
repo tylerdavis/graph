@@ -1,0 +1,14 @@
+name: ask-form
+title: graph workbench — answering a question
+plan: docs/shots/plans/release_scope.yaml
+grid: { cols: 120, rows: 30 }
+
+chat: "run it"
+
+llm:
+  - call: workbench__run_plan
+    input: {}
+
+capture:
+  pause_at: E0
+  keys: [v, "0", ".", "1", "5", ".", "0", tab, enter, down, enter]

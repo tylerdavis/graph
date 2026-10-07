@@ -338,6 +338,7 @@ impl Interlocutor for UiInterlocutor {
         let sent = self.tx.send(Msg::GateAsk {
             kind: GateKind::Ask {
                 schema: request.schema.clone(),
+                default: request.default.clone(),
             },
             path: path.clone(),
             tool: graph_core::pipeline::ASK_TOOL.to_string(),

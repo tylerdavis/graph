@@ -1,9 +1,9 @@
 //! Rendering: the generic dual-pane shell (chat · workspace · status bar ·
 //! modals) with the plan workspace as the right-pane body.
 
-use super::app::{App, ChatEntry, Focus, FormState, GateKind, GatePrompt, Mode};
+use super::app::{App, ChatEntry, Focus, GateKind, GatePrompt, Mode};
 use super::editor::EditorContext;
-use super::form::Verdict;
+use super::form::{Form, Verdict};
 use super::plan_ws::{
     DraftingProgress, PlanWorkspace, RowKey, RunLine, StepRow, StepStatus, WsTab,
 };
@@ -78,7 +78,21 @@ pub fn draw(frame: &mut Frame, app: &App) {
         draw_editor(frame, editor);
     }
     if let Mode::Form(state) = &app.mode {
-        draw_form(frame, state, app.newline_key());
+        draw_form(
+            frame,
+            &state.form,
+            &format!(
+                " Tab next · Shift+Tab prev · {} newline · Ctrl+T validate · Ctrl+S submit · Esc cancel",
+                app.newline_key()
+            ),
+        );
+    }
+    if let Mode::Answering(state) = &app.mode {
+        draw_form(
+            frame,
+            &state.form,
+            " Tab next · Shift+Tab prev · ↑↓ choose · Ctrl+T check · Ctrl+S answer · Esc back",
+        );
     }
     if app.show_help {
         draw_help(frame, app);
@@ -184,7 +198,10 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions) {
     let scroll = cursor.0.saturating_sub(visible - 1);
     frame.render_widget(Paragraph::new(text).scroll((scroll as u16, 0)), input_inner);
     if app.focus == Focus::Chat
-        && !matches!(app.mode, Mode::Editing(_) | Mode::Form(_))
+        && !matches!(
+            app.mode,
+            Mode::Editing(_) | Mode::Form(_) | Mode::Answering(_)
+        )
         && !app.show_help
     {
         frame.set_cursor_position((
@@ -881,6 +898,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         },
         Mode::Editing(_) => "editing",
         Mode::Form(_) => "editing",
+        Mode::Answering(_) => "asking",
     };
     let mut spans = vec![
         Span::styled(format!(" {mode} "), ACCENT.add_modifier(Modifier::REVERSED)),
@@ -1080,8 +1098,7 @@ fn draw_editor(frame: &mut Frame, editor: &super::editor::EditorState) {
     frame.render_widget(Paragraph::new(footer_lines), footer);
 }
 
-fn draw_form(frame: &mut Frame, state: &FormState, newline_key: &str) {
-    let form = &state.form;
+fn draw_form(frame: &mut Frame, form: &Form, keys: &str) {
     let area = centered(frame.area(), 80, 88);
     frame.render_widget(Clear, area);
     let outer = Block::bordered()
@@ -1123,15 +1140,21 @@ fn draw_form(frame: &mut Frame, state: &FormState, newline_key: &str) {
             Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         ));
     } else {
-        footer_lines.push(Line::styled(
-            format!(
-                " Tab next · Shift+Tab prev · {newline_key} newline · Ctrl+T validate · Ctrl+S submit · Esc cancel"
-            ),
-            DIM,
-        ));
+        footer_lines.push(Line::styled(keys.to_string(), DIM));
     }
     let footer_height = footer_lines.len() as u16;
-    let header_height = u16::from(!form.header.is_empty());
+    let header_text = Paragraph::new(
+        form.header
+            .lines()
+            .map(|line| Line::styled(format!(" {line}"), ACCENT))
+            .collect::<Vec<_>>(),
+    )
+    .wrap(Wrap { trim: false });
+    let header_height = if form.header.is_empty() {
+        0
+    } else {
+        (header_text.line_count(inner.width) as u16).min(inner.height / 2) + 1
+    };
     let [header, body, footer] = *Layout::vertical([
         Constraint::Length(header_height),
         Constraint::Min(3),
@@ -1141,10 +1164,7 @@ fn draw_form(frame: &mut Frame, state: &FormState, newline_key: &str) {
         return;
     };
     if header_height > 0 {
-        frame.render_widget(
-            Paragraph::new(Line::styled(format!(" {}", form.header), ACCENT)),
-            header,
-        );
+        frame.render_widget(header_text, header);
     }
     frame.render_widget(Paragraph::new(footer_lines), footer);
 
@@ -1175,7 +1195,8 @@ fn draw_form(frame: &mut Frame, state: &FormState, newline_key: &str) {
         if let Some(error) = &form.fields[index].error {
             let label = format!(" ✗ {error} ");
             let x = width.saturating_sub(label.chars().count() as u16 + 1);
-            offscreen.set_string(x, top, label, ERROR);
+            let border = top + form.fields[index].question_rows(width);
+            offscreen.set_string(x, border, label, ERROR);
         }
         let end = top + height;
         if end > scroll && top < scroll + viewport {
@@ -1260,6 +1281,26 @@ fn draw_form(frame: &mut Frame, state: &FormState, newline_key: &str) {
 }
 
 fn render_field(field: &super::form::Field, rect: Rect, buf: &mut Buffer) {
+    let asked = field.question_rows(rect.width).min(rect.height);
+    if let Some(question) = field.question_paragraph() {
+        let style = if field.focused {
+            Style::new().add_modifier(Modifier::BOLD)
+        } else {
+            Style::new()
+        };
+        question.style(style).render(
+            Rect {
+                height: asked,
+                ..rect
+            },
+            buf,
+        );
+    }
+    let rect = Rect {
+        y: rect.y + asked,
+        height: rect.height - asked,
+        ..rect
+    };
     let block = field.block();
     let inner = block.inner(rect);
     block.render(rect, buf);

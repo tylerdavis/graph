@@ -13,7 +13,7 @@ pub enum EditorContext {
     /// result (before-call skip) or replaces the failed result (on-error).
     /// Carries the whole parked prompt so Esc restores the pause.
     InjectResult {
-        prompt: GatePrompt,
+        prompt: Box<GatePrompt>,
     },
     /// Collecting the plan's input object before a run.
     RunInput {
@@ -88,7 +88,9 @@ impl EditorState {
             title,
             header,
             textarea: json_textarea(&prefill),
-            context: EditorContext::InjectResult { prompt },
+            context: EditorContext::InjectResult {
+                prompt: Box::new(prompt),
+            },
             error: None,
         }
     }
