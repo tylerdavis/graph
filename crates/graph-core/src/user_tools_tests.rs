@@ -264,6 +264,18 @@ async fn ticket_for(pr_json: Value, pattern: Option<&str>) -> Value {
 }
 
 #[tokio::test]
+async fn reshape_returns_a_bare_value_for_a_single_template_shape() {
+    let docs = load_pack_tools(&["data".to_string()]).unwrap();
+    let registry = UserToolRegistry::builtins(docs, router());
+    let outcome = registry
+        .invoke("builtin__reshape", json!({"shape": "abc123"}))
+        .await
+        .unwrap();
+    assert!(!outcome.is_error, "{:?}", outcome.result);
+    assert_eq!(outcome.result, json!("abc123"));
+}
+
+#[tokio::test]
 async fn gh_pr_ticket_ignores_prose_and_standard_names_by_default() {
     let prose = json!({
         "headRefName": "agents/drafting",

@@ -130,6 +130,8 @@ impl Pipeline {
             .cloned()
             .unwrap_or(Value::Null);
         problems.extend(mistyped_inputs(&json!(doc.steps), &defs, &declared));
+        let shapes = self.shapes().await;
+        problems.extend(unknown_fields(&doc, &defs, &shapes));
         let plan = authoring::to_json(&doc).map_err(|e| e.to_string())?;
         Ok(json!({
             "valid": problems.is_empty(),
@@ -205,6 +207,92 @@ fn composing_problems(steps: &Value) -> Vec<String> {
             }
             Value::Array(items) => stack.extend(items),
             _ => {}
+        }
+    }
+    problems
+}
+
+fn strings<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+    match value {
+        Value::String(text) => out.push(text),
+        Value::Array(items) => items.iter().for_each(|item| strings(item, out)),
+        Value::Object(map) => map.values().for_each(|item| strings(item, out)),
+        _ => {}
+    }
+}
+
+fn step_tools(value: &Value, out: &mut std::collections::BTreeMap<String, String>) {
+    match value {
+        Value::Object(map) => {
+            if let (Some(id), Some(tool)) = (
+                map.get("id").and_then(Value::as_str),
+                map.get("tool_name")
+                    .or_else(|| map.get("toolName"))
+                    .and_then(Value::as_str),
+            ) {
+                out.insert(id.to_string(), tool.to_string());
+            }
+            map.values().for_each(|item| step_tools(item, out));
+        }
+        Value::Array(items) => items.iter().for_each(|item| step_tools(item, out)),
+        _ => {}
+    }
+}
+
+fn unknown_fields(
+    doc: &super::doc::PlanDoc,
+    defs: &[ToolDef],
+    shapes: &std::collections::HashMap<String, crate::store::ToolShape>,
+) -> Vec<String> {
+    let steps = json!(doc.steps);
+    let mut tools = std::collections::BTreeMap::new();
+    step_tools(&steps, &mut tools);
+    let mut texts = Vec::new();
+    strings(&steps, &mut texts);
+    let output = json!(doc.output);
+    strings(&output, &mut texts);
+    let mut problems = Vec::new();
+    for text in texts {
+        let Ok(paths) = crate::template::referenced_paths(text) else {
+            continue;
+        };
+        for path in paths {
+            let mut segments = path.split('.');
+            let (Some(root), Some(field)) = (segments.next(), segments.next()) else {
+                continue;
+            };
+            let Some(tool) = tools.get(root) else {
+                continue;
+            };
+            if matches!(
+                tool.as_str(),
+                "route" | "map" | "filter" | "reduce" | "exit" | "ask" | "agent"
+            ) {
+                continue;
+            }
+            let schema = defs
+                .iter()
+                .find(|def| &def.name == tool)
+                .and_then(|def| def.output_schema.clone())
+                .or_else(|| shapes.get(tool).map(|shape| shape.schema.clone()));
+            let Some(properties) = schema
+                .as_ref()
+                .and_then(|schema| schema.get("properties"))
+                .and_then(Value::as_object)
+            else {
+                continue;
+            };
+            if field == "length" || properties.contains_key(field) {
+                continue;
+            }
+            let known: Vec<&str> = properties.keys().map(String::as_str).collect();
+            let problem = format!(
+                "`{{{{{path}}}}}`: {tool}'s output has no `{field}`; its fields are {}",
+                known.join(", ")
+            );
+            if !problems.contains(&problem) {
+                problems.push(problem);
+            }
         }
     }
     problems
@@ -495,6 +583,25 @@ mod tests {
             unused_steps(&doc),
             ["step ab: its result is never used by a later step or the output; remove it or use it"]
         );
+    }
+
+    #[test]
+    fn a_field_the_tool_does_not_return_is_a_problem() {
+        let yaml = "version: 2\nidentifier: p\nname: p\ndescription: d\nsteps:\n  - id: issue\n    tool_name: t__issue\n    input: {id: x}\n  - id: pick\n    tool_name: route\n    input:\n      if: {value: \"{{issue.title}}\", op: not_empty}\n      then: {tool_name: t__issue, input: {id: y}}\n      else: {tool_name: t__issue, input: {id: z}}\noutput: {a: \"{{issue.project}}\", b: \"{{issue.title}}\", c: \"{{pick.result.items}}\", d: \"{{pick.result}}\"}\n";
+        let doc = parse_plan_source(yaml, "plan").unwrap();
+        let defs = vec![ToolDef {
+            name: "t__issue".to_string(),
+            description: String::new(),
+            input_schema: json!({"type": "object"}),
+            output_schema: Some(
+                json!({"type": "object", "properties": {"title": {}, "status": {}}}),
+            ),
+            output_example: None,
+            read_only: None,
+        }];
+        let problems = unknown_fields(&doc, &defs, &Default::default());
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("t__issue's output has no `project`"));
     }
 
     #[test]
