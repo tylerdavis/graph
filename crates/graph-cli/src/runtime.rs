@@ -1,11 +1,12 @@
 //! Shared wiring: config → providers → MCP registry → store → agent.
 
 use anyhow::{Context, Result};
+use graph_core::agent::conversation::{Conversation, ConversationTurn};
 use graph_core::pipeline::{doc::LoadedPlans, ExecutionGate, Interlocutor, Pipeline, ToolCatalog};
 use graph_core::toolbox::AgentToolbox;
 use graph_core::usage::UsageLedger;
 use graph_core::user_tools::UserToolRegistry;
-use graph_core::{Agent, CompositeRegistry, EventSink, Store, ThreadMeta, ToolRegistry};
+use graph_core::{Agent, CompositeRegistry, EventSink, NewEntry, Store, ThreadMeta, ToolRegistry};
 use graph_llm::ModelRouter;
 use graph_mcp::McpManager;
 use graph_store::{FileStore, MemoryStore, RecordingRegistry};
@@ -376,6 +377,39 @@ impl Runtime {
         }))
     }
 
+    pub async fn conversation(
+        &self,
+        store: &Arc<dyn Store>,
+        events: Arc<dyn EventSink>,
+        hooks: PipelineHooks,
+    ) -> Result<Conversation> {
+        let pipeline = self.pipeline_with(store, events.clone(), hooks).await?;
+        let catalog: Arc<dyn ToolRegistry> = self.toolbox_over(store, &pipeline)?;
+        let now = chrono::Local::now()
+            .format("%A, %B %e %Y, %H:%M %Z")
+            .to_string();
+        let mut prompt_overrides = std::collections::BTreeMap::new();
+        if let Some(prompt) = &self.config.prompts.chat {
+            prompt_overrides.insert(
+                graph_core::agent::doc::CHAT_AGENT.to_string(),
+                graph_core::prompts::chat_system_prompt(&self.config.user, &now, Some(prompt)),
+            );
+        }
+        Ok(Conversation {
+            agents: pipeline.agents.clone(),
+            catalog,
+            pipeline,
+            events,
+            session: std::collections::BTreeMap::from([
+                ("date", now),
+                ("user", session_user(&self.config.user)),
+            ]),
+            prompt_overrides,
+            context: None,
+            default_max_iterations: self.config.settings.max_agent_iterations,
+        })
+    }
+
     /// The agent's full tool catalog: MCP + user tools + plan tools +
     /// plan_and_execute.
     pub async fn toolbox(
@@ -383,23 +417,20 @@ impl Runtime {
         store: &Arc<dyn Store>,
         events: Arc<dyn EventSink>,
     ) -> Result<Arc<AgentToolbox>> {
-        self.toolbox_with(store, events, PipelineHooks::default())
-            .await
+        let pipeline = self
+            .pipeline_with(store, events, PipelineHooks::default())
+            .await?;
+        self.toolbox_over(store, &pipeline)
     }
 
-    /// The agent's tool catalog over a hooked pipeline — so a plan called
-    /// as `plan__*` from a conversation can still reach the human who is
-    /// already sitting there.
-    pub async fn toolbox_with(
+    fn toolbox_over(
         &self,
         store: &Arc<dyn Store>,
-        events: Arc<dyn EventSink>,
-        hooks: PipelineHooks,
+        pipeline: &Arc<Pipeline>,
     ) -> Result<Arc<AgentToolbox>> {
         let base = self.recording_registry(store)?;
-        let pipeline = self.pipeline_with(store, events, hooks).await?;
         let plans = pipeline.plans.as_ref().clone();
-        Ok(Arc::new(AgentToolbox::new(base, pipeline, plans)))
+        Ok(Arc::new(AgentToolbox::new(base, pipeline.clone(), plans)))
     }
 }
 
@@ -459,6 +490,56 @@ pub async fn resolve_thread(
     }
 }
 
+pub async fn load_history(store: &dyn Store, thread_id: &str) -> Result<Vec<NewEntry>> {
+    Ok(store
+        .load_entries(thread_id)
+        .await?
+        .into_iter()
+        .map(NewEntry::from)
+        .collect())
+}
+
+pub async fn persist_turn(
+    store: &dyn Store,
+    meta: &ThreadMeta,
+    active: &str,
+    turn: &ConversationTurn,
+) -> Result<()> {
+    store.append_entries(&meta.id, &turn.entries).await?;
+    if turn.active != active {
+        store.set_active_agent(&meta.id, &turn.active).await?;
+    }
+    Ok(())
+}
+
+pub fn starting_agent(thread: Option<&ThreadMeta>, requested: Option<&str>) -> Result<String> {
+    match (thread, requested) {
+        (Some(meta), Some(agent)) if agent != meta.owner => anyhow::bail!(
+            "thread {} belongs to the {} agent — continue it without naming an agent \
+             (it resumes with {}), or start a new thread for {agent}",
+            meta.id,
+            meta.owner,
+            meta.active
+        ),
+        (Some(meta), _) => Ok(meta.active.clone()),
+        (None, Some(agent)) => Ok(agent.to_string()),
+        (None, None) => Ok(graph_core::agent::doc::CHAT_AGENT.to_string()),
+    }
+}
+
+fn session_user(user: &graph_config::UserConfig) -> String {
+    let mut out = String::new();
+    if let Some(name) = &user.name {
+        out.push_str(&format!("The user's name is {name}.\n"));
+    }
+    if let Some(context) = &user.context {
+        out.push_str(&format!(
+            "\nAbout the user and their environment:\n{context}\n"
+        ));
+    }
+    out
+}
+
 /// Derive a thread title from the first user message.
 pub fn title_from(message: &str) -> String {
     let first_line = message.lines().next().unwrap_or_default().trim();
@@ -496,4 +577,34 @@ pub fn load_config() -> Result<graph_config::LoadedConfig> {
         }
     }
     Ok(loaded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn thread(owner: &str, active: &str) -> ThreadMeta {
+        ThreadMeta {
+            id: "t1".to_string(),
+            title: "t".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            message_count: 0,
+            owner: owner.to_string(),
+            active: active.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_thread_resumes_with_its_active_agent_and_refuses_other_owners() {
+        let meta = thread("router", "poet");
+        assert_eq!(starting_agent(Some(&meta), None).unwrap(), "poet");
+        assert_eq!(starting_agent(Some(&meta), Some("router")).unwrap(), "poet");
+        let error = starting_agent(Some(&meta), Some("poet"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("belongs to the router agent"), "{error}");
+        assert_eq!(starting_agent(None, Some("poet")).unwrap(), "poet");
+        assert_eq!(starting_agent(None, None).unwrap(), "chat");
+    }
 }

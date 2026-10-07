@@ -42,7 +42,7 @@ pub use filter::FILTER_TOOL;
 pub use gate::{ErrorDecision, ExecutionGate, GateContext, GateDecision, StepPath};
 pub use interlocutor::{AskOutcome, AskRequest, Interlocutor};
 pub use iterate::{MAP_TOOL, REDUCE_TOOL};
-pub use named_agents::{AGENT_TOOL_PREFIX, MAX_SUBAGENT_DEPTH};
+pub use named_agents::{named_agent_tool_def, SubagentRun, AGENT_TOOL_PREFIX, MAX_SUBAGENT_DEPTH};
 pub use native_tools::{is_native_tool, native_tool_defs, NATIVE_TOOLS};
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
 pub use prompts::{CONTROL_STEP_RULES, TEMPLATING_RULES};
@@ -249,7 +249,7 @@ enum ExecutionEnd {
 }
 
 /// How a dispatched tool call failed.
-enum DispatchError {
+pub(crate) enum DispatchError {
     /// Tool failure — the (truncated) failure message.
     Failed(String),
     /// The gate aborted the run. Carries the failing tool's error result

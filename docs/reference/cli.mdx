@@ -11,14 +11,15 @@ Global: `-v/-vv/-vvv` raises log verbosity (stderr); `GRAPH_LOG` accepts a traci
 One agent turn.
 
 ```text
-graph ask "<message>" [--thread [<id>]] [--json] [--no-stream]
+graph ask "<message>" [--agent <name>] [--thread [<id>]] [--json] [--no-stream]
 ```
 
 | Flag | Effect |
 | --- | --- |
+| `--agent <name>` | run a [named agent](/reference/agent-schema) instead of the default `chat` agent; on an existing thread it must be the thread's owner |
 | `--thread` (bare) | continue the most recent thread |
 | `--thread <id>` | continue a specific thread |
-| `--json` | emit `{content, tool_calls_made, usage, thread_id}` instead of streaming |
+| `--json` | emit `{content, tool_calls_made, tools_used, usage, thread_id, agent}` instead of streaming; `agent` is the agent that answered |
 | `--no-stream` | print the final answer without token streaming |
 | piped stdin | appended to the message as input context |
 
@@ -26,7 +27,11 @@ Put `--thread` after the message (it takes an optional value).
 
 ## `graph chat`
 
-Interactive REPL. `--thread [<id>]` as above. Slash commands: `/thread`, `/state`, `/quit`.
+```text
+graph chat [<agent>] [--thread [<id>]]
+```
+
+Interactive REPL with the default `chat` agent, or the named one. `--thread [<id>]` as above; a resumed thread continues with its active agent, and naming an agent other than the thread's owner is refused. Slash commands: `/agent` (list agents, marking the active one), `/agent <name>` (switch), `/thread`, `/state`, `/quit`.
 
 ## `graph workbench`
 

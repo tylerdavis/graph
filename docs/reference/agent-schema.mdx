@@ -29,11 +29,11 @@ system_prompt: |
 | `description` | yes | string | what the agent is for, written for the agents and people choosing it |
 | `model` | yes | string | a [model role](/models/models-and-providers#roles), standard or custom |
 | `tools` | yes | list of patterns | catalog tools the agent may call, as exact names or `*` globs (`linear__*`). `[]` means none and `["*"]` means the whole catalog. Plan step names (`map`, `exit`, …) and the generated `agent__` and `transfer_to_` names aren't allowed here |
-| `subagents` | no | list of agent names | agents this one can run as a subagent, each in its own fresh context. Listing the agent's own name lets it run a fresh copy of itself |
-| `handoffs` | no | list of agent names | agents this one can hand the conversation to. An agent can't hand off to itself |
+| `subagents` | no | list of agent names | agents this one can run as a subagent (`agent__<name>`), each in its own fresh context. Listing the agent's own name lets it run a fresh copy of itself |
+| `handoffs` | no | list of agent names | agents this one can hand the conversation to (`transfer_to_<name>`), in [`chat` and `ask`](/using/chat-and-ask#agents). An agent can't hand off to itself |
 | `input_schema` | no | JSON Schema | typed input when the agent runs as a subagent. Without it, a subagent call takes `{prompt}`. Must be an object schema with a `description` on every property |
 | `output_schema` | no | JSON Schema | typed output when the agent runs as a subagent. Without it, the call returns the agent's final reply as `{result}`. Must be an object schema |
-| `max_iterations` | no | integer ≥ 1 | a cap on model rounds. Omitted means no cap |
+| `max_iterations` | no | integer ≥ 1 | a cap on model rounds. Omitted means no cap when the agent runs as a subagent; in a conversation, `[settings].max_agent_iterations` applies |
 | `system_prompt` | yes | template | the agent's instructions, rendered with the [template language](/reference/plans/template-language) |
 
 Unknown keys are a load error that names the key. The two schemas are independent: an agent may declare either, both, or neither.

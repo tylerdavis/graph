@@ -69,6 +69,15 @@ impl NewEntry {
     }
 }
 
+impl From<ThreadEntry> for NewEntry {
+    fn from(entry: ThreadEntry) -> Self {
+        Self {
+            author: entry.author,
+            body: entry.body,
+        }
+    }
+}
+
 pub fn message_entries(agent: &str, messages: &[ChatMessage]) -> Vec<NewEntry> {
     messages
         .iter()
