@@ -34,6 +34,7 @@ pub struct TaskOutcome {
     pub iterations: u32,
     pub tools_called: Vec<ToolCallEntry>,
     pub final_: bool,
+    pub messages: Vec<ChatMessage>,
 }
 
 #[derive(Debug)]
@@ -45,6 +46,22 @@ pub enum TaskError {
 #[async_trait]
 pub trait TaskTools: Send + Sync {
     async fn execute(&self, calls: &[ToolCall], round: u32) -> Result<Vec<ChatMessage>, TaskError>;
+}
+
+fn finish(
+    output: Value,
+    iterations: u32,
+    tools_called: &[ToolCallEntry],
+    final_: bool,
+    messages: &[ChatMessage],
+) -> Result<TaskOutcome, TaskError> {
+    Ok(TaskOutcome {
+        output,
+        iterations,
+        tools_called: tools_called.to_vec(),
+        final_,
+        messages: messages.to_vec(),
+    })
 }
 
 pub async fn run_task_agent(
@@ -59,14 +76,6 @@ pub async fn run_task_agent(
     }];
     let mut tools_called: Vec<ToolCallEntry> = Vec::new();
     let mut round: u32 = 0;
-    let finish = |output: Value, iterations: u32, tools_called: &[ToolCallEntry], final_: bool| {
-        Ok(TaskOutcome {
-            output,
-            iterations,
-            tools_called: tools_called.to_vec(),
-            final_,
-        })
-    };
 
     loop {
         if spec.max_iterations.is_some_and(|max| round >= max) {
@@ -74,7 +83,7 @@ pub async fn run_task_agent(
             // tools and forces an answer, so the loop returns from there.
             // Kept as a backstop for a final round that produced neither
             // structured output nor text.
-            return finish(json!({}), round, &tools_called, false);
+            return finish(json!({}), round, &tools_called, false, &messages);
         }
         round += 1;
         // Same signal the ask/chat loop emits between rounds: a long
@@ -142,7 +151,7 @@ pub async fn run_task_agent(
         // It is already schema-validated by the provider, so there is
         // nothing to parse and no repair pass to pay for.
         if let Some(output) = response.structured {
-            return finish(output, round, &tools_called, true);
+            return finish(output, round, &tools_called, true, &messages);
         }
 
         if response.tool_calls.is_empty() {
@@ -167,14 +176,20 @@ pub async fn run_task_agent(
             }
 
             let Some(schema) = &spec.output_schema else {
-                return finish(json!({ "result": text }), round, &tools_called, true);
+                return finish(
+                    json!({ "result": text }),
+                    round,
+                    &tools_called,
+                    true,
+                    &messages,
+                );
             };
             match site
                 .clone()
                 .scope(parse_and_validate_structured_output(&text, schema, router))
                 .await
             {
-                Ok(output) => return finish(output, round, &tools_called, true),
+                Ok(output) => return finish(output, round, &tools_called, true, &messages),
                 Err(problem) => {
                     messages.push(ChatMessage::User {
                         content: format!(

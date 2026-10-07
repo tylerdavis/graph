@@ -25,6 +25,9 @@ pub enum Command {
     Ask {
         /// The message; reads stdin when omitted and piped
         message: Option<String>,
+        /// Run a named agent instead of the default `chat` agent
+        #[arg(long)]
+        agent: Option<String>,
         /// Continue a thread: `--thread <id>` for a specific one, bare
         /// `--thread` for the most recent. Omit to start a new thread.
         #[arg(long)]
@@ -38,6 +41,8 @@ pub enum Command {
     },
     /// Interactive chat (REPL)
     Chat {
+        /// The agent to talk to; the default `chat` agent when omitted
+        agent: Option<String>,
         /// Continue a thread: `--thread <id>` for a specific one, bare
         /// `--thread` for the most recent. Omit to start a new thread.
         #[arg(long)]

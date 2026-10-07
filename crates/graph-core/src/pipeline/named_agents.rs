@@ -16,7 +16,7 @@ pub const AGENT_TOOL_PREFIX: &str = "agent__";
 
 pub const MAX_SUBAGENT_DEPTH: usize = 3;
 
-fn agent_tool_def(doc: &AgentDoc) -> ToolDef {
+pub fn named_agent_tool_def(doc: &AgentDoc) -> ToolDef {
     ToolDef {
         name: format!("{AGENT_TOOL_PREFIX}{}", doc.name),
         description: doc.description.clone(),
@@ -29,7 +29,7 @@ fn agent_tool_def(doc: &AgentDoc) -> ToolDef {
 
 impl Pipeline {
     pub(super) fn agent_tool_defs(&self) -> Vec<ToolDef> {
-        self.agents.iter().map(agent_tool_def).collect()
+        self.agents.iter().map(named_agent_tool_def).collect()
     }
 
     pub(super) async fn call_agent(
@@ -38,7 +38,16 @@ impl Pipeline {
         name: &str,
         input: Value,
     ) -> Result<ToolOutcome, DispatchError> {
-        let failed = |message: String| Ok(tool_error(message));
+        Ok(self.run_subagent(path, name, input).await?.outcome)
+    }
+
+    pub(crate) async fn run_subagent(
+        &self,
+        path: &StepPath,
+        name: &str,
+        input: Value,
+    ) -> Result<SubagentRun, DispatchError> {
+        let failed = |message: String| Ok(SubagentRun::refused(message));
         if self.agent_depth >= MAX_SUBAGENT_DEPTH {
             return failed(format!(
                 "agent '{name}' not started: subagents nest at most {MAX_SUBAGENT_DEPTH} deep"
@@ -90,16 +99,24 @@ impl Pipeline {
             .at(path.to_string())
             .in_plans(&self.call_stack);
         match run_task_agent(&spec, &self.router, &site, self.events.as_ref(), &tools).await {
-            Ok(outcome) if outcome.final_ => Ok(ToolOutcome {
-                result: outcome.output,
-                is_error: false,
-            }),
-            Ok(outcome) => Ok(ToolOutcome {
-                result: json!({
-                    "error": format!("agent '{name}' ran out of rounds before answering"),
-                    "partial": outcome.output,
-                }),
-                is_error: true,
+            Ok(outcome) => Ok(SubagentRun {
+                outcome: if outcome.final_ {
+                    ToolOutcome {
+                        result: outcome.output.clone(),
+                        is_error: false,
+                    }
+                } else {
+                    ToolOutcome {
+                        result: json!({
+                            "error": format!("agent '{name}' ran out of rounds before answering"),
+                            "partial": outcome.output,
+                        }),
+                        is_error: true,
+                    }
+                },
+                output: outcome.output,
+                messages: outcome.messages,
+                final_: outcome.final_,
             }),
             Err(TaskError::Failed(message)) => failed(format!("agent '{name}' failed: {message}")),
             Err(TaskError::Aborted(error)) => Err(DispatchError::Aborted { error }),
@@ -124,9 +141,27 @@ impl Pipeline {
             doc.subagents
                 .iter()
                 .filter_map(|target| self.agents.get(target))
-                .map(|target| to_spec(agent_tool_def(target))),
+                .map(|target| to_spec(named_agent_tool_def(target))),
         );
         specs
+    }
+}
+
+pub struct SubagentRun {
+    pub outcome: ToolOutcome,
+    pub output: Value,
+    pub messages: Vec<ChatMessage>,
+    pub final_: bool,
+}
+
+impl SubagentRun {
+    fn refused(message: String) -> Self {
+        Self {
+            outcome: tool_error(message),
+            output: Value::Null,
+            messages: Vec::new(),
+            final_: false,
+        }
     }
 }
 

@@ -1,20 +1,26 @@
 //! `graph chat` — interactive REPL with persistent threads.
 
-use crate::runtime::{resolve_thread, title_from, Runtime};
+use crate::runtime::{
+    load_history, persist_turn, resolve_thread, starting_agent, title_from, Runtime,
+};
 use anyhow::{bail, Result};
-use graph_core::agent::doc::CHAT_AGENT;
-use graph_core::{Store, ThreadMeta};
-use graph_llm::types::ChatMessage;
+use graph_core::agent::conversation::{view, Conversation};
+use graph_core::{NewEntry, Store, ThreadMeta};
 use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use std::sync::Arc;
 
-pub async fn run(thread: Option<Option<String>>) -> Result<()> {
+pub async fn run(agent: Option<String>, thread: Option<Option<String>>) -> Result<()> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         bail!("chat needs an interactive terminal — use `graph ask` for scripted queries");
     }
     let runtime = Runtime::init()?;
     let store = runtime.store()?;
     let mut thread: Option<ThreadMeta> = resolve_thread(store.as_ref(), thread).await?;
+    let mut active = starting_agent(thread.as_ref(), agent.as_deref())?;
+    let owner = thread
+        .as_ref()
+        .map(|meta| meta.owner.clone())
+        .unwrap_or_else(|| active.clone());
     let run = crate::telemetry::RunInfo::conversation(
         "chat",
         thread.as_ref().map(|meta| meta.id.clone()),
@@ -28,25 +34,30 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
         ..Default::default()
     };
     runtime.usage.attach_events(events.clone());
-    let toolbox = runtime.toolbox_with(&store, events.clone(), hooks).await?;
-    let agent = runtime.agent(events.clone(), toolbox)?;
+    let conversation = runtime.conversation(&store, events.clone(), hooks).await?;
+    conversation.agent(&active)?;
 
-    let mut messages: Vec<ChatMessage> = match &thread {
+    let mut history: Vec<NewEntry> = match &thread {
         Some(meta) => {
-            eprintln!("continuing thread {} — {}", meta.id, meta.title);
-            graph_core::conversation(&store.load_entries(&meta.id).await?)
+            eprintln!(
+                "continuing thread {} — {} (with {active})",
+                meta.id, meta.title
+            );
+            load_history(store.as_ref(), &meta.id).await?
         }
         None => Vec::new(),
     };
 
     let mut editor = Reedline::create();
-    let prompt = DefaultPrompt::new(
-        DefaultPromptSegment::Basic("graph".into()),
-        DefaultPromptSegment::Empty,
+    eprintln!(
+        "graph chat with {active} — /quit to exit, /agent to see or switch agents, /state to inspect, /thread for the thread id"
     );
-    eprintln!("graph chat — /quit to exit, /state to inspect, /thread for the thread id");
 
     loop {
+        let prompt = DefaultPrompt::new(
+            DefaultPromptSegment::Basic(prompt_label(&active)),
+            DefaultPromptSegment::Empty,
+        );
         match editor.read_line(&prompt) {
             Ok(Signal::Success(line)) => {
                 let line = line.trim().to_string();
@@ -54,16 +65,26 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
                     continue;
                 }
                 if let Some(command) = line.strip_prefix('/') {
-                    if handle_slash(command, &messages, &thread)? {
+                    let session = Session {
+                        conversation: &conversation,
+                        store: store.as_ref(),
+                        thread: &thread,
+                        history: &history,
+                    };
+                    if session.slash(command, &mut active).await? {
                         break;
                     }
                     continue;
                 }
-                let pre_len = messages.len();
                 let created = thread.is_none();
                 if created {
-                    match store.create_thread(&title_from(&line), CHAT_AGENT).await {
-                        Ok(meta) => thread = Some(meta),
+                    match store.create_thread(&title_from(&line), &owner).await {
+                        Ok(meta) => {
+                            if meta.active != active {
+                                let _ = store.set_active_agent(&meta.id, &active).await;
+                            }
+                            thread = Some(meta);
+                        }
                         Err(e) => eprintln!("warning: failed to create thread: {e}"),
                     }
                 }
@@ -72,31 +93,31 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
                     session_id: thread.as_ref().map(|meta| meta.id.clone()),
                     input: Some(serde_json::Value::String(line.clone())),
                 });
-                messages.push(ChatMessage::User {
-                    content: line.clone(),
-                });
-                let result = agent.run_turn(&mut messages).await;
+                let result = conversation.run_turn(&history, &active, &line).await;
                 // Per turn, not per session: the ledger drains, so
                 // each turn reports its own spend.
                 let usage = runtime.usage.take();
                 match result {
-                    Ok(outcome) => {
-                        events.run_finished(&serde_json::Value::String(outcome.text), false);
+                    Ok(turn) => {
+                        events.run_finished(&serde_json::Value::String(turn.text.clone()), false);
                         println!();
                         if !usage.is_empty() && !crate::output::jsonl_events() {
                             eprintln!("\x1b[2m{}\x1b[0m", usage.summary());
                         }
-                        if let Err(e) =
-                            persist_turn(store.as_ref(), &mut thread, &line, &messages[pre_len..])
-                                .await
-                        {
-                            eprintln!("warning: failed to persist turn: {e}");
+                        if turn.active != active {
+                            eprintln!("\x1b[2mnow talking with {}\x1b[0m", turn.active);
                         }
+                        if let Some(meta) = &thread {
+                            if let Err(e) = persist_turn(store.as_ref(), meta, &active, &turn).await
+                            {
+                                eprintln!("warning: failed to persist turn: {e}");
+                            }
+                        }
+                        active = turn.active;
+                        history.extend(turn.entries);
                     }
                     Err(e) => {
                         events.run_finished(&serde_json::json!({"error": e.to_string()}), true);
-                        // Drop the failed turn's messages so a retry starts clean.
-                        messages.truncate(pre_len);
                         if created {
                             if let Some(meta) = thread.take() {
                                 let _ = store.delete_thread(&meta.id).await;
@@ -124,55 +145,69 @@ pub async fn run(thread: Option<Option<String>>) -> Result<()> {
     Ok(())
 }
 
-async fn persist_turn(
-    store: &dyn Store,
-    thread: &mut Option<ThreadMeta>,
-    first_message: &str,
-    new_messages: &[ChatMessage],
-) -> Result<()> {
-    if thread.is_none() {
-        *thread = Some(
-            store
-                .create_thread(&title_from(first_message), CHAT_AGENT)
-                .await?,
-        );
+fn prompt_label(active: &str) -> String {
+    if active == graph_core::agent::doc::CHAT_AGENT {
+        "graph".to_string()
+    } else {
+        format!("graph:{active}")
     }
-    let meta = thread.as_ref().unwrap();
-    store
-        .append_entries(
-            &meta.id,
-            &graph_core::message_entries(CHAT_AGENT, new_messages),
-        )
-        .await?;
-    Ok(())
 }
 
-/// Returns true when the session should end.
-fn handle_slash(
-    command: &str,
-    messages: &[ChatMessage],
-    thread: &Option<ThreadMeta>,
-) -> Result<bool> {
-    match command.trim() {
-        "quit" | "exit" | "q" => Ok(true),
-        "state" => {
-            println!("{}", serde_json::to_string_pretty(messages)?);
-            Ok(false)
-        }
-        "thread" => {
-            match thread {
-                Some(meta) => println!("{} — {}", meta.id, meta.title),
-                None => println!("no thread yet (created after the first turn)"),
+struct Session<'a> {
+    conversation: &'a Conversation,
+    store: &'a dyn Store,
+    thread: &'a Option<ThreadMeta>,
+    history: &'a [NewEntry],
+}
+
+impl Session<'_> {
+    /// Returns true when the session should end.
+    async fn slash(&self, command: &str, active: &mut String) -> Result<bool> {
+        let mut words = command.split_whitespace();
+        match (words.next().unwrap_or_default(), words.next()) {
+            ("quit" | "exit" | "q", _) => Ok(true),
+            ("state", _) => {
+                let messages = view(active, self.history.iter());
+                println!("{}", serde_json::to_string_pretty(&messages)?);
+                Ok(false)
             }
-            Ok(false)
-        }
-        "plan" => {
-            eprintln!("/plan lands in a later phase");
-            Ok(false)
-        }
-        other => {
-            eprintln!("unknown command: /{other} (try /quit, /state, /thread)");
-            Ok(false)
+            ("thread", _) => {
+                match self.thread {
+                    Some(meta) => println!(
+                        "{} — {} (owner {}, active {active})",
+                        meta.id, meta.title, meta.owner
+                    ),
+                    None => println!("no thread yet (created after the first turn)"),
+                }
+                Ok(false)
+            }
+            ("agent", None) => {
+                println!("talking with {active}");
+                for doc in self.conversation.agents.iter() {
+                    let marker = if doc.name == *active { "*" } else { " " };
+                    println!("{marker} {} — {}", doc.name, doc.description);
+                }
+                Ok(false)
+            }
+            ("agent", Some(name)) => {
+                match self.conversation.agent(name) {
+                    Ok(doc) => {
+                        *active = doc.name.clone();
+                        if let Some(meta) = self.thread {
+                            self.store.set_active_agent(&meta.id, active).await?;
+                        }
+                        println!("now talking with {active}");
+                    }
+                    Err(e) => eprintln!("{e}"),
+                }
+                Ok(false)
+            }
+            (other, _) => {
+                eprintln!(
+                    "unknown command: /{other} (try /quit, /agent, /agent <name>, /state, /thread)"
+                );
+                Ok(false)
+            }
         }
     }
 }
