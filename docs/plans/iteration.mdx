@@ -100,7 +100,7 @@ When one item failing shouldn't stop the plan (looking up tickets referenced in 
       input: { id: "{{item.ticket}}" }
 ```
 
-A failed item, whether its body's tool errors or its data is missing, is left out of `results`, and the step yields `{count, results, failed_count, failed}`, each `failed` entry `{index, item, error}`. The other items still run and the plan continues. A fired `exit` or an abort inside the body still ends the plan. `onError: fail` is the default. `reduce` has no `onError`: a fold can't skip a step of its own accumulator.
+A failed item, whether its body's tool errors or its data is missing, is left out of `results` (a template defect, such as a path into a field the item doesn't have, still fails the plan), and the step yields `{count, results, failed_count, failed}`, each `failed` entry `{index, item, error}`. The other items still run and the plan continues. A fired `exit` or an abort inside the body still ends the plan. `onError: fail` is the default. `reduce` has no `onError`: a fold can't skip a step of its own accumulator.
 
 <Warning>
 Item results are scoped to the step, so a replan past a map failure re-runs from item 0. Keep bodies idempotent — see [the idempotency caveat](/plans/errors-and-replanning#plan_and_execute-replans).

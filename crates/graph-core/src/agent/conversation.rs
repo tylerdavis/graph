@@ -22,6 +22,8 @@ struct Handoff {
 
 pub const TRANSFER_BACK: &str = "transfer_back";
 
+pub const CONTEXT_AUTHOR_PREFIX: &str = "context:";
+
 pub const MAX_HANDOFFS_PER_TURN: usize = 4;
 
 pub type ContextHook = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
@@ -107,6 +109,9 @@ impl Conversation {
             };
             let tools =
                 Arc::new(ConversationTools::new(self, doc, 0, may_hand_off).back_to(back_to));
+            if let Some(note) = self.context_note(&active, history.iter().chain(entries.iter())) {
+                entries.push(note);
+            }
             let agent = self.build_agent(doc, tools.clone())?;
             let mut messages = view(&active, history.iter().chain(entries.iter()));
             let before = messages.len();
@@ -145,6 +150,7 @@ impl Conversation {
                 });
             };
             handoffs += 1;
+            self.events.handoff(&active, &target, via == TRANSFER_BACK);
             entries.push(NewEntry {
                 author: active.clone(),
                 body: EntryBody::Handoff {
@@ -172,8 +178,43 @@ impl Conversation {
         }
     }
 
+    fn context_note<'a>(
+        &self,
+        agent: &str,
+        entries: impl Iterator<Item = &'a NewEntry>,
+    ) -> Option<NewEntry> {
+        let sections = self.context.as_ref().map(|context| context(agent))?;
+        if sections.is_empty() {
+            return None;
+        }
+        let author = format!("{CONTEXT_AUTHOR_PREFIX}{agent}");
+        let content = sections.join("\n\n");
+        let last = entries
+            .filter(|entry| entry.author == author)
+            .filter_map(|entry| match &entry.body {
+                EntryBody::Message {
+                    message: ChatMessage::User { content },
+                } => Some(content.clone()),
+                _ => None,
+            })
+            .last();
+        (last.as_deref() != Some(content.as_str()))
+            .then(|| NewEntry::message(&author, ChatMessage::User { content }))
+    }
+
+    fn system_prompt_with_context(&self, doc: &AgentDoc) -> Result<String, ConversationError> {
+        let mut prompt = self.system_prompt(doc)?;
+        if let Some(context) = &self.context {
+            for section in context(&doc.name) {
+                prompt.push_str("\n\n");
+                prompt.push_str(&section);
+            }
+        }
+        Ok(prompt)
+    }
+
     fn system_prompt(&self, doc: &AgentDoc) -> Result<String, ConversationError> {
-        let mut prompt = match self.prompt_overrides.get(&doc.name) {
+        let prompt = match self.prompt_overrides.get(&doc.name) {
             Some(prompt) => prompt.clone(),
             None => render_system_prompt(doc, &global_fragments(), &self.session).map_err(
                 |message| ConversationError::Setup {
@@ -182,12 +223,6 @@ impl Conversation {
                 },
             )?,
         };
-        if let Some(context) = &self.context {
-            for section in context(&doc.name) {
-                prompt.push_str("\n\n");
-                prompt.push_str(&section);
-            }
-        }
         Ok(prompt)
     }
 
@@ -251,7 +286,7 @@ impl Conversation {
                 problems.join("; ")
             ));
         }
-        let system = match self.system_prompt(doc) {
+        let system = match self.system_prompt_with_context(doc) {
             Ok(system) => system,
             Err(error) => return refuse(error.to_string()),
         };
@@ -276,7 +311,7 @@ impl Conversation {
             system,
             prompt,
             tools: specs,
-            max_iterations: doc.max_iterations,
+            max_iterations: doc.max_iterations.or(Some(self.default_max_iterations)),
             output_schema: doc.output_schema.clone(),
         };
         let site = CallSite::role(doc.model.clone()).at(format!("agent:{caller}/agent__{name}"));
@@ -348,6 +383,15 @@ pub fn view<'a>(agent: &str, entries: impl Iterator<Item = &'a NewEntry>) -> Vec
             EntryBody::Message {
                 message: ChatMessage::User { content },
             } if entry.author == USER_AUTHOR => note.push(content.clone()),
+            EntryBody::Message {
+                message: ChatMessage::User { content },
+            } if entry
+                .author
+                .strip_prefix(CONTEXT_AUTHOR_PREFIX)
+                .is_some_and(|owner| owner == agent) =>
+            {
+                note.push(content.clone())
+            }
             EntryBody::Message {
                 message:
                     ChatMessage::Assistant {
@@ -748,6 +792,7 @@ mod tests {
             user_context: String::new(),
             current_date: "2026-09-30".into(),
             max_attempts: 1,
+            max_agent_iterations: 15,
             usage: Arc::new(crate::usage::UsageLedger::unpriced()),
             agents: agents.clone(),
             agent_depth: 0,
@@ -872,6 +917,41 @@ mod tests {
 
     fn tool_names(request: &ChatRequest) -> Vec<String> {
         request.tools.iter().map(|tool| tool.name.clone()).collect()
+    }
+
+    struct Recorder(Mutex<Vec<String>>);
+
+    impl crate::EventSink for Recorder {
+        fn text_delta(&self, text: &str) {
+            self.0.lock().unwrap().push(format!("text {text}"));
+        }
+        fn handoff(&self, from: &str, to: &str, back: bool) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("handoff {from}->{to} back={back}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_handoff_is_announced_when_it_happens_not_when_the_turn_ends() {
+        let (mut conversation, _) = conversation(vec![
+            call("c1", "transfer_to_drafter", json!({"message": "draft it"})),
+            call("c2", "transfer_back", json!({"message": "done"})),
+            text("back with you"),
+        ]);
+        let recorder = Arc::new(Recorder(Mutex::new(Vec::new())));
+        conversation.events = recorder.clone();
+        conversation.run_turn(&[], "front", "go").await.unwrap();
+        let events = recorder.0.lock().unwrap().clone();
+        let handoffs: Vec<&String> = events.iter().filter(|e| e.starts_with("handoff")).collect();
+        assert_eq!(
+            handoffs,
+            [
+                "handoff front->drafter back=false",
+                "handoff drafter->front back=true"
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1020,6 +1100,63 @@ mod tests {
             4,
             "the caller sees its own call and result, never the subagent's messages"
         );
+    }
+
+    #[tokio::test]
+    async fn context_rides_in_the_history_so_the_system_prompt_stays_cacheable() {
+        let (mut conversation, provider) =
+            conversation(vec![text("first"), text("second"), text("third")]);
+        let draft = Arc::new(Mutex::new("v1".to_string()));
+        let shared = draft.clone();
+        conversation.context = Some(Arc::new(move |agent: &str| {
+            if agent == "front" {
+                vec![format!("## Current draft\n{}", shared.lock().unwrap())]
+            } else {
+                Vec::new()
+            }
+        }));
+        let first = conversation.run_turn(&[], "front", "one").await.unwrap();
+        let mut history = first.entries;
+        let second = conversation
+            .run_turn(&history, "front", "two")
+            .await
+            .unwrap();
+        assert!(
+            !second
+                .entries
+                .iter()
+                .any(|entry| entry.author == "context:front"),
+            "an unchanged context isn't repeated"
+        );
+        history.extend(second.entries);
+        *draft.lock().unwrap() = "v2".to_string();
+        conversation
+            .run_turn(&history, "front", "three")
+            .await
+            .unwrap();
+
+        let requests = provider.requests.lock().unwrap();
+        assert!(requests
+            .iter()
+            .all(|request| request.system == requests[0].system));
+        assert!(!requests[0].system.contains("Current draft"));
+        assert!(user_text(&requests[0]).contains("one\n\n## Current draft\nv1"));
+        let earlier: Vec<String> = requests[1]
+            .messages
+            .iter()
+            .map(|m| format!("{m:?}"))
+            .collect();
+        let later: Vec<String> = requests[2]
+            .messages
+            .iter()
+            .map(|m| format!("{m:?}"))
+            .collect();
+        assert_eq!(
+            later[..earlier.len()],
+            earlier[..],
+            "earlier turns are a stable prefix"
+        );
+        assert!(user_text(&requests[2]).contains("## Current draft\nv2"));
     }
 
     #[tokio::test]

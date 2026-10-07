@@ -84,9 +84,7 @@ fn field(key: &str, property: &Value, required: bool, prefill: Option<&Value>) -
     let label = property.get("title").and_then(Value::as_str).unwrap_or(key);
     let declared = property.get("type").and_then(Value::as_str);
     let field = match choices(property) {
-        Some(options) => Field::new(key, label, FieldKind::Text, false)
-            .options(options)
-            .strict(),
+        Some(options) => Field::new(key, label, FieldKind::Text, false).choices(options),
         None => match declared {
             Some("string" | "integer" | "number") => Field::new(key, label, FieldKind::Text, false),
             _ => Field::new(key, label, FieldKind::Json, true),
@@ -196,9 +194,9 @@ mod tests {
             status.options.as_deref(),
             Some(
                 &[
-                    "Done".to_string(),
+                    "Todo".to_string(),
                     "In Progress".to_string(),
-                    "Todo".to_string()
+                    "Done".to_string()
                 ][..]
             )
         );

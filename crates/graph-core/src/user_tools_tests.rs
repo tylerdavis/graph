@@ -1826,3 +1826,31 @@ fn coercion_recovers_parent_fields_leaked_into_a_json_string() {
     );
     assert_eq!(coerced, json!({"step": {"id": "E1"}, "planComplete": true}));
 }
+
+#[test]
+fn an_env_reference_can_carry_a_default_for_settings() {
+    let doc = crate::user_tools::parse_tool_source(
+        "name: search\ndescription: x\nkind: exec\ncommand: echo\nenv:\n  URL: \"${GRAPH_TEST_NEVER_SET_URL:-https://search.example}\"\n  KEY: \"${GRAPH_TEST_NEVER_SET_KEY}\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        crate::user_tools::unset_env_vars(&doc),
+        ["GRAPH_TEST_NEVER_SET_KEY"],
+        "a reference with a default never counts as unset"
+    );
+    let supplied = crate::user_tools::with_env_values(
+        &doc,
+        &std::collections::BTreeMap::from([(
+            "GRAPH_TEST_NEVER_SET_KEY".to_string(),
+            "k".to_string(),
+        )]),
+    );
+    let crate::user_tools::ToolKind::Exec { env, .. } = &supplied.kind else {
+        panic!("exec tool");
+    };
+    assert_eq!(env["KEY"], "k");
+    assert_eq!(
+        env["URL"],
+        "${GRAPH_TEST_NEVER_SET_URL:-https://search.example}"
+    );
+}

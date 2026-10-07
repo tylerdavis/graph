@@ -25,11 +25,32 @@ fn subagent_io(doc: &AgentDoc) -> &'static str {
     }
 }
 
-fn summary(doc: &AgentDoc) -> Value {
+fn source(doc: &AgentDoc, workbench: bool) -> String {
+    if workbench {
+        "built-in, workbench only (graph wb)".to_string()
+    } else {
+        doc.source.describe()
+    }
+}
+
+fn runnable_and_workbench(dirs: &[PathBuf]) -> (Vec<(AgentDoc, bool)>, Vec<String>) {
+    let (set, errors) = AgentSet::load(graph_core::agent::doc::BUILTINS, dirs);
+    let mut agents: Vec<(AgentDoc, bool)> = set.iter().map(|doc| (doc, false)).collect();
+    for doc in crate::workbench::agents::workbench_only() {
+        if !agents.iter().any(|(known, _)| known.name == doc.name) {
+            agents.push((doc, true));
+        }
+    }
+    agents.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
+    (agents, errors)
+}
+
+fn summary(doc: &AgentDoc, workbench: bool) -> Value {
     json!({
         "name": doc.name,
         "description": doc.description,
-        "source": doc.source.describe(),
+        "source": source(doc, workbench),
+        "workbenchOnly": workbench,
         "model": doc.model,
         "subagents": doc.subagents,
         "handoffs": doc.handoffs,
@@ -38,15 +59,18 @@ fn summary(doc: &AgentDoc) -> Value {
 }
 
 pub(crate) fn list(dirs: &[PathBuf]) -> Outcome {
-    let (set, errors) = AgentSet::load(&crate::workbench::agents::builtin_sources(), dirs);
-    let agents: Vec<Value> = set.iter().map(|doc| summary(&doc)).collect();
-    let text: String = set
+    let (listed, errors) = runnable_and_workbench(dirs);
+    let agents: Vec<Value> = listed
         .iter()
-        .map(|doc| {
+        .map(|(doc, workbench)| summary(doc, *workbench))
+        .collect();
+    let text: String = listed
+        .iter()
+        .map(|(doc, workbench)| {
             format!(
                 "{}\t{}\t{}\n",
                 doc.name,
-                doc.source.describe(),
+                source(doc, *workbench),
                 doc.description
             )
         })
@@ -66,9 +90,9 @@ pub(crate) fn list(dirs: &[PathBuf]) -> Outcome {
 }
 
 pub(crate) fn show(dirs: &[PathBuf], name: &str) -> Result<Outcome> {
-    let (set, _) = AgentSet::load(&crate::workbench::agents::builtin_sources(), dirs);
-    let Some(doc) = set.get(name) else {
-        let known: Vec<String> = set.iter().map(|d| d.name).collect();
+    let (listed, _) = runnable_and_workbench(dirs);
+    let Some((doc, workbench)) = listed.iter().find(|(doc, _)| doc.name == name).cloned() else {
+        let known: Vec<String> = listed.iter().map(|(d, _)| d.name.clone()).collect();
         bail!("unknown agent '{name}' (defined: {})", known.join(", "));
     };
     let mut value = serde_yaml::to_value(&doc)?;
@@ -79,7 +103,7 @@ pub(crate) fn show(dirs: &[PathBuf], name: &str) -> Result<Outcome> {
         "source": doc.source.describe(),
         "yaml": yaml,
     });
-    Ok(Outcome::raw(yaml, body).with_note(format!("source: {}", doc.source.describe())))
+    Ok(Outcome::raw(yaml, body).with_note(format!("source: {}", source(&doc, workbench))))
 }
 
 pub(crate) fn validate(dirs: &[PathBuf], path: Option<&Path>) -> Result<Outcome> {
@@ -148,7 +172,7 @@ mod tests {
         write_agent(
             dir.path(),
             "search_bot.yaml",
-            "name: search_bot\ndescription: searches\nmodel: chat\ntools: []\nsystem_prompt: hi\n",
+            "name: search_bot\ndescription: searches\nmodel: chat\ntools: []\ninput_schema: {type: object, required: [query], properties: {query: {type: string, description: what to find}}}\noutput_schema: {type: object, properties: {hits: {type: array}}}\nsystem_prompt: hi\n",
         );
         let outcome = list(&[dir.path().to_path_buf()]);
         let names: Vec<&str> = outcome.body["agents"]
@@ -162,22 +186,34 @@ mod tests {
             [
                 "agent_drafter",
                 "chat",
-                "orchestrator",
+                "front_desk",
+                "plan_drafter",
                 "plan_editor",
                 "plan_loader",
-                "plan_refiner",
                 "search_bot",
                 "tool_drafter"
             ]
         );
         assert_eq!(outcome.body["agents"][0]["source"], "built-in");
+        let by_name = |name: &str| {
+            outcome.body["agents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|agent| agent["name"] == name)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(by_name("plan_drafter")["workbenchOnly"], true);
+        assert_eq!(by_name("tool_drafter")["workbenchOnly"], false);
+        assert_eq!(by_name("chat")["workbenchOnly"], false);
         assert_eq!(
             outcome.body["agents"][6]["subagentIo"],
-            "{prompt} -> {result}"
+            "typed input -> typed output"
         );
         assert_eq!(
-            outcome.body["agents"][5]["subagentIo"],
-            "typed input -> typed output"
+            outcome.body["agents"][7]["subagentIo"],
+            "{prompt} -> {result}"
         );
     }
 

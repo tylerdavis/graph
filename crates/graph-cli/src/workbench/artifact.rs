@@ -12,8 +12,20 @@ pub const SET_ARTIFACT: &str = "workbench__set_artifact";
 pub const TRY_ARTIFACT: &str = "workbench__try_artifact";
 pub const SAVE_ARTIFACT: &str = "workbench__save_artifact";
 pub const DISCARD_ARTIFACT: &str = "workbench__discard_artifact";
+pub const LOAD_ARTIFACT: &str = "workbench__load_artifact";
 
-pub const ARTIFACT_TOOLS: [&str; 4] = [SET_ARTIFACT, TRY_ARTIFACT, SAVE_ARTIFACT, DISCARD_ARTIFACT];
+pub const LIST_AGENTS: &str = "workbench__list_agents";
+pub const LIST_TOOLS: &str = "workbench__list_tools";
+
+pub const ARTIFACT_TOOLS: [&str; 7] = [
+    SET_ARTIFACT,
+    TRY_ARTIFACT,
+    SAVE_ARTIFACT,
+    DISCARD_ARTIFACT,
+    LOAD_ARTIFACT,
+    LIST_AGENTS,
+    LIST_TOOLS,
+];
 
 pub const TOOL_DRAFTER: &str = "tool_drafter";
 pub const AGENT_DRAFTER: &str = "agent_drafter";
@@ -25,7 +37,7 @@ pub enum ArtifactKind {
 }
 
 impl ArtifactKind {
-    fn parse(text: &str) -> Option<Self> {
+    pub fn parse(text: &str) -> Option<Self> {
         match text {
             "agent" => Some(Self::Agent),
             "tool" => Some(Self::Tool),
@@ -54,6 +66,8 @@ pub struct Artifact {
     pub yaml: String,
     pub problems: Vec<String>,
     pub last_run: Option<Value>,
+    pub editing: Option<std::path::PathBuf>,
+    pub original: Option<String>,
 }
 
 impl Artifact {
@@ -139,13 +153,41 @@ pub async fn set_artifact(
                 true,
             );
         }
+        let incoming = Artifact {
+            kind,
+            yaml: yaml.to_string(),
+            problems: Vec::new(),
+            last_run: None,
+            editing: None,
+            original: None,
+        }
+        .name();
+        let current = open.name();
+        if incoming != current && current != "unnamed" {
+            return outcome(
+                json!({"error": format!(
+                    "the {} draft '{current}' is still open; save or discard it before starting '{incoming}'",
+                    kind.label()
+                )}),
+                true,
+            );
+        }
     }
     let problems = check(pipeline, kind, yaml).await;
+    let (editing, original) = draft
+        .lock()
+        .unwrap()
+        .artifact
+        .as_ref()
+        .map(|open| (open.editing.clone(), open.original.clone()))
+        .unwrap_or_default();
     let artifact = Artifact {
         kind,
         yaml: yaml.to_string(),
         problems: problems.clone(),
         last_run: None,
+        editing,
+        original,
     };
     let name = artifact.name();
     draft.lock().unwrap().artifact = Some(artifact);
@@ -183,7 +225,31 @@ pub async fn try_artifact(
         }
     }
     publish(draft, pipeline, tx);
-    outcome(run, false)
+    outcome(for_the_model(run), false)
+}
+
+const SAMPLE_CHARS: usize = 1500;
+
+fn for_the_model(run: Value) -> Value {
+    if run["ran"] != json!(true) {
+        return run;
+    }
+    let full = serde_json::to_string_pretty(&run["result"]).unwrap_or_default();
+    let total = full.chars().count();
+    let mut trimmed = json!({
+        "ran": true,
+        "is_error": run["is_error"],
+        "shape": run["shape"],
+    });
+    if total <= SAMPLE_CHARS {
+        trimmed["result"] = run["result"].clone();
+    } else {
+        trimmed["sample"] = json!(full.chars().take(SAMPLE_CHARS).collect::<String>());
+        trimmed["note"] = json!(format!(
+            "the result is {total} characters; this is the first {SAMPLE_CHARS}. Its shape above covers the whole result, and the user sees all of it in the pane."
+        ));
+    }
+    trimmed
 }
 
 pub async fn save_artifact(
@@ -192,19 +258,36 @@ pub async fn save_artifact(
     tx: &UnboundedSender<Msg>,
     overwrite: bool,
     untested: bool,
+    confirm: bool,
 ) -> Result<String, String> {
     let Some(artifact) = draft.lock().unwrap().artifact.clone() else {
         return Err("there is no draft to save".to_string());
     };
+    let replacing = artifact.editing.is_some()
+        && artifact.original.as_deref() == Some(artifact.name().as_str());
+    let overwrite = overwrite || replacing;
+    let existing = artifact
+        .editing
+        .as_deref()
+        .filter(|path| replacing && !path.as_os_str().is_empty());
+    let asking;
+    let saving = if confirm {
+        asking = pipeline
+            .clone()
+            .with_interlocutor(Arc::new(UiInterlocutor::new(tx.clone())));
+        &asking
+    } else {
+        pipeline
+    };
     let saved = match artifact.kind {
         ArtifactKind::Tool => {
-            pipeline
-                .save_tool_file(&artifact.yaml, untested, overwrite, false)
+            saving
+                .save_tool_file_at(&artifact.yaml, untested, overwrite, confirm, existing)
                 .await
         }
         ArtifactKind::Agent => {
-            pipeline
-                .save_agent_file(&artifact.yaml, overwrite, false)
+            saving
+                .save_agent_file_at(&artifact.yaml, overwrite, confirm, existing)
                 .await
         }
     };
@@ -230,6 +313,126 @@ pub async fn save_artifact(
         "saved {name} to {}",
         saved["path"].as_str().unwrap_or_default()
     ))
+}
+
+pub fn existing(
+    kind: ArtifactKind,
+    name: &str,
+    tool_dirs: &[std::path::PathBuf],
+) -> Result<Artifact, String> {
+    let (yaml, editing) = match kind {
+        ArtifactKind::Agent => {
+            let (set, _) = graph_core::agent::doc::AgentSet::load(
+                graph_core::agent::doc::BUILTINS,
+                &graph_core::agent::doc::agent_dirs(),
+            );
+            let doc = set
+                .get(name)
+                .ok_or_else(|| format!("there's no agent named '{name}'"))?;
+            match &doc.source {
+                graph_core::agent::doc::AgentSource::File(path) => (
+                    std::fs::read_to_string(path)
+                        .map_err(|e| format!("can't read {}: {e}", path.display()))?,
+                    Some(path.clone()),
+                ),
+                graph_core::agent::doc::AgentSource::Builtin => {
+                    let mut value = serde_yaml::to_value(&doc).map_err(|e| e.to_string())?;
+                    graph_core::format::stamp(graph_core::format::Kind::Agent, &mut value);
+                    (
+                        serde_yaml::to_string(&value).map_err(|e| e.to_string())?,
+                        Some(std::path::PathBuf::new()),
+                    )
+                }
+            }
+        }
+        ArtifactKind::Tool => {
+            let bare = name
+                .strip_prefix(graph_core::user_tools::USER_TOOL_PREFIX)
+                .unwrap_or(name);
+            let docs = graph_core::user_tools::load_user_tools(tool_dirs)?;
+            let doc = docs.into_iter().find(|doc| doc.name == bare).ok_or_else(|| {
+                format!("there's no user tool named '{bare}'; built-in pack tools can't be edited here")
+            })?;
+            let path = doc
+                .path
+                .ok_or_else(|| format!("'{bare}' has no file to edit"))?;
+            (
+                std::fs::read_to_string(&path)
+                    .map_err(|e| format!("can't read {}: {e}", path.display()))?,
+                Some(path),
+            )
+        }
+    };
+    Ok(Artifact {
+        kind,
+        yaml,
+        problems: Vec::new(),
+        last_run: None,
+        editing,
+        original: Some(match kind {
+            ArtifactKind::Agent => name.to_string(),
+            ArtifactKind::Tool => name
+                .strip_prefix(graph_core::user_tools::USER_TOOL_PREFIX)
+                .unwrap_or(name)
+                .to_string(),
+        }),
+    })
+}
+
+pub async fn open_existing(
+    draft: &SharedDraft,
+    pipeline: &Pipeline,
+    tx: &UnboundedSender<Msg>,
+    kind: ArtifactKind,
+    name: &str,
+) -> Result<String, String> {
+    if draft.lock().unwrap().artifact.is_some() {
+        return Err("a draft is already open; save or discard it first".to_string());
+    }
+    let mut artifact = existing(kind, name, &pipeline.drafted.tool_dirs)?;
+    artifact.problems = check(pipeline, kind, &artifact.yaml).await;
+    let name = artifact.name();
+    draft.lock().unwrap().artifact = Some(artifact);
+    publish(draft, pipeline, tx);
+    Ok(name)
+}
+
+pub fn list_agents(pipeline: &Pipeline) -> ToolOutcome {
+    let agents: Vec<Value> = pipeline
+        .agents
+        .iter()
+        .map(|doc| {
+            json!({
+                "name": doc.name,
+                "description": doc.description,
+                "source": doc.source.describe(),
+                "typed": doc.input_schema.is_some() || doc.output_schema.is_some(),
+            })
+        })
+        .collect();
+    outcome(json!({"count": agents.len(), "agents": agents}), false)
+}
+
+pub async fn list_tools(pipeline: &Pipeline) -> ToolOutcome {
+    let user: Vec<Value> = graph_core::user_tools::load_user_tools(&pipeline.drafted.tool_dirs)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|doc| {
+            json!({
+                "name": format!("{}{}", graph_core::user_tools::USER_TOOL_PREFIX, doc.name),
+                "description": doc.description,
+                "path": doc.path.map(|path| path.display().to_string()),
+            })
+        })
+        .collect();
+    let servers: Vec<Value> = pipeline
+        .registry
+        .servers()
+        .await
+        .into_iter()
+        .map(|server| json!({"name": server.name, "description": server.description}))
+        .collect();
+    outcome(json!({"user_tools": user, "mcp_servers": servers}), false)
 }
 
 pub fn discard_artifact(
@@ -368,6 +571,44 @@ pub fn tool_defs() -> Vec<ToolDef> {
             read_only: Some(false),
         },
         ToolDef {
+            name: LIST_AGENTS.to_string(),
+            description: "List the agents you can chat with or call from plans: name, \
+                          description, where each comes from, and whether it takes typed input."
+                .to_string(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            output_schema: None,
+            output_example: None,
+            read_only: Some(true),
+        },
+        ToolDef {
+            name: LIST_TOOLS.to_string(),
+            description: "List the user tools (name, description, file) and the connected MCP \
+                          servers. Use it when the user asks what tools they have."
+                .to_string(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            output_schema: None,
+            output_example: None,
+            read_only: Some(true),
+        },
+        ToolDef {
+            name: LOAD_ARTIFACT.to_string(),
+            description: "Open an existing agent or user tool in the pane for editing. Saving \
+                          it later replaces that file (an edited built-in agent is saved as a \
+                          project override)."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["kind", "name"],
+                "properties": {
+                    "kind": {"type": "string", "enum": ["agent", "tool"], "description": "What to open"},
+                    "name": {"type": "string", "description": "The agent's name, or the tool's name (with or without user__)"}
+                }
+            }),
+            output_schema: None,
+            output_example: None,
+            read_only: Some(true),
+        },
+        ToolDef {
             name: DISCARD_ARTIFACT.to_string(),
             description: "Throw away the draft in the pane, only when the user asks to discard it."
                 .to_string(),
@@ -377,4 +618,32 @@ pub fn tool_defs() -> Vec<ToolDef> {
             read_only: Some(true),
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_long_test_result_reaches_the_model_as_its_shape_and_a_sample() {
+        let long = "x".repeat(5000);
+        let trimmed = for_the_model(json!({
+            "ran": true,
+            "is_error": false,
+            "result": {"text": long},
+            "shape": {"type": "object", "properties": {"text": {"type": "string"}}}
+        }));
+        assert!(trimmed.get("result").is_none());
+        assert_eq!(trimmed["shape"]["properties"]["text"]["type"], "string");
+        assert_eq!(
+            trimmed["sample"].as_str().unwrap().chars().count(),
+            SAMPLE_CHARS
+        );
+        assert!(trimmed["note"].as_str().unwrap().contains("characters"));
+
+        let short = for_the_model(
+            json!({"ran": true, "is_error": false, "result": {"ok": 1}, "shape": {}}),
+        );
+        assert_eq!(short["result"], json!({"ok": 1}));
+    }
 }

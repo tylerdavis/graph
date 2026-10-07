@@ -170,10 +170,6 @@ pub fn load_plan_docs(dirs: &[PathBuf]) -> LoadedPlans {
 
 pub const BUILTIN_PLANS: &[&str] = &[
     include_str!("../plans/search_tools.yaml"),
-    include_str!("../plans/draft_outline.yaml"),
-    include_str!("../plans/draft_step.yaml"),
-    include_str!("../plans/draft_expand.yaml"),
-    include_str!("../plans/author_plan.yaml"),
     include_str!("../plans/compose_plan.yaml"),
 ];
 
@@ -374,6 +370,9 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
         // (same-body ids, per-item pseudo-roots) are legal, so the generic
         // template walk would false-flag them.
         let mut problems = Vec::new();
+        if step.tool_name == super::EXIT_TOOL {
+            super::exit::check_exit_input(&step.input, &step.id, &mut problems);
+        }
         match step.tool_name.as_str() {
             name if name == super::AGENT_TOOL => {
                 super::agent::validate_agent_input(&step.input, &seen, &step.id, &mut problems)

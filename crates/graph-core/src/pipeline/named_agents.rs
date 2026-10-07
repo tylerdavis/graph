@@ -88,7 +88,7 @@ impl Pipeline {
             system,
             prompt,
             tools,
-            max_iterations: doc.max_iterations,
+            max_iterations: doc.max_iterations.or(Some(self.max_agent_iterations)),
             output_schema: doc.output_schema.clone(),
         };
         let mut child = self.clone();

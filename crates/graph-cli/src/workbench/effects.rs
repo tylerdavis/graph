@@ -69,7 +69,7 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                             *ctx.active.lock().unwrap() = turn.active.clone();
                             let _ = ctx.tx.send(Msg::ActiveAgent {
                                 name: turn.active.clone(),
-                                note: Some(format!("⇢ {active} handed off to {}", turn.active)),
+                                note: None,
                             });
                         }
                         Ok(turn.text)
@@ -249,6 +249,7 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                     &ctx.draft,
                     &ctx.pipeline,
                     &ctx.tx,
+                    false,
                     false,
                     false,
                 )

@@ -4,12 +4,16 @@ description: "The Graph development environment"
 icon: "table-columns"
 ---
 
-`graph workbench plan` (alias: `graph wb plan`) opens a full-screen IDE for plans: a chat with the workbench's agents on the left, the plan workspace on the right. Describe what you want in chat and the agents draft the plan into the side pane; inspect its steps and context; then validate it, run it, or step through it with per-tool-call confirmation — all without leaving the terminal.
+`graph workbench` (alias: `graph wb`) opens a full-screen IDE for plans, agents and tools: a chat with the workbench's agents on the left, the workspace on the right. Describe what you want in chat and the agents draft it into the side pane. For a plan, inspect its steps and context, then validate it, run it, or step through it with per-tool-call confirmation — all without leaving the terminal.
 
 ```bash
-graph workbench plan                    # blank draft — build it via chat
+graph wb                                # the front desk asks what you want to build
+graph workbench plan                    # straight to a new plan
 graph workbench plan sprint_analysis    # open a known plan by identifier
-graph wb plan ./drafts/report.yaml      # open a YAML file directly
+graph wb plan ./drafts/report.yaml      # open a plan file directly
+graph wb agent                          # straight to a new agent
+graph wb agent release_notes_writer     # edit an existing agent
+graph wb tool weather_now               # edit an existing user tool
 ```
 
 The workbench needs an interactive terminal; for scripting, use `graph plan run`.
@@ -38,27 +42,28 @@ The plan tab renders the whole plan as a `tree`-style flowchart: live status gly
 
 ## The workbench agents
 
-The workbench runs three built-in [agents](/reference/agent-schema), and hands you to two global ones, the drafters, when you need a new tool or agent. Each has an explicit list of tools; none of them can call the tools your plans call (MCP servers, packs, user tools) — running a plan is how those get called, and you control that.
+The workbench runs six built-in [agents](/reference/agent-schema), one for each job. Each has an explicit list of tools; none of them can call the tools your plans call (MCP servers, packs, user tools) — running a plan is how those get called, and you control that.
 
 | Agent | Does | Can use |
 | --- | --- | --- |
-| `orchestrator` | starts an empty workbench; drafts new plans with you and routes you to existing ones | `plan__compose_plan`, `set_draft`, and `plan_loader` as a subagent |
-| `tool_drafter`, `agent_drafter` | draft a new user tool or agent with you in the pane, then hand back to whoever sent you | catalog search and the draft tools: `set_artifact`, `try_artifact` (tools only), `save_artifact`, `discard_artifact` |
+| `front_desk` | greets you on `graph wb`, answers what plans, agents and tools exist, and hands you to the plan, agent or tool mode when you want to build or change something | `list_plans`, `list_agents`, `list_tools` |
+| `plan_drafter` | starts `graph wb plan` without a plan; drafts new plans with you and opens existing ones | `plan__compose_plan`, `set_draft`, and `plan_loader` as a subagent |
+| `tool_drafter`, `agent_drafter` | start `graph wb tool` and `graph wb agent`; draft a new tool or agent, or edit an existing one, in the pane, then hand back to whoever sent you | catalog search and the draft tools: `set_artifact`, `load_artifact`, `try_artifact` (tools only), `save_artifact`, `discard_artifact` |
 | `plan_loader` | finds a plan in the catalog and loads it (run as a subagent) | `list_plans`, `show_plan`, `load_plan` |
 | `plan_editor` | starts the workbench when you open a plan; edits, validates, runs and saves it with you, one targeted change at a time | the editing tools, `validate_plan`, `run_plan`, `save_plan`, `describe_tool`, and the project file tools |
 
-`plan_editor` never replaces the whole plan. When you ask for a new plan, to start over, or to open a different one, it hands the conversation back to `orchestrator`. When you ask for a new tool or agent, or a step needs a tool the catalog doesn't have, it hands you to `tool_drafter` or `agent_drafter`, and when the drafter hands back, it changes the plan only when it handed you off for a step that needed the new tool; otherwise it tells you what was saved and asks before using it. `/agent` lists the agents and marks the one you're talking to; `/agent <name>` switches. When an agent hands off, the chat shows `⇢ <from> handed off to <to>`. Each agent is a file you can inspect with `graph agents show <name>` and replace with one of the same name in `./.graph/agents/` or `~/.config/graph/agents/`.
+`plan_editor` never replaces the whole plan. When you ask for a new plan, to start over, or to open a different one, it hands the conversation back to `plan_drafter`. When you ask for a new tool or agent, or a step needs a tool the catalog doesn't have, it hands you to `tool_drafter` or `agent_drafter`, and when the drafter hands back, it changes the plan only when it handed you off for a step that needed the new tool; otherwise it tells you what was saved and asks before using it. `/agent` lists the agents and marks the one you're talking to; `/agent <name>` switches. When an agent hands off, the chat shows `⇢ <from> handed off to <to>`. Each agent is a file you can inspect with `graph agents show <name>` and replace with one of the same name in `./.graph/agents/` or `~/.config/graph/agents/`.
 
 ### Drafting a new plan
 
-New plans come from the built-in [`compose_plan`](/plans/the-planner#composing-a-whole-plan-in-one-call) plan, which `orchestrator` runs for you. It's a plan, not an agent's habit, so the steps always happen in this order:
+New plans come from the built-in [`compose_plan`](/plans/the-planner#composing-a-whole-plan-in-one-call) plan, which `plan_drafter` runs for you. It's a plan, not an agent's habit, so the steps always happen in this order:
 
-1. **Needs and tools.** One call lists what the goal needs, and [tool search](/tools/finding-tools) finds a tool for each part. When no tool can do a part, nothing is drafted: `orchestrator` tells you what's missing and offers to write a tool for it with `tool_drafter`, to add an MCP server that can do it, or to change the goal. When `tool_drafter` saves the tool and hands back, `orchestrator` drafts the plan again, now with that tool.
+1. **Needs and tools.** One call lists what the goal needs, and [tool search](/tools/finding-tools) finds a tool for each part. When no tool can do a part, nothing is drafted: `plan_drafter` tells you what's missing and offers to write a tool for it with `tool_drafter`, to add an MCP server that can do it, or to change the goal. When `tool_drafter` saves the tool and hands back, `plan_drafter` drafts the plan again, now with that tool.
 2. **Draft.** One call writes the whole plan.
 3. **Questions.** When the draft had to guess a value that decides what the plan returns, such as a status or project name, a form asks you about each one, with the guess filled in, plus an open "Anything else the planner should know?" field. Your answers are patched into the plan, and when they need a tool the draft wasn't shown (look up a team's workflow states, say), the planner searches for one. No guesses, no form.
 4. **Check and fix.** The plan is validated against the catalog, and only the steps with problems are fixed, keeping what you answered.
 
-`orchestrator` then puts the plan in the pane with `set_draft` and hands you to `plan_editor`, which tells you what was built. When the plan calls tools that write, run it gated (`g`) to approve each step. `set_draft` won't discard unsaved changes to the current draft unless you confirm.
+`plan_drafter` then puts the plan in the pane with `set_draft` and hands you to `plan_editor`, which tells you what was built. When the plan calls tools that write, run it gated (`g`) to approve each step. `set_draft` won't discard unsaved changes to the current draft unless you confirm.
 
 <Frame caption="Drafting a new plan: the draft guessed two values, so the workbench asks about them before the plan is finished.">
   ![The answer form compose_plan opens while drafting: two questions with the draft's guesses filled in, and an open field for anything else.](/images/workbench/drafting-questions.svg)
@@ -66,13 +71,15 @@ New plans come from the built-in [`compose_plan`](/plans/the-planner#composing-a
 
 ### Drafting a tool or an agent
 
-Ask for a new tool or agent, or say yes when `orchestrator` offers to write a missing tool, and the workbench switches to drafting it. The drafter starts in the same turn: it puts a first draft in the pane, then asks only what it can't settle itself. The first tab shows the draft instead of the plan, laid out field by field with its problems live: an agent's model, tools, schemas and system prompt; a tool's command or prompt, its input, and its last test run. The drafter changes the draft in the pane, not in the chat.
+Ask for a new tool or agent, or say yes when `plan_drafter` offers to write a missing tool, and the workbench switches to drafting it. The drafter starts in the same turn: it puts a first draft in the pane, then asks only what it can't settle itself. The first tab shows the draft instead of the plan, laid out field by field with its problems live: an agent's model, tools, schemas and system prompt; a tool's command or prompt, its input, and its last test run. The drafter changes the draft in the pane, not in the chat.
 
 <Frame caption="Drafting an agent: the first draft is in the pane while the drafter asks what it can't settle itself.">
   ![The workbench with agent_drafter active: the chat on the left, and the agent draft in the pane on the right with its description, model, tools, input, output and system prompt.](/images/workbench/agent-draft.svg)
 </Frame>
 
-Nothing is written until you save: press Ctrl+S, or tell the drafter to save it. A tool has to pass a test run first, which the drafter runs from the pane and you approve, unless you tell it not to test the tool. Press `x` twice to throw the draft away, or ask the drafter to.
+To change an existing agent or tool, start with `graph wb agent <name>` or `graph wb tool <name>`, or ask a drafter to open it: it loads into the pane, and saving replaces that file. An edited built-in agent is saved as a project override in `./.graph/agents/`; built-in pack tools can't be edited here.
+
+Nothing is written until you save: press Ctrl+S, or let the drafter save it, which it does once the draft is ready by showing you a confirmation form (it won't also ask in the chat). One draft is open at a time: the drafter can't start a second tool or agent until the open one is saved or discarded. A tool has to pass a test run first, which the drafter runs from the pane and you approve, unless you tell it not to test the tool. One approval covers further test runs of the same draft, with any sample input; once the draft changes, the next run asks again. When the tool reads a secret from an environment variable that isn't set, the approval form asks you for it: the value is used for that one run, isn't saved, and is never passed to the model (it's blanked out of the result the drafter sees). Set the variable where graph starts before using the tool for real. Press `x` twice to throw the draft away, or ask the drafter to.
 
 While a draft is open, the conversation can't move on to another agent: save or discard it first. The one exception is an agent that needs a tool that doesn't exist yet. `agent_drafter` hands you to `tool_drafter`, the agent draft waits (the pane says so), and when the tool is saved you're back in the agent draft, with the new tool added to it. Saved tools and agents are usable straight away.
 
@@ -84,8 +91,8 @@ Every action maps to a `workbench__` tool the agents call on your behalf:
 | --- | --- |
 | browsing the catalog | `list_plans`, `show_plan` — read any plan's YAML **without touching the draft** |
 | loading a plan | `load_plan` — by identifier or file path; replaces the draft (guarded, below) |
-| publishing a draft | `set_draft` — with no arguments, puts the plan `plan__compose_plan` returned in the pane exactly as it returned it (or a given plan document); `orchestrator` only |
-| drafting a tool or agent | `set_artifact`, `try_artifact`, `save_artifact`, `discard_artifact`, for the drafters only: the draft in the pane, its approved test run, and saving or discarding it when you say so |
+| publishing a draft | `set_draft` — with no arguments, puts the plan `plan__compose_plan` returned in the pane exactly as it returned it (or a given plan document); `plan_drafter` only |
+| drafting a tool or agent | `set_artifact`, `load_artifact`, `try_artifact`, `save_artifact`, `discard_artifact`, for the drafters only: the draft in the pane, opening an existing one, its approved test run, and saving or discarding it when you say so |
 | learning about a tool | `describe_tool` — its schemas, observed output shape, and whether it's read-only, without calling it |
 | precise edits | `update_metadata`, `add_step`, `update_step`, `delete_step` |
 | re-reading the draft | `get_plan` — rarely needed: the current draft is always in the agent's context |
@@ -109,7 +116,7 @@ For changes to an existing draft, the agent prefers the precise editing tools ov
 - `update_step` patches a step's tool, input, or reasoning; its `newId` renames the step **and rewrites every downstream `{{id.*}}` reference** — templates keep working.
 - An edit is rejected — with the draft untouched — **only when it would introduce new validation problems** (duplicate id, forward reference, deleting a step others still read). Problems the plan already had never block an edit: an already-invalid draft stays editable, each successful edit reports the remaining pre-existing problems, and rejections list the problems the edit introduced separately from the pre-existing ones.
 - These edit top-level steps; `route`/`map`/`reduce` body steps live inside the control step's input, so update that step.
-- `plan_editor` has no whole-plan replace tool — reshape the draft with the editing tools, or ask for a new plan, which `orchestrator` drafts.
+- `plan_editor` has no whole-plan replace tool — reshape the draft with the editing tools, or ask for a new plan, which `plan_drafter` drafts.
 
 ### Drafting from a goal
 
@@ -180,7 +187,7 @@ A debug run (`g`) works like a debugger over plan execution. Pauses are **non-mo
 
 **The inject editor** explains itself: a header says what the JSON becomes, where the prefill came from (the tool's declared output example → an observed example → a skeleton synthesized from its `output_schema` → empty), and — the part that matters — **which paths downstream templates read** from this step, so you know exactly what fields the value must contain. `Ctrl+S` submits; `Esc` returns to the pause; the hints stay visible alongside any parse error.
 
-**Questions.** An [`ask` step](/plans/ask-step) parks the run the same way a breakpoint does, but it is not a debugger pause — the plan declared it needs this value. The workbench opens the answer form directly: the step's `prompt`, then one field per property of the step's answer schema, required fields first, each under its own question taken from the property's `description`. An `enum` or `boolean` property is a pick list, `integer` and `number` fields accept only numbers, and the step's `default` (or a property's own `default`) is filled in, so accepting it is one keystroke. `Ctrl+S` sends the answer, `Ctrl+T` checks it without sending, and anything the schema rejects is marked on its field and keeps the form open. `Esc` returns to the pause, where `s` reopens the form and `n` declines, taking the step's `when_unanswered` path. A question from a plan an agent called doesn't highlight a step of the plan you have open. There is no abort: an unanswered question is a plan-declared condition, and a run that must stop can still be aborted at the next gated tool call. Breakpoints and continue mode never suppress a question — skipping it while a human sat watching would silently take the unattended path.
+**Questions.** An [`ask` step](/plans/ask-step) parks the run the same way a breakpoint does, but it is not a debugger pause — the plan declared it needs this value. The workbench opens the answer form directly: the step's `prompt`, then one field per property of the step's answer schema, required fields first, each under its own question taken from the property's `description`. An `enum` or `boolean` property is a pick list, `integer` and `number` fields accept only numbers, and the step's `default` (or a property's own `default`) is filled in, so accepting it is one keystroke. Enter moves to the next field and, on the last one, sends the answer, as does `Ctrl+S`; `Ctrl+T` checks it without sending, and anything the schema rejects is marked on its field and keeps the form open. `Esc` returns to the pause, where `s` reopens the form and `n` declines, taking the step's `when_unanswered` path. A question from a plan an agent called doesn't highlight a step of the plan you have open. There is no abort: an unanswered question is a plan-declared condition, and a run that must stop can still be aborted at the next gated tool call. Breakpoints and continue mode never suppress a question — skipping it while a human sat watching would silently take the unattended path.
 
 <Frame caption="An ask step's question with the form generated from its answer schema.">
   <img src="/images/workbench/ask-form.svg" alt="The workbench answer form: the question, then since, audience, include_internal and max_items fields" />

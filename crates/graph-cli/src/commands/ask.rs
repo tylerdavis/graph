@@ -22,7 +22,17 @@ pub async fn run(args: AskArgs) -> Result<()> {
     let runtime = Runtime::init()?;
     let store = runtime.store()?;
     let existing = resolve_thread(store.as_ref(), args.thread).await?;
-    let active = starting_agent(existing.as_ref(), args.agent.as_deref())?;
+    if let Some(name) = args
+        .agent
+        .as_deref()
+        .filter(|name| crate::workbench::agents::is_workbench_only(name))
+    {
+        bail!("{name} runs only in the workbench: start it with `graph wb`");
+    }
+    let agents = runtime.agent_set();
+    let active = starting_agent(existing.as_ref(), args.agent.as_deref(), &|name| {
+        agents.get(name).is_some()
+    })?;
 
     let stream_text = !args.json && !args.no_stream;
     let created = existing.is_none();

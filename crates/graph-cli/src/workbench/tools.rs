@@ -988,6 +988,7 @@ impl ToolRegistry for WorkbenchTools {
                     &self.tx,
                     input["overwrite"].as_bool().unwrap_or(false),
                     input["untested"].as_bool().unwrap_or(false),
+                    true,
                 )
                 .await
                 {
@@ -996,6 +997,30 @@ impl ToolRegistry for WorkbenchTools {
                         is_error: false,
                     },
                     Err(error) => error_outcome(&error),
+                },
+            ),
+            super::artifact::LIST_AGENTS => Ok(super::artifact::list_agents(&self.pipeline)),
+            super::artifact::LIST_TOOLS => Ok(super::artifact::list_tools(&self.pipeline).await),
+            super::artifact::LOAD_ARTIFACT => Ok(
+                match super::artifact::ArtifactKind::parse(
+                    input["kind"].as_str().unwrap_or_default(),
+                ) {
+                    Some(kind) => match super::artifact::open_existing(
+                        &self.draft,
+                        &self.pipeline,
+                        &self.tx,
+                        kind,
+                        input["name"].as_str().unwrap_or_default(),
+                    )
+                    .await
+                    {
+                        Ok(name) => ToolOutcome {
+                            result: json!({ "opened": name }),
+                            is_error: false,
+                        },
+                        Err(error) => error_outcome(&error),
+                    },
+                    None => error_outcome("kind must be \"agent\" or \"tool\""),
                 },
             ),
             super::artifact::DISCARD_ARTIFACT => Ok(
@@ -1076,6 +1101,7 @@ mod tests {
             user_context: String::new(),
             current_date: String::new(),
             max_attempts: 1,
+            max_agent_iterations: 15,
             usage: std::sync::Arc::new(graph_core::usage::UsageLedger::unpriced()),
             agents: Arc::new(graph_core::agent::doc::AgentSet::default()),
             agent_depth: 0,
@@ -2029,6 +2055,7 @@ steps:
             user_context: String::new(),
             current_date: String::new(),
             max_attempts: 1,
+            max_agent_iterations: 15,
             usage: std::sync::Arc::new(graph_core::usage::UsageLedger::unpriced()),
             agents: Arc::new(graph_core::agent::doc::AgentSet::default()),
             agent_depth: 0,
@@ -2209,17 +2236,135 @@ steps:
         );
         assert!(!dir.path().join("tools/weather.yaml").exists());
 
-        let saved = tools
-            .invoke(
-                crate::workbench::artifact::SAVE_ARTIFACT,
-                json!({"untested": true}),
-            )
-            .await
-            .unwrap();
+        let saving = tools.invoke(
+            crate::workbench::artifact::SAVE_ARTIFACT,
+            json!({"untested": true}),
+        );
+        let answering = async {
+            while let Some(msg) = rx.recv().await {
+                if let Msg::GateAsk { reply, input, .. } = msg {
+                    assert!(input["prompt"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("Save user__weather"));
+                    reply
+                        .send(crate::workbench::runner::UiDecision::Skip {
+                            result: json!({"save": true}),
+                        })
+                        .unwrap();
+                    break;
+                }
+            }
+        };
+        let (saved, ()) = tokio::join!(saving, answering);
+        let saved = saved.unwrap();
         assert!(!saved.is_error, "{}", saved.result);
         assert!(dir.path().join("tools/weather.yaml").exists());
         assert!(tools.draft.lock().unwrap().artifact.is_none());
         assert_eq!(shown(&mut rx), Some(false));
+    }
+
+    #[tokio::test]
+    async fn saving_an_opened_agent_replaces_that_file_and_a_renamed_one_is_saved_beside_it() {
+        use crate::workbench::artifact::{save_artifact, Artifact, ArtifactKind};
+        let dir = tempfile::tempdir().unwrap();
+        let mut pipeline = (*test_pipeline(Vec::new())).clone();
+        pipeline.drafted = Arc::new(graph_core::pipeline::Drafted::new(
+            Some(dir.path().join("tools")),
+            Some(dir.path().join("agents")),
+        ));
+        let provider: Arc<dyn graph_llm::ChatProvider> = Arc::new(ScriptedProvider {
+            responses: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
+        });
+        pipeline.router = Arc::new(graph_llm::ModelRouter::with_providers(
+            std::collections::HashMap::from([("mock".to_string(), provider)]),
+            graph_config::ModelRoles::from_iter([(
+                "default".to_string(),
+                graph_config::ModelChoice {
+                    provider: "mock".into(),
+                    model: "m".into(),
+                    temperature: None,
+                    description: None,
+                    fallbacks: Vec::new(),
+                    context_window: None,
+                },
+            )]),
+        ));
+        let (tools, _rx) = draft_tools(Arc::new(pipeline));
+        let global = dir.path().join("global");
+        std::fs::create_dir_all(&global).unwrap();
+        let opened = global.join("triager.yaml");
+        std::fs::write(&opened, "name: triager\n").unwrap();
+        let agent = |name: &str| {
+            Artifact {
+            kind: ArtifactKind::Agent,
+            yaml: format!(
+                "name: {name}\ndescription: Triages issues\nmodel: default\ntools: []\nsystem_prompt: You triage.\n"
+            ),
+            problems: Vec::new(),
+            last_run: None,
+            editing: Some(opened.clone()),
+            original: Some("triager".to_string()),
+        }
+        };
+        let (tx, _rx2) = tokio::sync::mpsc::unbounded_channel();
+
+        tools.draft.lock().unwrap().artifact = Some(agent("triager"));
+        save_artifact(&tools.draft, &tools.pipeline, &tx, false, false, false)
+            .await
+            .unwrap();
+        assert!(std::fs::read_to_string(&opened)
+            .unwrap()
+            .contains("You triage."));
+        assert!(!dir.path().join("agents/triager.yaml").exists());
+
+        std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+        std::fs::write(dir.path().join("agents/other.yaml"), "name: other\n").unwrap();
+        tools.draft.lock().unwrap().artifact = Some(agent("other"));
+        let refused = save_artifact(&tools.draft, &tools.pipeline, &tx, false, false, false)
+            .await
+            .unwrap_err();
+        assert!(refused.contains("already exists"), "{refused}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("agents/other.yaml")).unwrap(),
+            "name: other\n",
+            "a renamed draft never replaces another agent's file"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_open_draft_is_never_swapped_for_a_different_one() {
+        let (tools, _rx, _dir) = drafting_tools();
+        tools
+            .invoke(
+                crate::workbench::artifact::SET_ARTIFACT,
+                json!({"kind": "tool", "yaml": WEATHER_TOOL}),
+            )
+            .await
+            .unwrap();
+        let other = WEATHER_TOOL.replace("name: weather", "name: forecast");
+        let refused = tools
+            .invoke(
+                crate::workbench::artifact::SET_ARTIFACT,
+                json!({"kind": "tool", "yaml": other}),
+            )
+            .await
+            .unwrap();
+        assert!(refused.is_error);
+        assert!(refused.result["error"]
+            .as_str()
+            .unwrap()
+            .contains("'weather' is still open"));
+        let edited = WEATHER_TOOL.replace("Current weather", "Weather now");
+        let kept = tools
+            .invoke(
+                crate::workbench::artifact::SET_ARTIFACT,
+                json!({"kind": "tool", "yaml": edited}),
+            )
+            .await
+            .unwrap();
+        assert!(!kept.is_error, "editing the same draft is fine");
     }
 
     #[tokio::test]
@@ -2253,11 +2398,13 @@ steps:
             yaml: "name: triager\n".to_string(),
             problems: Vec::new(),
             last_run: None,
+            editing: None,
+            original: None,
         };
         draft.lock().unwrap().artifact = Some(agent);
 
         assert!(
-            guard("agent_drafter", "orchestrator").is_some(),
+            guard("agent_drafter", "plan_drafter").is_some(),
             "an open draft blocks leaving"
         );
         assert!(guard("agent_drafter", "tool_drafter").is_none());
@@ -2272,6 +2419,8 @@ steps:
             yaml: "name: lookup\n".to_string(),
             problems: Vec::new(),
             last_run: None,
+            editing: None,
+            original: None,
         });
         assert!(
             guard("tool_drafter", "agent_drafter").is_some(),

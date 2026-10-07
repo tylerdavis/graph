@@ -57,7 +57,7 @@ graph loads agents in layers. A later layer replaces an earlier agent with the s
 2. **Global** agents in `~/.config/graph/agents/*.yaml`.
 3. **Project** agents in `./.graph/agents/*.yaml`.
 
-Two files with the same name in one directory are a load error. The built-in `chat` agent is graph's default general assistant. It can call any catalog tool and run copies of itself as subagents. The built-in `plan_refiner` agent reviews a drafted plan and proposes targeted edits, which `builtin__apply_edits` applies. The built-in `tool_drafter` and `agent_drafter` agents [write user tools and agents with you](/using/chat-and-ask#drafting-tools-and-agents). The [workbench](/workbench/plan-workbench#the-workbench-agents) adds three more built-ins (`orchestrator`, `plan_loader`, `plan_editor`), which `graph agents` lists and shows like any other.
+Two files with the same name in one directory are a load error. The built-in `chat` agent is graph's default general assistant. It can call any catalog tool and run copies of itself as subagents. The built-in `tool_drafter` and `agent_drafter` agents [write user tools and agents with you](/using/chat-and-ask#drafting-tools-and-agents). The [workbench](/workbench/plan-workbench#the-workbench-agents) adds four more built-ins (`front_desk`, `plan_drafter`, `plan_loader`, `plan_editor`) and its own versions of `tool_drafter` and `agent_drafter` that work in the drafting pane, which `graph agents` lists and shows like any other.
 
 ## Checks
 
@@ -76,4 +76,4 @@ graph agents validate [<path>] [--json]
 graph agents migrate <path> [--json]
 ```
 
-`show` prints an agent's effective file with its current `version`, the starting point for customizing a built-in: copy it to `./.graph/agents/<name>.yaml` and edit. See the [CLI reference](/reference/cli#graph-agents).
+`show` prints an agent's effective file with its current `version`, the starting point for customizing a built-in: copy it to `./.graph/agents/<name>.yaml` and edit. `list` also shows the workbench's own agents (`front_desk`, `plan_drafter`, `plan_loader`, `plan_editor`), marked workbench only: they run in `graph wb`, not in `graph chat`, `graph ask --agent` or a plan step. See the [CLI reference](/reference/cli#graph-agents).

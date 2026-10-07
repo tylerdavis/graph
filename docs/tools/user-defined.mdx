@@ -34,7 +34,7 @@ input_schema:
 | --- | --- | --- |
 | `command` | yes | the executable |
 | `args` | no | templated from the input (`{{input.*}}` only — step references don't exist inside a tool) |
-| `env` | no | extra environment; values support `${VAR}` from the parent environment |
+| `env` | no | extra environment; values support `${VAR}` from the parent environment, and `${VAR:-default}` to fall back to a default when it's unset or empty |
 | `cwd` | no | working directory for the process |
 | `timeout_secs` | no | kill-after budget; default 60 |
 | `output` | no | `text` (default: stdout wrapped as `{"text": …}`) or `json` (stdout parsed as JSON) |

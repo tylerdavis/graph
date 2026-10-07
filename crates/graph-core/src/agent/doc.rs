@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 pub const BUILTINS: &[&str] = &[
     include_str!("../agents/chat.yaml"),
-    include_str!("../agents/plan_refiner.yaml"),
     include_str!("../agents/tool_drafter.yaml"),
     include_str!("../agents/agent_drafter.yaml"),
 ];
@@ -16,7 +15,7 @@ pub const CHAT_AGENT: &str = "chat";
 pub const RESERVED_TOOL_NAMES: &[&str] = &[
     "plan_and_execute",
     "exit",
-    "decide",
+    "route",
     "filter",
     "map",
     "reduce",

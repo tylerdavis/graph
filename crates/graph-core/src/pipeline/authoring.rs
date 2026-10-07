@@ -64,6 +64,9 @@ pub fn validate_steps(plan: &Plan) -> Vec<String> {
         // Control steps are body-aware: body-internal references (same-body
         // ids, per-item pseudo-roots) are legal, so the generic walk below
         // would false-flag them.
+        if step.tool_name == super::EXIT_TOOL {
+            super::exit::check_exit_input(&step.input, &step.id, &mut problems);
+        }
         match step.tool_name.as_str() {
             super::AGENT_TOOL => {
                 super::agent::validate_agent_input(&step.input, &seen, &step.id, &mut problems)

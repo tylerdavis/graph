@@ -163,6 +163,7 @@ fn pipeline_with_named(
             user_context: "test user".into(),
             current_date: "2026-07-09".into(),
             max_attempts,
+            max_agent_iterations: 15,
             usage,
             agents: Arc::new(crate::agent::doc::AgentSet::default()),
             agent_depth: 0,
@@ -1865,6 +1866,26 @@ async fn map_on_error_skip_records_failed_items_and_continues() {
 }
 
 #[tokio::test]
+async fn map_on_error_skip_still_fails_the_plan_on_a_template_defect() {
+    let registry = search_registry(json!({"values": [{"id": "a"}, {"id": "b"}]}));
+    let (pipeline, _) = pipeline(vec![], registry.clone(), 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "onError": "skip",
+            "do": {"toolName": "t__issues", "input": {"q": "{{item.id.nope.deeper}}"}},
+        }},
+    ]))
+    .unwrap();
+    let outcome = pipeline.run_explicit("q", plan, Finish::Silent, None).await;
+    assert!(
+        outcome.is_err(),
+        "a bad path is a plan defect, not a skippable item"
+    );
+}
+
+#[tokio::test]
 async fn empty_over_continues_with_zero_count() {
     let registry = search_registry(json!({"values": []}));
     let (pipeline, _) = pipeline(vec![], registry, 1);
@@ -2512,27 +2533,6 @@ impl crate::EventSink for RecordingSink {
             .unwrap()
             .push(("planning".to_string(), Value::Null));
     }
-
-    fn draft_outline(&self, items: &Value) {
-        self.drafting
-            .lock()
-            .unwrap()
-            .push(("draft_outline".to_string(), items.clone()));
-    }
-
-    fn draft_step_started(&self, index: usize, summary: &str) {
-        self.drafting.lock().unwrap().push((
-            "draft_step_started".to_string(),
-            json!({"index": index, "summary": summary}),
-        ));
-    }
-
-    fn draft_step_finished(&self, index: usize, step: &Value, problems: &[String], attempt: u32) {
-        self.drafting.lock().unwrap().push((
-            "draft_step_finished".to_string(),
-            json!({"index": index, "step": step, "problems": problems, "attempt": attempt}),
-        ));
-    }
 }
 
 #[tokio::test]
@@ -3137,57 +3137,12 @@ steps:
 
 // ── Plan drafting ────────────────────────────────────────────────────────
 
-fn outline_response() -> ChatResponse {
-    structured(json!({"entries": ["find the team", "fetch its issues"]}))
-}
-
-fn flat_draft(step: Value, extra: Value) -> Value {
-    let mut draft = step;
-    for (key, value) in extra.as_object().unwrap() {
-        draft[key] = value.clone();
-    }
-    draft
-}
-
-fn step_draft(step: Value, plan_complete: bool) -> ChatResponse {
-    structured(flat_draft(step, json!({"planComplete": plan_complete})))
-}
-
-fn briefed_step_draft(step: Value) -> ChatResponse {
-    structured(flat_draft(
-        step,
-        json!({"planComplete": false, "queryToAnswer": "how is the sprint going"}),
-    ))
-}
-
 fn user_turns(request: &ChatRequest) -> Vec<String> {
     request
         .messages
         .iter()
         .filter_map(|message| match message {
             graph_llm::types::ChatMessage::User { content } => Some(content.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn search_step(id: &str) -> Value {
-    json!({"id": id, "toolName": "t__search", "input": {"query": "platform"}})
-}
-
-fn issues_step(id: &str, reference: &str) -> Value {
-    json!({"id": id, "toolName": "t__issues", "input": {"teamId": format!("{{{{{reference}}}}}")}})
-}
-
-fn assistant_turns(request: &ChatRequest) -> Vec<String> {
-    request
-        .messages
-        .iter()
-        .filter_map(|message| match message {
-            graph_llm::types::ChatMessage::Assistant {
-                content: Some(content),
-                ..
-            } => Some(content.clone()),
             _ => None,
         })
         .collect()
@@ -3233,527 +3188,12 @@ fn with_drafting_builtins(mut pipeline: Pipeline) -> Pipeline {
     pipeline
 }
 
-async fn draft(pipeline: &Pipeline, goal: &str) -> Result<super::Draft, String> {
-    let call = pipeline
-        .call_plan(super::AUTHOR_PLAN, super::draft_input(goal))
-        .await;
-    if call.is_error {
-        return Err(call.result.to_string());
-    }
-    super::Draft::from_authored(&call.result)
-}
-
-async fn drafted(pipeline: &Pipeline, goal: &str) -> PlannerOutput {
-    let draft = draft(pipeline, goal).await.unwrap();
-    assert_eq!(draft.failed_step, None, "{:?}", draft.problems);
-    draft.output
-}
-
 fn drafting(
     responses: Vec<ChatResponse>,
     registry: Arc<dyn ToolRegistry>,
 ) -> (Pipeline, Arc<ScriptedProvider>) {
     let (pipeline, provider) = pipeline(responses, registry, 1);
     (with_drafting_builtins(pipeline), provider)
-}
-
-#[tokio::test]
-async fn draft_generates_outline_then_steps() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, provider) = drafting(
-        vec![
-            outline_response(),
-            briefed_step_draft(search_step("E0")),
-            step_draft(issues_step("E1", "E0.values.0.id"), true),
-        ],
-        registry.clone(),
-    );
-    let output = drafted(&pipeline, "sprint status").await;
-
-    let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
-    assert_eq!(ids, ["E0", "E1"]);
-    let solver_data = output
-        .solver_data
-        .as_ref()
-        .expect("a question-answering draft finishes with a solver");
-    assert_eq!(solver_data.query_to_answer, "how is the sprint going");
-    assert!(
-        !solver_data.data.is_empty(),
-        "default solver data filled from the plan"
-    );
-    assert!(
-        registry.invocations.lock().unwrap().is_empty(),
-        "drafting must not execute"
-    );
-
-    let requests = provider.requests.lock().unwrap();
-    assert_eq!(
-        requests.len(),
-        3,
-        "outline + one call per step; the closing call passes through once done"
-    );
-    let outline_input = user_turns(&requests[0]).join("\n");
-    assert!(outline_input.contains("principal engineer"));
-    for step in ["exit", "route", "filter", "map", "reduce", "agent", "ask"] {
-        assert!(
-            outline_input.contains(&format!("- `{step}`: ")),
-            "{step} is described"
-        );
-        assert!(super::is_control_step(step));
-    }
-    assert!(
-        outline_input.contains("sprint status") && outline_input.contains("## MCP Servers\n- t"),
-        "the outliner gets the goal and the sectioned catalog: {outline_input}"
-    );
-    assert!(
-        !requests[0].system.contains("t__search") && !outline_input.contains("t__search"),
-        "the outliner never sees individual MCP tools"
-    );
-    assert!(
-        requests[1..].iter().all(|r| r.system == requests[1].system),
-        "every step call must use the identical system prompt"
-    );
-    assert!(
-        !requests[1].system.contains("t__search"),
-        "the step's tools travel in the request, not the cached system prompt"
-    );
-    assert!(user_turns(&requests[1])
-        .join("\n")
-        .contains("## Further tools for this step"));
-    assert!(
-        requests[1].system.contains("### Drafting Protocol"),
-        "the step system prompt comes from the draft_step plan"
-    );
-    let schema = &requests[1]
-        .response_schema
-        .as_ref()
-        .expect("a step is a structured inference")
-        .schema;
-    assert_eq!(
-        schema["required"],
-        json!(["id", "toolName", "input", "planComplete"])
-    );
-    assert!(
-        schema.get("definitions").is_none(),
-        "the step is flat, not nested"
-    );
-    assert_eq!(schema["additionalProperties"], json!(false));
-    let first = user_turns(&requests[1]);
-    assert!(
-        first[0].contains("# Outline\n1. find the team\n2. fetch its issues"),
-        "each step call carries the whole outline: {first:?}"
-    );
-    let second = user_turns(&requests[2]).join("\n");
-    assert!(
-        second.contains("# Accepted steps") && second.contains("t__search"),
-        "the accepted E0 travels in the request: {second}"
-    );
-    assert!(
-        second.contains("outline entry 2:\nfetch its issues"),
-        "{second}"
-    );
-}
-
-#[tokio::test]
-async fn the_outline_call_resolves_the_outliner_role() {
-    let registry = search_registry(json!({"values": []}));
-    let mut named = std::collections::BTreeMap::new();
-    named.insert(
-        "outliner".to_string(),
-        ModelChoice {
-            provider: "mock".to_string(),
-            model: "outliner-model".to_string(),
-            temperature: None,
-            description: None,
-            fallbacks: Vec::new(),
-            context_window: None,
-        },
-    );
-    let (pipeline, provider) = pipeline_with_named(
-        vec![outline_response(), step_draft(search_step("E0"), true)],
-        registry,
-        1,
-        named,
-    );
-    let pipeline = with_drafting_builtins(pipeline);
-    drafted(&pipeline, "sprint status").await;
-    let requests = provider.requests.lock().unwrap();
-    assert_eq!(requests[0].model, "outliner-model");
-    assert!(
-        requests[0].response_schema.is_some(),
-        "the outline is a structured inference"
-    );
-    assert_eq!(requests[1].model, "test", "steps stay on the planner role");
-}
-
-#[tokio::test]
-async fn draft_retries_invalid_step_with_errors_injected() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, provider) = drafting(
-        vec![
-            outline_response(),
-            step_draft(search_step("E0"), false),
-            step_draft(issues_step("E1", "E9.values"), false),
-            step_draft(issues_step("E1", "E0.values.0.id"), false),
-            step_draft(search_step("E2"), true),
-        ],
-        registry,
-    );
-    let output = drafted(&pipeline, "sprint status").await;
-    let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
-    assert_eq!(ids, ["E0", "E1", "E2"]);
-
-    let requests = provider.requests.lock().unwrap();
-    assert_eq!(requests.len(), 5, "one retry for the invalid step");
-    let retry = user_turns(&requests[3]);
-    assert_eq!(retry.len(), 1, "each attempt is one fresh request");
-    assert!(
-        retry[0].contains("Your previous response was") && retry[0].contains("E9.values"),
-        "the invalid StepDraft is quoted back: {retry:?}"
-    );
-    assert!(
-        retry[0].contains("The step is invalid")
-            && retry[0].contains("Produce a corrected step (id E1)"),
-        "the validation problem is injected as feedback: {retry:?}"
-    );
-    assert_eq!(
-        requests[3].system, requests[1].system,
-        "a retry keeps the cached system prompt"
-    );
-    let after = user_turns(&requests[4]).join("\n") + &assistant_turns(&requests[4]).join("\n");
-    assert!(
-        !after.contains("E9"),
-        "the failed attempt is not carried into the next step: {after}"
-    );
-}
-
-#[tokio::test]
-async fn draft_retries_a_step_whose_tool_is_not_in_the_catalog() {
-    let registry = search_registry(json!({"values": []}));
-    let (mut pipeline, provider) = drafting(
-        vec![
-            outline_response(),
-            step_draft(
-                json!({"id": "E0", "toolName": "ghost__scan", "input": {}}),
-                false,
-            ),
-            step_draft(search_step("E0"), false),
-            step_draft(issues_step("E1", "E0.values.0.id"), true),
-        ],
-        registry,
-    );
-    pipeline.catalog = Some(Arc::new(catalog::ToolCatalog {
-        mcp_servers: std::collections::BTreeSet::from(["t".to_string()]),
-        plans: pipeline
-            .plans
-            .iter()
-            .map(|doc| doc.identifier.clone())
-            .collect(),
-        builtin_tools: ["builtin__infer", "builtin__reshape"]
-            .into_iter()
-            .map(String::from)
-            .collect(),
-        ..Default::default()
-    }));
-    let output = drafted(&pipeline, "sprint status").await;
-    let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
-    assert_eq!(ids, ["E0", "E1"]);
-    let requests = provider.requests.lock().unwrap();
-    assert_eq!(requests.len(), 4, "one retry for the unknown tool");
-    let retry = user_turns(&requests[2]).join("\n");
-    assert!(
-        retry.contains("ghost"),
-        "the catalog problem is fed back: {retry}"
-    );
-}
-
-#[tokio::test]
-async fn the_cached_drafting_prompt_carries_no_observed_shapes() {
-    let registry = search_registry(json!({"values": []}));
-    let (mut pipeline, provider) = drafting(
-        vec![
-            outline_response(),
-            step_draft(search_step("E0"), false),
-            step_draft(issues_step("E1", "E0.values.0.id"), true),
-        ],
-        registry,
-    );
-    let store = Arc::new(ShapeOnlyStore {
-        shapes: Mutex::new(Vec::new()),
-    });
-    store
-        .record_tool_shape(
-            "t__issues",
-            &json!({"type": "object"}),
-            &json!({"values": []}),
-        )
-        .await
-        .unwrap();
-    pipeline.store = Some(store);
-    pipeline.always_loaded = Arc::new(vec!["t__issues".to_string()]);
-    drafted(&pipeline, "sprint status").await;
-    let requests = provider.requests.lock().unwrap();
-    assert!(requests[1].system.contains("t__issues"));
-    assert!(
-        !requests[1].system.contains("observedOutputShape"),
-        "shapes change as drafting runs tools, so the cached prompt leaves them out"
-    );
-}
-
-#[tokio::test]
-async fn the_chat_agent_is_never_offered_to_or_accepted_from_the_planner() {
-    let registry = search_registry(json!({"values": []}));
-    let (mut pipeline, provider) = drafting(
-        vec![
-            outline_response(),
-            step_draft(
-                json!({"id": "E0", "toolName": "agent__chat", "input": {"prompt": "find the team"}}),
-                false,
-            ),
-            step_draft(search_step("E0"), false),
-            step_draft(issues_step("E1", "E0.values.0.id"), true),
-        ],
-        registry,
-    );
-    pipeline.agents = Arc::new(crate::agent::doc::AgentSet::layered(
-        crate::agent::doc::builtin_agents(crate::agent::doc::BUILTINS),
-        Vec::new(),
-    ));
-    assert!(pipeline.agents.get("chat").is_some());
-    assert!(!pipeline.planner_catalog().await.0.contains("agent__chat"));
-    assert!(!pipeline
-        .searchable_tools()
-        .await
-        .iter()
-        .any(|tool| tool.name == "agent__chat"));
-    let output = drafted(&pipeline, "sprint status").await;
-    assert_eq!(output.plan[0].tool_name, "t__search");
-    let requests = provider.requests.lock().unwrap();
-    let retry = user_turns(&requests[2]).join("\n");
-    assert!(retry.contains("not available to plans"), "{retry}");
-}
-
-#[tokio::test]
-async fn an_unrepairable_step_draft_is_retried_not_fatal() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, provider) = drafting(
-        vec![
-            outline_response(),
-            structured(json!({"thoughts": "a step goes here"})),
-            structured(json!({"thoughts": "still a step"})),
-            step_draft(search_step("E0"), false),
-            step_draft(issues_step("E1", "E0.values.0.id"), true),
-        ],
-        registry,
-    );
-    let output = drafted(&pipeline, "sprint status").await;
-    let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
-    assert_eq!(ids, ["E0", "E1"]);
-    let requests = provider.requests.lock().unwrap();
-    assert_eq!(requests.len(), 5, "the draft, its repair, then a retry");
-    let retry = user_turns(&requests[3]).join("\n");
-    assert!(
-        retry.contains("does not match the response schema"),
-        "the mismatch is fed back as a correction: {retry}"
-    );
-}
-
-#[tokio::test]
-async fn malformed_step_drafts_are_fixed_without_a_repair_call() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, provider) = drafting(
-        vec![
-            outline_response(),
-            structured(search_step("E0")),
-            structured(json!({
-                "$PARAMETER_VALUE": {
-                    "id": "E1",
-                    "toolName": "t__issues",
-                    "input": "{\"teamId\": \"{{E0.values.0.id}}\"}",
-                    "planComplete": true,
-                }
-            })),
-        ],
-        registry,
-    );
-    let output = drafted(&pipeline, "sprint status").await;
-    let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
-    assert_eq!(ids, ["E0", "E1"]);
-    assert_eq!(
-        provider.requests.lock().unwrap().len(),
-        3,
-        "a missing planComplete, a wrapper key, and an input sent as a JSON string need no repair call"
-    );
-}
-
-#[tokio::test]
-async fn draft_exhausted_retries_returns_valid_partial() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, _) = drafting(
-        vec![
-            outline_response(),
-            briefed_step_draft(search_step("E0")),
-            step_draft(issues_step("E1", "E9.values"), false),
-            step_draft(issues_step("E1", "E8.values"), false),
-            step_draft(issues_step("E1", "E7.values"), false),
-        ],
-        registry,
-    );
-    let draft = draft(&pipeline, "sprint status").await.unwrap();
-    assert_eq!(draft.failed_step.as_deref(), Some("E1"));
-    let problems = &draft.problems;
-    assert!(problems.iter().any(|p| p.contains("E7")), "{problems:?}");
-    let partial = &draft.output;
-    let ids: Vec<&str> = partial.plan.iter().map(|s| s.id.as_str()).collect();
-    assert_eq!(ids, ["E0"], "the valid prefix is carried out");
-    assert_eq!(
-        partial
-            .solver_data
-            .as_ref()
-            .expect("the valid prefix keeps its solver brief")
-            .query_to_answer,
-        "how is the sprint going"
-    );
-}
-
-#[tokio::test]
-async fn draft_accepts_done_early_without_a_step() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, provider) = drafting(
-        vec![
-            outline_response(),
-            step_draft(search_step("E0"), false),
-            structured(json!({"id": null, "toolName": null, "input": null, "planComplete": true})),
-        ],
-        registry.clone(),
-    );
-    let output = drafted(&pipeline, "sprint status").await;
-    assert_eq!(output.plan.len(), 1);
-    assert_eq!(output.plan[0].id, "E0");
-    assert_eq!(provider.requests.lock().unwrap().len(), 3);
-
-    let (empty_pipeline, provider) = drafting(
-        vec![
-            outline_response(),
-            structured(json!({"id": null, "toolName": null, "input": null, "planComplete": true})),
-            step_draft(search_step("E0"), true),
-        ],
-        registry,
-    );
-    let output = drafted(&empty_pipeline, "sprint status").await;
-    assert_eq!(output.plan.len(), 1, "the retry produced the real step");
-    assert_eq!(
-        provider.requests.lock().unwrap().len(),
-        3,
-        "outline + rejected null + retry"
-    );
-}
-
-#[tokio::test]
-async fn entries_left_after_the_draft_completes_make_no_model_calls() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, provider) = drafting(
-        vec![
-            structured(json!({"entries": ["find the team", "fetch its issues", "report"]})),
-            step_draft(search_step("E0"), true),
-        ],
-        registry,
-    );
-    let output = drafted(&pipeline, "sprint status").await;
-    assert_eq!(output.plan.len(), 1);
-    assert_eq!(
-        provider.requests.lock().unwrap().len(),
-        2,
-        "outline + one step"
-    );
-}
-
-#[tokio::test]
-async fn draft_emits_progress_events() {
-    let registry = search_registry(json!({"values": []}));
-    let (mut pipeline, _) = drafting(
-        vec![
-            outline_response(),
-            step_draft(search_step("E0"), false),
-            step_draft(issues_step("E1", "E9.values"), false),
-            step_draft(issues_step("E1", "E0.values.0.id"), true),
-        ],
-        registry,
-    );
-    let sink = Arc::new(RecordingSink::default());
-    pipeline.events = sink.clone();
-    drafted(&pipeline, "sprint status").await;
-
-    let events = sink.drafting.lock().unwrap();
-    let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(
-        names,
-        vec![
-            "draft_outline",
-            "draft_step_started",
-            "draft_step_finished",
-            "draft_step_started",
-            "draft_step_finished",
-            "draft_step_finished",
-        ]
-    );
-    assert_eq!(
-        events[0].1,
-        json!(["find the team", "fetch its issues"]),
-        "outline entries"
-    );
-    let failed = &events[4].1;
-    assert!(!failed["problems"].as_array().unwrap().is_empty());
-    assert_eq!(failed["attempt"], json!(1));
-    let accepted = &events[5].1;
-    assert!(accepted["problems"].as_array().unwrap().is_empty());
-    assert_eq!(accepted["attempt"], json!(2));
-    assert_eq!(accepted["step"]["id"], json!("E1"));
-}
-
-#[tokio::test]
-async fn a_closing_call_runs_once_when_the_planner_never_signals_done() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, provider) = drafting(
-        vec![
-            outline_response(),
-            briefed_step_draft(search_step("E0")),
-            step_draft(search_step("E1"), false),
-            step_draft(search_step("E2"), false),
-        ],
-        registry.clone(),
-    );
-    let output = drafted(&pipeline, "sprint status").await;
-    let ids: Vec<&str> = output.plan.iter().map(|s| s.id.as_str()).collect();
-    assert_eq!(
-        ids,
-        ["E0", "E1", "E2"],
-        "one step per entry plus the closing step"
-    );
-    assert!(
-        registry.invocations.lock().unwrap().is_empty(),
-        "drafting must not execute"
-    );
-    let requests = provider.requests.lock().unwrap();
-    assert_eq!(
-        requests.len(),
-        4,
-        "outline + two entries + one closing call"
-    );
-    assert!(
-        user_turns(&requests[3])
-            .join("\n")
-            .contains("Every outline entry has now been advanced"),
-        "the closing call uses the closing wording"
-    );
-}
-
-#[tokio::test]
-async fn draft_rejects_an_empty_outline() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, _) = drafting(vec![structured(json!({"entries": ["  ", ""]}))], registry);
-    let err = draft(&pipeline, "sprint status").await.err().unwrap();
-    assert!(err.contains("the outline has no entries"), "{err}");
 }
 
 #[tokio::test]
@@ -3785,6 +3225,42 @@ async fn a_plan_step_runs_a_named_agent_as_a_typed_subagent() {
 }
 
 #[tokio::test]
+async fn a_subagent_without_max_iterations_gets_the_configured_round_cap() {
+    let registry = search_registry(json!({"values": []}));
+    let (mut pipeline, provider) = drafting(
+        vec![
+            tool_use("c1", "t__search", json!({"query": "x"})),
+            text("done"),
+        ],
+        registry,
+    );
+    pipeline.max_agent_iterations = 2;
+    pipeline.agents = Arc::new(crate::agent::doc::AgentSet::layered(
+        crate::agent::doc::builtin_agents(&[
+            "name: looper\ndescription: Keeps searching\nmodel: planner\ntools: [t__search]\nsystem_prompt: Search.\n",
+        ]),
+        Vec::new(),
+    ));
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "agent__looper", "input": {"prompt": "go"}},
+    ]))
+    .unwrap();
+    let mut output = Map::new();
+    output.insert("result".to_string(), json!("{{E0.result}}"));
+    let outcome = pipeline
+        .run_explicit("q", plan, Finish::Render(output), None)
+        .await
+        .unwrap();
+    assert_eq!(outcome.structured, Some(json!({"result": "done"})));
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[1].tools.is_empty(),
+        "the capped final round withdraws the tools"
+    );
+}
+
+#[tokio::test]
 async fn subagent_calls_stop_at_the_depth_cap() {
     let registry = search_registry(json!({"values": []}));
     let (mut pipeline, provider) = drafting(Vec::new(), registry);
@@ -3800,21 +3276,6 @@ async fn subagent_calls_stop_at_the_depth_cap() {
     assert!(err.to_string().contains("nest at most"), "{err}");
     assert!(provider.requests.lock().unwrap().is_empty());
 }
-
-#[test]
-fn step_draft_schema_makes_step_nullable() {
-    // Watch-item: `Option<Step>` must schema out as nullable so providers
-    // accept a null/omitted step for the done-early signal.
-    let schema = serde_json::to_value(schemars::schema_for!(super::drafting::StepDraft)).unwrap();
-    let step = &schema["properties"]["step"];
-    let text = step.to_string();
-    assert!(
-        text.contains("null") || text.contains("anyOf"),
-        "step must admit null: {text}"
-    );
-}
-
-// ── agent control step ────────────────────────────────────────────────
 
 fn tool_use(id: &str, name: &str, args: Value) -> ChatResponse {
     ChatResponse {
@@ -4754,41 +4215,6 @@ impl Interlocutor for ScriptedHuman {
     }
 }
 
-#[tokio::test]
-async fn author_plan_outlines_drafts_and_validates_without_running_anything() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, provider) = drafting(
-        vec![
-            structured(json!({"entries": ["find the team", "fetch its issues"]})),
-            briefed_step_draft(search_step("E0")),
-            step_draft(issues_step("E1", "E0.values.0.id"), true),
-        ],
-        registry.clone(),
-    );
-
-    let call = pipeline
-        .call_plan("author_plan", json!({"goal": "sprint status"}))
-        .await;
-    assert!(!call.is_error, "{}", call.result);
-    let result = call.result;
-    assert_eq!(
-        result["outline"],
-        json!(["find the team", "fetch its issues"])
-    );
-    assert_eq!(result["valid"], json!(true), "{result}");
-    assert_eq!(result["plan"]["steps"].as_array().unwrap().len(), 2);
-    assert_eq!(
-        result["side_effects"],
-        json!([]),
-        "both test tools are read-only"
-    );
-    assert!(
-        registry.invocations.lock().unwrap().is_empty(),
-        "authoring never runs the plan's tools"
-    );
-    assert_eq!(provider.requests.lock().unwrap().len(), 3);
-}
-
 fn compose_needs() -> ChatResponse {
     structured(json!({
         "inputs": [],
@@ -5468,6 +4894,17 @@ fn decide_exit_plan(gate: Value) -> Plan {
     .unwrap()
 }
 
+async fn invalid_plan(pipeline: &Pipeline, plan: Plan) -> String {
+    let err = pipeline
+        .run_explicit("q", plan, Finish::Silent, None)
+        .await
+        .unwrap_err();
+    let PipelineError::InvalidPlan(message) = err else {
+        panic!("expected InvalidPlan, got {err:?}");
+    };
+    message
+}
+
 async fn step_failure(pipeline: &Pipeline, plan: Plan) -> String {
     let err = pipeline
         .run_explicit("q", plan, Finish::Silent, None)
@@ -5585,17 +5022,17 @@ async fn gate_keys_are_mutually_exclusive_and_decide_rejects_what_it_does_not_su
         }}
     ]))
     .unwrap();
-    let message = step_failure(&pipeline, both).await;
+    let message = invalid_plan(&pipeline, both).await;
     assert!(message.contains("mutually exclusive"), "{message}");
 
-    let message = step_failure(
+    let message = invalid_plan(
         &pipeline,
         decide_exit_plan(json!({"question": "q?", "options": {"a": "A", "b": "B"}})),
     )
     .await;
     assert!(message.contains("`route`"), "{message}");
 
-    let message = step_failure(
+    let message = invalid_plan(
         &pipeline,
         decide_exit_plan(json!({"question": "q?", "min_confidence": 1.5})),
     )
@@ -5702,6 +5139,50 @@ async fn a_failing_filter_decision_names_the_item() {
     let message = step_failure(&pipeline, plan).await;
     assert!(message.contains("item 1"), "{message}");
     assert!(message.contains("decision failed"), "{message}");
+}
+
+#[test]
+fn static_validation_checks_an_exit_steps_decide_gate() {
+    let registry = search_registry(json!({"values": []}));
+    let (pipeline, _) = pipeline(vec![], registry, 1);
+    let plan: Plan = serde_json::from_value(json!([
+        {"id": "E0", "toolName": "t__search", "input": {"query": "x"}},
+        {"id": "E1", "toolName": "exit", "input": {
+            "decide": {"question": "q?", "threshold": 0.8},
+            "status": "success",
+        }},
+        {"id": "E2", "toolName": "exit", "input": {
+            "decide": {"question": "q?", "options": {"a": "A"}, "min_confidence": 2},
+            "status": "success",
+        }},
+        {"id": "E3", "toolName": "map", "input": {
+            "over": "{{E0.values}}",
+            "do": [{"id": "B0", "toolName": "exit", "input": {
+                "decide": {"question": "q?"},
+                "when": {"value": "{{item.id}}", "op": "eq", "to": "a"},
+                "status": "success",
+            }}],
+        }},
+    ]))
+    .unwrap();
+    let problems = pipeline.validate_plan(&plan).unwrap_err();
+    let has = |needle: &str| problems.iter().any(|p| p.contains(needle));
+    assert!(
+        has("step E1: unknown field `decide.threshold`"),
+        "{problems:?}"
+    );
+    assert!(
+        has("step E2: `decide.options` (named cases) only works on a `route` step"),
+        "{problems:?}"
+    );
+    assert!(
+        has("step E2: `decide.min_confidence` must be between 0 and 1"),
+        "{problems:?}"
+    );
+    assert!(
+        has("step B0: `when`, `infer`, and `decide` are mutually exclusive"),
+        "{problems:?}"
+    );
 }
 
 #[test]
@@ -6326,45 +5807,6 @@ async fn control_steps_are_never_searched() {
     }
 }
 
-#[tokio::test]
-async fn each_draft_step_sees_only_its_searched_tools() {
-    let registry = search_registry(json!({"values": []}));
-    let (pipeline, provider) = drafting(
-        vec![
-            outline_response(),
-            briefed_step_draft(search_step("E0")),
-            step_draft(issues_step("E1", "E0.values.0.id"), true),
-        ],
-        registry,
-    );
-    drafted(&pipeline, "sprint status").await;
-    let whole = pipeline.planner_catalog().await.0.lines().count();
-    let requests = provider.requests.lock().unwrap();
-    let second = user_turns(&requests[2]).join("\n");
-    assert!(
-        second.contains("## Further tools for this step"),
-        "{second}"
-    );
-    assert!(second.contains("t__issues") && second.contains("t__search"));
-    for control in control_step_defs() {
-        let named = format!("\"name\":\"{}\"", control.name);
-        assert!(
-            requests[2].system.contains(&named) && !second.contains(&named),
-            "the {} control step is offered once, in the cached system prompt",
-            control.name
-        );
-    }
-    let offered = second.matches("\"inputSchema\"").count();
-    assert!(
-        offered < whole,
-        "a step sees fewer tools than the whole catalog ({offered} of {whole})"
-    );
-    assert!(
-        requests[1..].iter().all(|r| r.system == requests[1].system),
-        "the cached system prompt is identical across steps"
-    );
-}
-
 const WEATHER_TOOL: &str = "name: weather\ndescription: Current weather for a city\nkind: exec\ncommand: printf\nargs: ['{\"city\":\"%s\",\"sky\":\"clear\"}', '{{input.city}}']\ninput_schema:\n  type: object\n  required: [city]\n  properties:\n    city: {type: string, description: The city}\n";
 
 fn drafting_pipeline(
@@ -6464,7 +5906,8 @@ async fn a_tested_tool_saves_and_is_usable_in_the_same_session() {
 
 #[tokio::test]
 async fn the_user_can_have_a_tool_saved_untested() {
-    let (pipeline, _dir, human) = drafting_pipeline(vec![]);
+    let (pipeline, _dir, human) =
+        drafting_pipeline(vec![AskOutcome::Answered(json!({"save": true}))]);
     let saved = pipeline
         .call_native(
             "builtin__save_tool",
@@ -6480,6 +5923,43 @@ async fn the_user_can_have_a_tool_saved_untested() {
         "nothing ran; only the save was asked about"
     );
     assert!(prompts[0].starts_with("Save user__weather"), "{prompts:?}");
+    assert!(
+        prompts[0].contains("command: printf"),
+        "the save prompt shows the file: {prompts:?}"
+    );
+}
+
+#[tokio::test]
+async fn nothing_is_saved_when_nobody_can_approve_it() {
+    let (pipeline, dir, _) =
+        drafting_pipeline(vec![AskOutcome::Unavailable("not a terminal".into())]);
+    let saved = pipeline
+        .call_native(
+            "builtin__save_tool",
+            json!({"yaml": WEATHER_TOOL, "untested": true}),
+        )
+        .await;
+    assert!(
+        saved.result["error"]
+            .as_str()
+            .unwrap()
+            .contains("nobody is here to approve"),
+        "{}",
+        saved.result
+    );
+    assert!(!dir.path().join("tools/weather.yaml").exists());
+    assert!(pipeline.drafted.tools().is_empty());
+
+    let mut headless = pipeline.clone();
+    headless.interlocutor = None;
+    let saved = headless
+        .call_native(
+            "builtin__save_agent",
+            json!({"yaml": "name: triager\ndescription: Triages issues\nmodel: chat\ntools: [t__search]\nsystem_prompt: You triage.\n"}),
+        )
+        .await;
+    assert!(saved.result["error"].is_string(), "{}", saved.result);
+    assert!(!dir.path().join("agents/triager.yaml").exists());
 }
 
 #[tokio::test]
@@ -6528,7 +6008,7 @@ async fn an_invalid_tool_file_is_never_run_or_saved() {
 
 #[tokio::test]
 async fn a_drafted_agent_is_validated_saved_and_callable_right_away() {
-    let (pipeline, dir, _) = drafting_pipeline(vec![]);
+    let (pipeline, dir, _) = drafting_pipeline(vec![AskOutcome::Answered(json!({"save": true}))]);
     let unknown_role = "name: triager\ndescription: Triages issues\nmodel: nonsense\ntools: [t__search]\nsystem_prompt: You triage.\n";
     let refused = pipeline
         .call_native("builtin__save_agent", json!({"yaml": unknown_role}))
@@ -6558,4 +6038,80 @@ async fn a_drafted_agent_is_validated_saved_and_callable_right_away() {
     assert!(dir.path().join("agents/triager.yaml").exists());
     assert!(pipeline.agents.get("triager").is_some());
     assert!(pipeline.live_catalog().unwrap().agents.contains("triager"));
+}
+
+#[tokio::test]
+async fn a_secret_for_a_test_run_is_asked_in_the_form_used_once_and_kept_from_the_model() {
+    let tool = "name: whoami\ndescription: Echoes a token\nkind: exec\ncommand: sh\nargs: ['-c', 'printf \"{\\\"token\\\":\\\"%s\\\"}\" \"$TOKEN\"']\nenv:\n  TOKEN: \"${GRAPH_TEST_NEVER_SET_TOKEN}\"\n";
+    let (pipeline, _dir, human) = drafting_pipeline(vec![AskOutcome::Answered(
+        json!({"run": true, "GRAPH_TEST_NEVER_SET_TOKEN": "hunter22"}),
+    )]);
+    let tried = pipeline
+        .call_native("builtin__try_tool", json!({"yaml": tool, "input": {}}))
+        .await;
+    assert_eq!(tried.result["ran"], json!(true), "{}", tried.result);
+    assert_eq!(tried.result["result"]["token"], "[secret]");
+    assert!(!tried.result.to_string().contains("hunter22"));
+    assert_eq!(
+        tried.result["needs_env"],
+        json!(["GRAPH_TEST_NEVER_SET_TOKEN"])
+    );
+    let asked = human.asked.lock().unwrap();
+    assert!(asked[0].prompt.contains("never passed to the model"));
+    assert!(asked[0].schema["properties"]["GRAPH_TEST_NEVER_SET_TOKEN"].is_object());
+}
+
+#[tokio::test]
+async fn short_secrets_and_secrets_with_escaped_characters_are_redacted_too() {
+    let tool = "name: echo\ndescription: Echoes a token\nkind: exec\ncommand: sh\nargs: ['-c', 'printf \"%s\" \"$TOKEN\"']\nenv:\n  TOKEN: \"${GRAPH_TEST_NEVER_SET_SHORT}\"\n";
+    let (pipeline, _dir, _) = drafting_pipeline(vec![AskOutcome::Answered(
+        json!({"run": true, "GRAPH_TEST_NEVER_SET_SHORT": "a\"\\b"}),
+    )]);
+    let tried = pipeline
+        .call_native("builtin__try_tool", json!({"yaml": tool, "input": {}}))
+        .await;
+    assert_eq!(tried.result["ran"], json!(true), "{}", tried.result);
+    let shown = tried.result.to_string();
+    assert!(shown.contains("[secret]"), "{shown}");
+    assert!(
+        !serde_json::to_string(&tried.result["result"])
+            .unwrap()
+            .contains("a\\\"\\\\b"),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn an_approved_test_run_is_not_asked_about_again_until_the_draft_or_input_changes() {
+    let (pipeline, _dir, human) =
+        drafting_pipeline(vec![AskOutcome::Answered(json!({"run": true}))]);
+    for _ in 0..2 {
+        let tried = pipeline
+            .call_native(
+                "builtin__try_tool",
+                json!({"yaml": WEATHER_TOOL, "input": {"city": "Denver"}}),
+            )
+            .await;
+        assert_eq!(tried.result["result"]["city"], "Denver", "{}", tried.result);
+    }
+    assert_eq!(
+        human.prompts().len(),
+        1,
+        "one approval covers re-runs of the same draft and input"
+    );
+    pipeline
+        .call_native(
+            "builtin__try_tool",
+            json!({"yaml": WEATHER_TOOL, "input": {"city": "Boston"}}),
+        )
+        .await;
+    assert_eq!(human.prompts().len(), 2, "new input asks again");
+    let changed = WEATHER_TOOL.replace("Current weather", "Weather now");
+    pipeline
+        .call_native(
+            "builtin__try_tool",
+            json!({"yaml": changed, "input": {"city": "Denver"}}),
+        )
+        .await;
+    assert_eq!(human.prompts().len(), 3, "a changed draft asks again");
 }
