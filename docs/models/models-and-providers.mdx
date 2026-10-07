@@ -140,7 +140,7 @@ On Anthropic, graph places two of the four permitted breakpoints:
 1. On the **system prompt**. Render order is `tools` → `system` → `messages`, so one marker there covers the tool definitions too.
 2. A rolling marker on the **tail of the conversation**, so round _N_ of a multi-round loop reads everything through round _N−1_ at ~0.1× instead of re-sending it at full price.
 
-The second one is what matters for [`agent` steps](/plans/agent-step): without it, an 18-round agent re-sends its whole growing conversation 18 times. Anything that calls a model repeatedly over a stable prefix benefits — agent rounds, the `chat`/`ask` loop, [plan drafting](/workbench/plan-workbench) (one structured call per step over an identical prompt), the planner's replan attempts, and per-item `infer` gates.
+The second one is what matters for [`agent` steps](/plans/agent-step): without it, an 18-round agent re-sends its whole growing conversation 18 times. Anything that calls a model repeatedly over a stable prefix benefits — agent rounds, the `chat`/`ask` loop, [plan drafting](/workbench/plan-workbench) (a system prompt that's identical for every draft and fix), the planner's replan attempts, and per-item `infer` gates.
 
 OpenAI-compatible providers cache automatically, server-side, with no request parameter — nothing to configure and no write premium, which is why they report `cache_creation_input_tokens: 0` and only ever show cache _reads_.
 

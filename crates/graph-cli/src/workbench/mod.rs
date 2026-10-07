@@ -182,7 +182,10 @@ async fn run_plan_workbench(
             .context("failed to resolve the workbench project directory")?,
     );
     let registry: Arc<dyn ToolRegistry> = Arc::new(CompositeRegistry::new(vec![
-        visible_catalog.clone(),
+        Arc::new(tools::ComposedCapture::new(
+            visible_catalog.clone(),
+            draft.clone(),
+        )),
         workbench_tools,
         fs_tools,
     ]));

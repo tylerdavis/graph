@@ -140,27 +140,103 @@ steps:
         {{context.tools}}
 
         Write the plan as YAML in `yaml`.
+
+        List in `questions` each value the plan uses that you had to guess because neither the goal, the inputs nor the tools' schemas pin it down, and that decides which items the plan returns: a status, project or label name, a threshold, a scope. Use your guess in the plan. Don't ask about a value the goal states (use it as written), a limit or size that only bounds how much is fetched, or how to do something the tools can't do. Each question is one short sentence to the person who asked for the plan ("Which workflow state means in progress?"), and its guess is exactly the value the plan uses, as written in the plan ("started"), with no explanation. `questions` goes beside `yaml` in your response, never inside the plan. Leave it empty when nothing is a guess.
+
+        When part of the plan needs a tool you weren't shown, describe what that tool should do in `search`, one entry per tool ("List the workflow states of a Linear team"), and write the rest of the plan; you'll see what the search finds before the plan is finished. Leave `search` empty when the tools shown are enough.
       output_schema:
         type: object
-        required: [yaml]
+        required: [yaml, questions, search]
         properties:
           yaml: { type: string, description: The whole plan file as YAML }
+          questions:
+            type: array
+            default: []
+            description: Values you guessed, as questions for the person who asked for the plan
+            items:
+              type: object
+              required: [key, question, guess]
+              properties:
+                key: { type: string, description: A snake_case name for the value }
+                question: { type: string, description: One short question asking for it }
+                guess: { type: string, description: Exactly the value the plan uses now, nothing else }
+                options: { type: array, items: { type: string }, description: The allowed values, only when a tool's schema lists them }
+          search:
+            type: array
+            default: []
+            items: { type: string }
+            description: What each tool you need but weren't shown should do; empty when the tools shown are enough
       on_mismatch: return
+  - id: form
+    tool_name: builtin__question_form
+    input:
+      draft: "{{draft}}"
+  - id: clarify
+    tool_name: route
+    input:
+      if: { value: "{{form.count}}", op: gt, to: 0 }
+      then:
+        - id: asked
+          tool_name: ask
+          input:
+            prompt: "A few things to settle before the plan for \"{{input.goal}}\" is finished."
+            output_schema: "{{form.schema}}"
+            when_unanswered: default
+            default: "{{form.default}}"
+        - id: heard
+          tool_name: builtin__reshape
+          input:
+            shape:
+              answered: "{{asked.answered}}"
+              said:
+                asked: "{{form.questions}}"
+                answers: "{{asked.answer}}"
+      else:
+        tool_name: builtin__reshape
+        input:
+          shape:
+            answered: false
+            said: Nothing was asked.
   - id: checked
     tool_name: builtin__check_plan
     input:
       yaml: "{{draft.yaml}}"
+      search: "{{draft.search}}"
+      pending: "{{clarify.result.answered}}"
+  - id: start
+    tool_name: builtin__reshape
+    input:
+      shape:
+        check: "{{checked}}"
+        search: "{{checked.search}}"
+        found: "{{found.results}}"
+        tools: "{{context.tools}}"
   - id: fixed
     tool_name: reduce
     input:
       over: "{{context.rounds}}"
-      initial: "{{checked}}"
+      initial: "{{start}}"
       do:
         - id: round
           tool_name: route
           input:
-            if: { value: "{{accumulator.valid}}", op: eq, to: false }
+            if: { value: "{{accumulator.check.settled}}", op: eq, to: false }
             then:
+              - id: tooling
+                tool_name: route
+                input:
+                  if: { value: "{{accumulator.search}}", op: not_empty }
+                  then:
+                    tool_name: builtin__find_tools
+                    input:
+                      queries: "{{accumulator.search}}"
+                      found: "{{accumulator.found}}"
+                  else:
+                    tool_name: builtin__reshape
+                    input:
+                      shape:
+                        found: "{{accumulator.found}}"
+                        tools: "{{accumulator.tools}}"
               - id: fix
                 tool_name: builtin__infer
                 input:
@@ -171,26 +247,45 @@ steps:
                     {{input.goal}}
 
                     # Tools found for this plan
-                    {{context.tools}}
+                    {{tooling.result.tools}}
 
                     # The plan
-                    {{accumulator.yaml}}
+                    {{accumulator.check.yaml}}
 
                     # Its problems
-                    {{accumulator.problems}}
+                    {{accumulator.check.problems}}
 
-                    Fix only what the problems name. Return `patch`: a YAML mapping with `steps` holding only the steps you replace (matched by id; a new step takes `after: <id of the step before it>`), `remove` with ids of steps to drop if any, and `input_schema` or `output` only if they change. Do not repeat steps that are fine.
+                    # What the person who asked for the plan said
+                    {{clarify.result.said}}
+
+                    Make the plan follow what the person said and fix its problems; never fix a problem by dropping something they asked for. Where an answer is a value, put it where the plan used the guess. Where an answer says a value changes from run to run, make it a plan input in `input_schema`, or an `ask` step when it can only be chosen after earlier steps run. Follow `instructions` when given. When a change needs a tool that isn't listed above, describe what it should do in `search` and leave that change for the next round.
+
+                    Return `patch`: a YAML mapping with `steps` holding a list of only the steps you replace (matched by id; a new step takes `after: <id of the step before it>`), `remove` with ids of steps to drop if any, and `input_schema` or `output` only if they change. Return an empty patch when nothing needs to change.
                   output_schema:
                     type: object
-                    required: [patch]
+                    required: [patch, search]
                     properties:
                       patch: { type: string, description: The YAML patch }
+                      search:
+                        type: array
+                        default: []
+                        items: { type: string }
+                        description: What each tool you need but weren't shown should do; empty when the tools listed are enough
                   on_mismatch: return
               - id: patched
                 tool_name: builtin__check_plan
                 input:
-                  yaml: "{{accumulator.yaml}}"
+                  yaml: "{{accumulator.check.yaml}}"
                   patch: "{{fix.patch}}"
+                  search: "{{fix.search}}"
+              - id: carried
+                tool_name: builtin__reshape
+                input:
+                  shape:
+                    check: "{{patched}}"
+                    search: "{{patched.search}}"
+                    found: "{{tooling.result.found}}"
+                    tools: "{{tooling.result.tools}}"
             else:
               tool_name: builtin__reshape
               input:
@@ -201,7 +296,8 @@ steps:
             shape: "{{round.result}}"
 output:
   needs: "{{needs}}"
-  plan: "{{fixed.result.plan}}"
-  valid: "{{fixed.result.valid}}"
-  problems: "{{fixed.result.problems}}"
-  yaml: "{{fixed.result.yaml}}"
+  plan: "{{fixed.result.check.plan}}"
+  valid: "{{fixed.result.check.valid}}"
+  problems: "{{fixed.result.check.problems}}"
+  yaml: "{{fixed.result.check.yaml}}"
+  questions: "{{form.questions}}"

@@ -64,6 +64,7 @@ pub struct DraftState {
     /// The (doc, dirty) displaced by the last replacement. `restore` swaps
     /// it with the current draft, so calling it twice is redo.
     pub undo: Option<(PlanDoc, bool)>,
+    pub composed: Option<Value>,
 }
 
 impl DraftState {
@@ -72,6 +73,7 @@ impl DraftState {
             doc,
             dirty: false,
             undo: None,
+            composed: None,
         }
     }
 
@@ -406,7 +408,18 @@ impl WorkbenchTools {
     }
 
     fn set_draft(&self, input: &Value) -> ToolOutcome {
-        let doc = match graph_core::pipeline::plan_doc(&input["plan"]) {
+        let plan = match input.get("plan").filter(|plan| !plan.is_null()) {
+            Some(plan) => plan.clone(),
+            None => match self.draft.lock().unwrap().composed.clone() {
+                Some(plan) => plan,
+                None => {
+                    return error_outcome(
+                        "there is no composed plan to publish: call plan__compose_plan first",
+                    )
+                }
+            },
+        };
+        let doc = match graph_core::pipeline::plan_doc(&plan) {
             Ok(doc) => doc,
             Err(error) => return error_outcome(&format!("set_draft requires a 'plan': {error}")),
         };
@@ -633,15 +646,15 @@ impl ToolRegistry for WorkbenchTools {
             ToolDef {
                 name: SET_DRAFT.to_string(),
                 description: "Make a plan document the workbench draft, replacing the current \
-                              one: pass the `plan` that plan__author_plan returned. Fails when the \
+                              one: with no `plan`, publishes the plan plan__compose_plan last \
+                              returned, exactly as it returned it. Fails when the \
                               current draft has unsaved changes; pass overwrite_draft: true only \
                               after the user confirms discarding them."
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
-                    "required": ["plan"],
                     "properties": {
-                        "plan": {"type": "object", "description": "The plan document to show in the pane"},
+                        "plan": {"type": "object", "description": "A plan document to show in the pane. Omit it to publish what plan__compose_plan returned"},
                         "overwrite_draft": {"type": "boolean", "description": "Discard unsaved changes to the current draft. Only after the user confirms."}
                     }
                 }),
@@ -964,6 +977,39 @@ impl ToolRegistry for WorkbenchTools {
         outcome
     }
 }
+
+pub struct ComposedCapture {
+    inner: Arc<dyn ToolRegistry>,
+    draft: SharedDraft,
+}
+
+impl ComposedCapture {
+    pub fn new(inner: Arc<dyn ToolRegistry>, draft: SharedDraft) -> Self {
+        Self { inner, draft }
+    }
+}
+
+#[async_trait]
+impl ToolRegistry for ComposedCapture {
+    async fn tools(&self) -> Result<Vec<ToolDef>, ToolError> {
+        self.inner.tools().await
+    }
+
+    async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
+        let outcome = self.inner.invoke(name, input).await?;
+        if name == COMPOSE_PLAN_TOOL && !outcome.is_error {
+            let plan = outcome.result.get("plan").filter(|plan| plan.is_object());
+            self.draft.lock().unwrap().composed = plan.cloned();
+        }
+        Ok(outcome)
+    }
+
+    async fn servers(&self) -> Vec<graph_core::ToolServer> {
+        self.inner.servers().await
+    }
+}
+
+const COMPOSE_PLAN_TOOL: &str = "plan__compose_plan";
 
 #[cfg(test)]
 mod tests {
@@ -2012,6 +2058,36 @@ steps:
             _ => panic!("expected DraftReplaced"),
         }
         assert!(rx.try_recv().is_err(), "one publish only");
+    }
+
+    #[tokio::test]
+    async fn set_draft_without_a_plan_publishes_the_last_composed_one_untouched() {
+        let (pipeline, _) = scripted_pipeline(Vec::new());
+        let (tools, _rx) = draft_tools(pipeline);
+        assert!(tools.set_draft(&json!({})).is_error, "nothing composed yet");
+
+        struct Composer;
+        #[async_trait]
+        impl ToolRegistry for Composer {
+            async fn tools(&self) -> Result<Vec<ToolDef>, ToolError> {
+                Ok(Vec::new())
+            }
+            async fn invoke(&self, _name: &str, _input: Value) -> Result<ToolOutcome, ToolError> {
+                Ok(ToolOutcome {
+                    result: json!({"plan": report_plan(), "valid": true}),
+                    is_error: false,
+                })
+            }
+        }
+        let capture = ComposedCapture::new(Arc::new(Composer), tools.draft.clone());
+        capture
+            .invoke(COMPOSE_PLAN_TOOL, json!({"goal": "x"}))
+            .await
+            .unwrap();
+
+        let outcome = tools.set_draft(&json!({}));
+        assert!(!outcome.is_error, "{:?}", outcome.result);
+        assert_eq!(outcome.result["identifier"], json!("report_on_x"));
     }
 
     #[tokio::test]

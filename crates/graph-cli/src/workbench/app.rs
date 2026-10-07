@@ -900,6 +900,18 @@ fn finish_turn_text(app: &mut App, text: String) {
         }
         return;
     }
+    let turn_start = app
+        .chat
+        .entries
+        .iter()
+        .rposition(|entry| matches!(entry, ChatEntry::User(_)))
+        .map_or(0, |index| index + 1);
+    let streamed = app.chat.entries[turn_start..]
+        .iter()
+        .any(|entry| matches!(entry, ChatEntry::Assistant(shown) if *shown == text));
+    if streamed {
+        return;
+    }
     match app.chat.entries.last_mut() {
         Some(ChatEntry::Assistant(buffer)) if *buffer == text => {}
         // Deltas drifted from (or never became) the final text — the
@@ -1999,6 +2011,36 @@ steps:
             },
             receiver,
         )
+    }
+
+    #[test]
+    fn a_reply_streamed_before_a_handoff_is_not_repeated_when_the_turn_ends() {
+        let mut app = App::new(None);
+        app.chat.input.insert_str("draft a plan");
+        update(&mut app, key(KeyCode::Enter));
+        update(&mut app, Msg::AgentDelta("Drafted the plan.".to_string()));
+        update(
+            &mut app,
+            Msg::AgentToolStarted("transfer_to_plan_editor".to_string()),
+        );
+        update(
+            &mut app,
+            Msg::ActiveAgent {
+                name: "plan_editor".to_string(),
+                note: Some("⇢ orchestrator handed off to plan_editor".to_string()),
+            },
+        );
+        update(
+            &mut app,
+            Msg::TurnFinished(Ok("Drafted the plan.".to_string())),
+        );
+        let replies = app
+            .chat
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry, ChatEntry::Assistant(_)))
+            .count();
+        assert_eq!(replies, 1);
     }
 
     #[test]

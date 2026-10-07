@@ -81,9 +81,9 @@ graph plan step rm <name|path> <id> [--json]
 
 `new` scaffolds a plan with no steps. It is intentionally invalid on creation (`plan has no steps`) — an edit is only refused if it makes things _worse_, so a scaffold stays editable and a plan can be built up step by step without ever invoking the planner.
 
-`draft` runs the planner over your tool catalog, one validated step at a time; if drafting exhausts its retries on a step, the valid prefix is saved and reported under `salvaged` so you can finish it with `step add` instead of redrafting. `--stdout` prints the YAML and writes nothing.
+`draft` runs the built-in [`compose_plan`](/plans/the-planner#composing-a-whole-plan-in-one-call) over your tool catalog: it finds the tools the goal needs, writes the whole plan in one call, and fixes only the steps that fail validation. When it had to guess a value that decides what the plan returns, such as a status name, it asks you in the terminal first; the questions it asked are listed under `questions`. Problems it couldn't fix are listed under `problems`, to finish with `step update`. When no tool in the catalog can do part of the goal, nothing is written and the result lists what is `missing`. `--stdout` prints the YAML and writes nothing.
 
-**Drafting happens once, at the start.** It replaces every step, so it is not a way to correct a plan — redrafting to fix one thing discards everything that was already right. `--from` exists to draft into a plan's _identity_ (its identifier, name, description, and input schema), which is how you get a well-named plan without renaming afterwards:
+**Drafting happens once, at the start.** It replaces every step, so it is not a way to correct a plan — redrafting to fix one thing discards everything that was already right. `--from` exists to draft into a plan's _identity_ (its identifier, name, and description), which is how you get a well-named plan without renaming afterwards:
 
 ```bash
 graph plan new commit_digest --description "Summarize commits between two refs"

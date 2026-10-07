@@ -219,7 +219,7 @@ pub fn validate_ask_input(
     super::check_templates(&Value::String(spec.prompt), seen, step_id, problems);
 }
 
-fn answer_schema_problem(schema: &Value) -> Option<String> {
+pub(super) fn answer_schema_problem(schema: &Value) -> Option<String> {
     if let Err(e) = jsonschema::validator_for(schema) {
         return Some(format!("`outputSchema` is not valid JSON Schema: {e}"));
     }

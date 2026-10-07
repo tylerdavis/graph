@@ -5,16 +5,22 @@ pub fn answer_form(path: &str, question: &str, schema: &Value, answer: Option<&V
     let required = required(schema);
     let mut fields = Vec::new();
     if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
-        let ordered = required
-            .iter()
-            .copied()
+        let listed: Vec<&str> = schema
+            .get("propertyOrder")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .chain(required.iter().copied())
+            .chain(properties.keys().map(String::as_str))
             .filter(|key| properties.contains_key(*key))
-            .chain(
-                properties
-                    .keys()
-                    .map(String::as_str)
-                    .filter(|key| !required.contains(key)),
-            );
+            .collect();
+        let mut ordered: Vec<&str> = Vec::new();
+        for key in listed {
+            if !ordered.contains(&key) {
+                ordered.push(key);
+            }
+        }
         for key in ordered {
             let prefill = answer.and_then(|answer| answer.get(key));
             fields.push(field(
@@ -204,6 +210,18 @@ mod tests {
         assert_eq!(form.fields[1].text(), "10");
         assert_eq!(form.fields[1].hint.as_deref(), Some("a whole number"));
         assert!(form.fields[4].is_select());
+    }
+
+    #[test]
+    fn a_property_order_puts_the_fields_in_that_order() {
+        let schema = json!({
+            "type": "object",
+            "propertyOrder": ["zeta", "alpha"],
+            "properties": {"alpha": {"type": "string"}, "beta": {"type": "string"}, "zeta": {"type": "string"}}
+        });
+        let form = answer_form("E1", "q", &schema, None);
+        let keys: Vec<&str> = form.fields.iter().map(|f| f.key.as_str()).collect();
+        assert_eq!(keys, ["zeta", "alpha", "beta"]);
     }
 
     #[test]

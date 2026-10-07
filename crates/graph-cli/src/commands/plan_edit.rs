@@ -27,7 +27,7 @@ use crate::runtime::Runtime;
 use anyhow::{anyhow, bail, Context, Result};
 use graph_core::pipeline::authoring;
 use graph_core::pipeline::doc::PlanDoc;
-use graph_core::pipeline::{draft_input, Draft, AUTHOR_PLAN};
+use graph_core::pipeline::{draft_input, plan_doc, COMPOSE_PLAN};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -171,16 +171,38 @@ pub async fn draft(
     );
     let pipeline = runtime.pipeline(&store, events).await?;
 
-    let drafted = pipeline.call_plan(AUTHOR_PLAN, draft_input(goal)).await;
+    let drafted = pipeline.call_plan(COMPOSE_PLAN, draft_input(goal)).await;
     runtime.shutdown().await;
     if drafted.is_error {
         bail!("drafting failed: {}", drafted.result);
     }
-    let draft = Draft::from_authored(&drafted.result).map_err(|error| anyhow!(error))?;
-    let salvaged = draft.failed_step.map(|step_id| (step_id, draft.problems));
-    let planner_output = draft.output;
-
-    let mut doc = authoring::merge_planner_output(existing, goal, planner_output);
+    let composed = match drafted.result.get("output") {
+        Some(output) if drafted.result["exited"] == json!(true) => output.clone(),
+        _ => drafted.result,
+    };
+    if composed["plan"].is_null() {
+        let missing = composed["missing"].clone();
+        let capabilities: Vec<&Value> = missing
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|gap| gap.get("does").unwrap_or(gap))
+            .collect();
+        return Ok(Outcome::rejected(json!({
+            "ok": false,
+            "error": "no tool in the catalog can do part of this goal; add an MCP server or a user tool that can, or change the goal",
+            "missing": missing,
+            "problems": capabilities,
+        })));
+    }
+    let mut doc = plan_doc(&composed["plan"]).map_err(|error| anyhow!(error))?;
+    if let Some(existing) = existing {
+        doc.identifier = existing.identifier;
+        doc.name = existing.name;
+        doc.description = existing.description;
+        doc.exemplars = existing.exemplars;
+        doc.path = existing.path;
+    }
     if output.is_some() {
         doc.path = output;
     }
@@ -203,18 +225,9 @@ pub async fn draft(
         "steps": doc.steps.len(),
         "savedTo": path.display().to_string(),
         "problems": problems,
+        "questions": composed["questions"],
     });
-    if let Some((step_id, step_problems)) = salvaged {
-        body["salvaged"] = json!(true);
-        body["failedStep"] = json!(step_id);
-        body["stepProblems"] = json!(step_problems);
-        body["note"] = json!(format!(
-            "drafting could not produce a valid step {step_id}; the valid \
-             partial draft ({} steps) was saved — finish it with \
-             `graph plan step add` rather than redrafting",
-            doc.steps.len()
-        ));
-    } else if !problems.is_empty() {
+    if !problems.is_empty() {
         body["note"] = json!(
             "the draft is not valid yet — fix the problems with \
              `graph plan set` / `graph plan step update`"

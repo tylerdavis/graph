@@ -42,7 +42,7 @@ The workbench runs three built-in [agents](/reference/agent-schema). Each has an
 
 | Agent | Does | Can use |
 | --- | --- | --- |
-| `orchestrator` | starts an empty workbench; drafts new plans with you and routes you to existing ones | `plan__author_plan`, `set_draft`, and `plan_loader` as a subagent |
+| `orchestrator` | starts an empty workbench; drafts new plans with you and routes you to existing ones | `plan__compose_plan`, `set_draft`, and `plan_loader` as a subagent |
 | `plan_loader` | finds a plan in the catalog and loads it (run as a subagent) | `list_plans`, `show_plan`, `load_plan` |
 | `plan_editor` | starts the workbench when you open a plan; edits, validates, runs and saves it with you, one targeted change at a time | the editing tools, `validate_plan`, `run_plan`, `save_plan`, `describe_tool`, and the project file tools |
 
@@ -50,13 +50,18 @@ The workbench runs three built-in [agents](/reference/agent-schema). Each has an
 
 ### Drafting a new plan
 
-New plans come from the built-in `author_plan` plan, which `orchestrator` runs for you. It's a plan, not an agent's habit, so the steps always happen in this order:
+New plans come from the built-in [`compose_plan`](/plans/the-planner#composing-a-whole-plan-in-one-call) plan, which `orchestrator` runs for you. It's a plan, not an agent's habit, so the steps always happen in this order:
 
-1. **Outline.** [`draft_outline`](/plans/the-planner#drafting-without-executing) sketches the stages.
-2. **Full plan.** `draft_expand` drafts and validates one step per stage, live in the plan tab.
-3. **Validate.** The plan is checked against the catalog, and the tools it calls that aren't marked read-only are listed.
+1. **Needs and tools.** One call lists what the goal needs, and [tool search](/tools/finding-tools) finds a tool for each part. When no tool can do a part, nothing is drafted: `orchestrator` tells you what's missing and asks whether you want to add an MCP server that can do it or change the goal.
+2. **Draft.** One call writes the whole plan.
+3. **Questions.** When the draft had to guess a value that decides what the plan returns, such as a status or project name, a form asks you about each one, with the guess filled in, plus an open "Anything else the planner should know?" field. Your answers are patched into the plan, and when they need a tool the draft wasn't shown (look up a team's workflow states, say), the planner searches for one. No guesses, no form.
+4. **Check and fix.** The plan is validated against the catalog, and only the steps with problems are fixed, keeping what you answered.
 
-`orchestrator` then puts the plan in the pane with `set_draft` and hands you to `plan_editor`, which tells you what was built. When the plan has side effects, run it gated (`g`) to approve each step. `set_draft` won't discard unsaved changes to the current draft unless you confirm.
+`orchestrator` then puts the plan in the pane with `set_draft` and hands you to `plan_editor`, which tells you what was built. When the plan calls tools that write, run it gated (`g`) to approve each step. `set_draft` won't discard unsaved changes to the current draft unless you confirm.
+
+<Frame caption="Drafting a new plan: the draft guessed two values, so the workbench asks about them before the plan is finished.">
+  ![The answer form compose_plan opens while drafting: two questions with the draft's guesses filled in, and an open field for anything else.](/images/workbench/drafting-questions.svg)
+</Frame>
 
 ## Driving it from chat
 
@@ -66,7 +71,7 @@ Every action maps to a `workbench__` tool the agents call on your behalf:
 | --- | --- |
 | browsing the catalog | `list_plans`, `show_plan` — read any plan's YAML **without touching the draft** |
 | loading a plan | `load_plan` — by identifier or file path; replaces the draft (guarded, below) |
-| publishing a draft | `set_draft` — puts a plan document (what `plan__author_plan` returns) in the pane; `orchestrator` only |
+| publishing a draft | `set_draft` — with no arguments, puts the plan `plan__compose_plan` returned in the pane exactly as it returned it (or a given plan document); `orchestrator` only |
 | learning about a tool | `describe_tool` — its schemas, observed output shape, and whether it's read-only, without calling it |
 | precise edits | `update_metadata`, `add_step`, `update_step`, `delete_step` |
 | re-reading the draft | `get_plan` — rarely needed: the current draft is always in the agent's context |
@@ -94,13 +99,7 @@ For changes to an existing draft, the agent prefers the precise editing tools ov
 
 ### Drafting from a goal
 
-`author_plan` drafts with [the planner's drafting plans](/plans/the-planner#drafting-without-executing), which see the full tool catalog and observed shapes. A goal that states a name ("named `the_goat`") sets the new draft's identifier and display name; otherwise both derive from the goal text. Every step is statically validated before drafting accepts it, so a published draft is statically valid; catalog problems (a tool name that doesn't resolve) are listed in the result and stay editable per the rules above. A new plan always gets its own identity; it never inherits the loaded plan's.
-
-Drafting articulates its progress live in the plan tab instead of a single planning spinner: the outline appears first as dimmed `○` placeholder rows, steps then materialize one at a time — a `◐` animated row for the step being drafted, turning into a `✓` row once it passes static validation, with a `(retry n/3)` suffix and the problems in the detail pane when it doesn't. The draft publishes exactly once, with `set_draft` after `author_plan` completes — and if a step exhausted its retries, the valid prefix is published (marked unsaved) with the problems listed, to finish with the editing tools instead of redrafting.
-
-<Frame caption="Drafting mid-flight: two steps accepted, the third being drafted, the outline's last stage still pending.">
-  ![Drafting mid-flight: two steps accepted, the third being drafted, the outline's last stage still pending.](/images/workbench/drafting-overlay.svg)
-</Frame>
+`compose_plan` drafts from the tools search found for the goal, described with their schemas and observed output shapes, and names the plan itself. Problems the fix rounds couldn't settle (a tool name that doesn't resolve, a field a tool doesn't return) are listed in the result and stay editable per the rules above. The draft publishes exactly once, with `set_draft` after `compose_plan` completes. A new plan always gets its own identity; it never inherits the loaded plan's.
 
 ### Workbench tools stay out of plans
 
