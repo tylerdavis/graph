@@ -499,6 +499,7 @@ impl crate::store::Store for ShapeOnlyStore {
     async fn create_thread(
         &self,
         _: &str,
+        _: &str,
     ) -> Result<crate::store::ThreadMeta, crate::store::StoreError> {
         unimplemented!()
     }
@@ -521,17 +522,20 @@ impl crate::store::Store for ShapeOnlyStore {
     async fn delete_thread(&self, _: &str) -> Result<bool, crate::store::StoreError> {
         unimplemented!()
     }
-    async fn append_messages(
+    async fn append_entries(
         &self,
         _: &str,
-        _: &[graph_llm::types::ChatMessage],
+        _: &[crate::store::NewEntry],
     ) -> Result<(), crate::store::StoreError> {
         unimplemented!()
     }
-    async fn load_messages(
+    async fn load_entries(
         &self,
         _: &str,
-    ) -> Result<Vec<graph_llm::types::ChatMessage>, crate::store::StoreError> {
+    ) -> Result<Vec<crate::store::ThreadEntry>, crate::store::StoreError> {
+        unimplemented!()
+    }
+    async fn set_active_agent(&self, _: &str, _: &str) -> Result<(), crate::store::StoreError> {
         unimplemented!()
     }
     async fn record_tool_shape(
