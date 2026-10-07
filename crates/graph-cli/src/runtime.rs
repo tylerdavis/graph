@@ -203,7 +203,23 @@ impl Runtime {
             user_tools,
             plans: plan_docs.iter().map(|d| d.identifier.clone()).collect(),
             mcp_servers: self.config.mcp.keys().cloned().collect(),
+            agents: self
+                .agent_set()
+                .iter()
+                .map(|doc| doc.name.clone())
+                .collect(),
         })
+    }
+
+    pub fn agent_set(&self) -> graph_core::agent::doc::AgentSet {
+        let (set, errors) = graph_core::agent::doc::AgentSet::load(
+            graph_core::agent::doc::BUILTINS,
+            &graph_core::agent::doc::agent_dirs(),
+        );
+        for error in errors {
+            tracing::warn!("skipping agent file — {error}");
+        }
+        set
     }
 
     /// Where new plan files are written: the first configured
@@ -355,6 +371,8 @@ impl Runtime {
             current_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
             max_attempts: self.config.settings.planning_attempts.max(1),
             usage: self.usage.clone(),
+            agents: Arc::new(self.agent_set()),
+            agent_depth: 0,
         }))
     }
 

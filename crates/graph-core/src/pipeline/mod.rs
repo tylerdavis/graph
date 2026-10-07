@@ -17,12 +17,14 @@ pub mod body;
 pub mod catalog;
 pub mod condition;
 pub mod doc;
+mod drafting;
 pub mod exit;
 pub mod filter;
 pub mod gate;
 pub mod interlocutor;
 pub mod iterate;
-mod outline;
+mod named_agents;
+mod native_tools;
 pub mod plan;
 mod prompts;
 pub mod route;
@@ -34,12 +36,14 @@ pub use agent::{agent_tool_def, AGENT_TOOL};
 pub use ask::{ask_tool_def, AskResult, WhenUnanswered, ASK_TOOL};
 pub use authoring::{EditAccepted, EditRejected, WriteError};
 pub use catalog::{CatalogCheck, ToolCatalog};
+pub use drafting::{draft_input, Draft, DraftState, StepDraft, DRAFT_PLAN, MAX_STEP_ATTEMPTS};
 pub use exit::{ExitStatus, PlanExit, EXIT_TOOL};
 pub use filter::FILTER_TOOL;
 pub use gate::{ErrorDecision, ExecutionGate, GateContext, GateDecision, StepPath};
 pub use interlocutor::{AskOutcome, AskRequest, Interlocutor};
 pub use iterate::{MAP_TOOL, REDUCE_TOOL};
-pub use outline::{PlanOutline, StepDraft, MAX_STEP_ATTEMPTS};
+pub use named_agents::{AGENT_TOOL_PREFIX, MAX_SUBAGENT_DEPTH};
+pub use native_tools::{is_native_tool, native_tool_defs, NATIVE_TOOLS};
 pub use plan::{Plan, PlannerOutput, SolverData, Step};
 pub use prompts::{CONTROL_STEP_RULES, TEMPLATING_RULES};
 pub use route::ROUTE_TOOL;
@@ -105,6 +109,8 @@ pub struct Pipeline {
     /// the caller reporting only what happened afterwards. The owner of the
     /// top-level run calls [`UsageLedger::take`] once, when it is over.
     pub usage: Arc<crate::usage::UsageLedger>,
+    pub agents: Arc<crate::agent::doc::AgentSet>,
+    pub agent_depth: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -134,19 +140,6 @@ pub enum PipelineError {
         /// interactive callers surface why the step failed.
         error: Option<Value>,
         state: Box<RunState>,
-    },
-    /// Drafting could not produce a valid step within its
-    /// budget. Carries the valid partial draft — everything accepted
-    /// before the failure — so interactive callers can salvage it
-    /// (mirrors `Aborted` carrying the partial run state).
-    #[error("plan drafting stopped at step {step_id}: {}", problems.join("; "))]
-    DraftStepExhausted {
-        step_id: String,
-        /// Failed attempts for the step (0 when the step budget, not the
-        /// per-step retry budget, ran out).
-        attempts: u32,
-        problems: Vec<String>,
-        partial: Box<PlannerOutput>,
     },
 }
 
@@ -632,6 +625,7 @@ impl Pipeline {
         let mut tools = self.registry.tools().await.unwrap_or_default();
         tools.extend(control_step_defs());
         tools.extend(self.callable_plan_defs());
+        tools.extend(self.agent_tool_defs());
         let shapes: HashMap<String, ToolShape> = match &self.store {
             Some(store) => store
                 .tool_shapes()
@@ -663,14 +657,6 @@ impl Pipeline {
                 read_only: None,
             })
             .collect()
-    }
-
-    async fn outliner_system(&self) -> String {
-        let mut tools = self.registry.tools().await.unwrap_or_default();
-        tools.extend(self.callable_plan_defs());
-        let names: Vec<String> = tools.into_iter().map(|tool| tool.name).collect();
-        let servers = self.registry.servers().await;
-        prompts::outliner_prompt(&prompts::outliner_catalog(&names, &servers))
     }
 
     /// The planner's system prompt: tool catalog (registry, control steps,
@@ -993,6 +979,14 @@ impl Pipeline {
                 result: call.result,
                 is_error: call.is_error,
             }
+        } else if let Some(name) = tool_name.strip_prefix(AGENT_TOOL_PREFIX) {
+            self.call_agent(path, name, rendered).await?
+        } else if is_native_tool(tool_name) {
+            CallSite::role("planner")
+                .at(&path_text)
+                .in_plans(&self.call_stack)
+                .scope(self.call_native(tool_name, rendered))
+                .await
         } else if tool_name == "plan_and_execute" {
             let call = self.call_planner(&rendered).await;
             if call.aborted {

@@ -241,6 +241,10 @@ impl AgentSet {
         )
     }
 
+    pub fn builtin() -> Self {
+        Self::layered(builtin_agents(BUILTINS), Vec::new())
+    }
+
     pub fn get(&self, name: &str) -> Option<&AgentDoc> {
         self.agents.get(name)
     }

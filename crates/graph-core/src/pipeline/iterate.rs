@@ -65,16 +65,17 @@ pub fn map_tool_def() -> crate::tools::ToolDef {
                       collected in input order: later steps reference {{Ex.results}} for \
                       the list and {{Ex.count}} for how many ran. Set `concurrency` above \
                       1 only when the per-item calls are independent. The body may contain \
-                      `agent`, `ask`, and `filter` steps (an `ask` is put to the user \
-                      once per item, always serialized), but never `exit`, `route`, \
-                      `map`, or `reduce` — call a plan (plan__*) for nested control flow."
+                      `agent`, `ask`, `filter`, `route`, and `exit` steps (an `ask` is put \
+                      to the user once per item, always serialized; a fired exit ends the \
+                      WHOLE plan), but never `map` or `reduce` — call a plan (plan__*) for \
+                      nested iteration."
             .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["over", "do"],
             "properties": {
                 "over": {"description": "The list to iterate — usually a template like {{E0.issues}} that resolves to an array."},
-                "do": body_schema(false),
+                "do": body_schema(),
                 "concurrency": {"type": "integer", "minimum": 1, "description": "Maximum items in flight; 1 (default) runs items one at a time."}
             }
         }),
@@ -95,16 +96,17 @@ pub fn reduce_tool_def() -> crate::tools::ToolDef {
                       Later steps reference {{Ex.result}} for the final value. Always \
                       sequential — each iteration depends on the previous; for \
                       independent per-item work use `map` (optionally concurrent) and \
-                      reduce over its results. The body may contain `agent`, `ask`, and \
-                      `filter` steps, but never `exit`, `route`, `map`, or `reduce` — \
-                      call a plan (plan__*) for nested control flow."
+                      reduce over its results. The body may contain `agent`, `ask`, \
+                      `filter`, `route`, and `exit` steps (a fired exit ends the WHOLE \
+                      plan), but never `map` or `reduce` — call a plan (plan__*) for \
+                      nested iteration."
             .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["over", "do"],
             "properties": {
                 "over": {"description": "The list to fold — usually a template like {{E1.results}} that resolves to an array."},
-                "do": body_schema(false),
+                "do": body_schema(),
                 "initial": {"description": "Starting accumulator value (any JSON; may use templates). Defaults to null."}
             }
         }),
@@ -144,7 +146,6 @@ pub fn validate_map_input(
         &pseudo,
         all_plan_ids,
         step_id,
-        false,
         problems,
     );
     if template_roots(&spec.do_).iter().any(|r| r == "accumulator") {
@@ -179,7 +180,6 @@ pub fn validate_reduce_input(
         &pseudo,
         all_plan_ids,
         step_id,
-        false,
         problems,
     );
 }
@@ -353,10 +353,7 @@ impl Pipeline {
                     step: step.id.clone(),
                     error,
                 },
-                // Validation forbids exit in iteration bodies; defensive.
-                BodyFail::Exited(_) => {
-                    failed("`exit` fired inside a map body — not supported".to_string())
-                }
+                BodyFail::Exited(exit) => ExecutionEnd::Exited(exit),
             });
         }
         self.events
@@ -449,10 +446,7 @@ impl Pipeline {
                             step: step.id.clone(),
                             error,
                         },
-                        // Validation forbids exit in iteration bodies; defensive.
-                        BodyFail::Exited(_) => {
-                            failed("`exit` fired inside a reduce body — not supported".to_string())
-                        }
+                        BodyFail::Exited(exit) => ExecutionEnd::Exited(exit),
                     });
                 }
             }

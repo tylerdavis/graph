@@ -168,7 +168,18 @@ pub fn load_plan_docs(dirs: &[PathBuf]) -> LoadedPlans {
     loaded
 }
 
-pub const BUILTIN_PLANS: &[&str] = &[];
+pub const BUILTIN_PLANS: &[&str] = &[
+    include_str!("../plans/draft_outline.yaml"),
+    include_str!("../plans/draft_step.yaml"),
+    include_str!("../plans/draft_expand.yaml"),
+    include_str!("../plans/draft.yaml"),
+];
+
+pub fn builtin_plan_docs() -> Vec<PlanDoc> {
+    let mut loaded = LoadedPlans::default();
+    add_builtin_plans(&mut loaded, BUILTIN_PLANS);
+    loaded.docs
+}
 
 pub fn add_builtin_plans(loaded: &mut LoadedPlans, sources: &[&str]) {
     for raw in sources {

@@ -420,22 +420,28 @@ impl WorkbenchTools {
         // Drafting validates every step before accepting it, so a draft
         // that comes back at all is statically valid; only catalog
         // problems (reported below) can remain.
-        let output = match self
+        let drafted = self
             .pipeline
-            .draft_plan(goal, existing_output.as_ref())
-            .await
-        {
-            Ok(output) => output,
+            .call_plan(
+                graph_core::pipeline::DRAFT_PLAN,
+                graph_core::pipeline::draft_input(goal, existing_output.as_ref()),
+            )
+            .await;
+        if drafted.is_error {
+            return error_outcome(&format!("drafting failed: {}", drafted.result));
+        }
+        let draft = match graph_core::pipeline::Draft::from_result(&drafted.result) {
+            Ok(draft) => draft,
+            Err(error) => return error_outcome(&error),
+        };
+        let output = match draft.failed_step {
+            None => draft.output,
             // Drafting exhausted its retries: salvage the valid prefix so
             // the agent finishes it with the edit tools instead of
             // redrafting from scratch.
-            Err(graph_core::pipeline::PipelineError::DraftStepExhausted {
-                step_id,
-                problems,
-                partial,
-                ..
-            }) => {
-                let doc = authoring::merge_planner_output(existing, goal, *partial);
+            Some(step_id) => {
+                let problems = draft.problems;
+                let doc = authoring::merge_planner_output(existing, goal, draft.output);
                 let steps = doc.steps.len();
                 self.publish(doc, true);
                 return ToolOutcome {
@@ -454,7 +460,6 @@ impl WorkbenchTools {
                     is_error: true,
                 };
             }
-            Err(error) => return error_outcome(&format!("planner failed: {error}")),
         };
 
         let doc = authoring::merge_planner_output(existing, goal, output);
@@ -907,6 +912,8 @@ mod tests {
             current_date: String::new(),
             max_attempts: 1,
             usage: std::sync::Arc::new(graph_core::usage::UsageLedger::unpriced()),
+            agents: Arc::new(graph_core::agent::doc::AgentSet::default()),
+            agent_depth: 0,
         })
     }
 
@@ -1837,11 +1844,16 @@ steps:
             },
         )]);
         let router = Arc::new(graph_llm::ModelRouter::with_providers(providers, roles));
+        let llm = graph_core::user_tools::load_pack_tools(&["llm".to_string(), "data".to_string()])
+            .unwrap();
         let pipeline = Arc::new(Pipeline {
+            registry: Arc::new(graph_core::user_tools::UserToolRegistry::builtins(
+                llm,
+                router.clone(),
+            )),
             router,
-            registry: Arc::new(graph_core::CompositeRegistry::new(vec![])),
             events: Arc::new(graph_core::NullSink),
-            plans: Arc::new(Vec::new()),
+            plans: Arc::new(graph_core::pipeline::doc::builtin_plan_docs()),
             call_stack: Vec::new(),
             store: None,
             gate: None,
@@ -1851,6 +1863,8 @@ steps:
             current_date: String::new(),
             max_attempts: 1,
             usage: std::sync::Arc::new(graph_core::usage::UsageLedger::unpriced()),
+            agents: Arc::new(graph_core::agent::doc::AgentSet::default()),
+            agent_depth: 0,
         });
         (pipeline, provider)
     }

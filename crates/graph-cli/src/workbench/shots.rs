@@ -363,6 +363,14 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
             .filter(|d| d.name.starts_with("user__"))
             .map(|d| d.name.clone())
             .collect(),
+        agents: graph_core::agent::doc::AgentSet::builtin()
+            .iter()
+            .map(|doc| doc.name.clone())
+            .collect(),
+        plans: graph_core::pipeline::doc::builtin_plan_docs()
+            .into_iter()
+            .map(|doc| doc.identifier)
+            .collect(),
         ..Default::default()
     };
     let scripted: Arc<ScriptedTools> = Arc::new(ScriptedTools {
@@ -371,11 +379,19 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
     });
 
     let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    let llm =
+        graph_core::user_tools::load_pack_tools(&["llm".to_string(), "data".to_string()]).unwrap();
     let pipeline = Arc::new(Pipeline {
+        registry: Arc::new(graph_core::CompositeRegistry::new(vec![
+            Arc::new(graph_core::user_tools::UserToolRegistry::builtins(
+                llm,
+                router.clone(),
+            )),
+            scripted.clone(),
+        ])),
         router,
-        registry: scripted.clone(),
         events: Arc::new(ChannelSink::plan_run(tx.clone())),
-        plans: Arc::new(Vec::new()),
+        plans: Arc::new(graph_core::pipeline::doc::builtin_plan_docs()),
         call_stack: Vec::new(),
         store: Some(store.clone()),
         gate: None,
@@ -386,6 +402,8 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         current_date: "2026-07-19".to_string(),
         max_attempts: 2,
         usage: std::sync::Arc::new(graph_core::usage::UsageLedger::unpriced()),
+        agents: Arc::new(graph_core::agent::doc::AgentSet::builtin()),
+        agent_depth: 0,
     });
 
     let debug = Arc::new(DebugControls::default());
