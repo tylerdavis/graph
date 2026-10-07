@@ -1,0 +1,41 @@
+version: 2
+identifier: planner_eval_judge
+name: Planner eval judge
+description: Judges whether a drafted plan's output answers its goal, against the rubric and the reference plan's output.
+input_schema:
+  type: object
+  required: [goal, rubric, reference_output, candidate_output]
+  properties:
+    goal: { type: string, description: The goal the plan was drafted for }
+    rubric: { type: string, description: What a correct output must contain }
+    reference_output: { type: string, description: Output of the hand-written reference plan on the same inputs }
+    candidate_output: { type: string, description: Output of the drafted plan }
+steps:
+  - id: verdict
+    tool_name: builtin__infer
+    input:
+      model: judge
+      instruction: |-
+        Judge whether a drafted plan's output correctly answers its goal.
+
+        Goal: {{input.goal}}
+        A correct output: {{input.rubric}}
+
+        Output of a hand-written reference plan on the same inputs. Fields starting with data_ are the raw tool data its prose was written from; they are the facts. Its prose is one acceptable answer, written by a model, and can itself be slightly off:
+        {{input.reference_output}}
+
+        Output of the drafted plan:
+        {{input.candidate_output}}
+
+        Check the drafted output against the facts (the data_ fields, or the reference's output when it has none). It is correct when it answers the goal and agrees with those facts, in any shape, wording, length or level of detail. It is incorrect when it is an error, is empty where the facts are not, answers a different question, leaves out something the goal explicitly asks for, or states something the facts contradict.
+      output_schema:
+        type: object
+        required: [correct, score, reason]
+        properties:
+          correct: { type: boolean }
+          score: { type: number, description: 0 to 1, how fully and accurately it answers the goal }
+          reason: { type: string, description: One or two sentences }
+output:
+  correct: "{{verdict.correct}}"
+  score: "{{verdict.score}}"
+  reason: "{{verdict.reason}}"

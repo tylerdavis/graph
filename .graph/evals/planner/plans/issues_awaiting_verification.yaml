@@ -1,0 +1,15 @@
+version: 2
+identifier: ref_issues_awaiting_verification
+name: Issues awaiting verification
+description: Lists the issues in a Linear project that are waiting on verification.
+input_schema:
+  type: object
+  required: [project]
+  properties:
+    project: { type: string, description: Linear project name }
+steps:
+  - id: issues
+    tool_name: linear__list_issues
+    input: { project: "{{input.project}}", state: Needs verification, limit: 250, fields: [title, url, status] }
+output:
+  issues: "{{issues}}"

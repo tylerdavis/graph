@@ -10,5 +10,7 @@
 !/.graph/config.toml
 !/.graph/plans/
 !/.graph/tools/
+!/.graph/evals/
 *.db
 mise.local.toml
+__pycache__/

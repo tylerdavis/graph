@@ -1,0 +1,48 @@
+version: 2
+identifier: ref_commits_without_docs
+name: Code commits without docs
+description: Lists the commits since a tag that changed crate code without changing the docs.
+input_schema:
+  type: object
+  required: [tag]
+  properties:
+    tag: { type: string, description: Release tag to start after }
+steps:
+  - id: commits
+    tool_name: builtin__git_log
+    input: { base: "{{input.tag}}", head: HEAD, paths: "", max_commits: 100 }
+  - id: touched
+    tool_name: map
+    input:
+      over: "{{commits.commits}}"
+      concurrency: 8
+      do:
+        - id: code
+          tool_name: builtin__git_changed_files
+          input: { base: "{{item.sha}}~1", head: "{{item.sha}}", prefix: crates/ }
+        - id: docs
+          tool_name: builtin__git_changed_files
+          input: { base: "{{item.sha}}~1", head: "{{item.sha}}", prefix: docs/ }
+        - id: row
+          tool_name: builtin__reshape
+          input:
+            shape: { sha: "{{item.short_sha}}", subject: "{{item.subject}}", code_files: "{{code.count}}", docs_files: "{{docs.count}}" }
+  - id: code_changes
+    tool_name: filter
+    input:
+      over: "{{touched.results}}"
+      where: { value: "{{item.code_files}}", op: gt, to: 0 }
+  - id: undocumented
+    tool_name: filter
+    input:
+      over: "{{code_changes.items}}"
+      where: { value: "{{item.docs_files}}", op: eq, to: 0 }
+  - id: all_documented
+    tool_name: exit
+    input:
+      when: { value: "{{undocumented.count}}", op: eq, to: 0 }
+      status: success
+      message: Every commit since {{input.tag}} that changed crate code also changed the docs
+      output: { commits: [] }
+output:
+  commits: "{{undocumented.items}}"

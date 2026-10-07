@@ -1,0 +1,19 @@
+version: 2
+identifier: ref_pr_changed_files
+name: Files a pull request changed under a path
+description: Lists the files a pull request changed under a path.
+input_schema:
+  type: object
+  required: [pr, path]
+  properties:
+    pr: { type: integer, description: Pull request number }
+    path: { type: string, description: Path prefix, e.g. crates/graph-core/ }
+steps:
+  - id: meta
+    tool_name: builtin__gh_pr_meta
+    input: { pr: "{{input.pr}}" }
+  - id: files
+    tool_name: builtin__git_changed_files
+    input: { base: "{{meta.base_sha}}", head: "{{meta.head_sha}}", prefix: "{{input.path}}" }
+output:
+  files: "{{files}}"

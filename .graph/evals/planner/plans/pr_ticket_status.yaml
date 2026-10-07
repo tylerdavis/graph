@@ -1,0 +1,26 @@
+version: 2
+identifier: ref_pr_ticket_status
+name: Ticket status for a pull request
+description: Reports the status of the Linear ticket a pull request implements, or that it references none.
+input_schema:
+  type: object
+  required: [pr]
+  properties:
+    pr: { type: integer, description: Pull request number }
+steps:
+  - id: ticket
+    tool_name: builtin__gh_pr_ticket
+    input: { pr: "{{input.pr}}", pattern: "LN-[0-9]+" }
+  - id: none
+    tool_name: exit
+    input:
+      when: { value: "{{ticket.found}}", op: eq, to: false }
+      status: success
+      message: Pull request {{input.pr}} references no Linear ticket
+      output: { ticket: null, status: null }
+  - id: issue
+    tool_name: linear__get_issue
+    input: { id: "{{ticket.ticket}}" }
+output:
+  ticket: "{{ticket.ticket}}"
+  issue: "{{issue}}"

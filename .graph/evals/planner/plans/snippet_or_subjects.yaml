@@ -1,0 +1,26 @@
+version: 2
+identifier: ref_snippet_or_subjects
+name: Changelog snippet check
+description: Stops when a release's changelog snippet already exists; otherwise returns the release's commit subjects for writing one.
+input_schema:
+  type: object
+  required: [tag]
+  properties:
+    tag: { type: string, description: Release tag, e.g. v0.15.0 }
+steps:
+  - id: status
+    tool_name: user__snippet_status
+    input: { dir: "graph/{{input.tag}}" }
+  - id: exists
+    tool_name: exit
+    input:
+      when: { value: "{{status.exists}}", op: eq, to: true }
+      status: success
+      message: The changelog snippet for {{input.tag}} already exists
+      output: { exists: true }
+  - id: subjects
+    tool_name: user__release_subjects
+    input: { version: "{{input.tag}}" }
+output:
+  exists: false
+  subjects: "{{subjects.text}}"
