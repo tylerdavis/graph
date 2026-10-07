@@ -1,0 +1,83 @@
+version: 2
+identifier: ref_pr_review
+name: Change set review against the repo's invariants
+description: Reviews the changes between two refs against CLAUDE.md, returning only verified defects and a blocker count.
+input_schema:
+  type: object
+  required: [base, head]
+  properties:
+    base: { type: string, description: Base ref of the change set }
+    head: { type: string, description: Head ref of the change set }
+steps:
+  - id: files
+    tool_name: user__repo_changed_files
+    input: { base: "{{input.base}}", head: "{{input.head}}", prefix: "" }
+  - id: diff
+    tool_name: user__repo_diff
+    input: { base: "{{input.base}}", head: "{{input.head}}", paths: ".", exclude: "Cargo.lock CHANGELOG.md", max_bytes: 200000, context: 10 }
+  - id: nothing
+    tool_name: exit
+    input:
+      when: { value: "{{diff.text}}", op: empty }
+      status: success
+      message: Nothing to review between {{input.base}} and {{input.head}}
+      output: { findings: [], blockers: 0 }
+  - id: guide
+    tool_name: user__repo_file
+    input: { path: CLAUDE.md, ref: "{{input.head}}", max_bytes: 30000 }
+  - id: rust
+    tool_name: filter
+    input:
+      over: "{{files.changes}}"
+      where: { value: "{{item.path}}", op: contains, to: ".rs" }
+  - id: sources
+    tool_name: map
+    input:
+      over: "{{rust.items}}"
+      concurrency: 8
+      do:
+        tool_name: user__repo_file
+        input: { path: "{{item.path}}", ref: "{{input.head}}", max_bytes: 20000 }
+  - id: review
+    tool_name: builtin__infer
+    input:
+      instruction: |-
+        Review this change set against the repository's invariants and conventions. Report only real defects, each with the file and line it is in.
+
+        Repository guide:
+        {{guide}}
+
+        Diff:
+        {{diff.text}}
+
+        Changed Rust files at the head:
+        {{sources.results}}
+      output_schema:
+        type: object
+        required: [findings]
+        properties:
+          findings:
+            type: array
+            items:
+              type: object
+              required: [file, line, finding, is_blocker, verified_defect]
+              properties:
+                file: { type: string }
+                line: { type: integer }
+                finding: { type: string }
+                is_blocker: { type: boolean }
+                verified_defect: { type: boolean, description: True only when the diff shows the defect, not a guess }
+  - id: verified
+    tool_name: filter
+    input:
+      over: "{{review.findings}}"
+      where: { value: "{{item.verified_defect}}", op: eq, to: true }
+  - id: blockers
+    tool_name: filter
+    input:
+      over: "{{verified.items}}"
+      where: { value: "{{item.is_blocker}}", op: eq, to: true }
+output:
+  findings: "{{verified.items}}"
+  blockers: "{{blockers.count}}"
+  data_changed_files: "{{files.changes}}"

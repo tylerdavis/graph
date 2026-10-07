@@ -1,0 +1,31 @@
+version: 2
+identifier: ref_issue_discussion
+name: Linear issue discussion summary
+description: Summarizes the discussion on a Linear issue.
+input_schema:
+  type: object
+  required: [issue]
+  properties:
+    issue: { type: string, description: Linear issue identifier, e.g. LN-123 }
+steps:
+  - id: issue
+    tool_name: linear__get_issue
+    input: { id: "{{input.issue}}" }
+  - id: comments
+    tool_name: linear__list_comments
+    input: { issueId: "{{input.issue}}", limit: 100 }
+  - id: summary
+    tool_name: builtin__infer
+    input:
+      instruction: |-
+        Summarize the discussion on this Linear issue: what it is about, the points raised in the comments, and where it stands. If there are no comments, say so.
+
+        Issue:
+        {{issue}}
+
+        Comments:
+        {{comments}}
+output:
+  summary: "{{summary.text}}"
+  data_issue: "{{issue}}"
+  data_comments: "{{comments}}"

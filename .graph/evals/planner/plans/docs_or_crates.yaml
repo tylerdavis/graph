@@ -1,0 +1,38 @@
+version: 2
+identifier: ref_docs_or_crates
+name: Pull request docs changes, or the crate files it touches
+description: Summarizes a pull request's documentation changes when it has any, and otherwise lists the crate files it changes.
+input_schema:
+  type: object
+  required: [pr]
+  properties:
+    pr: { type: integer, description: Pull request number }
+steps:
+  - id: meta
+    tool_name: builtin__gh_pr_meta
+    input: { pr: "{{input.pr}}" }
+  - id: docs
+    tool_name: builtin__git_changed_files
+    input: { base: "{{meta.base_sha}}", head: "{{meta.head_sha}}", prefix: docs/ }
+  - id: answer
+    tool_name: route
+    input:
+      if: { value: "{{docs.count}}", op: gt, to: 0 }
+      then:
+        - id: docs_diff
+          tool_name: builtin__git_diff
+          input: { base: "{{meta.base_sha}}", head: "{{meta.head_sha}}", paths: docs, exclude: "", max_bytes: 60000 }
+        - id: docs_summary
+          tool_name: builtin__infer
+          input:
+            instruction: |-
+              Summarize the documentation changes in this pull request ({{meta.title}}), page by page.
+
+              {{docs_diff}}
+      else:
+        tool_name: builtin__git_changed_files
+        input: { base: "{{meta.base_sha}}", head: "{{meta.head_sha}}", prefix: crates/ }
+output:
+  docs_changed: "{{answer.branch}}"
+  result: "{{answer.result}}"
+  data_docs_files: "{{docs.changes}}"

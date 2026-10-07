@@ -1,0 +1,15 @@
+version: 2
+identifier: ref_config_key_reads
+name: Where a config key is read
+description: Finds every place in the crates that reads a config key.
+input_schema:
+  type: object
+  required: [key]
+  properties:
+    key: { type: string, description: Config key name }
+steps:
+  - id: matches
+    tool_name: builtin__git_grep
+    input: { pattern: "{{input.key}}", paths: crates, ref: HEAD, max_matches: 200 }
+output:
+  matches: "{{matches.matches}}"

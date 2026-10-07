@@ -1,0 +1,69 @@
+- id: release_notes
+  goal: Write release notes for a release tag, grouped by theme, from the pull requests merged since the previous release and any Linear tickets (like LN-123) they reference.
+  inputs: { tag: 2026.10.0 }
+  reference: ref_release_notes
+  rubric: Release notes for 2026.10.0 only, grouped into a few themes, each describing what changed and why it matters, drawn from the commits between the previous release and 2026.10.0 and the Linear tickets they reference. No invented changes or tickets.
+
+- id: pr_summary
+  goal: Summarize what a pull request changes and why.
+  inputs: { pr: 3633 }
+  reference: ref_pr_summary
+  rubric: A short summary of pull request 3633 (the portfolio hub Liquid renderer), naming its main changes and their purpose, consistent with its title, description and diff.
+
+- id: pr_ticket_status
+  goal: Report the status of the Linear ticket (like LN-123) a pull request implements, or say the pull request references no ticket.
+  inputs: { pr: 3633 }
+  reference: ref_pr_ticket_status
+  rubric: Names LN-9418 as the ticket pull request 3633 implements and reports its current status as the reference does.
+
+- id: pr_changed_files
+  goal: List the files a pull request changed under a given path.
+  inputs: { pr: 3633, path: backend/ }
+  reference: ref_pr_changed_files
+  check: { kind: set, reference_field: files, pattern: 'backend/[A-Za-z0-9_./-]*[A-Za-z0-9]' }
+  rubric: The files under backend/ that pull request 3633 changed, with their change status. No files outside that path.
+
+- id: commits_by_author
+  goal: Summarize the commits since a release tag, grouped by author.
+  inputs: { tag: 2026.9.4 }
+  reference: ref_commits_by_author
+  rubric: Every author with commits after 2026.9.4, each with a summary of their commits. No commits from before the tag.
+
+- id: release_sizes
+  goal: For each release tag in a list, count the commits in that release since the release before it, and return the tag, the previous tag and the count for each.
+  inputs: { tags: [2026.9.2, 2026.9.3, 2026.9.4, 2026.10.0] }
+  reference: ref_release_sizes
+  check: { kind: rows, reference_field: releases, key: tag, value: commits }
+  rubric: One entry per tag, each with its previous release tag and the number of commits between them, matching the reference counts.
+
+- id: issue_discussion
+  goal: Summarize the discussion on a Linear issue.
+  inputs: { issue: LN-9418 }
+  reference: ref_issue_discussion
+  rubric: A summary of LN-9418 grounded in its title, description and comments; if it has no comments, says so rather than inventing discussion.
+
+- id: project_progress
+  goal: Report the progress of a Linear project, with milestone completion and the issues still open.
+  inputs: { project: Embed Enhancements }
+  reference: ref_project_progress
+  rubric: Progress of the Embed Enhancements project consistent with its milestones and issues, naming open issues and how far each milestone is.
+
+- id: issues_awaiting_verification
+  goal: List the issues in a Linear project that are in the Needs verification state, with their titles and links.
+  inputs: { project: Portfolio Hub v1 — Cotality }
+  reference: ref_issues_awaiting_verification
+  check: { kind: set, reference_field: issues, pattern: 'LN-[0-9]+' }
+  rubric: Exactly the project's issues in the Needs verification state, each with title and link.
+
+- id: silent_open_issues
+  goal: For a Linear project, find the open issues (not completed, canceled or duplicates) and list the ones nobody has commented on, with their titles and links.
+  inputs: { project: Embed Enhancements }
+  reference: ref_silent_open_issues
+  check: { kind: set, reference_field: issues, pattern: 'LN-[0-9]+' }
+  rubric: Exactly the project's open issues that have no comments, each with title and link; no completed, canceled or duplicate issues and none that have comments.
+
+- id: github_bug_issues
+  goal: List the GitHub issues labeled bug that were opened this week.
+  inputs: {}
+  reference: null
+  rubric: No plan. The planner reports that no tool lists GitHub issues and asks whether to add an MCP server or draft a tool.

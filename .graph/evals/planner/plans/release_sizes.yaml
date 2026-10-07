@@ -1,0 +1,28 @@
+version: 2
+identifier: ref_release_sizes
+name: Commits per release
+description: Counts the commits in each of a list of releases, since the release before it.
+input_schema:
+  type: object
+  required: [tags]
+  properties:
+    tags: { type: array, items: { type: string }, description: Release tags }
+steps:
+  - id: sizes
+    tool_name: map
+    input:
+      over: "{{input.tags}}"
+      concurrency: 4
+      do:
+        - id: release
+          tool_name: builtin__gh_release
+          input: { tag: "{{item}}" }
+        - id: log
+          tool_name: builtin__git_log
+          input: { base: "{{release.previous_tag}}", head: "{{item}}", paths: "", max_commits: 1 }
+        - id: row
+          tool_name: builtin__reshape
+          input:
+            shape: { tag: "{{item}}", previous: "{{release.previous_tag}}", commits: "{{log.total}}" }
+output:
+  releases: "{{sizes.results}}"

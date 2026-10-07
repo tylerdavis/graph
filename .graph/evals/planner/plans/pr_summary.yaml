@@ -1,0 +1,32 @@
+version: 2
+identifier: ref_pr_summary
+name: Pull request summary
+description: Summarizes what a pull request changes and why.
+input_schema:
+  type: object
+  required: [pr]
+  properties:
+    pr: { type: integer, description: Pull request number }
+steps:
+  - id: meta
+    tool_name: builtin__gh_pr_meta
+    input: { pr: "{{input.pr}}" }
+  - id: diff
+    tool_name: builtin__git_diff
+    input: { base: "{{meta.base_sha}}", head: "{{meta.head_sha}}", paths: ".", exclude: "Cargo.lock", max_bytes: 60000 }
+  - id: summary
+    tool_name: builtin__infer
+    input:
+      instruction: |-
+        Summarize what this pull request changes and why, in a short paragraph followed by its main changes as a list.
+
+        Title: {{meta.title}}
+        Description:
+        {{meta.body}}
+
+        Diff:
+        {{diff}}
+output:
+  summary: "{{summary.text}}"
+  data_title: "{{meta.title}}"
+  data_body: "{{meta.body}}"

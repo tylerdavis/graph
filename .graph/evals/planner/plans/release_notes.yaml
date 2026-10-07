@@ -1,0 +1,57 @@
+version: 2
+identifier: ref_release_notes
+name: Release notes for a tag
+description: Release notes for a tag, grouped by theme, from the pull requests merged since the previous release and the Linear tickets they reference.
+input_schema:
+  type: object
+  required: [tag]
+  properties:
+    tag: { type: string, description: Release tag, e.g. v0.15.0 }
+steps:
+  - id: release
+    tool_name: builtin__gh_release
+    input: { tag: "{{input.tag}}" }
+  - id: commits
+    tool_name: builtin__git_log
+    input: { base: "{{release.previous_tag}}", head: "{{input.tag}}", paths: "", max_commits: 300 }
+  - id: merged
+    tool_name: filter
+    input:
+      over: "{{commits.commits}}"
+      where: { value: "{{item.pr}}", op: not_empty }
+  - id: tickets
+    tool_name: map
+    input:
+      over: "{{merged.items}}"
+      concurrency: 8
+      do:
+        tool_name: builtin__gh_pr_ticket
+        input: { pr: "{{item.pr}}", pattern: "LN-[0-9]+" }
+  - id: found
+    tool_name: filter
+    input:
+      over: "{{tickets.results}}"
+      where: { value: "{{item.found}}", op: eq, to: true }
+  - id: issues
+    tool_name: map
+    input:
+      over: "{{found.items}}"
+      concurrency: 8
+      do:
+        tool_name: linear__get_issue
+        input: { id: "{{item.ticket}}" }
+  - id: notes
+    tool_name: builtin__infer
+    input:
+      instruction: |-
+        Write release notes for {{input.tag}}, grouped into a few themes. Under each theme, say in one or two sentences what changed and why it matters, then list the pull requests (#number) it covers. Use only the changes below.
+
+        Commits merged in this release:
+        {{merged.items}}
+
+        Linear tickets they reference:
+        {{issues.results}}
+output:
+  notes: "{{notes.text}}"
+  data_commits: "{{merged.items}}"
+  data_tickets: "{{issues.results}}"

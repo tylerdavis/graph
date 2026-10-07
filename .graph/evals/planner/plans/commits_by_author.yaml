@@ -1,0 +1,23 @@
+version: 2
+identifier: ref_commits_by_author
+name: Commits since a tag by author
+description: Summarizes the commits since a release tag, grouped by author.
+input_schema:
+  type: object
+  required: [tag]
+  properties:
+    tag: { type: string, description: Release tag to start after, e.g. v0.15.0 }
+steps:
+  - id: commits
+    tool_name: builtin__git_log
+    input: { base: "{{input.tag}}", head: HEAD, paths: "", max_commits: 300 }
+  - id: summary
+    tool_name: builtin__infer
+    input:
+      instruction: |-
+        Group these commits by author and, for each author, summarize what their commits did in a sentence or two.
+
+        {{commits.commits}}
+output:
+  summary: "{{summary.text}}"
+  data_commits: "{{commits}}"

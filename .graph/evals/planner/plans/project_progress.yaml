@@ -1,0 +1,31 @@
+version: 2
+identifier: ref_project_progress
+name: Linear project progress
+description: Reports a Linear project's progress, with milestone completion and the issues still open.
+input_schema:
+  type: object
+  required: [project]
+  properties:
+    project: { type: string, description: Linear project name }
+steps:
+  - id: project
+    tool_name: linear__get_project
+    input: { query: "{{input.project}}", includeMilestones: true }
+  - id: issues
+    tool_name: linear__list_issues
+    input: { project: "{{input.project}}", limit: 250 }
+  - id: report
+    tool_name: builtin__infer
+    input:
+      instruction: |-
+        Report the progress of this Linear project: overall status, how far along each milestone is, and the issues still open with their status. Use only the data below.
+
+        Project:
+        {{project}}
+
+        Issues:
+        {{issues}}
+output:
+  report: "{{report.text}}"
+  data_project: "{{project}}"
+  data_issues: "{{issues}}"

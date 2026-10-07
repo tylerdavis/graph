@@ -1,0 +1,49 @@
+version: 2
+identifier: ref_silent_open_issues
+name: Open issues nobody has commented on
+description: Lists the open issues in a Linear project that have no comments.
+input_schema:
+  type: object
+  required: [project]
+  properties:
+    project: { type: string, description: Linear project name }
+steps:
+  - id: issues
+    tool_name: linear__list_issues
+    input: { project: "{{input.project}}", limit: 250, fields: [title, url, status, statusType] }
+  - id: not_done
+    tool_name: filter
+    input:
+      over: "{{issues.issues}}"
+      where: { value: "{{item.statusType}}", op: ne, to: completed }
+  - id: open
+    tool_name: filter
+    input:
+      over: "{{not_done.items}}"
+      where: { value: "{{item.statusType}}", op: ne, to: canceled }
+  - id: live
+    tool_name: filter
+    input:
+      over: "{{open.items}}"
+      where: { value: "{{item.statusType}}", op: ne, to: duplicate }
+  - id: discussed
+    tool_name: map
+    input:
+      over: "{{live.items}}"
+      concurrency: 8
+      do:
+        - id: comments
+          tool_name: linear__list_comments
+          input: { issueId: "{{item.id}}", limit: 5 }
+        - id: row
+          tool_name: builtin__reshape
+          input:
+            shape: { id: "{{item.id}}", title: "{{item.title}}", url: "{{item.url}}", status: "{{item.status}}", comments: "{{comments.comments}}" }
+  - id: silent
+    tool_name: filter
+    input:
+      over: "{{discussed.results}}"
+      where: { value: "{{item.comments}}", op: empty }
+output:
+  issues: "{{silent.items}}"
+  data_issues: "{{issues.issues}}"
