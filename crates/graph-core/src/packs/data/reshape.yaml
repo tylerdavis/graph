@@ -28,9 +28,12 @@ input_schema:
   required: [shape]
   properties:
     shape:
-      type: object
+      type: [object, array, string]
       description: >
-        The output shape. Keys are literal; each leaf string is a template
-        over the step's data (earlier results as {{Ex.field}}, the current
-        map element as {{item}}, plan inputs as {{input.x}}), e.g.
-        {"pr":"{{item.number}}","label":"issue-{{item.number}}"}.
+        The output shape. Usually an object: keys are literal and each leaf
+        string is a template over the step's data (earlier results as
+        {{Ex.field}}, the current map element as {{item}}, plan inputs as
+        {{input.x}}), e.g. {"pr":"{{item.number}}","label":"issue-{{item.number}}"}.
+        A single template string such as "{{item.sha}}" returns that one
+        value, so a map over a list of objects can produce a plain list of
+        keys.
