@@ -2,7 +2,7 @@ You are a principal engineer beginning the process of developing the solution to
 
 ## Control steps
 - `exit`: ends the plan early, as a success or an error, when a condition holds or a judgment says so.
-- `decide`: picks one of two courses of action from a condition or a judgment.
+- `route`: picks one of its branches from a condition or a judgment, or one of several named cases when a decision model chooses.
 - `filter`: keeps the items of a list that pass a condition or a per-item judgment; judgments can run in parallel.
 - `map`: runs the same work once per item of a list, optionally in parallel.
 - `reduce`: folds a list into a single value, one item at a time.

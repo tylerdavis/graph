@@ -1,0 +1,8 @@
+→ builtin__git_diff {"base":"2018554db7561373c41a4e662a53fe41755f70f8","exclude":"","head":"8689a2e4d7c3b2ae968bff7c31a7fc0bb1467fa0","max_b
+✓ builtin__git_diff 24.1ms
+→ exit {"message":"no format model changed — format gate not applicable","output":{"format_bump_required":false,"reason":"no_mo
+✓ exit 26.5µs
+→ builtin__git_diff {"base":"2018554db7561373c41a4e662a53fe41755f70f8","exclude":"","head":"8689a2e4d7c3b2ae968bff7c31a7fc0bb1467fa0","max_b
+✓ builtin__git_diff 21.0ms
+→ exit {"decide":{"question":"Does this PR change a versioned file's schema WITHOUT bumping that\nfile's version? Decide it per
+✓ exit 154.8ms

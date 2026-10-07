@@ -341,7 +341,7 @@ mod tests {
         let prompt = outliner_prompt(&tools);
         assert!(prompt.contains("## Tool packs\n- github: "), "{prompt}");
         assert!(prompt.contains("principal engineer"));
-        for step in ["exit", "decide", "filter", "map", "reduce", "agent", "ask"] {
+        for step in ["exit", "route", "filter", "map", "reduce", "agent", "ask"] {
             assert!(
                 prompt.contains(&format!("- `{step}`: ")),
                 "{step} is described"
