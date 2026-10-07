@@ -1,0 +1,4 @@
+{"seq":0,"at":1767225600000,"author":"user","kind":"message","message":{"kind":"user","content":"which issues are urgent?"}}
+{"seq":1,"at":1767225600000,"author":"chat","kind":"message","message":{"kind":"assistant","content":null,"tool_calls":[{"id":"call_1","name":"plan__urgent_issues","arguments":{"team":"ENG"}}]}}
+{"seq":2,"at":1767225600000,"author":"chat","kind":"message","message":{"kind":"tool_result","tool_call_id":"call_1","content":{"answer":"ENG-12 and ENG-40"},"is_error":false}}
+{"seq":3,"at":1767225600000,"author":"chat","kind":"message","message":{"kind":"assistant","content":"ENG-12 and ENG-40 are urgent."}}

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "tool": "user__git_log",
+  "schema": {
+    "type": "array",
+    "items": {
+      "type": "string"
+    }
+  },
+  "example": [
+    "abc123 fix: thing"
+  ],
+  "seen_count": 3,
+  "updated_at": 1767225600000
+}

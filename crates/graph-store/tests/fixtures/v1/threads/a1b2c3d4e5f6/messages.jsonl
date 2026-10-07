@@ -1,0 +1,4 @@
+{"kind":"user","content":"which issues are urgent?"}
+{"kind":"assistant","content":null,"tool_calls":[{"id":"call_1","name":"plan__urgent_issues","arguments":{"team":"ENG"}}]}
+{"kind":"tool_result","tool_call_id":"call_1","content":{"answer":"ENG-12 and ENG-40"},"is_error":false}
+{"kind":"assistant","content":"ENG-12 and ENG-40 are urgent."}

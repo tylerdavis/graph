@@ -29,7 +29,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub const STORE_FORMAT: u32 = 1;
+pub const STORE_FORMAT: u32 = 2;
 
 pub const STORE_FORMAT_OLDEST: u32 = 1;
 
@@ -156,10 +156,11 @@ fn check_format_marker(root: &Path) -> Result<(), StoreError> {
             STORE_FORMAT,
         ) {
             Some(problem) => Err(StoreError(problem)),
+            None if found < STORE_FORMAT => migrate(root),
             None => Ok(()),
         },
-        None => match link_new(root, format!("{STORE_FORMAT}\n").as_bytes()) {
-            Ok(()) => Ok(()),
+        None => match link_new(root, format!("{}\n", unmarked_format(root)?).as_bytes()) {
+            Ok(()) => check_format_marker(root),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => check_format_marker(root),
             Err(e) => Err(StoreError(format!(
                 "writing {}: {e}",
@@ -167,6 +168,58 @@ fn check_format_marker(root: &Path) -> Result<(), StoreError> {
             ))),
         },
     }
+}
+
+fn unmarked_format(root: &Path) -> Result<u32, StoreError> {
+    let threads = root.join("threads");
+    let mut dirs = std::fs::read_dir(&threads)
+        .map_err(|e| StoreError(format!("reading {}: {e}", threads.display())))?;
+    Ok(if dirs.next().is_some() {
+        1
+    } else {
+        STORE_FORMAT
+    })
+}
+
+fn migrate(root: &Path) -> Result<(), StoreError> {
+    let marker = root.join(FORMAT_MARKER);
+    let lock = File::open(&marker)
+        .map_err(|e| StoreError(format!("opening {}: {e}", marker.display())))?;
+    lock.lock_exclusive()
+        .map_err(|e| StoreError(format!("locking {}: {e}", marker.display())))?;
+    let Some(mut found) = marker_format(root)? else {
+        return Err(StoreError(format!("{} disappeared", marker.display())));
+    };
+    while found < STORE_FORMAT {
+        match found {
+            1 => migrate_threads_v1(&root.join("threads"))?,
+            other => {
+                return Err(StoreError(format!(
+                    "no migration from store version {other}"
+                )))
+            }
+        }
+        found += 1;
+        write_atomic(&marker, format!("{found}\n").as_bytes())?;
+    }
+    Ok(())
+}
+
+fn migrate_threads_v1(threads_dir: &Path) -> Result<(), StoreError> {
+    let dirs = std::fs::read_dir(threads_dir)
+        .map_err(|e| StoreError(format!("reading {}: {e}", threads_dir.display())))?;
+    for dir in dirs.filter_map(Result::ok).map(|entry| entry.path()) {
+        if !dir.join("meta.json").is_file() {
+            continue;
+        }
+        let _lock = lock_thread(&dir)?;
+        let Some(mut meta) = read_meta(&dir)? else {
+            continue;
+        };
+        meta.version = 2;
+        upgrade_legacy_log(&dir, &mut meta)?;
+    }
+    Ok(())
 }
 
 fn link_new(root: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -290,21 +343,22 @@ fn entry_lines(entries: &[ThreadEntry]) -> Result<Vec<u8>, StoreError> {
 }
 
 fn upgrade_legacy_log(dir: &Path, meta: &mut MetaFile) -> Result<(), StoreError> {
-    if dir.join(ENTRIES_FILE).exists() {
-        return Ok(());
+    let legacy = dir.join(LEGACY_MESSAGES_FILE);
+    match read_jsonl::<ThreadEntry>(&dir.join(ENTRIES_FILE))? {
+        Some(entries) => meta.entry_count = entries.len() as u64,
+        None if legacy.exists() => {
+            let entries = legacy_entries(dir, meta.created_at)?.unwrap_or_default();
+            write_atomic(&dir.join(ENTRIES_FILE), &entry_lines(&entries)?)?;
+            meta.entry_count = entries.len() as u64;
+        }
+        None => {}
     }
-    let Some(entries) = legacy_entries(dir, meta.created_at)? else {
-        return Ok(());
-    };
-    write_atomic(&dir.join(ENTRIES_FILE), &entry_lines(&entries)?)?;
-    meta.entry_count = entries.len() as u64;
     write_meta(dir, meta)?;
-    std::fs::remove_file(dir.join(LEGACY_MESSAGES_FILE)).map_err(|e| {
-        StoreError(format!(
-            "removing {}: {e}",
-            dir.join(LEGACY_MESSAGES_FILE).display()
-        ))
-    })
+    if legacy.exists() {
+        std::fs::remove_file(&legacy)
+            .map_err(|e| StoreError(format!("removing {}: {e}", legacy.display())))?;
+    }
+    Ok(())
 }
 
 fn lock_existing_thread(dir: &Path, thread_id: &str) -> Result<(File, MetaFile), StoreError> {
@@ -423,7 +477,6 @@ impl Store for FileStore {
         let entries = entries.to_vec();
         self.blocking(move || {
             let (_lock, mut meta) = lock_existing_thread(&dir, &thread_id)?;
-            upgrade_legacy_log(&dir, &mut meta)?;
             let at = now_ms();
             let numbered: Vec<ThreadEntry> = entries
                 .into_iter()
@@ -457,11 +510,7 @@ impl Store for FileStore {
     async fn load_entries(&self, thread_id: &str) -> Result<Vec<ThreadEntry>, StoreError> {
         let dir = self.thread_dir(thread_id);
         self.blocking(move || {
-            if let Some(entries) = read_jsonl::<ThreadEntry>(&dir.join(ENTRIES_FILE))? {
-                return Ok(entries);
-            }
-            let created_at = read_meta(&dir)?.map(|meta| meta.created_at).unwrap_or(0);
-            Ok(legacy_entries(&dir, created_at)?.unwrap_or_default())
+            Ok(read_jsonl::<ThreadEntry>(&dir.join(ENTRIES_FILE))?.unwrap_or_default())
         })
         .await
     }
@@ -606,7 +655,9 @@ mod tests {
             "{err}"
         );
         assert!(
-            err.contains(&format!("reads store version {STORE_FORMAT}")),
+            err.contains(&format!(
+                "reads store versions {STORE_FORMAT_OLDEST} to {STORE_FORMAT}"
+            )),
             "{err}"
         );
         std::fs::write(dir.path().join(FORMAT_MARKER), "banana\n").unwrap();
@@ -637,16 +688,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_legacy_message_log_reads_as_chat_entries_and_upgrades_on_append() {
+    async fn opening_a_version_1_store_converts_its_message_logs_to_chat_entries() {
         let root = tempfile::tempdir().unwrap();
-        let store = FileStore::open(root.path()).unwrap();
+        std::fs::write(root.path().join(FORMAT_MARKER), "1\n").unwrap();
         let id = legacy_thread(root.path());
+        let empty = root.path().join("threads").join("empty000001");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::write(
+            empty.join("meta.json"),
+            r#"{"version":1,"id":"empty000001","title":"none","created_at":1,"updated_at":1,"message_count":0}"#,
+        )
+        .unwrap();
 
-        let meta = store.get_thread(&id).await.unwrap().unwrap();
+        let store = FileStore::open(root.path()).unwrap();
+        assert_eq!(marker_format(root.path()).unwrap(), Some(2));
+        let dir = root.path().join("threads").join(&id);
+        assert!(!dir.join(LEGACY_MESSAGES_FILE).exists());
+        let meta = read_meta(&dir).unwrap().unwrap();
+        assert_eq!((meta.version, meta.entry_count), (2, 2));
         assert_eq!(
             (meta.owner.as_str(), meta.active.as_str()),
             ("chat", "chat")
         );
+        assert_eq!(read_meta(&empty).unwrap().unwrap().version, 2);
         let entries = store.load_entries(&id).await.unwrap();
         let authors: Vec<&str> = entries.iter().map(|e| e.author.as_str()).collect();
         assert_eq!(authors, ["user", "chat"]);
@@ -663,15 +727,89 @@ mod tests {
             )
             .await
             .unwrap();
-        let dir = root.path().join("threads").join(&id);
-        assert!(!dir.join(LEGACY_MESSAGES_FILE).exists());
-        let entries = store.load_entries(&id).await.unwrap();
-        let seqs: Vec<u64> = entries.iter().map(|e| e.seq).collect();
+        let seqs: Vec<u64> = store
+            .load_entries(&id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|e| e.seq)
+            .collect();
         assert_eq!(seqs, [0, 1, 2]);
         assert_eq!(
             store.get_thread(&id).await.unwrap().unwrap().message_count,
             3
         );
+    }
+
+    #[tokio::test]
+    async fn a_store_from_before_the_format_marker_is_migrated_as_version_1() {
+        let root = tempfile::tempdir().unwrap();
+        let id = legacy_thread(root.path());
+        let store = FileStore::open(root.path()).unwrap();
+        assert_eq!(marker_format(root.path()).unwrap(), Some(STORE_FORMAT));
+        let authors: Vec<String> = store
+            .load_entries(&id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.author)
+            .collect();
+        assert_eq!(authors, ["user", "chat"]);
+    }
+
+    #[tokio::test]
+    async fn a_migration_interrupted_after_writing_entries_finishes_with_the_right_count() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(FORMAT_MARKER), "1\n").unwrap();
+        let id = legacy_thread(root.path());
+        let dir = root.path().join("threads").join(&id);
+        let entries = legacy_entries(&dir, 5).unwrap().unwrap();
+        std::fs::write(dir.join(ENTRIES_FILE), entry_lines(&entries).unwrap()).unwrap();
+
+        let store = FileStore::open(root.path()).unwrap();
+        assert!(!dir.join(LEGACY_MESSAGES_FILE).exists());
+        assert_eq!(read_meta(&dir).unwrap().unwrap().entry_count, 2);
+        store
+            .append_entries(
+                &id,
+                &[NewEntry::message(
+                    "user",
+                    ChatMessage::User {
+                        content: "again".to_string(),
+                    },
+                )],
+            )
+            .await
+            .unwrap();
+        let seqs: Vec<u64> = store
+            .load_entries(&id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|e| e.seq)
+            .collect();
+        assert_eq!(seqs, [0, 1, 2]);
+    }
+
+    #[test]
+    fn concurrent_opens_of_a_version_1_store_migrate_it_once() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(FORMAT_MARKER), "1\n").unwrap();
+        let id = legacy_thread(root.path());
+        let path = root.path().to_path_buf();
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || FileStore::open(&path).map(|_| ()))
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+        assert_eq!(marker_format(&path).unwrap(), Some(2));
+        let entries =
+            std::fs::read_to_string(path.join("threads").join(id).join(ENTRIES_FILE)).unwrap();
+        assert_eq!(entries.lines().count(), 2);
     }
 
     #[tokio::test]
