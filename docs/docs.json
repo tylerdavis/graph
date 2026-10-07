@@ -82,6 +82,7 @@
           },
           "architecture/storage",
           "reference/configuration",
+          "reference/agent-schema",
           "reference/file-versions"
         ]
       },

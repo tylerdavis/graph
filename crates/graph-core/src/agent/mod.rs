@@ -1,5 +1,6 @@
 //! The ReAct agent loop: model ↔ tools until a final text answer.
 
+pub mod doc;
 mod events;
 pub mod task;
 
