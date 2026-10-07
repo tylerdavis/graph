@@ -12,7 +12,7 @@ Standard library tools are [user-tool-format](/tools/user-defined) YAML document
 packs = ["github", "slack"]
 ```
 
-The `llm` and `data` packs are always on — no config needed. Unknown pack names fail at startup, not at plan time. To customize a built-in, copy its YAML into a tools directory and reference your `user__` copy from plans — built-ins themselves never change out from under you except with a graph release.
+The `llm` and `data` packs are always on — no config needed. Unknown pack names fail at startup, not at plan time. To customize a built-in, put a tool file with the same `name` in the `builtin/` subdirectory of a tools directory, for example `./.graph/tools/builtin/reshape.yaml`. It replaces `builtin__reshape`, so every plan and agent that calls it picks up your version. A file directly in the tools directory is always a `user__` tool, even when its name matches a built-in. `graph tools show builtin__<name>` prints the definition in effect and its source. A file under `builtin/` must name a tool from an enabled pack, or the catalog fails to load and names the file.
 
 ## Runtime requirements
 

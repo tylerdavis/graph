@@ -16,7 +16,8 @@ pub async fn run(command: ToolsCommand) -> Result<()> {
     let toolbox = runtime
         .toolbox(&store, std::sync::Arc::new(graph_core::NullSink))
         .await?;
-    let result = dispatch(toolbox.as_ref(), command).await;
+    let docs = runtime.tool_docs()?;
+    let result = dispatch(toolbox.as_ref(), command, &docs).await;
     // MCP children must be shut down before the runtime drops, on every
     // path — including the one where `report` returns a SilentExit.
     runtime.shutdown().await;
@@ -27,10 +28,11 @@ pub async fn run(command: ToolsCommand) -> Result<()> {
 async fn dispatch(
     registry: &(dyn ToolRegistry + Send + Sync),
     command: ToolsCommand,
+    docs: &graph_core::user_tools::ToolDocs,
 ) -> Result<(Outcome, bool)> {
     match command {
         ToolsCommand::List { json } => Ok((list(registry).await?, json)),
-        ToolsCommand::Show { name, json } => Ok((show(registry, &name).await?, json)),
+        ToolsCommand::Show { name, json } => Ok((show(registry, docs, &name).await?, json)),
         ToolsCommand::Test {
             name,
             input,
@@ -42,6 +44,22 @@ async fn dispatch(
         )),
         ToolsCommand::Migrate { .. } => unreachable!("handled before the runtime starts"),
     }
+}
+
+fn tool_source(docs: &graph_core::user_tools::ToolDocs, name: &str) -> Option<String> {
+    let (list, bare) = match name.split_once("__")? {
+        ("builtin", bare) => (&docs.builtins, bare),
+        ("user", bare) => (&docs.user, bare),
+        _ => return None,
+    };
+    let doc = list.iter().find(|doc| doc.name == bare)?;
+    Some(match &doc.path {
+        Some(path) => path.display().to_string(),
+        None => match graph_core::user_tools::pack_of(bare) {
+            Some(pack) => format!("built-in ({pack} pack)"),
+            None => "built-in".to_string(),
+        },
+    })
 }
 
 /// `graph tools migrate <path>` — rewrite one tool file to the current tool
@@ -93,6 +111,7 @@ pub(crate) async fn list(registry: &(dyn ToolRegistry + Send + Sync)) -> Result<
 
 pub(crate) async fn show(
     registry: &(dyn ToolRegistry + Send + Sync),
+    docs: &graph_core::user_tools::ToolDocs,
     name: &str,
 ) -> Result<Outcome> {
     let defs = catalog(registry).await?;
@@ -113,7 +132,12 @@ pub(crate) async fn show(
             serde_json::to_string_pretty(schema)?
         ));
     }
-    Ok(Outcome::raw(text, body))
+    let mut outcome = Outcome::raw(text, body);
+    if let Some(source) = tool_source(docs, name) {
+        outcome.body["source"] = json!(source);
+        outcome = outcome.with_note(format!("source: {source}"));
+    }
+    Ok(outcome)
 }
 
 pub(crate) async fn test(
@@ -148,4 +172,37 @@ pub(crate) async fn test(
     });
     let text = format!("{}\n", serde_json::to_string_pretty(&invoked.result)?);
     Ok(Outcome::raw(text, body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_source_names_the_overriding_file_or_the_pack() {
+        let builtins = graph_core::user_tools::load_pack_tools(&["data".to_string()]).unwrap();
+        let docs = graph_core::user_tools::ToolDocs {
+            builtins: builtins.clone(),
+            user: Vec::new(),
+        };
+        assert_eq!(
+            tool_source(&docs, "builtin__reshape").as_deref(),
+            Some("built-in (data pack)")
+        );
+        let mut mine = builtins
+            .iter()
+            .find(|d| d.name == "reshape")
+            .unwrap()
+            .clone();
+        mine.path = Some(std::path::PathBuf::from("/tools/builtin/reshape.yaml"));
+        let overridden = graph_core::user_tools::ToolDocs {
+            builtins: graph_core::user_tools::apply_tool_overrides(builtins, vec![mine]).unwrap(),
+            user: Vec::new(),
+        };
+        assert_eq!(
+            tool_source(&overridden, "builtin__reshape").as_deref(),
+            Some("/tools/builtin/reshape.yaml")
+        );
+        assert_eq!(tool_source(&docs, "linear__get_issue"), None);
+    }
 }
