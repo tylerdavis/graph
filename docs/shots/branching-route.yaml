@@ -9,8 +9,9 @@ grid: { cols: 120, rows: 36 }
 chat: "run it for PR 61"
 
 llm:
-  - call: workbench__run_plan
+  - call: workbench__try_artifact
     input:
+      kind: plan
       input: { pr: 61 }
   - text: >-
       Done — PR 61 is still open, so the then branch ran: diff checked,

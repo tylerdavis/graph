@@ -6,8 +6,8 @@ grid: { cols: 120, rows: 30 }
 chat: "run it"
 
 llm:
-  - call: workbench__run_plan
-    input: {}
+  - call: workbench__try_artifact
+    input: { kind: plan }
 
 capture:
   pause_at: E0

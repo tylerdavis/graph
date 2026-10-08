@@ -10,8 +10,9 @@ grid: { cols: 120, rows: 26 }
 chat: "run it over a586a8b..9f31c02, pausing on each file"
 
 llm:
-  - call: workbench__run_plan
+  - call: workbench__try_artifact
     input:
+      kind: plan
       gated: true
       breakpoints: [E1]
       input: { base: a586a8b, head: 9f31c02 }

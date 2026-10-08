@@ -1070,8 +1070,8 @@ mod tests {
             session_id: Some("thread-9".into()),
             input: Some(json!("fix E0")),
         });
-        sink.tool_started("workbench__validate_plan", &json!({}));
-        sink.tool_finished("workbench__validate_plan", Duration::ZERO, false);
+        sink.tool_started("workbench__set_artifact", &json!({}));
+        sink.tool_finished("workbench__set_artifact", Duration::ZERO, false);
         sink.run_finished(&json!("done"), false);
         drop(sink);
         provider.force_flush().unwrap();
@@ -1102,7 +1102,7 @@ mod tests {
             attribute(first, "session.id"),
             Some(&OtelValue::from("wb-1"))
         );
-        let tool = by_name(&spans, "workbench__validate_plan");
+        let tool = by_name(&spans, "workbench__set_artifact");
         assert_eq!(tool.parent_span_id, second.span_context.span_id());
         assert_eq!(
             attribute(tool, "session.id"),

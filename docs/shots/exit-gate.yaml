@@ -8,8 +8,9 @@ grid: { cols: 120, rows: 36 }
 chat: "run the nightly report against v0.8.1"
 
 llm:
-  - call: workbench__run_plan
+  - call: workbench__try_artifact
     input:
+      kind: plan
       input: { base: v0.8.1 }
   - text: >-
       Quiet night — no changes since v0.8.1, so the gate exited the plan

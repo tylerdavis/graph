@@ -14,20 +14,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 
-pub const SET_DRAFT: &str = "workbench__set_draft";
 pub const DESCRIBE_TOOL: &str = "workbench__describe_tool";
-pub const GET_PLAN: &str = "workbench__get_plan";
-pub const LOAD_PLAN: &str = "workbench__load_plan";
-pub const LIST_PLANS: &str = "workbench__list_plans";
-pub const VALIDATE_PLAN: &str = "workbench__validate_plan";
-pub const RUN_PLAN: &str = "workbench__run_plan";
-pub const SAVE_PLAN: &str = "workbench__save_plan";
 pub const UPDATE_METADATA: &str = "workbench__update_metadata";
 pub const ADD_STEP: &str = "workbench__add_step";
 pub const UPDATE_STEP: &str = "workbench__update_step";
 pub const DELETE_STEP: &str = "workbench__delete_step";
 pub const RESTORE_DRAFT: &str = "workbench__restore_draft";
-pub const SHOW_PLAN: &str = "workbench__show_plan";
 
 /// The mutating edit tools — a successful call to one is genuine forward
 /// progress on the draft. The agent loop resets its iteration budget on these
@@ -35,7 +27,7 @@ pub const SHOW_PLAN: &str = "workbench__show_plan";
 /// run, repeat) isn't starved mid-repair.
 pub fn progress_tools() -> Vec<String> {
     [
-        SET_DRAFT,
+        super::artifact::SET_ARTIFACT,
         UPDATE_METADATA,
         ADD_STEP,
         UPDATE_STEP,
@@ -196,8 +188,10 @@ impl WorkbenchTools {
     /// Read a plan's YAML without touching the draft — the inspection
     /// counterpart to load_plan, so studying a plan never replaces work.
     fn show_plan(&self, input: &Value) -> ToolOutcome {
-        let Some(name_or_path) = input.get("name_or_path").and_then(Value::as_str) else {
-            return error_outcome("show_plan requires a 'name_or_path' string");
+        let Some(name_or_path) = input.get("name").and_then(Value::as_str) else {
+            return error_outcome(
+                "show_artifact requires a 'name': a plan identifier or file path",
+            );
         };
         let doc = match self.resolve_plan(name_or_path) {
             Ok(doc) => doc,
@@ -215,8 +209,10 @@ impl WorkbenchTools {
     /// Load an existing plan into the workbench: an identifier from the
     /// configured plan catalog, or a YAML file path.
     fn load_plan(&self, input: &Value) -> ToolOutcome {
-        let Some(name_or_path) = input.get("name_or_path").and_then(Value::as_str) else {
-            return error_outcome("load_plan requires a 'name_or_path' string");
+        let Some(name_or_path) = input.get("name").and_then(Value::as_str) else {
+            return error_outcome(
+                "load_artifact requires a 'name': a plan identifier or file path",
+            );
         };
         let doc = match self.resolve_plan(name_or_path) {
             Ok(doc) => doc,
@@ -242,7 +238,7 @@ impl WorkbenchTools {
                 return ToolOutcome {
                     result: json!({
                         "error": "the draft has unsaved changes — save them with \
-                                  workbench__save_plan, or pass overwrite_draft: true \
+                                  workbench__save_artifact, or pass overwrite_draft: true \
                                   only after the user confirms discarding them",
                         "dirtyDraft": state.doc.as_ref().map(|d| d.identifier.clone()),
                     }),
@@ -299,19 +295,6 @@ impl WorkbenchTools {
             .collect();
         ToolOutcome {
             result: json!({"count": plans.len(), "plans": plans}),
-            is_error: false,
-        }
-    }
-
-    /// Validate the draft and surface the verdict in the plan pane.
-    fn validate_plan(&self) -> ToolOutcome {
-        let Some(doc) = self.current() else {
-            return error_outcome("no draft to validate");
-        };
-        let problems = plan_problems(&self.pipeline, &doc);
-        let _ = self.tx.send(Msg::Validated(problems.clone()));
-        ToolOutcome {
-            result: json!({"valid": problems.is_empty(), "problems": problems}),
             is_error: false,
         }
     }
@@ -411,9 +394,15 @@ impl WorkbenchTools {
         }
     }
 
-    fn set_draft(&self, input: &Value) -> ToolOutcome {
-        let plan = match input.get("plan").filter(|plan| !plan.is_null()) {
-            Some(plan) => plan.clone(),
+    fn set_plan(&self, input: &Value) -> ToolOutcome {
+        let plan = match input["yaml"]
+            .as_str()
+            .filter(|yaml| !yaml.trim().is_empty())
+        {
+            Some(yaml) => match serde_yaml::from_str::<Value>(yaml) {
+                Ok(plan) => plan,
+                Err(error) => return error_outcome(&format!("the plan isn't valid YAML: {error}")),
+            },
             None => match self.draft.lock().unwrap().composed.clone() {
                 Some(plan) => plan,
                 None => {
@@ -425,7 +414,7 @@ impl WorkbenchTools {
         };
         let doc = match graph_core::pipeline::plan_doc(&plan) {
             Ok(doc) => doc,
-            Err(error) => return error_outcome(&format!("set_draft requires a 'plan': {error}")),
+            Err(error) => return error_outcome(&format!("not a plan document: {error}")),
         };
         let overwrite = input
             .get("overwrite_draft")
@@ -444,7 +433,7 @@ impl WorkbenchTools {
                 return ToolOutcome {
                     result: json!({
                         "error": "the draft has unsaved changes — save them with \
-                                  workbench__save_plan, or pass overwrite_draft: true \
+                                  workbench__save_artifact, or pass overwrite_draft: true \
                                   only after the user confirms discarding them",
                         "dirtyDraft": state.doc.as_ref().map(|d| d.identifier.clone()),
                     }),
@@ -516,22 +505,6 @@ impl WorkbenchTools {
         }
     }
 
-    fn get_plan(&self) -> ToolOutcome {
-        match self.current() {
-            Some(doc) => match authoring::to_yaml(&doc) {
-                Ok(yaml) => ToolOutcome {
-                    result: json!({"yaml": yaml}),
-                    is_error: false,
-                },
-                Err(error) => error_outcome(&error.to_string()),
-            },
-            None => ToolOutcome {
-                result: json!({"yaml": null, "note": "no draft yet"}),
-                is_error: false,
-            },
-        }
-    }
-
     /// The choke point for the precise editing tools. The edit rules
     /// (reject only what introduces NEW problems) live in
     /// [`authoring::apply_edit`]; this wrapper adds the workbench's own
@@ -578,6 +551,124 @@ impl WorkbenchTools {
     /// reference it — the problems say which templates dangle.
     fn delete_step(&self, input: &Value) -> ToolOutcome {
         self.edit_draft(|doc| authoring::patch_delete_step(doc, input))
+    }
+
+    async fn artifact_tool(&self, name: &str, target: Target, input: &Value) -> ToolOutcome {
+        use super::artifact as file;
+        match (name, target) {
+            (file::SET_ARTIFACT, Target::Plan) => self.set_plan(input),
+            (file::SET_ARTIFACT, Target::File(_)) => {
+                file::set_artifact(&self.draft, &self.pipeline, &self.tx, input).await
+            }
+            (file::LOAD_ARTIFACT, Target::Plan) => self.load_plan(input),
+            (file::LOAD_ARTIFACT, Target::File(kind)) => match file::open_existing(
+                &self.draft,
+                &self.pipeline,
+                &self.tx,
+                kind,
+                input["name"].as_str().unwrap_or_default(),
+            )
+            .await
+            {
+                Ok(name) => ToolOutcome {
+                    result: json!({ "opened": name }),
+                    is_error: false,
+                },
+                Err(error) => error_outcome(&error),
+            },
+            (file::TRY_ARTIFACT, Target::Plan) => self.run_plan(input).await,
+            (file::TRY_ARTIFACT, Target::File(kind)) => match self.open_mismatch(kind) {
+                Some(outcome) => outcome,
+                None => file::try_artifact(&self.draft, &self.pipeline, &self.tx, input).await,
+            },
+            (file::SAVE_ARTIFACT, Target::Plan) => self.save_plan(),
+            (file::SAVE_ARTIFACT, Target::File(kind)) => {
+                if let Some(outcome) = self.open_mismatch(kind) {
+                    return outcome;
+                }
+                match file::save_artifact(
+                    &self.draft,
+                    &self.pipeline,
+                    &self.tx,
+                    input["overwrite"].as_bool().unwrap_or(false),
+                    input["untested"].as_bool().unwrap_or(false),
+                    true,
+                )
+                .await
+                {
+                    Ok(message) => ToolOutcome {
+                        result: json!({ "saved": message }),
+                        is_error: false,
+                    },
+                    Err(error) => error_outcome(&error),
+                }
+            }
+            (file::DISCARD_ARTIFACT, Target::Plan) => error_outcome(
+                "a plan draft can't be discarded; it stays in the pane until another plan replaces it",
+            ),
+            (file::DISCARD_ARTIFACT, Target::File(kind)) => {
+                if let Some(outcome) = self.open_mismatch(kind) {
+                    return outcome;
+                }
+                match file::discard_artifact(&self.draft, &self.pipeline, &self.tx) {
+                    Some(message) => ToolOutcome {
+                        result: json!({ "discarded": message }),
+                        is_error: false,
+                    },
+                    None => error_outcome("there is no draft to discard"),
+                }
+            }
+            (file::LIST_ARTIFACTS, Target::Plan) => self.list_plans(),
+            (file::LIST_ARTIFACTS, Target::File(file::ArtifactKind::Agent)) => {
+                file::list_agents(&self.pipeline)
+            }
+            (file::LIST_ARTIFACTS, Target::File(file::ArtifactKind::Tool)) => {
+                file::list_tools(&self.pipeline).await
+            }
+            (file::SHOW_ARTIFACT, Target::Plan) => self.show_plan(input),
+            (file::SHOW_ARTIFACT, Target::File(kind)) => {
+                let name = input["name"].as_str().unwrap_or_default();
+                match file::existing(kind, name, &self.pipeline.drafted.tool_dirs) {
+                    Ok(artifact) => ToolOutcome {
+                        result: json!({"name": artifact.name(), "yaml": artifact.yaml}),
+                        is_error: false,
+                    },
+                    Err(error) => error_outcome(&error),
+                }
+            }
+            (other, _) => error_outcome(&format!("unknown artifact tool '{other}'")),
+        }
+    }
+
+    fn open_mismatch(&self, kind: super::artifact::ArtifactKind) -> Option<ToolOutcome> {
+        let state = self.draft.lock().unwrap();
+        let open = state.artifact.as_ref()?;
+        (open.kind != kind).then(|| {
+            error_outcome(&format!(
+                "the pane holds a {} draft, not a {}",
+                open.kind.label(),
+                kind.label()
+            ))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Target {
+    Plan,
+    File(super::artifact::ArtifactKind),
+}
+
+impl Target {
+    fn of(input: &Value) -> Result<Self, ToolOutcome> {
+        match input["kind"].as_str() {
+            Some("plan") => Ok(Self::Plan),
+            Some(kind) => super::artifact::ArtifactKind::parse(kind)
+                .map(Self::File)
+                .ok_or(()),
+            None => Err(()),
+        }
+        .map_err(|()| error_outcome("kind must be \"plan\", \"agent\" or \"tool\""))
     }
 }
 
@@ -648,27 +739,6 @@ impl ToolRegistry for WorkbenchTools {
     async fn tools(&self) -> Result<Vec<ToolDef>, ToolError> {
         let mut defs = vec![
             ToolDef {
-                name: SET_DRAFT.to_string(),
-                description: "Make a plan document the workbench draft, replacing the current \
-                              one: with no `plan`, publishes the plan plan__compose_plan last \
-                              returned, exactly as it returned it. Fails when the \
-                              current draft has unsaved changes; pass overwrite_draft: true only \
-                              after the user confirms discarding them."
-                    .to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "plan": {"type": "object", "description": "A plan document to show in the pane. Omit it to publish what plan__compose_plan returned"},
-                        "overwrite_draft": {"type": "boolean", "description": "Discard unsaved changes to the current draft. Only after the user confirms."}
-                    }
-                }),
-                output_schema: None,
-                output_example: Some(
-                    json!({"identifier": "sprint_report", "steps": 3, "validation": "ok"}),
-                ),
-                read_only: None,
-            },
-            ToolDef {
                 name: DESCRIBE_TOOL.to_string(),
                 description: "Describe one tool from the plan catalog without calling it: its \
                               description, input schema, declared output schema, the output \
@@ -685,102 +755,6 @@ impl ToolRegistry for WorkbenchTools {
                 output_schema: None,
                 output_example: None,
                 read_only: Some(true),
-            },
-            ToolDef {
-                name: LOAD_PLAN.to_string(),
-                description: "Open a DIFFERENT plan the user explicitly names — by \
-                              identifier from the plan catalog, or by YAML file path. \
-                              Never use it to edit, fix, or continue the current draft; \
-                              use the editing tools for that. Replaces the current \
-                              draft, and FAILS if the draft has unsaved changes unless \
-                              overwrite_draft is true."
-                    .to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "required": ["name_or_path"],
-                    "properties": {
-                        "name_or_path": {"type": "string", "description": "A plan identifier (e.g. sprint_analysis) or a path to a plan YAML file."},
-                        "overwrite_draft": {"type": "boolean", "description": "Required (true) to load over a draft with unsaved changes. Only pass it after the user explicitly confirms discarding them. Default false."}
-                    }
-                }),
-                output_schema: None,
-                output_example: Some(
-                    json!({"identifier": "sprint_analysis", "name": "Sprint analysis", "steps": 4, "validation": "ok"}),
-                ),
-                read_only: Some(true),
-            },
-            ToolDef {
-                name: GET_PLAN.to_string(),
-                description: "Re-read the current draft plan as YAML. The workbench \
-                              includes the current draft in the system prompt every \
-                              turn, so call this only to re-check the draft after your \
-                              own edits within the same turn."
-                    .to_string(),
-                input_schema: json!({"type": "object", "properties": {}}),
-                output_schema: None,
-                output_example: None,
-                read_only: Some(true),
-            },
-            ToolDef {
-                name: LIST_PLANS.to_string(),
-                description: "List the plans available in the catalog: identifier, name, \
-                              description, and step count. Use this when the user asks what \
-                              plans exist or which one to load."
-                    .to_string(),
-                input_schema: json!({"type": "object", "properties": {}}),
-                output_schema: None,
-                output_example: Some(
-                    json!({"count": 1, "plans": [{"identifier": "sprint_analysis", "name": "Sprint analysis", "description": "…", "steps": 4}]}),
-                ),
-                read_only: Some(true),
-            },
-            ToolDef {
-                name: VALIDATE_PLAN.to_string(),
-                description: "Validate the current draft (templates, reference ordering, \
-                              control-step bodies, document structure). Returns every \
-                              problem and updates the plan pane's verdict."
-                    .to_string(),
-                input_schema: json!({"type": "object", "properties": {}}),
-                output_schema: None,
-                output_example: Some(
-                    json!({"valid": false, "problems": ["step E1 references E5, which is not an earlier step"]}),
-                ),
-                read_only: Some(true),
-            },
-            ToolDef {
-                name: RUN_PLAN.to_string(),
-                description: "Execute the current draft. Step activity streams to the \
-                              workspace pane. Set gated=true for a debug run — it pauses \
-                              for the USER's decision (step / continue / skip / abort) and \
-                              breaks on any failing call; pass `breakpoints` (top-level \
-                              step ids, implies gated) to run freely to those steps. \
-                              Prefer debugging for plans with side effects, and only run \
-                              when the user asks. Pass `input` when the plan declares an \
-                              input_schema."
-                    .to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "gated": {"type": "boolean", "description": "Debug run: pause for the user's decisions and break on errors. Default false."},
-                        "breakpoints": {"type": "array", "items": {"type": "string"}, "description": "Top-level step ids to pause at. Implies gated; the run auto-proceeds until a breakpoint (or a failing call) and pauses for the USER."},
-                        "input": {"type": "object", "description": "The plan's input object, validated against its input_schema."}
-                    }
-                }),
-                output_schema: None,
-                output_example: Some(
-                    json!({"status": "completed", "stepsExecuted": 3, "output": {"…": "…"}}),
-                ),
-                read_only: None,
-            },
-            ToolDef {
-                name: SAVE_PLAN.to_string(),
-                description: "Save the current draft to disk as YAML — back to the file it \
-                              was loaded from, or into the plans directory for new drafts."
-                    .to_string(),
-                input_schema: json!({"type": "object", "properties": {}}),
-                output_schema: None,
-                output_example: Some(json!({"savedTo": "./.graph/plans/sprint_report.yaml"})),
-                read_only: None,
             },
             ToolDef {
                 name: UPDATE_METADATA.to_string(),
@@ -899,26 +873,6 @@ impl ToolRegistry for WorkbenchTools {
                 read_only: None,
             },
             ToolDef {
-                name: SHOW_PLAN.to_string(),
-                description: "Read a catalog plan's YAML without touching the draft — by \
-                              identifier or YAML file path. Use this to inspect or \
-                              reference existing plans; use load_plan only to switch the \
-                              draft to a plan the user names."
-                    .to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "required": ["name_or_path"],
-                    "properties": {
-                        "name_or_path": {"type": "string", "description": "A plan identifier (e.g. sprint_analysis) or a path to a plan YAML file."}
-                    }
-                }),
-                output_schema: None,
-                output_example: Some(
-                    json!({"identifier": "sprint_analysis", "name": "Sprint analysis", "yaml": "identifier: sprint_analysis\n…"}),
-                ),
-                read_only: Some(true),
-            },
-            ToolDef {
                 name: RESTORE_DRAFT.to_string(),
                 description: "One-level undo: put the draft back to what it was before \
                               the last replacement (load, draft, or edit) — use it \
@@ -940,9 +894,8 @@ impl ToolRegistry for WorkbenchTools {
 
     async fn invoke(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
         match name {
-            SET_DRAFT | DESCRIBE_TOOL | GET_PLAN | LOAD_PLAN | LIST_PLANS | VALIDATE_PLAN
-            | RUN_PLAN | SAVE_PLAN | UPDATE_METADATA | ADD_STEP | UPDATE_STEP | DELETE_STEP
-            | RESTORE_DRAFT | SHOW_PLAN => {}
+            DESCRIBE_TOOL | UPDATE_METADATA | ADD_STEP | UPDATE_STEP | DELETE_STEP
+            | RESTORE_DRAFT => {}
             name if super::artifact::ARTIFACT_TOOLS.contains(&name) => {}
             // Not ours: stay silent, or the composite registry's fallthrough
             // (the fs tools are also workbench__*) double-logs the call.
@@ -955,84 +908,16 @@ impl ToolRegistry for WorkbenchTools {
         );
         let started = std::time::Instant::now();
         let outcome = match name {
-            SET_DRAFT => Ok(self.set_draft(&input)),
             DESCRIBE_TOOL => Ok(self.describe_tool(&input).await),
-            GET_PLAN => Ok(self.get_plan()),
-            LOAD_PLAN => Ok(self.load_plan(&input)),
-            LIST_PLANS => Ok(self.list_plans()),
-            VALIDATE_PLAN => Ok(self.validate_plan()),
-            RUN_PLAN => Ok(self.run_plan(&input).await),
-            SAVE_PLAN => Ok(self.save_plan()),
             UPDATE_METADATA => Ok(self.update_metadata(&input)),
             ADD_STEP => Ok(self.add_step(&input)),
             UPDATE_STEP => Ok(self.update_step(&input)),
             DELETE_STEP => Ok(self.delete_step(&input)),
             RESTORE_DRAFT => Ok(self.restore_draft()),
-            SHOW_PLAN => Ok(self.show_plan(&input)),
-            super::artifact::SET_ARTIFACT => {
-                Ok(
-                    super::artifact::set_artifact(&self.draft, &self.pipeline, &self.tx, &input)
-                        .await,
-                )
-            }
-            super::artifact::TRY_ARTIFACT => {
-                Ok(
-                    super::artifact::try_artifact(&self.draft, &self.pipeline, &self.tx, &input)
-                        .await,
-                )
-            }
-            super::artifact::SAVE_ARTIFACT => Ok(
-                match super::artifact::save_artifact(
-                    &self.draft,
-                    &self.pipeline,
-                    &self.tx,
-                    input["overwrite"].as_bool().unwrap_or(false),
-                    input["untested"].as_bool().unwrap_or(false),
-                    true,
-                )
-                .await
-                {
-                    Ok(message) => ToolOutcome {
-                        result: json!({ "saved": message }),
-                        is_error: false,
-                    },
-                    Err(error) => error_outcome(&error),
-                },
-            ),
-            super::artifact::LIST_AGENTS => Ok(super::artifact::list_agents(&self.pipeline)),
-            super::artifact::LIST_TOOLS => Ok(super::artifact::list_tools(&self.pipeline).await),
-            super::artifact::LOAD_ARTIFACT => Ok(
-                match super::artifact::ArtifactKind::parse(
-                    input["kind"].as_str().unwrap_or_default(),
-                ) {
-                    Some(kind) => match super::artifact::open_existing(
-                        &self.draft,
-                        &self.pipeline,
-                        &self.tx,
-                        kind,
-                        input["name"].as_str().unwrap_or_default(),
-                    )
-                    .await
-                    {
-                        Ok(name) => ToolOutcome {
-                            result: json!({ "opened": name }),
-                            is_error: false,
-                        },
-                        Err(error) => error_outcome(&error),
-                    },
-                    None => error_outcome("kind must be \"agent\" or \"tool\""),
-                },
-            ),
-            super::artifact::DISCARD_ARTIFACT => Ok(
-                match super::artifact::discard_artifact(&self.draft, &self.pipeline, &self.tx) {
-                    Some(message) => ToolOutcome {
-                        result: json!({ "discarded": message }),
-                        is_error: false,
-                    },
-                    None => error_outcome("there is no draft to discard"),
-                },
-            ),
-            other => Err(ToolError::Unknown(other.to_string())),
+            artifact_tool => Ok(match Target::of(&input) {
+                Ok(target) => self.artifact_tool(artifact_tool, target, &input).await,
+                Err(outcome) => outcome,
+            }),
         };
         if let Ok(outcome) = &outcome {
             tracing::debug!(
@@ -1081,10 +966,22 @@ impl ToolRegistry for ComposedCapture {
 const COMPOSE_PLAN_TOOL: &str = "plan__compose_plan";
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+    use crate::workbench::artifact::{
+        DISCARD_ARTIFACT, LIST_ARTIFACTS, LOAD_ARTIFACT, SAVE_ARTIFACT, SET_ARTIFACT,
+        SHOW_ARTIFACT, TRY_ARTIFACT,
+    };
 
-    fn test_pipeline(plans: Vec<PlanDoc>) -> Arc<Pipeline> {
+    fn call(tools: &WorkbenchTools, name: &str, input: Value) -> ToolOutcome {
+        futures::executor::block_on(tools.invoke(name, input)).unwrap()
+    }
+
+    fn report_yaml() -> String {
+        serde_yaml::to_string(&report_plan()).unwrap()
+    }
+
+    pub(in crate::workbench) fn test_pipeline(plans: Vec<PlanDoc>) -> Arc<Pipeline> {
         Arc::new(Pipeline {
             router: Arc::new(graph_llm::ModelRouter::with_providers(
                 Default::default(),
@@ -1137,7 +1034,11 @@ steps:
             tx,
         );
 
-        let outcome = tools.load_plan(&json!({"name_or_path": "demo"}));
+        let outcome = call(
+            &tools,
+            LOAD_ARTIFACT,
+            json!({"kind": "plan", "name": "demo"}),
+        );
         assert!(!outcome.is_error, "{:?}", outcome.result);
         assert_eq!(outcome.result["identifier"], json!("demo"));
         assert_eq!(outcome.result["validation"], json!("ok"));
@@ -1167,14 +1068,13 @@ steps:
             Arc::new(DebugControls::default()),
             tx,
         );
-        let outcome = tools.validate_plan();
-        assert_eq!(outcome.result["valid"], json!(false));
+        let doc = tools.current().unwrap();
+        let problems = plan_problems(&tools.pipeline, &doc);
         assert!(
-            outcome.result["problems"]
-                .to_string()
-                .contains("user__nope"),
-            "{:?}",
-            outcome.result
+            problems
+                .iter()
+                .any(|problem| problem.contains("user__nope")),
+            "{problems:?}"
         );
     }
 
@@ -1188,7 +1088,11 @@ steps:
             Arc::new(DebugControls::default()),
             tx,
         );
-        let outcome = tools.load_plan(&json!({"name_or_path": "nope"}));
+        let outcome = call(
+            &tools,
+            LOAD_ARTIFACT,
+            json!({"kind": "plan", "name": "nope"}),
+        );
         assert!(outcome.is_error);
         assert_eq!(outcome.result["availablePlans"], json!(["demo"]));
     }
@@ -1213,7 +1117,11 @@ steps:
             tx,
         );
 
-        let outcome = tools.show_plan(&json!({"name_or_path": "other_plan"}));
+        let outcome = call(
+            &tools,
+            SHOW_ARTIFACT,
+            json!({"kind": "plan", "name": "other_plan"}),
+        );
         assert!(!outcome.is_error, "{:?}", outcome.result);
         assert_eq!(outcome.result["identifier"], json!("other_plan"));
         assert!(outcome.result["yaml"]
@@ -1229,7 +1137,11 @@ steps:
         );
         assert!(state.dirty, "the dirty flag is untouched");
 
-        let unknown = tools.show_plan(&json!({"name_or_path": "nope"}));
+        let unknown = call(
+            &tools,
+            SHOW_ARTIFACT,
+            json!({"kind": "plan", "name": "nope"}),
+        );
         assert!(unknown.is_error);
         assert_eq!(unknown.result["availablePlans"], json!(["other_plan"]));
     }
@@ -1248,7 +1160,11 @@ steps:
             tx,
         );
 
-        let outcome = tools.load_plan(&json!({"name_or_path": "other_plan"}));
+        let outcome = call(
+            &tools,
+            LOAD_ARTIFACT,
+            json!({"kind": "plan", "name": "other_plan"}),
+        );
         assert!(outcome.is_error);
         assert!(
             outcome.result["error"]
@@ -1281,8 +1197,11 @@ steps:
             tx,
         );
 
-        let outcome =
-            tools.load_plan(&json!({"name_or_path": "other_plan", "overwrite_draft": true}));
+        let outcome = call(
+            &tools,
+            LOAD_ARTIFACT,
+            json!({"kind": "plan", "name": "other_plan", "overwrite_draft": true}),
+        );
         assert!(!outcome.is_error, "{:?}", outcome.result);
         match rx.try_recv().unwrap() {
             Msg::DraftReplaced { doc, dirty } => {
@@ -1311,36 +1230,11 @@ steps:
             Arc::new(DebugControls::default()),
             tx,
         );
-        let outcome = tools.list_plans();
+        let outcome = call(&tools, LIST_ARTIFACTS, json!({"kind": "plan"}));
         assert!(!outcome.is_error);
         assert_eq!(outcome.result["count"], json!(1));
         assert_eq!(outcome.result["plans"][0]["identifier"], json!("demo"));
         assert_eq!(outcome.result["plans"][0]["steps"], json!(1));
-    }
-
-    #[test]
-    fn validate_plan_reports_problems_and_updates_the_pane() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut doc = demo_doc();
-        doc.steps[0].input.insert(
-            "bad".to_string(),
-            Value::String("{{E5.values}}".to_string()),
-        );
-        let tools = WorkbenchTools::new(
-            Arc::new(Mutex::new(DraftState::new(Some(doc)))),
-            test_pipeline(vec![]),
-            None,
-            Arc::new(DebugControls::default()),
-            tx,
-        );
-        let outcome = tools.validate_plan();
-        assert!(!outcome.is_error);
-        assert_eq!(outcome.result["valid"], json!(false));
-        assert!(outcome.result["problems"][0]
-            .as_str()
-            .unwrap()
-            .contains("E5"));
-        assert!(matches!(rx.try_recv().unwrap(), Msg::Validated(p) if p.len() == 1));
     }
 
     #[test]
@@ -1354,7 +1248,7 @@ steps:
             Arc::new(DebugControls::default()),
             tx,
         );
-        let outcome = tools.save_plan();
+        let outcome = call(&tools, SAVE_ARTIFACT, json!({"kind": "plan"}));
         assert!(!outcome.is_error, "{:?}", outcome.result);
         assert!(dir.path().join("demo.yaml").exists());
         assert!(matches!(rx.try_recv().unwrap(), Msg::Saved(Ok(_))));
@@ -1394,7 +1288,7 @@ steps:
             Arc::new(DebugControls::default()),
             tx,
         );
-        let outcome = futures::executor::block_on(tools.run_plan(&json!({})));
+        let outcome = call(&tools, TRY_ARTIFACT, json!({"kind": "plan"}));
         assert!(outcome.is_error);
         assert!(outcome.result["inputSchema"].is_object());
         assert!(rx.try_recv().is_err(), "no run should have started");
@@ -1879,7 +1773,7 @@ steps:
         let doc = draft.lock().unwrap().doc.clone().unwrap();
         let ids: Vec<&str> = doc.steps.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["E0", "E9b", "E10"]);
-        assert!(tools.validate_plan().result["valid"].as_bool().unwrap());
+        assert!(plan_problems(&tools.pipeline, &doc).is_empty());
     }
 
     #[test]
@@ -1890,7 +1784,11 @@ steps:
                     - id: E0\n  tool_name: t__x\n  input: {}\ngate:\n  condition: true\n";
         std::fs::write(&path, yaml).unwrap();
         let (tools, _draft, _rx) = editing_tools(None);
-        let outcome = tools.load_plan(&json!({ "name_or_path": path.to_str().unwrap() }));
+        let outcome = call(
+            &tools,
+            LOAD_ARTIFACT,
+            json!({"kind": "plan", "name": path.to_str().unwrap() }),
+        );
         assert!(outcome.is_error);
         let message = outcome.result["error"].as_str().unwrap();
         assert!(message.contains("unknown field"), "{message}");
@@ -2119,7 +2017,11 @@ steps:
     async fn set_draft_publishes_the_plan_once_as_unsaved() {
         let (pipeline, _) = scripted_pipeline(Vec::new());
         let (tools, mut rx) = draft_tools(pipeline);
-        let outcome = tools.set_draft(&json!({"plan": report_plan()}));
+        let outcome = call(
+            &tools,
+            SET_ARTIFACT,
+            json!({"kind": "plan", "yaml": report_yaml()}),
+        );
         assert!(!outcome.is_error, "{:?}", outcome.result);
         assert_eq!(outcome.result["identifier"], json!("report_on_x"));
         assert_eq!(outcome.result["steps"], json!(1));
@@ -2137,7 +2039,10 @@ steps:
     async fn set_draft_without_a_plan_publishes_the_last_composed_one_untouched() {
         let (pipeline, _) = scripted_pipeline(Vec::new());
         let (tools, _rx) = draft_tools(pipeline);
-        assert!(tools.set_draft(&json!({})).is_error, "nothing composed yet");
+        assert!(
+            call(&tools, SET_ARTIFACT, json!({"kind": "plan"})).is_error,
+            "nothing composed yet"
+        );
 
         struct Composer;
         #[async_trait]
@@ -2158,7 +2063,7 @@ steps:
             .await
             .unwrap();
 
-        let outcome = tools.set_draft(&json!({}));
+        let outcome = call(&tools, SET_ARTIFACT, json!({"kind": "plan"}));
         assert!(!outcome.is_error, "{:?}", outcome.result);
         assert_eq!(outcome.result["identifier"], json!("report_on_x"));
     }
@@ -2167,9 +2072,20 @@ steps:
     async fn set_draft_refuses_to_discard_unsaved_changes_without_confirmation() {
         let (pipeline, _) = scripted_pipeline(Vec::new());
         let (tools, _rx) = draft_tools(pipeline);
-        assert!(!tools.set_draft(&json!({"plan": report_plan()})).is_error);
+        assert!(
+            !call(
+                &tools,
+                SET_ARTIFACT,
+                json!({"kind": "plan", "yaml": report_yaml()})
+            )
+            .is_error
+        );
 
-        let refused = tools.set_draft(&json!({"plan": report_plan()}));
+        let refused = call(
+            &tools,
+            SET_ARTIFACT,
+            json!({"kind": "plan", "yaml": report_yaml()}),
+        );
         assert!(refused.is_error);
         assert!(
             refused.result["error"]
@@ -2179,7 +2095,11 @@ steps:
             "{:?}",
             refused.result
         );
-        let confirmed = tools.set_draft(&json!({"plan": report_plan(), "overwrite_draft": true}));
+        let confirmed = call(
+            &tools,
+            SET_ARTIFACT,
+            json!({"kind": "plan", "yaml": report_yaml(), "overwrite_draft": true}),
+        );
         assert!(!confirmed.is_error, "{:?}", confirmed.result);
     }
 
@@ -2225,7 +2145,10 @@ steps:
         assert_eq!(shown(&mut rx), Some(true));
 
         let refused = tools
-            .invoke(crate::workbench::artifact::SAVE_ARTIFACT, json!({}))
+            .invoke(
+                crate::workbench::artifact::SAVE_ARTIFACT,
+                json!({"kind": "tool"}),
+            )
             .await
             .unwrap();
         assert!(refused.is_error);
@@ -2238,7 +2161,7 @@ steps:
 
         let saving = tools.invoke(
             crate::workbench::artifact::SAVE_ARTIFACT,
-            json!({"untested": true}),
+            json!({"kind": "tool", "untested": true}),
         );
         let answering = async {
             while let Some(msg) = rx.recv().await {
@@ -2368,6 +2291,55 @@ steps:
     }
 
     #[tokio::test]
+    async fn every_artifact_tool_routes_on_its_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pipeline = (*test_pipeline(Vec::new())).clone();
+        pipeline.drafted = Arc::new(
+            graph_core::pipeline::Drafted::new(Some(dir.path().join("tools")), None)
+                .with_tool_dirs(vec![dir.path().join("tools")]),
+        );
+        let (tools, _rx) = draft_tools(Arc::new(pipeline));
+        std::fs::create_dir_all(dir.path().join("tools")).unwrap();
+        std::fs::write(dir.path().join("tools/weather.yaml"), WEATHER_TOOL).unwrap();
+        let invoke = |name: &'static str, input: Value| {
+            let tools = &tools;
+            async move { tools.invoke(name, input).await.unwrap() }
+        };
+
+        let missing = invoke(SET_ARTIFACT, json!({"yaml": WEATHER_TOOL})).await;
+        assert!(missing.is_error);
+        assert!(missing.result.to_string().contains("kind must be"));
+
+        let shown = invoke(
+            SHOW_ARTIFACT,
+            json!({"kind": "tool", "name": "user__weather"}),
+        )
+        .await;
+        assert!(!shown.is_error, "{}", shown.result);
+        assert_eq!(shown.result["yaml"], json!(WEATHER_TOOL));
+
+        let listed = invoke(LIST_ARTIFACTS, json!({"kind": "tool"})).await;
+        assert_eq!(
+            listed.result["user_tools"][0]["name"],
+            json!("user__weather")
+        );
+        let agents = invoke(LIST_ARTIFACTS, json!({"kind": "agent"})).await;
+        assert!(agents.result["agents"].is_array());
+
+        let plan_discard = invoke(DISCARD_ARTIFACT, json!({"kind": "plan"})).await;
+        assert!(plan_discard.is_error);
+
+        let set = invoke(SET_ARTIFACT, json!({"kind": "tool", "yaml": WEATHER_TOOL})).await;
+        assert!(!set.is_error, "{}", set.result);
+        let wrong = invoke(DISCARD_ARTIFACT, json!({"kind": "agent"})).await;
+        assert!(wrong.is_error);
+        assert!(wrong.result.to_string().contains("holds a tool draft"));
+        assert!(tools.draft.lock().unwrap().artifact.is_some());
+        let tried = invoke(TRY_ARTIFACT, json!({"kind": "agent"})).await;
+        assert!(tried.is_error);
+    }
+
+    #[tokio::test]
     async fn an_invalid_draft_shows_its_problems_and_can_be_discarded() {
         let (tools, mut rx, _dir) = drafting_tools();
         let set = tools
@@ -2379,7 +2351,10 @@ steps:
             .unwrap();
         assert!(set.result["problems"].to_string().contains("bogus"));
         let discarded = tools
-            .invoke(crate::workbench::artifact::DISCARD_ARTIFACT, json!({}))
+            .invoke(
+                crate::workbench::artifact::DISCARD_ARTIFACT,
+                json!({"kind": "tool"}),
+            )
             .await
             .unwrap();
         assert!(!discarded.is_error);

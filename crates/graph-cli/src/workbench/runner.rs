@@ -54,7 +54,7 @@ struct DebugState {
 
 /// Shared debugger state: owned by the workbench context, read by the gate
 /// on the run task, written by breakpoint toggles (`b` via
-/// `Effect::SyncDebug`) and the agent's run_plan breakpoints. One mutex,
+/// `Effect::SyncDebug`) and the agent's try_artifact breakpoints. One mutex,
 /// never held across an await.
 #[derive(Default)]
 pub struct DebugControls(std::sync::Mutex<DebugState>);
@@ -101,7 +101,7 @@ impl DebugControls {
 }
 
 /// One run's terminal state, shared by the keyboard path (effects) and the
-/// agent's `workbench__run_plan` tool.
+/// agent's `workbench__try_artifact` tool.
 pub struct RunReport {
     pub headline: String,
     pub is_error: bool,

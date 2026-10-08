@@ -354,7 +354,7 @@ fn turn_failure_message(error: AgentError) -> String {
 }
 
 /// Write the draft to disk: back to its source file, or into the plans
-/// directory for new drafts. Shared by Ctrl+S and `workbench__save_plan`.
+/// directory for new drafts. Shared by Ctrl+S and `workbench__save_artifact`.
 pub fn save_draft(
     draft: &std::sync::Mutex<DraftState>,
     plans_dir: Option<&std::path::Path>,
