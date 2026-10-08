@@ -10,8 +10,9 @@ grid: { cols: 120, rows: 36 }
 chat: "run the weekly status since v0.8.0"
 
 llm:
-  - call: workbench__run_plan
+  - call: workbench__try_artifact
     input:
+      kind: plan
       input: { since: "v0.8.0" }
   - text: |-
       # Week of Jul 14 — shipped

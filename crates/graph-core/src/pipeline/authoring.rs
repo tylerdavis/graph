@@ -1260,7 +1260,7 @@ steps:
     #[test]
     fn a_workbench_tool_step_is_rejected() {
         let patch = json!({
-            "step": {"id": "E9", "toolName": "workbench__run_plan", "input": {}},
+            "step": {"id": "E9", "toolName": "workbench__try_artifact", "input": {}},
         });
         let rejected = apply_edit(&linked(), |d| patch_add_step(d, &patch))
             .err()

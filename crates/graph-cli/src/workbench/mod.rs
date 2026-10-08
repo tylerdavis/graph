@@ -210,7 +210,7 @@ async fn run_workbench(
     }
     let mut conversation =
         runtime.conversation_over(Arc::new(agent_set), registry, pipeline.clone(), agent_sink);
-    conversation.context = Some(agents::context_hook(draft.clone()));
+    conversation.context = Some(agents::context_hook(draft.clone(), pipeline.clone()));
     conversation.handoff_guard = Some(artifact::handoff_guard(
         draft.clone(),
         pipeline.clone(),

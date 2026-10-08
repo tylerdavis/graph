@@ -3,7 +3,7 @@
 #
 # This is executed, not staged: the harness (graph-cli workbench/shots.rs)
 # types the chat message through the real reducer, the scripted agent
-# calls the real workbench__run_plan tool, and the real pipeline runs
+# calls the real workbench__try_artifact tool, and the real pipeline runs
 # E0–E4 (template rendering, the E2X exit gate, catalog resolution
 # included) until the real UiGate pauses at E5. Only the LLM responses
 # and tool outcomes below are scripted, and each outcome is validated
@@ -20,8 +20,9 @@ llm:
       Starting a debug run with a breakpoint on E5 — the pipeline will
       fetch the PR, review the diff, and pause before the inline comments
       post so you can inspect what would be sent.
-    call: workbench__run_plan
+    call: workbench__try_artifact
     input:
+      kind: plan
       gated: true
       breakpoints: [E5]
       input: { pr: 61 }

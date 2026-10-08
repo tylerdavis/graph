@@ -449,7 +449,7 @@ async fn run_shot(root: &Path, spec: ShotSpec) -> Result<PathBuf> {
         events: Arc::new(ChannelSink::agent(tx.clone())),
         session: BTreeMap::from([("date", "2026-07-19".to_string()), ("user", String::new())]),
         prompt_overrides: BTreeMap::new(),
-        context: Some(super::agents::context_hook(draft.clone())),
+        context: Some(super::agents::context_hook(draft.clone(), pipeline.clone())),
         default_max_iterations: 8,
         progress_tools: progress_tools(),
         handoff_guard: None,

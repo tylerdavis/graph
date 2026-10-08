@@ -295,7 +295,7 @@ pub enum Msg {
         dirty: bool,
     },
     // Plan run
-    /// A run was launched by the agent's `workbench__run_plan` tool (the
+    /// A run was launched by the agent's `workbench__try_artifact` tool (the
     /// keyboard path resets the pane directly). `breakpoints` is Some when
     /// the agent replaced the set.
     RunStarted {

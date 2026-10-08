@@ -2,6 +2,7 @@ use super::tools::DraftState;
 use graph_core::agent::conversation::ContextHook;
 use graph_core::pipeline::authoring;
 use graph_core::pipeline::doc::PlanDoc;
+use graph_core::pipeline::Pipeline;
 use std::sync::{Arc, Mutex};
 
 pub const WORKBENCH_AGENTS: &[&str] = &[
@@ -76,13 +77,13 @@ fn sections(agent: &str) -> &'static [Section] {
     }
 }
 
-pub fn context_hook(draft: Arc<Mutex<DraftState>>) -> ContextHook {
+pub fn context_hook(draft: Arc<Mutex<DraftState>>, pipeline: Arc<Pipeline>) -> ContextHook {
     Arc::new(move |agent: &str| {
         let doc = draft.lock().unwrap().doc.clone();
         sections(agent)
             .iter()
             .map(|section| match section {
-                Section::CurrentDraft => current_draft(&doc),
+                Section::CurrentDraft => current_draft(&pipeline, &doc),
                 Section::DraftSummary => draft_summary(&doc),
                 Section::Artifact => super::artifact::context_section(&draft),
             })
@@ -90,19 +91,26 @@ pub fn context_hook(draft: Arc<Mutex<DraftState>>) -> ContextHook {
     })
 }
 
-fn current_draft(doc: &Option<PlanDoc>) -> String {
+fn current_draft(pipeline: &Pipeline, doc: &Option<PlanDoc>) -> String {
     let mut section = String::from("## Current draft\n");
     match doc {
         Some(doc) => {
             section.push_str(&format!(
-                "The plan pane currently shows '{}' — this YAML is current as \
-                 of this turn, so do NOT call workbench__get_plan just to read \
-                 it (only to re-check after your own edits within this turn):\n",
+                "The plan pane currently shows '{}', current as of this turn:\n",
                 doc.identifier
             ));
             match authoring::to_yaml(doc) {
                 Ok(yaml) => section.push_str(&yaml),
-                Err(_) => section.push_str("(unserializable draft — use workbench__get_plan)"),
+                Err(_) => section.push_str("(unserializable draft)\n"),
+            }
+            let problems = super::tools::plan_problems(pipeline, doc);
+            if problems.is_empty() {
+                section.push_str("It validates with no problems.\n");
+            } else {
+                section.push_str(&format!(
+                    "Its validation problems:\n- {}\n",
+                    problems.join("\n- ")
+                ));
             }
         }
         None => section.push_str("(none yet — the pane is empty)"),
@@ -178,17 +186,20 @@ steps:
 "#,
         )
         .unwrap();
-        let section = current_draft(&Some(doc));
+        let mut pipeline = (*super::super::tools::tests::test_pipeline(Vec::new())).clone();
+        pipeline.catalog = Some(Arc::new(graph_core::pipeline::ToolCatalog::default()));
+        let section = current_draft(&pipeline, &Some(doc));
         assert!(section.starts_with("## Current draft"));
         assert!(section.contains("identifier: demo"));
-        assert!(section.contains("do NOT call workbench__get_plan"));
-        assert!(current_draft(&None).contains("none yet"));
+        assert!(section.contains("Its validation problems:\n- "));
+        assert!(section.contains("t__search"));
+        assert!(current_draft(&pipeline, &None).contains("none yet"));
     }
 
     #[test]
     fn each_agent_gets_its_context_sections() {
         let draft = Arc::new(Mutex::new(DraftState::new(None)));
-        let hook = context_hook(draft);
+        let hook = context_hook(draft, super::super::tools::tests::test_pipeline(Vec::new()));
         assert_eq!(
             hook("plan_drafter"),
             ["## Workbench\nThe draft pane is empty."]

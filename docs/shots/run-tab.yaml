@@ -8,8 +8,9 @@ grid: { cols: 120, rows: 36 }
 chat: "run it from a586a8b to 9f31c02"
 
 llm:
-  - call: workbench__run_plan
+  - call: workbench__try_artifact
     input:
+      kind: plan
       input: { base: a586a8b, head: 9f31c02 }
   - text: >-
       The store's whole-file writes moved to a temp-file+rename pattern,

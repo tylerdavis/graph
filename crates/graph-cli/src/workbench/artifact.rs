@@ -13,9 +13,8 @@ pub const TRY_ARTIFACT: &str = "workbench__try_artifact";
 pub const SAVE_ARTIFACT: &str = "workbench__save_artifact";
 pub const DISCARD_ARTIFACT: &str = "workbench__discard_artifact";
 pub const LOAD_ARTIFACT: &str = "workbench__load_artifact";
-
-pub const LIST_AGENTS: &str = "workbench__list_agents";
-pub const LIST_TOOLS: &str = "workbench__list_tools";
+pub const LIST_ARTIFACTS: &str = "workbench__list_artifacts";
+pub const SHOW_ARTIFACT: &str = "workbench__show_artifact";
 
 pub const ARTIFACT_TOOLS: [&str; 7] = [
     SET_ARTIFACT,
@@ -23,8 +22,8 @@ pub const ARTIFACT_TOOLS: [&str; 7] = [
     SAVE_ARTIFACT,
     DISCARD_ARTIFACT,
     LOAD_ARTIFACT,
-    LIST_AGENTS,
-    LIST_TOOLS,
+    LIST_ARTIFACTS,
+    SHOW_ARTIFACT,
 ];
 
 pub const TOOL_DRAFTER: &str = "tool_drafter";
@@ -517,36 +516,55 @@ pub fn context_section(draft: &SharedDraft) -> String {
     section
 }
 
+fn kind_property(description: &str) -> Value {
+    json!({"type": "string", "enum": ["plan", "agent", "tool"], "description": description})
+}
+
 pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: SET_ARTIFACT.to_string(),
-            description: "Put a whole agent or tool file in the workbench pane as the current \
-                          draft, replacing what's there. It is checked right away and the \
-                          problems come back, but nothing is written to disk."
+            description: "Put a whole plan, agent or tool file in the workbench pane as the \
+                          current draft, replacing what's there. It is checked right away and \
+                          the problems come back, but nothing is written to disk. For a plan, \
+                          omit `yaml` to publish exactly what plan__compose_plan last returned; \
+                          replacing a plan with unsaved changes fails unless overwrite_draft is \
+                          true, which needs the user's confirmation."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
-                "required": ["kind", "yaml"],
+                "required": ["kind"],
                 "properties": {
-                    "kind": {"type": "string", "enum": ["agent", "tool"], "description": "What the file is"},
-                    "yaml": {"type": "string", "description": "The whole file"}
+                    "kind": kind_property("What the file is"),
+                    "yaml": {"type": "string", "description": "The whole file. Required for an agent or tool; omit it for a plan to publish what plan__compose_plan returned"},
+                    "overwrite_draft": {"type": "boolean", "description": "Plans only: discard unsaved changes to the current plan draft, only after the user confirms"}
                 }
             }),
             output_schema: None,
-            output_example: None,
+            output_example: Some(
+                json!({"identifier": "sprint_report", "steps": 3, "validation": "ok"}),
+            ),
             read_only: Some(true),
         },
         ToolDef {
             name: TRY_ARTIFACT.to_string(),
-            description: "Test-run the tool draft in the pane once on a sample input. The user \
-                          approves the run first; the result shows in the pane."
+            description: "Run the draft in the pane. A tool runs once on a sample input after \
+                          the user approves it, with the result shown in the pane. A plan runs \
+                          only when the user asks: its steps stream to the pane; gated=true \
+                          makes it a debug run that pauses for the USER's decision (step / \
+                          continue / skip / abort) and breaks on any failing call, and \
+                          `breakpoints` (top-level step ids, implies gated) run freely to those \
+                          steps. Prefer a debug run for a plan with side effects. An agent \
+                          draft can't be run."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
-                "required": ["input"],
+                "required": ["kind"],
                 "properties": {
-                    "input": {"type": "object", "description": "Sample input matching the tool's input_schema"}
+                    "kind": kind_property("What the draft is"),
+                    "input": {"type": "object", "description": "A tool's sample input matching its input_schema, or a plan's input validated against its input_schema"},
+                    "gated": {"type": "boolean", "description": "Plans only: debug run, pausing for the user's decisions and breaking on errors. Default false."},
+                    "breakpoints": {"type": "array", "items": {"type": "string"}, "description": "Plans only: top-level step ids to pause at. Implies gated; the run proceeds until a breakpoint (or a failing call) and pauses for the USER."}
                 }
             }),
             output_schema: None,
@@ -556,14 +574,17 @@ pub fn tool_defs() -> Vec<ToolDef> {
         ToolDef {
             name: SAVE_ARTIFACT.to_string(),
             description: "Save the draft in the pane to the project, only when the user asks to \
-                          save it. A tool must have passed a test run unless `untested` is true \
-                          because the user said not to test it."
+                          save it. A plan goes back to the file it was loaded from, or into the \
+                          plans directory when it's new. A tool must have passed a test run \
+                          unless `untested` is true because the user said not to test it."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
+                "required": ["kind"],
                 "properties": {
-                    "overwrite": {"type": "boolean", "description": "Replace an existing file, only after the user confirms"},
-                    "untested": {"type": "boolean", "description": "Save a tool without a test run, only when the user said not to test it"}
+                    "kind": kind_property("What the draft is"),
+                    "overwrite": {"type": "boolean", "description": "Agents and tools: replace an existing file, only after the user confirms"},
+                    "untested": {"type": "boolean", "description": "Tools only: save without a test run, only when the user said not to test it"}
                 }
             }),
             output_schema: None,
@@ -571,37 +592,55 @@ pub fn tool_defs() -> Vec<ToolDef> {
             read_only: Some(false),
         },
         ToolDef {
-            name: LIST_AGENTS.to_string(),
-            description: "List the agents you can chat with or call from plans: name, \
-                          description, where each comes from, and whether it takes typed input."
+            name: LIST_ARTIFACTS.to_string(),
+            description: "List what exists of one kind. Plans: identifier, name, description \
+                          and step count. Agents: name, description, where each comes from, and \
+                          whether it takes typed input. Tools: the user tools (name, \
+                          description, file) and the connected MCP servers."
                 .to_string(),
-            input_schema: json!({"type": "object", "properties": {}}),
+            input_schema: json!({
+                "type": "object",
+                "required": ["kind"],
+                "properties": {
+                    "kind": kind_property("What to list")
+                }
+            }),
             output_schema: None,
             output_example: None,
             read_only: Some(true),
         },
         ToolDef {
-            name: LIST_TOOLS.to_string(),
-            description: "List the user tools (name, description, file) and the connected MCP \
-                          servers. Use it when the user asks what tools they have."
+            name: SHOW_ARTIFACT.to_string(),
+            description: "Read an existing plan, agent or user tool as YAML without touching \
+                          the pane, to inspect it or use it as a reference."
                 .to_string(),
-            input_schema: json!({"type": "object", "properties": {}}),
+            input_schema: json!({
+                "type": "object",
+                "required": ["kind", "name"],
+                "properties": {
+                    "kind": kind_property("What to read"),
+                    "name": {"type": "string", "description": "A plan identifier or plan file path, an agent's name, or a tool's name (with or without user__)"}
+                }
+            }),
             output_schema: None,
             output_example: None,
             read_only: Some(true),
         },
         ToolDef {
             name: LOAD_ARTIFACT.to_string(),
-            description: "Open an existing agent or user tool in the pane for editing. Saving \
-                          it later replaces that file (an edited built-in agent is saved as a \
-                          project override)."
+            description: "Open an existing plan, agent or user tool in the pane for editing. \
+                          Saving it later replaces that file (an edited built-in agent is saved \
+                          as a project override). Open a plan only when the user names a \
+                          different one, never to continue the current draft; it fails when \
+                          the plan draft has unsaved changes unless overwrite_draft is true."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "required": ["kind", "name"],
                 "properties": {
-                    "kind": {"type": "string", "enum": ["agent", "tool"], "description": "What to open"},
-                    "name": {"type": "string", "description": "The agent's name, or the tool's name (with or without user__)"}
+                    "kind": kind_property("What to open"),
+                    "name": {"type": "string", "description": "A plan identifier or plan file path, an agent's name, or a tool's name (with or without user__)"},
+                    "overwrite_draft": {"type": "boolean", "description": "Plans only: load over a plan draft with unsaved changes, only after the user confirms discarding them"}
                 }
             }),
             output_schema: None,
@@ -610,9 +649,16 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: DISCARD_ARTIFACT.to_string(),
-            description: "Throw away the draft in the pane, only when the user asks to discard it."
+            description: "Throw away the agent or tool draft in the pane, only when the user \
+                          asks to discard it. Plan drafts can't be discarded."
                 .to_string(),
-            input_schema: json!({"type": "object", "properties": {}}),
+            input_schema: json!({
+                "type": "object",
+                "required": ["kind"],
+                "properties": {
+                    "kind": kind_property("What the draft is")
+                }
+            }),
             output_schema: None,
             output_example: None,
             read_only: Some(true),
