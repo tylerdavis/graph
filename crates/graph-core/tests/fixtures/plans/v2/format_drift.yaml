@@ -100,6 +100,7 @@ steps:
         for additive changes) and a fixture pair; the release's changelog
         entry documents it
     reasoning: One judge call decides; error exit fails the CI check.
-output:
-  format_bump_required: false
-  reason: "{{E3.reason}}"
+finish:
+  output:
+    format_bump_required: false
+    reason: "{{E3.reason}}"

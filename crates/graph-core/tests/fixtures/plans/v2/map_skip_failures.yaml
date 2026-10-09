@@ -24,6 +24,7 @@ steps:
       do:
         tool_name: linear__get_issue
         input: { id: "{{item.ticket}}" }
-output:
-  issues: "{{issues.results}}"
-  not_found: "{{issues.failed}}"
+finish:
+  output:
+    issues: "{{issues.results}}"
+    not_found: "{{issues.failed}}"

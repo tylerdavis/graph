@@ -31,6 +31,8 @@ steps:
       output:
         version: '{{input.version}}'
         regenerated: false
+        migration_needed: false
+        written: []
     reasoning: The never-regenerate guard. Curated snippets are the source of truth; exiting success (not error) keeps release automation flowing.
   - id: E2
     tool_name: user__release_subjects

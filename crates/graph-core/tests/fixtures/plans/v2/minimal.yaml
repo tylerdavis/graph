@@ -6,3 +6,4 @@ steps:
   - id: E0
     tool_name: exit
     input: { status: success, message: done }
+finish: silent

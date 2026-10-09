@@ -47,3 +47,4 @@ steps:
         input: { pr: "{{input.pr}}" }
         reasoning: Merged or closed — record the ticket reference.
     reasoning: Open PRs get a nudge; anything else gets its ticket logged.
+finish: silent

@@ -442,7 +442,7 @@ mod tests {
     }
 
     fn doc(yaml: &str) -> PlanDoc {
-        serde_yaml::from_str(yaml).unwrap()
+        str::parse::<crate::pipeline::doc::PlanDoc>(yaml).unwrap()
     }
 
     const OK_DOC: &str = r#"

@@ -164,7 +164,7 @@ pub fn run_effect(effect: Effect, context: &Arc<WorkbenchContext>) {
                 });
                 let query = format!("Run the '{}' plan", doc.name);
                 let result = pipeline
-                    .run_explicit(&query, doc.steps.clone(), doc.finish(), Some(input))
+                    .run_explicit(&query, doc.steps.clone(), doc.finish.clone(), Some(input))
                     .await;
                 crate::telemetry::report_plan_result(pipeline.events.as_ref(), &result);
                 tracing::debug!(

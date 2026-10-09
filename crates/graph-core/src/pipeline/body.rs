@@ -325,13 +325,20 @@ impl Pipeline {
         let run = self.run_agent_scoped(path, input, scope).await;
         let (result, is_error) = match &run {
             Ok(run) => (run.result.clone(), false),
-            Err(super::agent::AgentFail::Empty(error)) => {
-                (json!({"error": error.to_string(), "emptyData": true}), true)
-            }
+            Err(super::agent::AgentFail::Empty(error)) => (
+                crate::tools::ErrorResult::new(error.to_string())
+                    .kind(crate::tools::ErrorKind::EmptyData)
+                    .into_value(),
+                true,
+            ),
             Err(super::agent::AgentFail::Failed(message)) => (json!({"error": message}), true),
-            Err(super::agent::AgentFail::Aborted(error)) => {
-                (json!({"error": "aborted", "cause": error}), true)
-            }
+            Err(super::agent::AgentFail::Aborted(error)) => (
+                crate::tools::ErrorResult::new("aborted")
+                    .kind(crate::tools::ErrorKind::Aborted)
+                    .cause(error.clone())
+                    .into_value(),
+                true,
+            ),
         };
         self.events.step_finished(
             &self.call_stack,
@@ -361,9 +368,12 @@ impl Pipeline {
         let run = self.run_ask_scoped(path, input, scope).await;
         let (result, is_error) = match &run {
             Ok(value) => (value.clone(), false),
-            Err(super::ask::AskFail::Empty(error)) => {
-                (json!({"error": error.to_string(), "emptyData": true}), true)
-            }
+            Err(super::ask::AskFail::Empty(error)) => (
+                crate::tools::ErrorResult::new(error.to_string())
+                    .kind(crate::tools::ErrorKind::EmptyData)
+                    .into_value(),
+                true,
+            ),
             Err(super::ask::AskFail::Failed(message)) => (json!({"error": message}), true),
         };
         self.events.step_finished(
@@ -715,7 +725,10 @@ impl Pipeline {
                 match &e.fail {
                     BodyFail::Render(error) => json!({"error": error.to_string()}),
                     BodyFail::Tool(message) => json!({"error": message}),
-                    BodyFail::Aborted(error) => json!({"error": "aborted", "cause": error}),
+                    BodyFail::Aborted(error) => crate::tools::ErrorResult::new("aborted")
+                        .kind(crate::tools::ErrorKind::Aborted)
+                        .cause(error.clone())
+                        .into_value(),
                     BodyFail::Exited(exit) => serde_json::to_value(exit).unwrap_or_default(),
                 },
                 !matches!(e.fail, BodyFail::Exited(_)),
@@ -759,9 +772,9 @@ impl Pipeline {
             ),
             Err(fail) => {
                 let message = match fail {
-                    FilterFail::Empty(error) => {
-                        json!({"error": error.to_string(), "emptyData": true})
-                    }
+                    FilterFail::Empty(error) => crate::tools::ErrorResult::new(error.to_string())
+                        .kind(crate::tools::ErrorKind::EmptyData)
+                        .into_value(),
                     FilterFail::Failed(message) => json!({"error": message}),
                 };
                 self.events.step_finished(

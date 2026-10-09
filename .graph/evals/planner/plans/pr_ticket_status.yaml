@@ -17,10 +17,11 @@ steps:
       when: { value: "{{ticket.found}}", op: eq, to: false }
       status: success
       message: Pull request {{input.pr}} references no Linear ticket
-      output: { ticket: null, status: null }
+      output: { ticket: null, issue: null }
   - id: issue
     tool_name: linear__get_issue
     input: { id: "{{ticket.ticket}}" }
-output:
-  ticket: "{{ticket.ticket}}"
-  issue: "{{issue}}"
+finish:
+  output:
+    ticket: "{{ticket.ticket}}"
+    issue: "{{issue}}"

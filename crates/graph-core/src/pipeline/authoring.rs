@@ -30,7 +30,7 @@
 use super::catalog::{self, ToolCatalog};
 use super::doc::{validate_doc, PlanDoc};
 use super::plan::{self, Plan, PlannerOutput, SolverData, Step};
-use super::{AGENT_TOOL, ASK_TOOL, MAP_TOOL, REDUCE_TOOL, ROUTE_TOOL};
+use super::{Finish, AGENT_TOOL, ASK_TOOL, MAP_TOOL, REDUCE_TOOL, ROUTE_TOOL};
 use crate::template;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
@@ -384,50 +384,52 @@ pub fn patch_metadata(doc: &mut PlanDoc, patch: &Value) -> Result<Value, Value> 
         }
         changed = true;
     }
+    if let Some(schema) = patch.get("output_schema") {
+        if schema.is_null() {
+            doc.output_schema = None;
+        } else if schema.is_object() {
+            doc.output_schema = Some(schema.clone());
+        } else {
+            return Err(
+                json!({"error": "output_schema must be a JSON Schema object (or null to clear)"}),
+            );
+        }
+        changed = true;
+    }
     if let Some(finish) = patch.get("finish") {
-        let has_solver = finish.get("solver").is_some();
-        let has_output = finish.get("output").is_some();
-        match (has_solver, has_output) {
-            (true, true) => {
-                return Err(json!({"error": "finish: pass 'solver' OR 'output', not both"}));
-            }
-            (false, false) => {
-                // Empty object or null clears both — a silent side-effect
-                // plan. A non-empty object lacking both keys is malformed.
-                let is_clear =
-                    finish.is_null() || finish.as_object().map(Map::is_empty).unwrap_or(false);
-                if !is_clear {
+        let is_silent = finish.is_null()
+            || finish.as_str() == Some("silent")
+            || finish.as_object().is_some_and(Map::is_empty);
+        doc.finish = if is_silent {
+            Finish::Silent
+        } else {
+            match (finish.get("solver"), finish.get("output")) {
+                (Some(_), Some(_)) => {
+                    return Err(json!({"error": "finish: pass 'solver' OR 'output', not both"}));
+                }
+                (Some(solver), None) => Finish::Solver(
+                    serde_json::from_value::<SolverData>(solver.clone())
+                        .map_err(|error| json!({"error": format!("invalid solver: {error}")}))?,
+                ),
+                (None, Some(output)) => Finish::Output(
+                    serde_json::from_value::<Map<String, Value>>(output.clone()).map_err(
+                        |error| json!({"error": format!("invalid output: expected a template map — {error}")}),
+                    )?,
+                ),
+                (None, None) => {
                     return Err(
-                        json!({"error": "finish requires 'solver' {queryToAnswer, systemPrompt?} or 'output' {<template map>}, or {} / null to clear to a silent plan"}),
+                        json!({"error": "finish is 'silent', {solver: {queryToAnswer, systemPrompt?}} or {output: {<template map>}}"}),
                     );
                 }
-                doc.solver = None;
-                doc.output = None;
-                changed = true;
             }
-            (true, false) => {
-                let solver_val = finish.get("solver").unwrap();
-                let solver: SolverData = serde_json::from_value(solver_val.clone())
-                    .map_err(|error| json!({"error": format!("invalid solver: {error}")}))?;
-                doc.solver = Some(solver);
-                doc.output = None;
-                changed = true;
-            }
-            (false, true) => {
-                let output_val = finish.get("output").unwrap();
-                let output: Map<String, Value> = serde_json::from_value(output_val.clone())
-                    .map_err(|error| json!({"error": format!("invalid output: expected a template map — {error}")}))?;
-                doc.output = Some(output);
-                doc.solver = None;
-                changed = true;
-            }
-        }
+        };
+        changed = true;
     }
     if !changed {
         return Err(json!({
             "error": "update_metadata needs at least one of \
                       identifier, name, description, exemplars, \
-                      requires_servers, input_schema, finish"
+                      requires_servers, input_schema, output_schema, finish"
         }));
     }
     Ok(json!({"ok": true, "identifier": doc.identifier, "name": doc.name}))
@@ -531,19 +533,22 @@ pub fn rename_references(doc: &mut PlanDoc, index: usize, old: &str, new: &str) 
             rewrite_value_roots(value, old, new);
         }
     }
-    if let Some(output) = &mut doc.output {
-        for value in output.values_mut() {
-            rewrite_value_roots(value, old, new);
+    match &mut doc.finish {
+        Finish::Output(output) => {
+            for value in output.values_mut() {
+                rewrite_value_roots(value, old, new);
+            }
         }
-    }
-    if let Some(solver) = &mut doc.solver {
-        solver.query_to_answer = template::rewrite_root(&solver.query_to_answer, old, new);
-        if let Some(prompt) = &mut solver.system_prompt {
-            *prompt = template::rewrite_root(prompt, old, new);
+        Finish::Solver(solver) => {
+            solver.query_to_answer = template::rewrite_root(&solver.query_to_answer, old, new);
+            if let Some(prompt) = &mut solver.system_prompt {
+                *prompt = template::rewrite_root(prompt, old, new);
+            }
+            for value in solver.data.values_mut() {
+                rewrite_value_roots(value, old, new);
+            }
         }
-        for value in solver.data.values_mut() {
-            rewrite_value_roots(value, old, new);
-        }
+        Finish::Silent => {}
     }
 }
 
@@ -587,9 +592,9 @@ pub fn merge_planner_output(
             // when the planner supplied one. A planner that omitted it is
             // describing a plan that does not solve, which must not quietly
             // discard a solver the draft already had.
-            if doc.output.is_none() {
+            if !matches!(doc.finish, Finish::Output(_)) {
                 if let Some(solver) = output.solver_data {
-                    doc.solver = Some(solver);
+                    doc.finish = Finish::Solver(solver);
                 }
             }
             doc
@@ -605,9 +610,9 @@ pub fn merge_planner_output(
             exemplars: Vec::new(),
             requires_servers: Vec::new(),
             input_schema: None,
+            output_schema: None,
             steps: output.plan,
-            solver: output.solver_data,
-            output: None,
+            finish: output.solver_data.map(Finish::Solver).unwrap_or_default(),
             path: None,
         },
     }
@@ -795,7 +800,10 @@ fn to_file_shape(doc: &PlanDoc) -> Result<serde_yaml::Value, WriteError> {
             snake_case_step(step);
         }
     }
-    if let Some(solver) = value.get_mut("solver") {
+    if let Some(solver) = value
+        .get_mut("finish")
+        .and_then(|finish| finish.get_mut("solver"))
+    {
         rename_key(solver, "queryToAnswer", "query_to_answer");
         rename_key(solver, "systemPrompt", "system_prompt");
     }
@@ -946,7 +954,7 @@ mod tests {
     use super::*;
 
     fn doc(yaml: &str) -> PlanDoc {
-        serde_yaml::from_str(yaml).unwrap()
+        str::parse::<crate::pipeline::doc::PlanDoc>(yaml).unwrap()
     }
 
     /// A two-step plan where E2 templates off E1 — the fixture for the
@@ -1050,7 +1058,10 @@ output:
         assert_eq!(d.steps[0].id, "fetch");
         assert_eq!(d.steps[1].input["text"], json!("{{fetch.body}}"));
         // E2 was not renamed, so the output map still points at it.
-        assert_eq!(d.output.unwrap()["summary"], json!("{{E2.text}}"));
+        assert_eq!(
+            d.output().cloned().unwrap()["summary"],
+            json!("{{E2.text}}")
+        );
     }
 
     #[test]
@@ -1074,7 +1085,7 @@ solver:
             patch_update_step(d, &json!({"id": "E1", "newId": "fetch"}))
         })
         .expect("rename should be accepted");
-        let solver = accepted.doc.solver.unwrap();
+        let solver = accepted.doc.solver().cloned().unwrap();
         assert_eq!(solver.query_to_answer, "what does {{fetch.body}} say?");
         assert_eq!(solver.system_prompt.unwrap(), "context: {{fetch.title}}");
         assert_eq!(solver.data["body"], json!("{{fetch.body}}"));
@@ -1139,9 +1150,9 @@ steps:
             )
         })
         .unwrap();
-        assert!(accepted.doc.solver.is_some());
+        assert!(accepted.doc.solver().is_some());
         assert!(
-            accepted.doc.output.is_none(),
+            accepted.doc.output().is_none(),
             "solver and output are mutually exclusive"
         );
 
@@ -1150,9 +1161,9 @@ steps:
             patch_metadata(d, &json!({"finish": {"output": {"x": "{{E2.text}}"}}}))
         })
         .unwrap();
-        assert!(back.doc.solver.is_none());
+        assert!(back.doc.solver().is_none());
         let silent = apply_edit(&back.doc, |d| patch_metadata(d, &json!({"finish": {}}))).unwrap();
-        assert!(silent.doc.solver.is_none() && silent.doc.output.is_none());
+        assert!(silent.doc.solver().is_none() && silent.doc.output().is_none());
     }
 
     #[test]
@@ -1509,10 +1520,7 @@ solver:
         .unwrap();
         let loaded = super::super::doc::load_plan_doc(&path).unwrap();
         assert_eq!(loaded.steps[0].tool_name, "agent");
-        assert_eq!(
-            loaded.solver.as_ref().unwrap().query_to_answer,
-            "what happened?"
-        );
+        assert_eq!(loaded.solver().unwrap().query_to_answer, "what happened?");
         // …and rewriting it normalizes the file to the documented spelling.
         let yaml = to_yaml(&loaded).unwrap();
         assert!(!yaml.contains("toolName"), "{yaml}");
@@ -1525,7 +1533,7 @@ solver:
         // Editing one field must not churn the rest of a hand-authored file.
         let original = format!(
             "version: {}\nidentifier: demo\nname: Demo\ndescription: demo plan\nsteps:\n\
-             - id: E1\n  tool_name: t__search\n  input:\n    query: x\n",
+             - id: E1\n  tool_name: t__search\n  input:\n    query: x\nfinish: silent\n",
             crate::format::PLAN_FORMAT
         );
         let original = original.as_str();
@@ -1617,7 +1625,7 @@ solver:
         assert_eq!(merged.exemplars, vec!["an example".to_string()]);
         assert_eq!(merged.steps.len(), 1);
         assert!(
-            merged.solver.is_none() && merged.output.is_some(),
+            merged.solver().is_none() && merged.output().is_some(),
             "an existing `output` finish is preserved, not replaced by a solver"
         );
     }
@@ -1625,8 +1633,7 @@ solver:
     #[test]
     fn a_planner_that_omits_the_brief_leaves_an_existing_solver_alone() {
         let mut existing = linked();
-        existing.output = None;
-        existing.solver = Some(SolverData {
+        existing.finish = Finish::Solver(SolverData {
             query_to_answer: "the original question".to_string(),
             ..SolverData::default()
         });
@@ -1636,7 +1643,11 @@ solver:
         };
         let merged = merge_planner_output(Some(existing), "revise it", output);
         assert_eq!(
-            merged.solver.expect("solver kept").query_to_answer,
+            merged
+                .solver()
+                .cloned()
+                .expect("solver kept")
+                .query_to_answer,
             "the original question",
             "an omitted brief must not silently drop the solver a draft already had"
         );
@@ -1650,7 +1661,7 @@ solver:
         };
         let fresh = merge_planner_output(None, "post the digest to slack", output);
         assert!(
-            fresh.solver.is_none() && fresh.output.is_none(),
+            fresh.solver().is_none() && fresh.output().is_none(),
             "no brief and no output map is a side-effect plan, not an empty solver"
         );
     }

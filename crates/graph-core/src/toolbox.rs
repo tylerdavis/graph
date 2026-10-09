@@ -66,7 +66,7 @@ impl ToolRegistry for AgentToolbox {
                 name: format!("{PLAN_TOOL_PREFIX}{}", doc.identifier),
                 description: doc.tool_description(),
                 input_schema: doc.tool_input_schema(),
-                output_schema: None,
+                output_schema: Some(doc.result_schema()),
                 output_example: None,
                 read_only: None,
             });
@@ -206,7 +206,7 @@ mod tests {
     }
 
     fn doc() -> PlanDoc {
-        serde_yaml::from_str(
+        str::parse::<crate::pipeline::doc::PlanDoc>(
             r#"
 identifier: demo
 name: Demo

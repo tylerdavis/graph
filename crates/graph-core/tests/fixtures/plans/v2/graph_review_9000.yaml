@@ -191,3 +191,4 @@ steps:
     marker: graph_review_9000:summary
     pr: '{{input.pr}}'
   reasoning: Final summary comment leading with the change-level framing alert, then the at-a-glance table of all eight passes ordered by severity, then the finding-lifecycle counts, then a blockers list linking to the inline comments posted in E7, then this run's thread transitions and the collapsible unverified and na/pass sections. Stable marker so repeated runs refresh this comment in place.
+finish: silent

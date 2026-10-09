@@ -89,8 +89,14 @@ def structure(doc):
         'reshape': sum(1 for s in steps if tool(s) == 'builtin__reshape'),
         'ask': sum(1 for s in steps if tool(s) == 'ask'),
         'has_input_schema': bool(doc.get('input_schema')),
-        'finish': 'output' if doc.get('output') else ('solver' if doc.get('solver') else 'none'),
+        'finish': finish_mode(doc.get('finish')),
     }
+
+
+def finish_mode(finish):
+    if isinstance(finish, dict) and len(finish) == 1:
+        return next(iter(finish))
+    return finish or 'none'
 
 
 def coerce(value, schema):

@@ -428,8 +428,8 @@ fn unknown_fields(
     step_tools(&steps, &mut tools);
     let mut texts = Vec::new();
     strings(&steps, &mut texts);
-    let output = json!(doc.output);
-    strings(&output, &mut texts);
+    let finish = json!(doc.finish);
+    strings(&finish, &mut texts);
     let mut problems = Vec::new();
     for text in texts {
         let Ok(paths) = crate::template::referenced_paths(text) else {
@@ -490,11 +490,7 @@ fn unused_steps(doc: &super::doc::PlanDoc) -> Vec<String> {
         if matches!(step.tool_name.as_str(), "exit" | "ask") {
             continue;
         }
-        let readers = [
-            json!(&doc.steps[index + 1..]),
-            json!(doc.output),
-            json!(doc.solver),
-        ];
+        let readers = [json!(&doc.steps[index + 1..]), json!(doc.finish)];
         if !readers.iter().any(|value| reads_root(value, &step.id)) {
             problems.push(format!(
                 "step {}: its result is never used by a later step or the output; remove it or use it",
@@ -668,7 +664,13 @@ fn apply_patch(yaml: &str, patch: &str) -> Result<String, String> {
     let Some(doc_map) = doc.as_mapping_mut() else {
         return Err("the plan must be a YAML mapping".to_string());
     };
-    for key in ["input_schema", "output", "name", "description"] {
+    for key in [
+        "input_schema",
+        "output_schema",
+        "finish",
+        "name",
+        "description",
+    ] {
         if let Some(value) = patch.get(key) {
             doc_map.insert(key.into(), value.clone());
         }
@@ -737,11 +739,11 @@ fn apply_patch(yaml: &str, patch: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    const PLAN: &str = "version: 2\nidentifier: p\nname: p\ndescription: d\nsteps:\n  - id: a\n    tool_name: t__search\n    input: {query: x}\n  - id: b\n    tool_name: t__issues\n    input: {teamId: \"{{a.values}}\"}\n";
+    const PLAN: &str = "version: 2\nidentifier: p\nname: p\ndescription: d\nsteps:\n  - id: a\n    tool_name: t__search\n    input: {query: x}\n  - id: b\n    tool_name: t__issues\n    input: {teamId: \"{{a.values}}\"}\nfinish: silent\n";
 
     #[test]
     fn a_patch_replaces_steps_by_id_inserts_after_and_removes() {
-        let patch = "steps:\n  - id: b\n    tool_name: t__issues\n    input: {teamId: fixed}\n  - id: c\n    after: a\n    tool_name: t__search\n    input: {query: y}\nremove: []\noutput: {issues: \"{{b}}\"}\n";
+        let patch = "steps:\n  - id: b\n    tool_name: t__issues\n    input: {teamId: fixed}\n  - id: c\n    after: a\n    tool_name: t__search\n    input: {query: y}\nremove: []\nfinish:\n  output: {issues: \"{{b}}\"}\n";
         let merged: serde_yaml::Value =
             serde_yaml::from_str(&apply_patch(PLAN, patch).unwrap()).unwrap();
         let ids: Vec<&str> = merged["steps"]
@@ -756,7 +758,7 @@ mod tests {
             Some("fixed")
         );
         assert!(merged["steps"][1].get("after").is_none());
-        assert_eq!(merged["output"]["issues"].as_str(), Some("{{b}}"));
+        assert_eq!(merged["finish"]["output"]["issues"].as_str(), Some("{{b}}"));
     }
 
     #[test]
@@ -835,7 +837,7 @@ mod tests {
 
     #[test]
     fn a_step_nothing_reads_is_a_problem() {
-        let yaml = "version: 2\nidentifier: p\nname: p\ndescription: d\nsteps:\n  - id: a\n    tool_name: t__search\n    input: {query: x}\n  - id: ab\n    tool_name: t__search\n    input: {query: y}\n  - id: b\n    tool_name: t__issues\n    input: {teamId: \"{{a.values}}\"}\noutput: {issues: \"{{b}}\"}\n";
+        let yaml = "version: 2\nidentifier: p\nname: p\ndescription: d\nsteps:\n  - id: a\n    tool_name: t__search\n    input: {query: x}\n  - id: ab\n    tool_name: t__search\n    input: {query: y}\n  - id: b\n    tool_name: t__issues\n    input: {teamId: \"{{a.values}}\"}\nfinish:\n  output: {issues: \"{{b}}\"}\n";
         let doc = parse_plan_source(yaml, "plan").unwrap();
         assert_eq!(
             unused_steps(&doc),
@@ -845,14 +847,14 @@ mod tests {
 
     #[test]
     fn a_step_read_through_a_section_or_a_padded_tag_is_used() {
-        let yaml = "version: 2\nidentifier: p\nname: p\ndescription: d\nsteps:\n  - id: commits\n    tool_name: t__search\n    input: {query: x}\n  - id: other\n    tool_name: t__search\n    input: {query: y}\n  - id: summary\n    tool_name: t__issues\n    input: {teamId: \"{{#commits.values}}{{title}}{{/commits.values}} {{ other.count }}\"}\noutput: {issues: \"{{summary}}\"}\n";
+        let yaml = "version: 2\nidentifier: p\nname: p\ndescription: d\nsteps:\n  - id: commits\n    tool_name: t__search\n    input: {query: x}\n  - id: other\n    tool_name: t__search\n    input: {query: y}\n  - id: summary\n    tool_name: t__issues\n    input: {teamId: \"{{#commits.values}}{{title}}{{/commits.values}} {{ other.count }}\"}\nfinish:\n  output: {issues: \"{{summary}}\"}\n";
         let doc = parse_plan_source(yaml, "plan").unwrap();
         assert!(unused_steps(&doc).is_empty(), "{:?}", unused_steps(&doc));
     }
 
     #[test]
     fn a_field_the_tool_does_not_return_is_a_problem() {
-        let yaml = "version: 2\nidentifier: p\nname: p\ndescription: d\nsteps:\n  - id: issue\n    tool_name: t__issue\n    input: {id: x}\n  - id: pick\n    tool_name: route\n    input:\n      if: {value: \"{{issue.title}}\", op: not_empty}\n      then: {tool_name: t__issue, input: {id: y}}\n      else: {tool_name: t__issue, input: {id: z}}\noutput: {a: \"{{issue.project}}\", b: \"{{issue.title}}\", c: \"{{pick.result.items}}\", d: \"{{pick.result}}\"}\n";
+        let yaml = "version: 2\nidentifier: p\nname: p\ndescription: d\nsteps:\n  - id: issue\n    tool_name: t__issue\n    input: {id: x}\n  - id: pick\n    tool_name: route\n    input:\n      if: {value: \"{{issue.title}}\", op: not_empty}\n      then: {tool_name: t__issue, input: {id: y}}\n      else: {tool_name: t__issue, input: {id: z}}\nfinish:\n  output: {a: \"{{issue.project}}\", b: \"{{issue.title}}\", c: \"{{pick.result.items}}\", d: \"{{pick.result}}\"}\n";
         let doc = parse_plan_source(yaml, "plan").unwrap();
         let defs = vec![ToolDef {
             name: "t__issue".to_string(),
@@ -871,7 +873,7 @@ mod tests {
 
     #[test]
     fn a_tool_whose_output_each_call_defines_is_not_held_to_a_recorded_shape() {
-        let yaml = "version: 2\nidentifier: p\nname: p\ndescription: d\nsteps:\n  - id: summary\n    tool_name: builtin__infer\n    input: {instruction: x}\noutput: {a: \"{{summary.text}}\"}\n";
+        let yaml = "version: 2\nidentifier: p\nname: p\ndescription: d\nsteps:\n  - id: summary\n    tool_name: builtin__infer\n    input: {instruction: x}\nfinish:\n  output: {a: \"{{summary.text}}\"}\n";
         let doc = parse_plan_source(yaml, "plan").unwrap();
         let defs = vec![ToolDef {
             name: "builtin__infer".to_string(),

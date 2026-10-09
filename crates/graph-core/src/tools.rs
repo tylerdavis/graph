@@ -30,6 +30,55 @@ pub struct ToolOutcome {
     pub is_error: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorKind {
+    Assertion,
+    EmptyData,
+    Aborted,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ErrorResult {
+    pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ErrorKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<Value>,
+}
+
+impl ErrorResult {
+    pub fn new(error: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            kind: None,
+            step: None,
+            cause: None,
+        }
+    }
+
+    pub fn kind(mut self, kind: ErrorKind) -> Self {
+        self.kind = Some(kind);
+        self
+    }
+
+    pub fn step(mut self, step: impl Into<String>) -> Self {
+        self.step = Some(step.into());
+        self
+    }
+
+    pub fn cause(mut self, cause: Option<Value>) -> Self {
+        self.cause = cause.filter(|cause| !cause.is_null());
+        self
+    }
+
+    pub fn into_value(self) -> Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
     #[error("unknown tool: {0}")]

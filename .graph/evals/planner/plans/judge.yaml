@@ -35,7 +35,8 @@ steps:
           correct: { type: boolean }
           score: { type: number, description: 0 to 1, how fully and accurately it answers the goal }
           reason: { type: string, description: One or two sentences }
-output:
-  correct: "{{verdict.correct}}"
-  score: "{{verdict.score}}"
-  reason: "{{verdict.reason}}"
+finish:
+  output:
+    correct: "{{verdict.correct}}"
+    score: "{{verdict.score}}"
+    reason: "{{verdict.reason}}"

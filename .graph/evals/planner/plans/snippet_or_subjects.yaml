@@ -17,10 +17,11 @@ steps:
       when: { value: "{{status.exists}}", op: eq, to: true }
       status: success
       message: The changelog snippet for {{input.tag}} already exists
-      output: { exists: true }
+      output: { exists: true, subjects: null }
   - id: subjects
     tool_name: user__release_subjects
     input: { version: "{{input.tag}}" }
-output:
-  exists: false
-  subjects: "{{subjects.text}}"
+finish:
+  output:
+    exists: false
+    subjects: "{{subjects.text}}"

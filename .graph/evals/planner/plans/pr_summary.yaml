@@ -26,7 +26,8 @@ steps:
 
         Diff:
         {{diff}}
-output:
-  summary: "{{summary.text}}"
-  data_title: "{{meta.title}}"
-  data_body: "{{meta.body}}"
+finish:
+  output:
+    summary: "{{summary.text}}"
+    data_title: "{{meta.title}}"
+    data_body: "{{meta.body}}"

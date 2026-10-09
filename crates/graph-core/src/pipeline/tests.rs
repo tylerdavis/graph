@@ -311,7 +311,7 @@ async fn explicit_plans_fail_hard_without_replanning() {
     ]))
     .unwrap();
     let err = pipeline
-        .run_explicit("q", plan, Finish::Solve(SolverData::default()), None)
+        .run_explicit("q", plan, Finish::Solver(SolverData::default()), None)
         .await
         .unwrap_err();
     assert!(matches!(err, PipelineError::StepFailed { .. }));
@@ -342,7 +342,7 @@ async fn explicit_runs_resolve_tools_against_the_catalog_before_any_step() {
     ]))
     .unwrap();
     let err = pipeline
-        .run_explicit("q", plan, Finish::Solve(SolverData::default()), None)
+        .run_explicit("q", plan, Finish::Solver(SolverData::default()), None)
         .await
         .unwrap_err();
     assert!(matches!(err, PipelineError::InvalidPlan(_)), "{err}");
@@ -403,7 +403,7 @@ async fn explicit_plans_render_input_root() {
         .run_explicit(
             "q",
             plan,
-            Finish::Solve(SolverData::default()),
+            Finish::Solver(SolverData::default()),
             Some(json!({"team": "Platform"})),
         )
         .await
@@ -424,7 +424,7 @@ async fn validation_rejects_forward_references() {
     ]))
     .unwrap();
     let err = pipeline
-        .run_explicit("q", plan, Finish::Solve(SolverData::default()), None)
+        .run_explicit("q", plan, Finish::Solver(SolverData::default()), None)
         .await
         .unwrap_err();
     let PipelineError::InvalidPlan(message) = err else {
@@ -446,7 +446,7 @@ async fn render_finish_emits_structured_output_without_llm() {
     output.insert("teams".into(), json!("{{E0.values}}"));
     output.insert("count".into(), json!("{{E0.values.length}}"));
     let outcome = pipeline
-        .run_explicit("q", plan, Finish::Render(output), None)
+        .run_explicit("q", plan, Finish::Output(output), None)
         .await
         .unwrap();
     assert_eq!(
@@ -618,7 +618,7 @@ async fn exit_success_skips_remaining_steps_and_solver() {
         .run_explicit(
             "q",
             exit_plan("{{E0.values.length}}", "success"),
-            Finish::Solve(SolverData::default()),
+            Finish::Solver(SolverData::default()),
             None,
         )
         .await
@@ -639,7 +639,7 @@ async fn exit_gate_passes_and_plan_continues() {
         .run_explicit(
             "q",
             exit_plan("{{E0.values.length}}", "success"),
-            Finish::Solve(SolverData::default()),
+            Finish::Solver(SolverData::default()),
             None,
         )
         .await
@@ -1283,7 +1283,7 @@ output:
 #[test]
 fn decide_doc_accepts_exit_in_branch_but_not_nested_control() {
     // Exit in a branch is a supported pattern (it ends the whole plan)…
-    let doc: crate::pipeline::doc::PlanDoc = serde_yaml::from_str(
+    let doc: crate::pipeline::doc::PlanDoc = str::parse::<crate::pipeline::doc::PlanDoc>(
         r#"
 identifier: ok
 name: Ok
@@ -1302,7 +1302,7 @@ steps:
     crate::pipeline::doc::validate_doc(&doc).unwrap();
 
     // …nested route/map/reduce still are not.
-    let doc: crate::pipeline::doc::PlanDoc = serde_yaml::from_str(
+    let doc: crate::pipeline::doc::PlanDoc = str::parse::<crate::pipeline::doc::PlanDoc>(
         r#"
 identifier: bad
 name: Bad
@@ -2332,7 +2332,8 @@ output:
 }
 
 fn plan_doc_yaml(yaml: &str) -> crate::pipeline::doc::PlanDoc {
-    let doc: crate::pipeline::doc::PlanDoc = serde_yaml::from_str(yaml).unwrap();
+    let doc: crate::pipeline::doc::PlanDoc =
+        str::parse::<crate::pipeline::doc::PlanDoc>(yaml).unwrap();
     crate::pipeline::doc::validate_doc(&doc).unwrap();
     doc
 }
@@ -3210,7 +3211,7 @@ async fn a_plan_step_runs_a_named_agent_as_a_typed_subagent() {
     let mut output = Map::new();
     output.insert("points".to_string(), json!("{{E0.points}}"));
     let outcome = pipeline
-        .run_explicit("q", plan, Finish::Render(output), None)
+        .run_explicit("q", plan, Finish::Output(output), None)
         .await
         .unwrap();
     assert_eq!(outcome.structured, Some(json!({"points": ["one", "two"]})));
@@ -3248,7 +3249,7 @@ async fn a_subagent_without_max_iterations_gets_the_configured_round_cap() {
     let mut output = Map::new();
     output.insert("result".to_string(), json!("{{E0.result}}"));
     let outcome = pipeline
-        .run_explicit("q", plan, Finish::Render(output), None)
+        .run_explicit("q", plan, Finish::Output(output), None)
         .await
         .unwrap();
     assert_eq!(outcome.structured, Some(json!({"result": "done"})));
@@ -3524,7 +3525,7 @@ async fn usage_is_attributed_to_the_step_that_spent_it() {
     .unwrap();
 
     pipeline
-        .run_explicit("q", plan, Finish::Solve(SolverData::default()), None)
+        .run_explicit("q", plan, Finish::Solver(SolverData::default()), None)
         .await
         .unwrap();
 
@@ -4231,8 +4232,9 @@ steps:
   - id: issues
     tool_name: t__issues
     input: { state: Started }
-output:
-  issues: \"{{issues.got}}\"
+finish:
+  output:
+    issues: \"{{issues.got}}\"
 ";
 
 fn compose_draft(questions: Value) -> ChatResponse {
@@ -4303,7 +4305,7 @@ async fn compose_plan_searches_for_a_tool_the_draft_asked_for_and_finishes_with_
                 "search": ["search for things"]
             })),
             structured(json!({
-                "patch": "steps:\n  - id: found\n    after: issues\n    tool_name: t__search\n    input: { query: x }\noutput:\n  issues: \"{{issues.got}}\"\n  found: \"{{found}}\"\n",
+                "patch": "steps:\n  - id: found\n    after: issues\n    tool_name: t__search\n    input: { query: x }\nfinish:\n  output:\n    issues: \"{{issues.got}}\"\n    found: \"{{found}}\"\n",
                 "search": []
             })),
         ],
@@ -5257,6 +5259,7 @@ steps:
   - id: E3
     tool_name: exit
     input: { infer: "blocked?", status: error }
+finish: silent
 "#,
         "kinds.yaml",
     )
@@ -5483,6 +5486,7 @@ steps:
             tool_name: t__issues
             input: {}
         technical: { tool_name: t__search, input: { query: x } }
+finish: silent
 "#,
         "triage.yaml",
     )
@@ -6114,4 +6118,138 @@ async fn an_approved_test_run_is_not_asked_about_again_until_the_draft_or_input_
         )
         .await;
     assert_eq!(human.prompts().len(), 3, "a changed draft asks again");
+}
+
+#[tokio::test]
+async fn every_ending_returns_the_success_shape_or_the_standard_error() {
+    let output_plan = plan_doc_yaml(
+        r#"
+version: 2
+identifier: listing
+name: Listing
+description: lists values
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: x }
+  - id: none
+    tool_name: exit
+    input:
+      when: { value: "{{E0.values}}", op: empty }
+      status: success
+      message: nothing found
+      output: { count: 0, values: [] }
+finish:
+  output:
+    count: "{{E0.values.length}}"
+    values: "{{E0.values}}"
+"#,
+    );
+    let asserting = plan_doc_yaml(
+        r#"
+version: 2
+identifier: asserting
+name: Asserting
+description: fails when empty
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: x }
+  - id: guard
+    tool_name: exit
+    input:
+      when: { value: "{{E0.values}}", op: empty }
+      status: error
+      message: no values
+finish:
+  output:
+    values: "{{E0.values}}"
+"#,
+    );
+    let solver = plan_doc_yaml(
+        r#"
+version: 2
+identifier: reporting
+name: Reporting
+description: reports
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: x }
+  - id: none
+    tool_name: exit
+    input:
+      when: { value: "{{E0.values}}", op: empty }
+      status: success
+      message: nothing to report
+finish:
+  solver:
+    query_to_answer: report
+"#,
+    );
+    let silent = plan_doc_yaml(
+        r#"
+version: 2
+identifier: quiet
+name: Quiet
+description: side effects
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: x }
+  - id: none
+    tool_name: exit
+    input:
+      when: { value: "{{E0.values}}", op: empty }
+      status: success
+      message: nothing to do
+finish: silent
+"#,
+    );
+    let empty = plan_doc_yaml(
+        r#"
+version: 2
+identifier: first
+name: First
+description: first value
+steps:
+  - id: E0
+    tool_name: t__search
+    input: { query: x }
+  - id: E1
+    tool_name: t__issues
+    input: { id: "{{E0.values.0.id}}" }
+finish:
+  output:
+    issue: "{{E1}}"
+"#,
+    );
+    let registry = search_registry(json!({"values": []}));
+    let (mut pipeline, _) = pipeline(vec![], registry, 1);
+    pipeline.plans = Arc::new(vec![output_plan, asserting, solver, silent, empty]);
+
+    let call = pipeline.call_plan("listing", json!({})).await;
+    assert!(!call.is_error, "{:?}", call.result);
+    assert_eq!(call.result, json!({"count": 0, "values": []}));
+
+    let call = pipeline.call_plan("asserting", json!({})).await;
+    assert!(call.is_error);
+    assert_eq!(
+        call.result,
+        json!({"error": "no values", "kind": "assertion", "step": "guard"})
+    );
+
+    let call = pipeline.call_plan("reporting", json!({})).await;
+    assert!(!call.is_error, "{:?}", call.result);
+    assert_eq!(call.result, json!({"answer": "nothing to report"}));
+
+    let call = pipeline.call_plan("quiet", json!({})).await;
+    assert!(!call.is_error, "{:?}", call.result);
+    assert_eq!(call.result, json!({"ok": true, "steps_executed": 1}));
+
+    let call = pipeline.call_plan("first", json!({})).await;
+    assert!(call.is_error);
+    assert_eq!(call.result["kind"], json!("empty_data"));
+    assert_eq!(call.result["step"], json!("E1"));
+    assert!(call.result.get("empty_data").is_none());
 }

@@ -20,7 +20,47 @@ pub const FORMAT_KEY: &str = "version";
 
 pub type Migration = fn(&mut Value) -> Result<Vec<String>, String>;
 
-const PLAN_MIGRATIONS: &[Migration] = &[decide_step_becomes_route];
+const PLAN_MIGRATIONS: &[Migration] = &[plan_v2];
+
+fn plan_v2(value: &mut Value) -> Result<Vec<String>, String> {
+    let mut notes = decide_step_becomes_route(value)?;
+    notes.extend(finish_becomes_explicit(value)?);
+    Ok(notes)
+}
+
+fn finish_becomes_explicit(value: &mut Value) -> Result<Vec<String>, String> {
+    let Some(mapping) = value.as_mapping_mut() else {
+        return Ok(Vec::new());
+    };
+    let moved: Vec<(&str, Value)> = ["solver", "output"]
+        .into_iter()
+        .filter_map(|key| mapping.shift_remove(key).map(|body| (key, body)))
+        .collect();
+    let finish = match (moved.as_slice(), mapping.contains_key("finish")) {
+        ([], true) => return Ok(Vec::new()),
+        ([], false) => {
+            mapping.insert(Value::from("finish"), Value::from("silent"));
+            return Ok(vec![
+                "no `solver` or `output`: wrote `finish: silent`".to_string()
+            ]);
+        }
+        ([(key, body)], false) => {
+            let mut finish = Mapping::new();
+            finish.insert(Value::from(*key), body.clone());
+            (key.to_string(), finish)
+        }
+        ([_, _, ..], _) => return Err("`solver` and `output` are mutually exclusive".to_string()),
+        (_, true) => {
+            return Err(
+                "`finish` already says how the plan ends; drop the top-level `solver` or `output`"
+                    .to_string(),
+            )
+        }
+    };
+    let (key, body) = finish;
+    mapping.insert(Value::from("finish"), Value::Mapping(body));
+    Ok(vec![format!("moved `{key}` under `finish`")])
+}
 
 fn decide_step_becomes_route(value: &mut Value) -> Result<Vec<String>, String> {
     let mut renamed = 0;
@@ -449,7 +489,13 @@ steps:
 "#,
         );
         let upgrade = upgrade(Kind::Plan, &mut value).unwrap();
-        assert_eq!(upgrade.notes, vec!["renamed 2 `decide` steps to `route`"]);
+        assert_eq!(
+            upgrade.notes,
+            vec![
+                "renamed 2 `decide` steps to `route`",
+                "no `solver` or `output`: wrote `finish: silent`"
+            ]
+        );
         let steps = value["steps"].as_sequence().unwrap();
         assert_eq!(steps[0]["tool_name"], "route");
         assert_eq!(steps[1]["toolName"], "route");
@@ -539,7 +585,7 @@ steps:
     fn migrate_file_reports_comments_it_could_not_keep() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("plan.yaml");
-        std::fs::write(&path, "identifier: p\n# inside\nname: P\n").unwrap();
+        std::fs::write(&path, "identifier: p\n# inside\nname: P\nfinish: silent\n").unwrap();
         let migrated = migrate_file(Kind::Plan, &path, &|_| Ok(())).unwrap();
         assert!(migrated.changed);
         assert_eq!(migrated.notes.len(), 1, "{:?}", migrated.notes);

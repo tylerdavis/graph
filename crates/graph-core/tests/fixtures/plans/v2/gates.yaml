@@ -37,3 +37,4 @@ steps:
       infer: "Should these be escalated? {{E3.items}}"
       then: { tool_name: user__escalate, input: { items: "{{E3.items}}" } }
       else: { tool_name: user__summarize, input: { items: "{{E3.items}}" } }
+finish: silent

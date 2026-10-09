@@ -1,7 +1,7 @@
 //! Plan documents: user-authored YAML plans, exposed to the agent as tools
 //! and runnable directly via `graph plan run`.
 
-use super::plan::{check_step_id, Plan, SolverData};
+use super::plan::{check_step_id, Plan};
 use super::Finish;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -24,16 +24,11 @@ pub struct PlanDoc {
     /// JSON Schema for the plan's inputs (referenced as `{{input.x}}`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
     pub steps: Plan,
-    /// LLM synthesis of the results into prose. Optional — see `output`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub solver: Option<SolverData>,
-    /// Structured output: a template map rendered against results and
-    /// emitted as JSON, with no LLM involved. Mutually exclusive with
-    /// `solver`; when both are absent the plan is a silent side-effect
-    /// plan (runs, exits, no output).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<Map<String, Value>>,
+    #[serde(default)]
+    pub finish: Finish,
     /// Source file, set by the loader.
     #[serde(skip)]
     pub path: Option<PathBuf>,
@@ -251,10 +246,34 @@ pub fn parse_plan_source(raw: &str, path: &str) -> Result<PlanDoc, DocError> {
             crate::format::FormatError::Invalid(message) => invalid(message),
         })?;
     check_step_keys(&value).map_err(invalid)?;
+    check_finish_key(&value).map_err(invalid)?;
     if upgrade.declared.is_none() && !upgrade.migrated() {
         return serde_yaml::from_str(raw).map_err(|e| invalid(e.to_string()));
     }
     serde_yaml::from_value(value).map_err(|e| invalid(e.to_string()))
+}
+
+pub const FINISH_FORMS: &str =
+    "`finish: silent`, `finish: { output: {…} }` or `finish: { solver: {…} }`";
+
+pub fn check_finish_key(doc: &serde_yaml::Value) -> Result<(), String> {
+    let Some(mapping) = doc.as_mapping() else {
+        return Ok(());
+    };
+    if let Some(key) = ["output", "solver"]
+        .into_iter()
+        .find(|key| mapping.contains_key(*key))
+    {
+        return Err(format!(
+            "`{key}` belongs under `finish` (`finish: {{ {key}: … }}`), not at the top level"
+        ));
+    }
+    if !mapping.contains_key("finish") {
+        return Err(format!(
+            "the plan has no `finish`; it ends with one of {FINISH_FORMS}"
+        ));
+    }
+    Ok(())
 }
 
 const STEP_KEYS: &[&str] = &["id", "tool_name", "toolName", "input", "reasoning"];
@@ -415,25 +434,238 @@ pub fn validate_doc(doc: &PlanDoc) -> Result<(), String> {
         }
         seen.push(&step.id);
     }
-    if doc.solver.is_some() && doc.output.is_some() {
-        return Err("`solver` and `output` are mutually exclusive — pick one".to_string());
-    }
-    if let Some(solver) = &doc.solver {
-        for value in solver.data.values() {
-            if let Value::String(template) = value {
-                crate::template::referenced_roots(template).map_err(|e| e.to_string())?;
-            }
-        }
-        crate::template::referenced_roots(&solver.query_to_answer).map_err(|e| e.to_string())?;
-    }
-    if let Some(output) = &doc.output {
-        for value in output.values() {
-            if let Value::String(template) = value {
-                crate::template::referenced_roots(template).map_err(|e| e.to_string())?;
-            }
+    finish_problems(doc)
+}
+
+fn check_finish_templates(map: &Map<String, Value>) -> Result<(), String> {
+    for value in map.values() {
+        if let Value::String(template) = value {
+            crate::template::referenced_roots(template).map_err(|e| e.to_string())?;
         }
     }
     Ok(())
+}
+
+fn finish_problems(doc: &PlanDoc) -> Result<(), String> {
+    match &doc.finish {
+        Finish::Solver(solver) => {
+            check_finish_templates(&solver.data)?;
+            crate::template::referenced_roots(&solver.query_to_answer)
+                .map_err(|e| e.to_string())?;
+        }
+        Finish::Output(output) => check_finish_templates(output)?,
+        Finish::Silent => {}
+    }
+    let schema = match (&doc.output_schema, &doc.finish) {
+        (None, _) => None,
+        (Some(schema), Finish::Output(output)) => Some(output_schema_problems(schema, output)?),
+        (Some(_), _) => {
+            return Err(format!(
+                "`output_schema` describes an output plan's result, but this plan finishes with \
+                 `{}`, whose result is {}",
+                finish_label(&doc.finish),
+                result_shape(&doc.finish)
+            ))
+        }
+    };
+    let steps = serde_json::json!(doc.steps);
+    let problems: Vec<String> = exit_inputs(&steps)
+        .into_iter()
+        .filter_map(|(id, input)| exit_problem(&id, input, &doc.finish, schema.as_ref()))
+        .collect();
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("; "))
+    }
+}
+
+pub fn finish_label(finish: &Finish) -> &'static str {
+    match finish {
+        Finish::Silent => "silent",
+        Finish::Output(_) => "output",
+        Finish::Solver(_) => "solver",
+    }
+}
+
+fn result_shape(finish: &Finish) -> &'static str {
+    match finish {
+        Finish::Silent => "`{ok, steps_executed}`",
+        Finish::Output(_) => "the `finish.output` map",
+        Finish::Solver(_) => "`{answer}`",
+    }
+}
+
+fn is_template(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text.contains("{{"),
+        Value::Array(items) => items.iter().any(is_template),
+        Value::Object(map) => map.values().any(is_template),
+        _ => false,
+    }
+}
+
+fn key_mismatch(expected: &[&str], actual: &Map<String, Value>) -> Option<String> {
+    let missing: Vec<&str> = expected
+        .iter()
+        .copied()
+        .filter(|key| !actual.contains_key(*key))
+        .collect();
+    let extra: Vec<&str> = actual
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !expected.contains(key))
+        .collect();
+    let mut parts = Vec::new();
+    if !missing.is_empty() {
+        parts.push(format!("missing {}", missing.join(", ")));
+    }
+    if !extra.is_empty() {
+        parts.push(format!("extra {}", extra.join(", ")));
+    }
+    (!parts.is_empty()).then(|| parts.join("; "))
+}
+
+fn literal_problems(
+    properties: &Map<String, Value>,
+    values: &Map<String, Value>,
+    at: &str,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (key, value) in values {
+        let Some(property) = properties.get(key) else {
+            continue;
+        };
+        if is_template(value) {
+            continue;
+        }
+        let Ok(validator) = jsonschema::validator_for(property) else {
+            continue;
+        };
+        problems.extend(
+            validator
+                .iter_errors(value)
+                .map(|error| format!("{at}: `{key}` {error}")),
+        );
+    }
+    problems
+}
+
+fn output_schema_problems(
+    schema: &Value,
+    output: &Map<String, Value>,
+) -> Result<Map<String, Value>, String> {
+    if !schema.is_object() || jsonschema::validator_for(schema).is_err() {
+        return Err("`output_schema` must be a valid JSON Schema object".to_string());
+    }
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return Err("`output_schema` must list the result's keys under `properties`".to_string());
+    };
+    let expected: Vec<&str> = properties.keys().map(String::as_str).collect();
+    if let Some(mismatch) = key_mismatch(&expected, output) {
+        return Err(format!(
+            "`finish.output` keys must match `output_schema` properties: {mismatch}"
+        ));
+    }
+    let problems = literal_problems(properties, output, "finish.output");
+    if problems.is_empty() {
+        Ok(properties.clone())
+    } else {
+        Err(problems.join("; "))
+    }
+}
+
+fn exit_problem(
+    id: &str,
+    input: &Map<String, Value>,
+    finish: &Finish,
+    schema: Option<&Map<String, Value>>,
+) -> Option<String> {
+    let status = input.get("status").and_then(Value::as_str);
+    let output = input.get("output");
+    if status == Some("error") {
+        return output.map(|_| {
+            format!(
+                "step {id}: an error exit cannot carry `output`; a failed run returns the \
+                 standard error"
+            )
+        });
+    }
+    let Finish::Output(expected) = finish else {
+        return output.map(|_| {
+            format!(
+                "step {id}: exit `output` needs `finish: output`; a {} plan's exits return {}",
+                finish_label(finish),
+                result_shape(finish)
+            )
+        });
+    };
+    if status != Some("success") {
+        return None;
+    }
+    let keys: Vec<&str> = expected.keys().map(String::as_str).collect();
+    let Some(Value::Object(output)) = output else {
+        return Some(format!(
+            "step {id}: a success exit in an output plan returns the plan's result; give it \
+             `output` with the `finish.output` keys ({})",
+            keys.join(", ")
+        ));
+    };
+    if let Some(mismatch) = key_mismatch(&keys, output) {
+        return Some(format!(
+            "step {id}: exit `output` keys must match `finish.output`: {mismatch}"
+        ));
+    }
+    let problems = schema
+        .map(|schema| literal_problems(schema, output, &format!("step {id} output")))
+        .unwrap_or_default();
+    (!problems.is_empty()).then(|| problems.join("; "))
+}
+
+fn exit_inputs(steps: &Value) -> Vec<(String, &Map<String, Value>)> {
+    let mut found = Vec::new();
+    collect_exits(steps, &mut found);
+    found
+}
+
+fn collect_exits<'a>(body: &'a Value, found: &mut Vec<(String, &'a Map<String, Value>)>) {
+    match body {
+        Value::Array(steps) => steps.iter().for_each(|step| collect_exits(step, found)),
+        Value::Object(step) => {
+            let tool = step
+                .get("tool_name")
+                .or_else(|| step.get("toolName"))
+                .and_then(Value::as_str);
+            let Some(Value::Object(input)) = step.get("input") else {
+                return;
+            };
+            match tool {
+                Some(super::EXIT_TOOL) => {
+                    let id = step.get("id").and_then(Value::as_str).unwrap_or("exit");
+                    found.push((id.to_string(), input));
+                }
+                Some(super::ROUTE_TOOL) => {
+                    for side in ["then", "else"] {
+                        if let Some(branch) = input.get(side) {
+                            collect_exits(branch, found);
+                        }
+                    }
+                    if let Some(Value::Object(cases)) = input.get("cases") {
+                        cases
+                            .values()
+                            .for_each(|branch| collect_exits(branch, found));
+                    }
+                }
+                Some(super::MAP_TOOL | super::REDUCE_TOOL) => {
+                    if let Some(body) = input.get("do") {
+                        collect_exits(body, found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
 }
 
 fn check_value_templates(value: &Value, available: &[&str], step_id: &str) -> Result<(), String> {
@@ -500,15 +732,55 @@ pub fn validate_input(doc: &PlanDoc, input: &Value) -> Result<(), Vec<String>> {
     }
 }
 
+impl std::str::FromStr for PlanDoc {
+    type Err = DocError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        parse_plan_source(raw, "plan")
+    }
+}
+
 impl PlanDoc {
-    /// How the plan finishes: solve, render structured output, or silence.
-    pub fn finish(&self) -> Finish {
-        if let Some(solver) = &self.solver {
-            Finish::Solve(solver.clone())
-        } else if let Some(output) = &self.output {
-            Finish::Render(output.clone())
-        } else {
-            Finish::Silent
+    pub fn solver(&self) -> Option<&super::SolverData> {
+        match &self.finish {
+            Finish::Solver(solver) => Some(solver),
+            _ => None,
+        }
+    }
+
+    pub fn output(&self) -> Option<&Map<String, Value>> {
+        match &self.finish {
+            Finish::Output(output) => Some(output),
+            _ => None,
+        }
+    }
+
+    pub fn result_schema(&self) -> Value {
+        match &self.finish {
+            Finish::Output(output) => self.output_schema.clone().unwrap_or_else(|| {
+                let properties: Map<String, Value> = output
+                    .keys()
+                    .map(|key| (key.clone(), Value::Object(Map::new())))
+                    .collect();
+                serde_json::json!({
+                    "type": "object",
+                    "required": output.keys().collect::<Vec<_>>(),
+                    "properties": properties,
+                })
+            }),
+            Finish::Solver(_) => serde_json::json!({
+                "type": "object",
+                "required": ["answer"],
+                "properties": {"answer": {"type": "string"}},
+            }),
+            Finish::Silent => serde_json::json!({
+                "type": "object",
+                "required": ["ok", "steps_executed"],
+                "properties": {
+                    "ok": {"type": "boolean"},
+                    "steps_executed": {"type": "integer"},
+                },
+            }),
         }
     }
 
@@ -611,7 +883,7 @@ solver:
     }
 
     fn doc_from(yaml: &str) -> Result<PlanDoc, String> {
-        let doc: PlanDoc = serde_yaml::from_str(yaml).map_err(|e| e.to_string())?;
+        let doc: PlanDoc = yaml.parse().map_err(|e: DocError| e.to_string())?;
         validate_doc(&doc).map(|()| doc)
     }
 
@@ -794,5 +1066,155 @@ solver:
         let reason = loaded.skip_reason("invalid").unwrap();
         assert!(reason.to_string().contains("E5"), "{reason}");
         assert!(loaded.skip_reason("sprint_analysis").is_none());
+    }
+
+    fn finish_problem(yaml: &str) -> String {
+        let doc = parse_plan_source(yaml, "p.yaml").unwrap();
+        validate_doc(&doc).unwrap_err()
+    }
+
+    const OUTPUT_HEAD: &str = "version: 2\nidentifier: p\nname: P\ndescription: d\nsteps:\n  - id: E0\n    tool_name: t__x\n    input: {}\n";
+
+    #[test]
+    fn a_version_2_plan_states_its_finish() {
+        let missing = parse_plan_source(OUTPUT_HEAD, "p.yaml")
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("has no `finish`"), "{missing}");
+        assert!(missing.contains("finish: silent"), "{missing}");
+
+        let top_level = format!("{OUTPUT_HEAD}output: {{ x: \"{{{{E0}}}}\" }}\n");
+        let err = parse_plan_source(&top_level, "p.yaml")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("`output` belongs under `finish`"), "{err}");
+
+        let bad = format!("{OUTPUT_HEAD}finish: output\n");
+        let err = parse_plan_source(&bad, "p.yaml").unwrap_err().to_string();
+        assert!(err.contains("finish is one of"), "{err}");
+
+        for (finish, label) in [
+            ("finish: silent\n", "silent"),
+            ("finish:\n  output: { x: \"{{E0}}\" }\n", "output"),
+            ("finish:\n  solver: { query_to_answer: q }\n", "solver"),
+        ] {
+            let doc = parse_plan_source(&format!("{OUTPUT_HEAD}{finish}"), "p.yaml").unwrap();
+            assert_eq!(finish_label(&doc.finish), label);
+            validate_doc(&doc).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_version_1_plan_gets_an_explicit_finish() {
+        let v1 = "identifier: p\nname: P\ndescription: d\nsteps:\n  - id: E0\n    tool_name: t__x\n    input: {}\n";
+        let silent = parse_plan_source(v1, "p.yaml").unwrap();
+        assert!(matches!(silent.finish, Finish::Silent));
+        let output =
+            parse_plan_source(&format!("{v1}output: {{ x: \"{{{{E0}}}}\" }}\n"), "p.yaml").unwrap();
+        assert_eq!(output.output().unwrap()["x"], "{{E0}}");
+        let solver =
+            parse_plan_source(&format!("{v1}solver: {{ query_to_answer: q }}\n"), "p.yaml")
+                .unwrap();
+        assert_eq!(solver.solver().unwrap().query_to_answer, "q");
+    }
+
+    #[test]
+    fn success_exits_in_an_output_plan_return_the_finish_keys() {
+        let plan = |exit_output: &str| {
+            format!(
+                "{OUTPUT_HEAD}  - id: stop\n    tool_name: exit\n    input:\n      status: success\n{exit_output}finish:\n  output: {{ count: \"{{{{E0.n}}}}\", items: \"{{{{E0.items}}}}\" }}\n"
+            )
+        };
+        let missing = finish_problem(&plan("      output: { count: 0 }\n"));
+        assert!(
+            missing.contains(
+                "step stop: exit `output` keys must match `finish.output`: missing items"
+            ),
+            "{missing}"
+        );
+        let extra = finish_problem(&plan("      output: { count: 0, items: [], more: 1 }\n"));
+        assert!(extra.contains("extra more"), "{extra}");
+        let absent = finish_problem(&plan(""));
+        assert!(
+            absent.contains("give it `output` with the `finish.output` keys (count, items)"),
+            "{absent}"
+        );
+        let doc =
+            parse_plan_source(&plan("      output: { count: 0, items: [] }\n"), "p.yaml").unwrap();
+        validate_doc(&doc).unwrap();
+    }
+
+    #[test]
+    fn only_success_exits_in_output_plans_carry_output() {
+        let error_exit = format!(
+            "{OUTPUT_HEAD}  - id: stop\n    tool_name: exit\n    input:\n      status: error\n      output: {{ x: 1 }}\nfinish:\n  output: {{ x: \"{{{{E0}}}}\" }}\n"
+        );
+        assert!(finish_problem(&error_exit).contains("an error exit cannot carry `output`"));
+        for finish in [
+            "finish: silent\n",
+            "finish:\n  solver: { query_to_answer: q }\n",
+        ] {
+            let doc = format!(
+                "{OUTPUT_HEAD}  - id: stop\n    tool_name: exit\n    input:\n      status: success\n      output: {{ x: 1 }}\n{finish}"
+            );
+            assert!(finish_problem(&doc).contains("exit `output` needs `finish: output`"));
+        }
+        let nested = format!(
+            "{OUTPUT_HEAD}  - id: E1\n    tool_name: route\n    input:\n      if: {{ value: 1, op: eq, to: 1 }}\n      then:\n        - id: B0\n          tool_name: exit\n          input: {{ status: success }}\nfinish:\n  output: {{ x: \"{{{{E0}}}}\" }}\n"
+        );
+        assert!(finish_problem(&nested).contains("step B0"));
+    }
+
+    #[test]
+    fn an_output_schema_names_the_finish_keys_and_checks_literals() {
+        let plan = |schema: &str, exit: &str| {
+            format!(
+                "version: 2\nidentifier: p\nname: P\ndescription: d\noutput_schema: {schema}\nsteps:\n  - id: E0\n    tool_name: t__x\n    input: {{}}\n  - id: stop\n    tool_name: exit\n    input:\n      status: success\n      output: {exit}\nfinish:\n  output: {{ count: \"{{{{E0.n}}}}\" }}\n"
+            )
+        };
+        let schema = "{ type: object, properties: { count: { type: integer } } }";
+        let doc = parse_plan_source(&plan(schema, "{ count: 0 }"), "p.yaml").unwrap();
+        validate_doc(&doc).unwrap();
+        assert_eq!(
+            doc.result_schema()["properties"]["count"]["type"],
+            "integer"
+        );
+
+        let wrong_type = finish_problem(&plan(schema, "{ count: none }"));
+        assert!(
+            wrong_type.contains("step stop output: `count`"),
+            "{wrong_type}"
+        );
+        let other_keys = finish_problem(&plan(
+            "{ type: object, properties: { total: {} } }",
+            "{ count: 0 }",
+        ));
+        assert!(
+            other_keys.contains("`finish.output` keys must match `output_schema` properties"),
+            "{other_keys}"
+        );
+
+        let solver = "version: 2\nidentifier: p\nname: P\ndescription: d\noutput_schema: { type: object, properties: {} }\nsteps:\n  - id: E0\n    tool_name: t__x\n    input: {}\nfinish:\n  solver: { query_to_answer: q }\n";
+        assert!(
+            finish_problem(solver).contains("`output_schema` describes an output plan's result")
+        );
+    }
+
+    #[test]
+    fn the_result_schema_follows_the_finish() {
+        let doc =
+            |finish: &str| parse_plan_source(&format!("{OUTPUT_HEAD}{finish}"), "p.yaml").unwrap();
+        assert_eq!(
+            doc("finish:\n  output: { a: \"{{E0}}\", b: 1 }\n").result_schema(),
+            serde_json::json!({"type": "object", "required": ["a", "b"], "properties": {"a": {}, "b": {}}})
+        );
+        assert_eq!(
+            doc("finish:\n  solver: { query_to_answer: q }\n").result_schema()["required"],
+            serde_json::json!(["answer"])
+        );
+        assert_eq!(
+            doc("finish: silent\n").result_schema()["required"],
+            serde_json::json!(["ok", "steps_executed"])
+        );
     }
 }

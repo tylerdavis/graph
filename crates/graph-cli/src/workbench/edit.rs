@@ -3,6 +3,7 @@ use graph_core::pipeline::authoring;
 use graph_core::pipeline::body::{control_body, control_body_mut, parse_branch, Branch};
 use graph_core::pipeline::doc::PlanDoc;
 use graph_core::pipeline::plan::Step;
+use graph_core::pipeline::Finish;
 use graph_core::ToolDef;
 use serde_json::{json, Map, Value};
 
@@ -253,12 +254,10 @@ impl FinishMode {
     }
 
     fn of(doc: &PlanDoc) -> Self {
-        if doc.solver.is_some() {
-            FinishMode::Solver
-        } else if doc.output.is_some() {
-            FinishMode::Output
-        } else {
-            FinishMode::Silent
+        match doc.finish {
+            Finish::Solver(_) => FinishMode::Solver,
+            Finish::Output(_) => FinishMode::Output,
+            Finish::Silent => FinishMode::Silent,
         }
     }
 }
@@ -342,17 +341,18 @@ fn metadata_texts(doc: &PlanDoc) -> Map<String, Value> {
         put("input_schema", pretty(schema));
     }
     put(FINISH_KEY, FinishMode::of(doc).label().to_string());
-    if let Some(solver) = &doc.solver {
-        put("solver_query", solver.query_to_answer.clone());
-        if let Some(prompt) = &solver.system_prompt {
-            put("solver_system_prompt", prompt.clone());
+    match &doc.finish {
+        Finish::Solver(solver) => {
+            put("solver_query", solver.query_to_answer.clone());
+            if let Some(prompt) = &solver.system_prompt {
+                put("solver_system_prompt", prompt.clone());
+            }
+            if !solver.data.is_empty() {
+                put("solver_data", pretty(&Value::Object(solver.data.clone())));
+            }
         }
-        if !solver.data.is_empty() {
-            put("solver_data", pretty(&Value::Object(solver.data.clone())));
-        }
-    }
-    if let Some(output) = &doc.output {
-        put("output", pretty(&Value::Object(output.clone())));
+        Finish::Output(output) => put("output", pretty(&Value::Object(output.clone()))),
+        Finish::Silent => {}
     }
     texts
 }
@@ -523,7 +523,7 @@ mod tests {
     use tui_textarea::TextArea;
 
     fn doc() -> PlanDoc {
-        serde_yaml::from_str(
+        str::parse::<graph_core::pipeline::doc::PlanDoc>(
             r#"
 identifier: demo
 name: Demo
@@ -680,7 +680,7 @@ solver:
         );
         assert_eq!(edited.steps[1].input["over"], json!("{{search.items}}"));
         assert_eq!(
-            edited.solver.as_ref().unwrap().query_to_answer,
+            edited.solver().unwrap().query_to_answer,
             "what happened with {{search.query}}?"
         );
         assert!(authoring::static_problems(&edited).is_empty());
@@ -901,10 +901,10 @@ solver:
         assert_eq!(edited.name, "Renamed");
         assert_eq!(edited.exemplars, vec!["one", "three"]);
         assert_eq!(edited.input_schema, Some(json!({"type": "object"})));
-        let solver = edited.solver.as_ref().unwrap();
+        let solver = edited.solver().unwrap();
         assert_eq!(solver.query_to_answer, "what happened with {{E0.query}}?");
         assert_eq!(solver.system_prompt.as_deref(), Some("be brief"));
-        assert!(edited.output.is_none());
+        assert!(edited.output().is_none());
 
         set(&mut form, "finish", "output");
         form.set_focus(3);
@@ -933,10 +933,9 @@ solver:
         };
         let mut edited = doc.clone();
         edit.apply(&mut edited).unwrap();
-        assert!(edited.solver.is_none());
         assert_eq!(
-            edited.output.as_ref().map(|o| Value::Object(o.clone())),
-            Some(json!({"count": "{{E0.count}}"}))
+            json!(edited.finish),
+            json!({"output": {"count": "{{E0.count}}"}})
         );
 
         set(&mut form, "finish", "silent");
@@ -948,7 +947,7 @@ solver:
         };
         let mut edited = doc.clone();
         edit.apply(&mut edited).unwrap();
-        assert!(edited.solver.is_none() && edited.output.is_none());
+        assert!(matches!(edited.finish, Finish::Silent));
     }
 
     #[test]
@@ -970,6 +969,7 @@ steps:
             tool_name: t__refund
             input: { amount: 1 }
         technical: { tool_name: t__incident, input: {} }
+finish: silent
 "#,
             "triage.yaml",
         )

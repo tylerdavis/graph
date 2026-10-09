@@ -24,5 +24,6 @@ steps:
           tool_name: builtin__reshape
           input:
             shape: { tag: "{{item}}", previous: "{{release.previous_tag}}", commits: "{{log.total}}" }
-output:
-  releases: "{{sizes.results}}"
+finish:
+  output:
+    releases: "{{sizes.results}}"

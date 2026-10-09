@@ -93,9 +93,12 @@ steps:
       status: success
       message: "No tool in the catalog can do: {{gaps.items}}"
       output:
+        needs: "{{needs}}"
         plan: null
         valid: false
         problems: []
+        yaml: null
+        questions: []
         missing: "{{gaps.items}}"
   - id: context
     tool_name: builtin__compose_context
@@ -260,7 +263,7 @@ steps:
 
                     Make the plan follow what the person said and fix its problems; never fix a problem by dropping something they asked for. Where an answer is a value, put it where the plan used the guess. Where an answer says a value changes from run to run, make it a plan input in `input_schema`, or an `ask` step when it can only be chosen after earlier steps run. Follow `instructions` when given. When a change needs a tool that isn't listed above, describe what it should do in `search` and leave that change for the next round.
 
-                    Return `patch`: a YAML mapping with `steps` holding a list of only the steps you replace (matched by id; a new step takes `after: <id of the step before it>`), `remove` with ids of steps to drop if any, and `input_schema` or `output` only if they change. Return an empty patch when nothing needs to change.
+                    Return `patch`: a YAML mapping with `steps` holding a list of only the steps you replace (matched by id; a new step takes `after: <id of the step before it>`), `remove` with ids of steps to drop if any, and `input_schema` or `finish` only if they change. Return an empty patch when nothing needs to change.
                   output_schema:
                     type: object
                     required: [patch, search]
@@ -294,10 +297,12 @@ steps:
           tool_name: builtin__reshape
           input:
             shape: "{{round.result}}"
-output:
-  needs: "{{needs}}"
-  plan: "{{fixed.result.check.plan}}"
-  valid: "{{fixed.result.check.valid}}"
-  problems: "{{fixed.result.check.problems}}"
-  yaml: "{{fixed.result.check.yaml}}"
-  questions: "{{form.questions}}"
+finish:
+  output:
+    needs: "{{needs}}"
+    plan: "{{fixed.result.check.plan}}"
+    valid: "{{fixed.result.check.valid}}"
+    problems: "{{fixed.result.check.problems}}"
+    yaml: "{{fixed.result.check.yaml}}"
+    questions: "{{form.questions}}"
+    missing: []

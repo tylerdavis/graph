@@ -16,6 +16,7 @@ steps:
       output_schema: "{{input.questions}}"
       when_unanswered: default
       default: "{{input.guesses}}"
-output:
-  answers: "{{clarify.answer}}"
-  answered: "{{clarify.answered}}"
+finish:
+  output:
+    answers: "{{clarify.answer}}"
+    answered: "{{clarify.answered}}"

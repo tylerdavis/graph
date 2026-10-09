@@ -44,5 +44,6 @@ steps:
       status: success
       message: Every commit since {{input.tag}} that changed crate code also changed the docs
       output: { commits: [] }
-output:
-  commits: "{{undocumented.items}}"
+finish:
+  output:
+    commits: "{{undocumented.items}}"

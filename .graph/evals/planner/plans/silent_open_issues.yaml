@@ -44,6 +44,7 @@ steps:
     input:
       over: "{{discussed.results}}"
       where: { value: "{{item.comments}}", op: empty }
-output:
-  issues: "{{silent.items}}"
-  data_issues: "{{issues.issues}}"
+finish:
+  output:
+    issues: "{{silent.items}}"
+    data_issues: "{{issues.issues}}"
