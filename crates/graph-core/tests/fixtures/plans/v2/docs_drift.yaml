@@ -74,6 +74,7 @@ steps:
         behavioral change without a docs/ update — CLAUDE.md requires docs
         land in the same PR as the behavior change
     reasoning: One judge call decides; error exit fails the CI check.
-output:
-  docs_required: false
-  reason: "{{E5.reason}}"
+finish:
+  output:
+    docs_required: false
+    reason: "{{E5.reason}}"

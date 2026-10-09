@@ -5,7 +5,9 @@ use super::app::{App, ChatEntry, Focus, GateKind, GatePrompt, Mode};
 use super::editor::EditorContext;
 use super::form::{Form, Verdict};
 use super::plan_ws::{PlanWorkspace, RowKey, RunLine, StepRow, StepStatus, WsTab};
-use graph_core::pipeline::{AGENT_TOOL, EXIT_TOOL, FILTER_TOOL, MAP_TOOL, REDUCE_TOOL, ROUTE_TOOL};
+use graph_core::pipeline::{
+    Finish, AGENT_TOOL, EXIT_TOOL, FILTER_TOOL, MAP_TOOL, REDUCE_TOOL, ROUTE_TOOL,
+};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -514,13 +516,7 @@ fn draw_plan_tab(frame: &mut Frame, app: &App, area: Rect, regions: &mut Regions
     };
 
     // Header: identity, finish mode, validation.
-    let finish = if doc.solver.is_some() {
-        "solver"
-    } else if doc.output.is_some() {
-        "output"
-    } else {
-        "silent"
-    };
+    let finish = graph_core::pipeline::doc::finish_label(&doc.finish);
     let mut identity = vec![
         Span::styled(&doc.identifier, ACCENT.add_modifier(Modifier::BOLD)),
         Span::raw(" — "),
@@ -1389,13 +1385,13 @@ fn push_plan_detail(lines: &mut Vec<Line>, doc: &graph_core::pipeline::doc::Plan
         }
     }
 
-    if let Some(solver) = &doc.solver {
+    if let Finish::Solver(solver) = &doc.finish {
         lines.push(Line::styled("output: solver report", DIM));
         for raw in solver.query_to_answer.lines() {
             lines.push(Line::from(raw.to_string()));
         }
         lines.push(Line::default());
-    } else if let Some(output) = &doc.output {
+    } else if let Finish::Output(output) = &doc.finish {
         push_json_section(
             lines,
             "output schema",
@@ -1661,7 +1657,8 @@ mod tests {
     }
 
     fn tree_texts(doc_yaml: &str) -> Vec<String> {
-        let doc: graph_core::pipeline::doc::PlanDoc = serde_yaml::from_str(doc_yaml).unwrap();
+        let doc: graph_core::pipeline::doc::PlanDoc =
+            str::parse::<graph_core::pipeline::doc::PlanDoc>(doc_yaml).unwrap();
         let mut ws = super::super::plan_ws::PlanWorkspace::default();
         ws.set_doc(doc);
         (0..ws.steps.len())
@@ -1676,7 +1673,8 @@ mod tests {
     }
 
     fn plan_detail_text(doc_yaml: &str) -> String {
-        let doc: graph_core::pipeline::doc::PlanDoc = serde_yaml::from_str(doc_yaml).unwrap();
+        let doc: graph_core::pipeline::doc::PlanDoc =
+            str::parse::<graph_core::pipeline::doc::PlanDoc>(doc_yaml).unwrap();
         let mut lines: Vec<super::Line> = Vec::new();
         super::push_plan_detail(&mut lines, &doc);
         lines
@@ -1781,8 +1779,9 @@ steps:
     /// declaring an output schema, and the control-step vocabulary — the
     /// same catalog mix `Effect::LoadContext` assembles.
     fn shaped_workspace() -> super::super::plan_ws::PlanWorkspace {
-        let doc: graph_core::pipeline::doc::PlanDoc = serde_yaml::from_str(
-            r#"
+        let doc: graph_core::pipeline::doc::PlanDoc =
+            str::parse::<graph_core::pipeline::doc::PlanDoc>(
+                r#"
 identifier: demo
 name: Demo
 description: d
@@ -1798,8 +1797,8 @@ steps:
 solver:
   queryToAnswer: q
 "#,
-        )
-        .unwrap();
+            )
+            .unwrap();
         let mut ws = super::super::plan_ws::PlanWorkspace::default();
         ws.set_doc(doc);
         let tool = |name: &str, output_schema: Option<serde_json::Value>| graph_core::ToolDef {

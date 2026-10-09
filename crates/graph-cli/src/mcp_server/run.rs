@@ -241,7 +241,7 @@ pub async fn run_plan(
         )
         .await?;
     let query = format!("Run the '{}' plan", doc.name);
-    let finish = doc.finish();
+    let finish = doc.finish.clone();
     let result = pipeline
         .run_explicit(&query, doc.steps.clone(), finish, Some(input))
         .await;

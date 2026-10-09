@@ -50,10 +50,10 @@ def with_inputs(doc, given):
             leftover.pop(0)
     if properties:
         doc['input_schema'] = {'type': 'object', 'required': required, 'properties': properties}
-    if not doc.get('output') and not doc.get('solver'):
+    if doc.get('finish', 'silent') == 'silent':
         last = next((step for step in reversed(doc['steps']) if tool_of(step) != 'exit'), None)
         if last:
-            doc['output'] = {'result': '{{' + last['id'] + '}}'}
+            doc['finish'] = {'output': {'result': '{{' + last['id'] + '}}'}}
     return doc
 
 

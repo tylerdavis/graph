@@ -116,6 +116,52 @@ fn a_fired_error_exit_gate_exits_four() {
         .stderr_contains("no rows found");
 }
 
+const SOLVER_EXIT_PLAN: &str = r#"version: 2
+identifier: solver_exit
+name: Solver exit
+description: exits before the solver runs
+steps:
+  - id: E1
+    tool_name: builtin__reshape
+    input: { shape: { rows: [] } }
+  - id: E2
+    tool_name: exit
+    input:
+      when: { value: "{{E1.rows}}", op: empty }
+      status: success
+      message: nothing to report
+finish:
+  solver: { query_to_answer: report the rows }
+"#;
+
+#[test]
+fn a_success_exit_in_a_solver_plan_answers_on_stdout() {
+    let scratch = Scratch::new();
+    scratch.write_plan("solver_exit", SOLVER_EXIT_PLAN);
+    let run = scratch.graph(&["plan", "run", "solver_exit"]);
+    run.code_is(0);
+    assert_eq!(run.stdout.trim(), "nothing to report");
+}
+
+#[test]
+fn an_output_plan_exit_without_the_finish_keys_is_refused() {
+    let scratch = Scratch::new();
+    let plan = SOLVER_EXIT_PLAN
+        .replace(
+            "      message: nothing to report\n",
+            "      message: nothing to report\n      output: { rows: [] }\n",
+        )
+        .replace(
+            "finish:\n  solver: { query_to_answer: report the rows }\n",
+            "finish:\n  output: { rows: \"{{E1.rows}}\", count: \"{{E1.rows.length}}\" }\n",
+        );
+    scratch.write_plan("solver_exit", &plan);
+    scratch
+        .graph(&["plan", "validate", "solver_exit"])
+        .code_is(1)
+        .stderr_contains("exit `output` keys must match `finish.output`: missing count");
+}
+
 #[test]
 fn an_invalid_plan_exits_one_with_the_envelope_still_on_stdout() {
     let scratch = Scratch::new();

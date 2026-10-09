@@ -21,7 +21,7 @@ steps:
       when: { value: "{{diff.text}}", op: empty }
       status: success
       message: Nothing to review between {{input.base}} and {{input.head}}
-      output: { findings: [], blockers: 0 }
+      output: { findings: [], blockers: 0, data_changed_files: [] }
   - id: guide
     tool_name: user__repo_file
     input: { path: CLAUDE.md, ref: "{{input.head}}", max_bytes: 30000 }
@@ -77,7 +77,8 @@ steps:
     input:
       over: "{{verified.items}}"
       where: { value: "{{item.is_blocker}}", op: eq, to: true }
-output:
-  findings: "{{verified.items}}"
-  blockers: "{{blockers.count}}"
-  data_changed_files: "{{files.changes}}"
+finish:
+  output:
+    findings: "{{verified.items}}"
+    blockers: "{{blockers.count}}"
+    data_changed_files: "{{files.changes}}"

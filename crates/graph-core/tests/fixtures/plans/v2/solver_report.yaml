@@ -1,0 +1,25 @@
+version: 2
+identifier: solver_report
+name: Solver report
+description: Summarizes a team's open issues in prose.
+input_schema:
+  type: object
+  required: [team]
+  properties:
+    team: { type: string }
+steps:
+  - id: E0
+    tool_name: linear__list_issues
+    input: { team: "{{input.team}}" }
+  - id: E1
+    tool_name: exit
+    input:
+      when: { value: "{{E0.issues}}", op: empty }
+      status: success
+      message: "{{input.team}} has no open issues"
+finish:
+  solver:
+    query_to_answer: Summarize the open issues for {{input.team}}.
+    system_prompt: Be brief.
+    data:
+      issues: "{{E0.issues}}"

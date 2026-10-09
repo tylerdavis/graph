@@ -11,5 +11,6 @@ steps:
   - id: matches
     tool_name: builtin__git_grep
     input: { pattern: "{{input.key}}", paths: crates, ref: HEAD, max_matches: 200 }
-output:
-  matches: "{{matches.matches}}"
+finish:
+  output:
+    matches: "{{matches.matches}}"

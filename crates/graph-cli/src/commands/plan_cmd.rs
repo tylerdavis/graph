@@ -354,7 +354,7 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
     runtime.usage.attach_events(events.clone());
     let pipeline = runtime.pipeline_with(&store, events.clone(), hooks).await?;
     let query = format!("Run the '{}' plan", doc.name);
-    let finish = doc.finish();
+    let finish = doc.finish.clone();
     let result = pipeline
         .run_explicit(&query, doc.steps.clone(), finish, Some(input))
         .await;
@@ -413,6 +413,8 @@ async fn run_plan(name: &str, document: Option<&str>, inputs: &[String], json: b
         }
         if exited_error {
             eprintln!("✗ {}", exit.message);
+        } else if matches!(doc.finish, graph_core::pipeline::Finish::Solver(_)) {
+            println!("{}", exit.message);
         } else {
             eprintln!("✓ {}", exit.message);
         }

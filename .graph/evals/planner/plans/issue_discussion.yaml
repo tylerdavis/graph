@@ -25,7 +25,8 @@ steps:
 
         Comments:
         {{comments}}
-output:
-  summary: "{{summary.text}}"
-  data_issue: "{{issue}}"
-  data_comments: "{{comments}}"
+finish:
+  output:
+    summary: "{{summary.text}}"
+    data_issue: "{{issue}}"
+    data_comments: "{{comments}}"

@@ -75,6 +75,7 @@ steps:
 
         {{/E2.results}}
     reasoning: Assemble the page — static frontmatter, every import (MDX requires them before content), then the blocks newest-first — and write it to the one path the tool permits.
-output:
-  path: '{{E3.path}}'
-  releases: '{{E1.count}}'
+finish:
+  output:
+    path: '{{E3.path}}'
+    releases: '{{E1.count}}'

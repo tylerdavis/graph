@@ -277,7 +277,7 @@ mod tests {
     use super::*;
 
     fn doc() -> PlanDoc {
-        serde_yaml::from_str(
+        str::parse::<graph_core::pipeline::doc::PlanDoc>(
             r#"
 identifier: sprint_report
 name: Sprint Report

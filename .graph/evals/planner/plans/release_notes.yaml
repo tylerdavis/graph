@@ -51,7 +51,8 @@ steps:
 
         Linear tickets they reference:
         {{issues.results}}
-output:
-  notes: "{{notes.text}}"
-  data_commits: "{{merged.items}}"
-  data_tickets: "{{issues.results}}"
+finish:
+  output:
+    notes: "{{notes.text}}"
+    data_commits: "{{merged.items}}"
+    data_tickets: "{{issues.results}}"

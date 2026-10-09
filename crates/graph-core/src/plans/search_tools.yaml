@@ -51,7 +51,8 @@ steps:
       tools: "{{picked.selected}}"
       schemas: "{{input.schemas}}"
     reasoning: The returned tools with their scores and, when asked, their schemas.
-output:
-  mode: "{{picked.mode}}"
-  tools: "{{described.tools}}"
-  always: "{{catalog.always}}"
+finish:
+  output:
+    mode: "{{picked.mode}}"
+    tools: "{{described.tools}}"
+    always: "{{catalog.always}}"

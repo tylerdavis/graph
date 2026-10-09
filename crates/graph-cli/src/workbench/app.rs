@@ -1924,7 +1924,7 @@ mod tests {
     }
 
     fn doc(yaml: &str) -> PlanDoc {
-        serde_yaml::from_str(yaml).unwrap()
+        str::parse::<graph_core::pipeline::doc::PlanDoc>(yaml).unwrap()
     }
 
     fn two_step_doc() -> PlanDoc {

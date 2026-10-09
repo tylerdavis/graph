@@ -1,0 +1,36 @@
+version: 2
+identifier: urgent_issues
+name: Urgent issues
+description: Counts and lists a team's urgent issues.
+input_schema:
+  type: object
+  required: [team]
+  properties:
+    team: { type: string }
+output_schema:
+  type: object
+  required: [count, issues]
+  properties:
+    count: { type: integer }
+    issues: { type: array }
+steps:
+  - id: issues
+    tool_name: linear__list_issues
+    input: { team: "{{input.team}}", priority: 1 }
+  - id: none
+    tool_name: exit
+    input:
+      when: { value: "{{issues.issues}}", op: empty }
+      status: success
+      message: No urgent issues
+      output: { count: 0, issues: [] }
+  - id: too_many
+    tool_name: exit
+    input:
+      when: { value: "{{issues.issues.length}}", op: gt, to: 50 }
+      status: error
+      message: More than 50 urgent issues
+finish:
+  output:
+    count: "{{issues.issues.length}}"
+    issues: "{{issues.issues}}"

@@ -156,9 +156,10 @@ mod tests {
 
     #[test]
     fn each_way_into_the_workbench_starts_at_its_agent() {
-        let doc: PlanDoc =
-            serde_yaml::from_str("identifier: demo\nname: Demo\ndescription: d\nsteps: []\n")
-                .unwrap();
+        let doc: PlanDoc = str::parse::<graph_core::pipeline::doc::PlanDoc>(
+            "identifier: demo\nname: Demo\ndescription: d\nsteps: []\n",
+        )
+        .unwrap();
         assert_eq!(starting_agent(&Start::FrontDesk, None), "front_desk");
         assert_eq!(starting_agent(&Start::Plan(None), None), "plan_drafter");
         assert_eq!(
@@ -174,7 +175,7 @@ mod tests {
 
     #[test]
     fn the_current_draft_section_carries_the_yaml() {
-        let doc: PlanDoc = serde_yaml::from_str(
+        let doc: PlanDoc = str::parse::<graph_core::pipeline::doc::PlanDoc>(
             r#"
 identifier: demo
 name: Demo

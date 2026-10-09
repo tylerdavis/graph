@@ -53,3 +53,4 @@ steps:
             tool_name: user__open_incident
             input: {}
       else: { tool_name: ask, input: { prompt: "Route this ticket?", output_schema: { type: object, properties: { team: { type: string } } } } }
+finish: silent

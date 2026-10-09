@@ -32,7 +32,8 @@ steps:
       else:
         tool_name: builtin__git_changed_files
         input: { base: "{{meta.base_sha}}", head: "{{meta.head_sha}}", prefix: crates/ }
-output:
-  docs_changed: "{{answer.branch}}"
-  result: "{{answer.result}}"
-  data_docs_files: "{{docs.changes}}"
+finish:
+  output:
+    docs_changed: "{{answer.branch}}"
+    result: "{{answer.result}}"
+    data_docs_files: "{{docs.changes}}"

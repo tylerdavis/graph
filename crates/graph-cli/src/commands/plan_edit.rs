@@ -26,8 +26,8 @@ use crate::commands::plan_cmd::resolve_target;
 use crate::runtime::Runtime;
 use anyhow::{anyhow, bail, Context, Result};
 use graph_core::pipeline::authoring;
-use graph_core::pipeline::doc::PlanDoc;
-use graph_core::pipeline::{draft_input, plan_doc, COMPOSE_PLAN};
+use graph_core::pipeline::doc::{finish_label, PlanDoc};
+use graph_core::pipeline::{draft_input, plan_doc, Finish, COMPOSE_PLAN};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -112,9 +112,9 @@ pub fn new_plan(
         exemplars: Vec::new(),
         requires_servers: Vec::new(),
         input_schema: None,
+        output_schema: None,
         steps: Vec::new(),
-        solver: None,
-        output: None,
+        finish: Finish::Silent,
         path: output,
     };
     let plans_dir = runtime.plans_dir();
@@ -176,10 +176,7 @@ pub async fn draft(
     if drafted.is_error {
         bail!("drafting failed: {}", drafted.result);
     }
-    let composed = match drafted.result.get("output") {
-        Some(output) if drafted.result["exited"] == json!(true) => output.clone(),
-        _ => drafted.result,
-    };
+    let composed = drafted.result;
     let missing_tools = composed["missing"]
         .as_array()
         .is_some_and(|missing| !missing.is_empty());
@@ -284,24 +281,24 @@ pub fn unset(runtime: &Runtime, target: &str, attribute: PlanAttribute) -> Resul
         // mode is the active one — otherwise `unset solver` on an
         // output-rendering plan would quietly delete its output map.
         PlanAttribute::Solver => edit(runtime, target, |doc| {
-            if doc.solver.is_none() {
+            if !matches!(doc.finish, Finish::Solver(_)) {
                 return Err(json!({
                     "error": format!(
-                        "plan '{}' has no solver to clear (it finishes with {})",
+                        "plan '{}' has no solver to clear (it finishes with `{}`)",
                         doc.identifier,
-                        if doc.output.is_some() { "`output`" } else { "neither — it is already silent" }
+                        finish_label(&doc.finish)
                     ),
                 }));
             }
             authoring::patch_metadata(doc, &json!({"finish": {}}))
         }),
         PlanAttribute::Output => edit(runtime, target, |doc| {
-            if doc.output.is_none() {
+            if !matches!(doc.finish, Finish::Output(_)) {
                 return Err(json!({
                     "error": format!(
-                        "plan '{}' has no output map to clear (it finishes with {})",
+                        "plan '{}' has no output map to clear (it finishes with `{}`)",
                         doc.identifier,
-                        if doc.solver.is_some() { "`solver`" } else { "neither — it is already silent" }
+                        finish_label(&doc.finish)
                     ),
                 }));
             }
@@ -601,7 +598,7 @@ mod tests {
 
     #[test]
     fn doc_json_carries_the_source_path() {
-        let mut doc: PlanDoc = serde_yaml::from_str(
+        let mut doc: PlanDoc = str::parse::<PlanDoc>(
             r#"
 identifier: demo
 name: Demo

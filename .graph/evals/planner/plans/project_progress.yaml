@@ -25,7 +25,8 @@ steps:
 
         Issues:
         {{issues}}
-output:
-  report: "{{report.text}}"
-  data_project: "{{project}}"
-  data_issues: "{{issues}}"
+finish:
+  output:
+    report: "{{report.text}}"
+    data_project: "{{project}}"
+    data_issues: "{{issues}}"

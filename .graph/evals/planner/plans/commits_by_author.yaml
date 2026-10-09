@@ -18,6 +18,7 @@ steps:
         Group these commits by author and, for each author, summarize what their commits did in a sentence or two.
 
         {{commits.commits}}
-output:
-  summary: "{{summary.text}}"
-  data_commits: "{{commits}}"
+finish:
+  output:
+    summary: "{{summary.text}}"
+    data_commits: "{{commits}}"

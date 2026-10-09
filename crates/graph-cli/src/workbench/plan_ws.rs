@@ -3,7 +3,7 @@
 
 use graph_core::pipeline::body::{control_bodies, parse_branch, Branch};
 use graph_core::pipeline::doc::PlanDoc;
-use graph_core::pipeline::ROUTE_TOOL;
+use graph_core::pipeline::{Finish, ROUTE_TOOL};
 use graph_core::{ToolDef, ToolShape};
 use serde_json::{Map, Value};
 use std::cell::Cell;
@@ -210,12 +210,15 @@ impl PlanWorkspace {
         for step in doc.steps.iter().skip(position.map_or(0, |p| p + 1)) {
             gather_template_strings(&Value::Object(step.input.clone()), &mut raw);
         }
-        if let Some(solver) = &doc.solver {
-            raw.push(solver.query_to_answer.clone());
-            gather_template_strings(&Value::Object(solver.data.clone()), &mut raw);
-        }
-        if let Some(output) = &doc.output {
-            gather_template_strings(&Value::Object(output.clone()), &mut raw);
+        match &doc.finish {
+            Finish::Solver(solver) => {
+                raw.push(solver.query_to_answer.clone());
+                gather_template_strings(&Value::Object(solver.data.clone()), &mut raw);
+            }
+            Finish::Output(output) => {
+                gather_template_strings(&Value::Object(output.clone()), &mut raw)
+            }
+            Finish::Silent => {}
         }
         let prefix = format!("{step_id}.");
         let mut references = Vec::new();
@@ -538,7 +541,7 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
             }
         }
     }
-    if let Some(solver) = &doc.solver {
+    if let Finish::Solver(solver) = &doc.finish {
         let mut input = Map::new();
         input.insert(
             "queryToAnswer".to_string(),
@@ -554,7 +557,7 @@ fn step_rows(doc: &PlanDoc) -> Vec<StepRow> {
             Value::Object(input),
             RowKey::Finish,
         ));
-    } else if let Some(output) = &doc.output {
+    } else if let Finish::Output(output) = &doc.finish {
         rows.push(row(
             "output".to_string(),
             "renders the output".to_string(),
@@ -584,7 +587,7 @@ mod tests {
     /// map with an inline step-list body, route with single-call
     /// branches, and a solver finish.
     fn control_doc() -> PlanDoc {
-        serde_yaml::from_str(
+        str::parse::<graph_core::pipeline::doc::PlanDoc>(
             r#"
 identifier: demo
 name: Demo
@@ -686,6 +689,7 @@ steps:
             input: {}
         technical: { tool_name: t__incident, input: {} }
       else: { tool_name: t__ask, input: {} }
+finish: silent
 "#,
             "triage.yaml",
         )
@@ -720,13 +724,13 @@ steps:
     #[test]
     fn silent_plans_get_no_finish_row_and_output_plans_get_one() {
         let mut doc = control_doc();
-        doc.solver = None;
+        doc.finish = Finish::Silent;
         assert!(!workspace(doc.clone())
             .steps
             .iter()
             .any(|row| row.key == RowKey::Finish));
 
-        doc.output = Some(
+        doc.finish = Finish::Output(
             json!({"count": "{{E0.count}}"})
                 .as_object()
                 .cloned()

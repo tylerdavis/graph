@@ -178,7 +178,7 @@ impl WorkbenchTools {
                      toolName is one of the bare control steps exit, agent, \
                      ask, route, filter, map, or reduce (there is no \
                      gate/assert tool); a \
-                     plan finishes with `solver` OR `output`, never both",
+                     plan ends with one `finish`: `silent`, {output: …} or {solver: …}",
                 );
             }
             error_outcome(&message)
@@ -366,7 +366,12 @@ impl WorkbenchTools {
         }
         let query = format!("Run the '{}' plan", doc.name);
         let result = pipeline
-            .run_explicit(&query, doc.steps.clone(), doc.finish(), Some(run_input))
+            .run_explicit(
+                &query,
+                doc.steps.clone(),
+                doc.finish.clone(),
+                Some(run_input),
+            )
             .await;
         let report = super::runner::report(result);
         let is_error = report.is_error;
@@ -759,14 +764,15 @@ impl ToolRegistry for WorkbenchTools {
             ToolDef {
                 name: UPDATE_METADATA.to_string(),
                 description: "Update the draft's plan-level fields: identifier, name, \
-                              description, exemplars, input_schema, requires_servers, \
-                              and/or the finish type. `input_schema` declares the plan's \
-                              inputs; `requires_servers` lists the MCP servers it needs. \
-                              `finish` sets how the plan produces its result — {solver: \
-                              {queryToAnswer, systemPrompt?}} for LLM synthesis of the \
-                              step results, or {output: {<template map>}} for a structured \
-                              templated result — solver and output are mutually exclusive, \
-                              and {} / null clears both for a silent side-effect plan. \
+                              description, exemplars, input_schema, output_schema, \
+                              requires_servers, and/or the finish. `input_schema` declares \
+                              the plan's inputs; `requires_servers` lists the MCP servers it \
+                              needs. `finish` sets how the plan produces its result — \
+                              {output: {<template map>}} for a structured templated result, \
+                              {solver: {queryToAnswer, systemPrompt?}} for LLM synthesis of \
+                              the step results, or \"silent\" for a side-effect plan. \
+                              `output_schema` types an output plan's result; every success \
+                              exit's `output` must have the same keys as `finish.output`. \
                               Changing the identifier makes it a new plan."
                     .to_string(),
                 input_schema: json!({
@@ -778,9 +784,10 @@ impl ToolRegistry for WorkbenchTools {
                         "exemplars": {"type": "array", "items": {"type": "string"}, "description": "Example requests the plan should handle; replaces the current list."},
                         "input_schema": {"type": "object", "description": "Replace the plan's input schema (a JSON Schema object describing the plan's inputs, e.g. {\"type\":\"object\",\"required\":[\"pr\"],\"properties\":{\"pr\":{\"type\":\"integer\"}}}). Pass null to clear it."},
                         "requires_servers": {"type": "array", "items": {"type": "string"}, "description": "Replace the list of MCP server names the plan requires to be configured (gates catalog visibility). Empty array clears it."},
+                        "output_schema": {"type": "object", "description": "Replace the JSON Schema of an output plan's result; its properties are the `finish.output` keys. Pass null to clear it."},
                         "finish": {
-                            "type": "object",
-                            "description": "Set the plan's finish type. Provide EITHER 'solver' {queryToAnswer: string, systemPrompt?: string} for LLM synthesis, OR 'output' {a map of key -> template string} for a structured result. Mutually exclusive.",
+                            "type": ["object", "string"],
+                            "description": "Set the plan's finish: \"silent\", EITHER {output: {a map of key -> template string}} for a structured result, OR {solver: {queryToAnswer: string, systemPrompt?: string}} for LLM synthesis.",
                             "properties": {
                                 "solver": {"type": "object", "properties": {"queryToAnswer": {"type": "string"}, "systemPrompt": {"type": "string"}}},
                                 "output": {"type": "object", "description": "Map of output key to template string, e.g. {\"summary\": \"{{E3.text}}\"}."}
@@ -1008,7 +1015,7 @@ pub(super) mod tests {
     }
 
     fn demo_doc() -> PlanDoc {
-        serde_yaml::from_str(
+        str::parse::<graph_core::pipeline::doc::PlanDoc>(
             r#"
 identifier: demo
 name: Demo
@@ -1297,7 +1304,7 @@ steps:
     /// Three steps with cross-references plus solver templates — the
     /// fixture for the precise editing tools.
     fn referencing_doc() -> PlanDoc {
-        serde_yaml::from_str(
+        str::parse::<graph_core::pipeline::doc::PlanDoc>(
             r#"
 identifier: demo
 name: Demo
@@ -1394,8 +1401,8 @@ solver:
             tools.update_metadata(&json!({"finish": {"output": {"summary": "{{E0.text}}"}}}));
         assert!(!outcome.is_error, "{:?}", outcome.result);
         let doc = draft.lock().unwrap().doc.clone().unwrap();
-        assert!(doc.solver.is_none(), "solver should be cleared");
-        let output = doc.output.expect("output should be set");
+        assert!(doc.solver().is_none(), "solver should be cleared");
+        let output = doc.output().cloned().expect("output should be set");
         assert!(output.contains_key("summary"));
         assert_dirty_publish(&mut rx);
 
@@ -1404,8 +1411,8 @@ solver:
             tools.update_metadata(&json!({"finish": {"solver": {"queryToAnswer": "answer it"}}}));
         assert!(!outcome.is_error, "{:?}", outcome.result);
         let doc = draft.lock().unwrap().doc.clone().unwrap();
-        assert!(doc.output.is_none(), "output should be cleared");
-        let solver = doc.solver.expect("solver should be set");
+        assert!(doc.output().is_none(), "output should be cleared");
+        let solver = doc.solver().cloned().expect("solver should be set");
         assert_eq!(solver.query_to_answer, "answer it");
     }
 
@@ -1440,8 +1447,8 @@ solver:
         let outcome = tools.update_metadata(&json!({"finish": {}}));
         assert!(!outcome.is_error, "{:?}", outcome.result);
         let doc = draft.lock().unwrap().doc.clone().unwrap();
-        assert!(doc.solver.is_none(), "solver should be cleared");
-        assert!(doc.output.is_none(), "output should be cleared");
+        assert!(doc.solver().is_none(), "solver should be cleared");
+        assert!(doc.output().is_none(), "output should be cleared");
         assert_dirty_publish(&mut rx);
 
         // null clears too — reset a solver first, then clear via null.
@@ -1449,7 +1456,7 @@ solver:
         let outcome = tools.update_metadata(&json!({"finish": null}));
         assert!(!outcome.is_error, "{:?}", outcome.result);
         let doc = draft.lock().unwrap().doc.clone().unwrap();
-        assert!(doc.solver.is_none() && doc.output.is_none());
+        assert!(doc.solver().is_none() && doc.output().is_none());
     }
 
     #[test]
@@ -1622,7 +1629,7 @@ solver:
             json!("{{#issues.values}}x{{/issues.values}} of {{issues.values.length}}")
         );
         assert_eq!(
-            doc.solver.unwrap().query_to_answer,
+            doc.solver().cloned().unwrap().query_to_answer,
             "Summarize {{issues.values.length}} items"
         );
     }
@@ -1679,7 +1686,7 @@ solver:
     /// template parse error — the state draft_plan handed over in the
     /// 2026-07-15 incident.
     fn invalid_doc() -> PlanDoc {
-        serde_yaml::from_str(
+        str::parse::<graph_core::pipeline::doc::PlanDoc>(
             r#"
 identifier: demo
 name: Demo

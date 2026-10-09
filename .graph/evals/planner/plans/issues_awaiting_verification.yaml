@@ -11,5 +11,6 @@ steps:
   - id: issues
     tool_name: linear__list_issues
     input: { project: "{{input.project}}", state: Needs verification, limit: 250, fields: [title, url, status] }
-output:
-  issues: "{{issues}}"
+finish:
+  output:
+    issues: "{{issues}}"

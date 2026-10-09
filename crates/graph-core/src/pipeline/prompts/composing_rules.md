@@ -5,7 +5,7 @@ Write the whole plan as one YAML document:
 - `version: 2`, then `identifier` (snake_case), `name`, and a one-sentence `description`.
 - `input_schema`: a JSON Schema object with a `properties` entry (with `type` and `description`) for every value the plan's user supplies each run, listed in `required`. Steps read them as `{{input.name}}`.
 - `steps`: a list, each `{id, tool_name, input}`. Give steps short descriptive ids (`release`, `commits`, `summary`). Omit `reasoning`.
-- `output`: a map from result names to templates, such as `notes: "{{summary.text}}"` or `files: "{{files}}"`. It is what the plan returns.
+- `finish`: `finish: { output: … }`, where `output` is a map from result names to templates, such as `notes: "{{summary.text}}"` or `files: "{{files}}"`. It is what the plan returns.
 
 ## How to compose
 
@@ -16,7 +16,7 @@ Write the whole plan as one YAML document:
    - An exact value is known only when the goal quotes or names it ("the Needs verification state"), the tool's schema lists it in an `enum`, or an observed output example shows it. Words in the goal such as open, active, done or closed are not values, and status names such as Completed or Canceled are guesses.
    - When the plan needs a named value you don't know, such as a status, project, label or threshold, use your best guess where it goes and add a question about it to `questions`. The person who asked for the plan answers before it is finished.
    - When items are wanted by meaning rather than by a named value, use a `filter` with `infer`: a yes/no question asked per item (`infer: "Is this issue about billing? {{item}}"`, with `concurrency: 8`). If the last step summarizes, give it everything and let it sort the items.
-5. `map` runs one tool call per item of a list. `filter` with `where` keeps the items whose field matches. `exit` stops early with a result. `route` picks between different tool calls when the data decides. Use each only when the goal needs it; `map` over an empty list is fine and needs no guard.
+5. `map` runs one tool call per item of a list. `filter` with `where` keeps the items whose field matches. `exit` stops early with a result: a `success` exit returns the plan's result, so its `output` has exactly the keys of `finish.output`, with literal values (`0`, `[]`, `null`) for what never ran; an `error` exit has no `output`. `route` picks between different tool calls when the data decides. Use each only when the goal needs it; `map` over an empty list is fine and needs no guard.
    - A `where`, `when` or `if` condition is exactly `{value, op, to}`, and `op` is one of `eq`, `ne`, `gt`, `lt`, `gte`, `lte`, `empty`, `not_empty`, `contains`. There is no negated `contains`: keep the matches with `contains`, or compare a field with `ne`.
    - When a `map`'s per-item call can fail for some items without the goal failing (looking up tickets found in text, fetching items that may have been deleted), set `onError: skip`: failed items are left out of `{{map_id.results}}` and listed in `{{map_id.failed}}`.
    - A `map`'s results are only what its body returns, in input order. When a later step needs each item's own fields next to what the call returned (which issue these comments belong to), make the body a list: the tool call, then a `builtin__reshape` that combines `{{item.…}}` with the call's result. Then `filter` those rows.
@@ -30,8 +30,8 @@ Write the whole plan as one YAML document:
    - Give it the tools' full results, such as `{{issues}}`, not a filtered subset, unless the goal excludes items: a progress report needs the finished items as well as the open ones.
 7. `builtin__reshape` only copies and renames fields. It cannot compute, group, count, sort, deduplicate, parse or combine lists. Never use it to pass data along: later steps can reference any earlier step directly.
 8. Do not use `agent` when the tools listed can do the work in fixed steps. If an open-ended subtask truly needs it, give it an explicit `tools` list.
-9. Finish with `output`. No solver, no file writes unless the goal asks for one.
-10. Use the fewest steps that do the job: no validation, logging, normalization, or summary-of-a-summary steps. Every step's result must be used by a later step or by `output`; a step nothing reads is a mistake.
+9. Finish with `finish: { output: … }`. No solver, no file writes unless the goal asks for one.
+10. Use the fewest steps that do the job: no validation, logging, normalization, or summary-of-a-summary steps. Every step's result must be used by a later step or by `finish.output`; a step nothing reads is a mistake.
 
 ## Pairing each item with its result
 
@@ -101,6 +101,7 @@ steps:
 
         Their contents:
         {{files.results}}
-output:
-  summary: "{{summary.text}}"
+finish:
+  output:
+    summary: "{{summary.text}}"
 ```

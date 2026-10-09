@@ -15,5 +15,6 @@ steps:
   - id: files
     tool_name: builtin__git_changed_files
     input: { base: "{{meta.base_sha}}", head: "{{meta.head_sha}}", prefix: "{{input.path}}" }
-output:
-  files: "{{files}}"
+finish:
+  output:
+    files: "{{files}}"

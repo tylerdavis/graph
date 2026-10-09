@@ -54,7 +54,7 @@ pub use state::{BusEntry, BusKind, RunState};
 
 use crate::store::{Store, ToolShape};
 use crate::template::{render_input, render_str, RenderError, Roots};
-use crate::tools::{ToolOutcome, ToolRegistry};
+use crate::tools::{ErrorKind, ErrorResult, ToolOutcome, ToolRegistry};
 use crate::usage::CallSite;
 use crate::EventSink;
 use futures::StreamExt;
@@ -195,20 +195,75 @@ pub fn is_control_step(name: &str) -> bool {
 pub const MAX_PLAN_DEPTH: usize = 8;
 
 /// How an explicit plan finishes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum Finish {
-    /// LLM synthesis of the results into prose.
-    Solve(SolverData),
-    /// Render a template map against the results into structured JSON.
-    Render(Map<String, Value>),
     /// Side-effect plan: run the steps, produce no output.
+    #[default]
     Silent,
+    /// Render a template map against the results into structured JSON.
+    Output(Map<String, Value>),
+    /// LLM synthesis of the results into prose.
+    Solver(SolverData),
+}
+
+impl serde::Serialize for Finish {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            Finish::Silent => serializer.serialize_str("silent"),
+            Finish::Output(output) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("output", output)?;
+                map.end()
+            }
+            Finish::Solver(solver) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("solver", solver)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Finish {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let forms = doc::FINISH_FORMS;
+        match Value::deserialize(deserializer)? {
+            Value::String(name) if name == "silent" => Ok(Finish::Silent),
+            Value::Object(mut map) if map.len() == 1 => {
+                if let Some(output) = map.remove("output") {
+                    return serde_json::from_value(output)
+                        .map(Finish::Output)
+                        .map_err(|e| D::Error::custom(format!("finish.output: {e}")));
+                }
+                if let Some(solver) = map.remove("solver") {
+                    return serde_json::from_value(solver)
+                        .map(Finish::Solver)
+                        .map_err(|e| D::Error::custom(format!("finish.solver: {e}")));
+                }
+                Err(D::Error::custom(format!("finish is one of {forms}")))
+            }
+            _ => Err(D::Error::custom(format!("finish is one of {forms}"))),
+        }
+    }
+}
+
+pub fn plan_result(finish: &Finish, outcome: &PipelineOutcome) -> Value {
+    match finish {
+        Finish::Output(_) => outcome.structured.clone().unwrap_or_else(|| json!({})),
+        Finish::Solver(_) => json!({"answer": outcome.answer}),
+        Finish::Silent => json!({
+            "ok": true,
+            "steps_executed": outcome.state.steps_executed(),
+        }),
+    }
 }
 
 #[derive(Debug)]
 pub struct PipelineOutcome {
     pub answer: String,
-    /// Structured output (Finish::Render plans, or an exit step's output).
+    /// Structured output (Finish::Output plans, or an exit step's output).
     pub structured: Option<Value>,
     pub state: RunState,
     /// True when the answer is an error summary rather than a solution.
@@ -364,7 +419,7 @@ impl Pipeline {
             plan,
             ..Default::default()
         };
-        if let Finish::Solve(solver_data) = &finish {
+        if let Finish::Solver(solver_data) = &finish {
             state.solver_data = solver_data.clone();
         }
         if let Some(input) = input {
@@ -384,11 +439,11 @@ impl Pipeline {
             ExecutionEnd::Completed => self.finish(state, finish).await,
             ExecutionEnd::Exited(exit) => Ok(self.exit_outcome(state, exit)),
             ExecutionEnd::Empty { step, message } => match finish {
-                Finish::Solve(_) => {
+                Finish::Solver(_) => {
                     state.push_bus(&step, BusKind::EmptyData, message);
                     self.solve(state).await
                 }
-                Finish::Render(_) | Finish::Silent => {
+                Finish::Output(_) | Finish::Silent => {
                     Err(PipelineError::EmptyData { step, message })
                 }
             },
@@ -476,57 +531,42 @@ impl Pipeline {
                 .run_explicit(
                     &query,
                     plan_doc.steps.clone(),
-                    plan_doc.finish(),
+                    plan_doc.finish.clone(),
                     Some(input),
                 )
                 .await
             {
-                Ok(outcome) => {
-                    if let Some(exit) = &outcome.exit {
-                        let is_error = exit.status == ExitStatus::Error;
-                        let mut result = json!({
-                            "exited": true,
-                            "status": if is_error { "error" } else { "success" },
-                            "message": exit.message,
-                        });
-                        if let Some(output) = &exit.output {
-                            result["output"] = Value::Object(output.clone());
-                        }
-                        if is_error {
-                            result["error"] = json!(exit.message);
-                        }
-                        return PlanCall {
-                            result,
-                            is_error,
-                            aborted: false,
-                        };
-                    }
-                    PlanCall {
-                        result: match outcome.structured {
-                            Some(structured) => structured,
-                            None if outcome.answer.is_empty() => json!({
-                                "ok": true,
-                                "steps_executed": outcome.state.steps_executed(),
-                            }),
-                            None => json!({"answer": outcome.answer}),
-                        },
+                Ok(outcome) => match &outcome.exit {
+                    Some(exit) if exit.status == ExitStatus::Error => PlanCall {
+                        result: ErrorResult::new(exit.message.clone())
+                            .kind(ErrorKind::Assertion)
+                            .step(exit.step.clone())
+                            .into_value(),
+                        is_error: true,
+                        aborted: false,
+                    },
+                    _ => PlanCall {
+                        result: plan_result(&plan_doc.finish, &outcome),
                         is_error: false,
                         aborted: false,
-                    }
-                }
+                    },
+                },
                 Err(PipelineError::EmptyData { step, message }) => PlanCall {
-                    result: json!({
-                        "error": format!("plan '{identifier}' had no data at step {step}: {message}"),
-                        "empty_data": true,
-                    }),
+                    result: ErrorResult::new(format!(
+                        "plan '{identifier}' had no data at step {step}: {message}"
+                    ))
+                    .kind(ErrorKind::EmptyData)
+                    .step(step)
+                    .into_value(),
                     is_error: true,
                     aborted: false,
                 },
                 Err(PipelineError::Aborted { step, error, .. }) => PlanCall {
-                    result: json!({
-                        "error": format!("plan '{identifier}' aborted at step {step}"),
-                        "cause": error,
-                    }),
+                    result: ErrorResult::new(format!("plan '{identifier}' aborted at step {step}"))
+                        .kind(ErrorKind::Aborted)
+                        .step(step)
+                        .cause(error)
+                        .into_value(),
                     is_error: true,
                     aborted: true,
                 },
@@ -559,10 +599,11 @@ impl Pipeline {
                     aborted: false,
                 },
                 Err(PipelineError::Aborted { step, error, .. }) => PlanCall {
-                    result: json!({
-                        "error": format!("planned run aborted at step {step}"),
-                        "cause": error,
-                    }),
+                    result: ErrorResult::new(format!("planned run aborted at step {step}"))
+                        .kind(ErrorKind::Aborted)
+                        .step(step)
+                        .cause(error)
+                        .into_value(),
                     is_error: true,
                     aborted: true,
                 },
@@ -596,8 +637,8 @@ impl Pipeline {
         finish: Finish,
     ) -> Result<PipelineOutcome, PipelineError> {
         match finish {
-            Finish::Solve(_) => self.solve(state).await,
-            Finish::Render(output) => {
+            Finish::Solver(_) => self.solve(state).await,
+            Finish::Output(output) => {
                 let roots = Roots::new(&state.results);
                 let mut rendered = Map::new();
                 for (key, value) in &output {
@@ -688,7 +729,7 @@ impl Pipeline {
                 name: format!("plan__{}", plan_doc.identifier),
                 description: plan_doc.tool_description(),
                 input_schema: plan_doc.tool_input_schema(),
-                output_schema: None,
+                output_schema: Some(plan_doc.result_schema()),
                 output_example: None,
                 read_only: None,
             })
@@ -830,7 +871,9 @@ impl Pipeline {
                             &self.call_stack,
                             &step.id,
                             &step.tool_name,
-                            &json!({"error": message, "emptyData": true}),
+                            &ErrorResult::new(message.clone())
+                                .kind(ErrorKind::EmptyData)
+                                .into_value(),
                             true,
                             started.elapsed(),
                         ),
