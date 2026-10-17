@@ -7,6 +7,7 @@ pub struct Content {
     pub summary: String,
     pub body: String,
     pub fields: BTreeMap<String, FieldDoc>,
+    pub output: Option<Yaml>,
 }
 
 pub struct FieldDoc {
@@ -44,7 +45,7 @@ pub fn content(key: &str, fallback: &str) -> Content {
             }
         }
     };
-    parse(&raw)
+    parse(&raw, &path)
 }
 
 fn seed(fallback: &str) -> String {
@@ -63,13 +64,14 @@ fn seed(fallback: &str) -> String {
     out
 }
 
-fn parse(raw: &str) -> Content {
+fn parse(raw: &str, path: &Path) -> Content {
     let (front, body) = raw
         .strip_prefix("---\n")
         .and_then(|rest| rest.split_once("\n---"))
         .map(|(front, body)| (front, body.trim_start_matches('\n')))
         .unwrap_or(("", raw));
-    let meta: Yaml = serde_yaml::from_str(front).unwrap_or(Yaml::Null);
+    let meta: Yaml = serde_yaml::from_str(front)
+        .unwrap_or_else(|e| panic!("{}: front matter is not YAML: {e}", path.display()));
     let summary = meta
         .get("summary")
         .and_then(Yaml::as_str)
@@ -100,6 +102,7 @@ fn parse(raw: &str) -> Content {
         summary,
         body: mdx_body(body.trim()),
         fields,
+        output: meta.get("output").cloned(),
     }
 }
 

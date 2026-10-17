@@ -1,5 +1,8 @@
 use super::content::{apply_fields, content, Content};
-use super::mdx::{attr, frontmatter, scalar, schema_fields, schema_from_example, text_line, Field};
+use super::mdx::{
+    attr, frontmatter, has_fields, paragraphs, scalar, schema_fields, schema_from_example,
+    text_line, value_field, Field,
+};
 use super::Section;
 use graph_core::tools::ToolDef;
 use graph_core::user_tools::builtin_tool_sources;
@@ -239,7 +242,7 @@ fn output_section(
 ) {
     let Some(mut schema) = schema else { return };
     apply_fields(&mut schema, &doc.fields);
-    if schema.get("properties").is_none() {
+    if !has_fields(&schema) {
         return;
     }
     let _ = writeln!(out, "## {heading}\n");
@@ -328,13 +331,21 @@ fn tool_page(doc: &Yaml, words: &Content) -> String {
         "| Loaded | Kind | Effect |\n| --- | --- | --- |\n| Always | `{kind}` | {effect} |\n"
     );
     input_section(&mut out, doc.get("input_schema").unwrap_or(&Yaml::Null));
-    output_section(
-        &mut out,
-        "Output",
-        "",
-        doc.get("output_schema").cloned(),
-        words,
-    );
+    match doc.get("output_schema").or(words.output.as_ref()).cloned() {
+        Some(schema) if !has_fields(&schema) => {
+            out.push_str("## Output\n\n");
+            value_field(&mut out, &schema);
+        }
+        output => {
+            let intro = output
+                .as_ref()
+                .and_then(|schema| schema.get("description"))
+                .and_then(Yaml::as_str)
+                .map(paragraphs)
+                .unwrap_or_default();
+            output_section(&mut out, "Output", &intro, output, words);
+        }
+    }
     panel(
         &mut out,
         "RequestExample",

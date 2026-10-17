@@ -27,6 +27,12 @@ keywords: ["builtin__reshape"]
   The output shape. Usually an object: keys are literal and each leaf string is a template over the step's data (earlier results as &#123;&#123;Ex.field&#125;&#125;, the current map element as &#123;&#123;item&#125;&#125;, plan inputs as &#123;&#123;input.x&#125;&#125;), e.g. &#123;"pr":"&#123;&#123;item.number&#125;&#125;","label":"issue-&#123;&#123;item.number&#125;&#125;"&#125;. A single template string such as "&#123;&#123;item.sha&#125;&#125;" returns that one value, so a map over a list of objects can produce a plain list of keys.
 </ParamField>
 
+## Output
+
+<ResponseField name="value" type="any">
+  The `shape` with every template resolved, so its type is the shape's. A leaf that is exactly one template keeps its source's type, and a leaf with surrounding text renders to a string. A `shape` that is a single template string returns that one value.
+</ResponseField>
+
 <RequestExample>
 
 ```yaml Plan step

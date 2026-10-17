@@ -41,6 +41,14 @@ keywords: ["builtin__infer"]
   Available options: `error`, `return`
 </ParamField>
 
+## Output
+
+Without `output_schema`, the result is `{text}`. With it, the result is an object matching that schema instead, with every field the schema declares present.
+
+<ResponseField name="text" type="string">
+  The model's answer, when the call passes no `output_schema`.
+</ResponseField>
+
 <RequestExample>
 
 ```yaml Plan step

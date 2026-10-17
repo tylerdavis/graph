@@ -78,8 +78,27 @@ pub enum Field {
     Response,
 }
 
+pub fn has_fields(schema: &Yaml) -> bool {
+    schema.get("properties").is_some() || named_values(schema).is_some()
+}
+
+fn named_values(schema: &Yaml) -> Option<&Yaml> {
+    schema
+        .get("additionalProperties")
+        .filter(|values| values.get("properties").is_some())
+}
+
+pub fn value_field(out: &mut String, schema: &Yaml) {
+    field(out, "value", schema, false, Field::Response);
+}
+
 pub fn schema_fields(out: &mut String, schema: &Yaml, kind: Field, prefix: &str) {
     let Some(properties) = schema.get("properties").and_then(Yaml::as_mapping) else {
+        if let Some(values) = named_values(schema) {
+            let path = format!("{prefix}<name>");
+            field(out, &path, values, false, kind);
+            schema_fields(out, values, kind, &format!("{path}."));
+        }
         return;
     };
     let required: Vec<&str> = schema
@@ -140,12 +159,7 @@ fn nested_schema(property: &Yaml) -> Option<(&'static str, &Yaml)> {
             return Some((".[].", items));
         }
     }
-    if let Some(values) = property.get("additionalProperties") {
-        if values.get("properties").is_some() {
-            return Some((".<name>.", values));
-        }
-    }
-    None
+    named_values(property).map(|values| (".<name>.", values))
 }
 
 pub fn type_label(schema: &Yaml) -> String {

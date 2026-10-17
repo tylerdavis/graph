@@ -1,5 +1,7 @@
 ---
 summary: Builds a value in a new JSON shape from earlier step results.
+output:
+  description: The `shape` with every template resolved, so its type is the shape's. A leaf that is exactly one template keeps its source's type, and a leaf with surrounding text renders to a string. A `shape` that is a single template string returns that one value.
 ---
 
 ## Behavior

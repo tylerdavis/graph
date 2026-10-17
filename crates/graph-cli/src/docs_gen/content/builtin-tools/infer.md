@@ -1,5 +1,12 @@
 ---
 summary: Runs one model call over an instruction and returns text or structured JSON.
+output:
+  description: Without `output_schema`, the result is `{text}`. With it, the result is an object matching that schema instead, with every field the schema declares present.
+  type: object
+  properties:
+    text:
+      type: string
+      description: The model's answer, when the call passes no `output_schema`.
 ---
 
 ## Behavior
