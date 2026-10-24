@@ -17,6 +17,16 @@ const SIGNED_URL_LIFETIME: Duration = Duration::from_secs(3600);
 
 const CACHE_LIMIT: u64 = 512 * 1024 * 1024;
 
+pub const FILES_DIR: &str = "files";
+
+pub fn files_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(FILES_DIR)
+}
+
+pub fn cache_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("cache").join(FILES_DIR)
+}
+
 pub struct ObjectFiles {
     store: Arc<dyn ObjectStore>,
     prefix: String,
@@ -114,7 +124,7 @@ impl ObjectFiles {
             )));
         }
         match config.backend {
-            FilesBackend::File => Self::local(&data_dir.join("blobs")),
+            FilesBackend::File => Self::local(&files_dir(data_dir)),
             FilesBackend::Memory => Self::memory(),
             FilesBackend::S3 => {
                 let bucket = config.bucket.clone().ok_or_else(|| {
@@ -129,7 +139,7 @@ impl ObjectFiles {
                         access_key_id: config.access_key_id.clone(),
                         secret_access_key: config.secret_access_key.clone(),
                     },
-                    &data_dir.join("cache").join("blobs"),
+                    &cache_dir(data_dir),
                 )
             }
         }
@@ -141,10 +151,14 @@ impl ObjectFiles {
     }
 
     fn key(&self, blob: &BlobRef) -> ObjectPath {
+        if self.local_root.is_some() {
+            return ObjectPath::from(blob.file_name());
+        }
+        let name = format!("{FILES_DIR}/{}", blob.file_name());
         if self.prefix.is_empty() {
-            ObjectPath::from(blob.file_name())
+            ObjectPath::from(name)
         } else {
-            ObjectPath::from(format!("{}/{}", self.prefix, blob.file_name()))
+            ObjectPath::from(format!("{}/{name}", self.prefix))
         }
     }
 
@@ -371,9 +385,9 @@ mod tests {
     #[tokio::test]
     async fn files_on_disk_round_trip_and_are_located_in_place() {
         let dir = tempfile::tempdir().unwrap();
-        let files = ObjectFiles::local(&dir.path().join("blobs")).unwrap();
+        let files = ObjectFiles::local(&files_dir(dir.path())).unwrap();
         let stored = files.put(PNG_1X1.to_vec(), "image/png").await.unwrap();
-        let expected = dir.path().join("blobs").join(stored.blob.file_name());
+        let expected = dir.path().join("files").join(stored.blob.file_name());
         assert_eq!(
             files.locate(&stored.blob).await.unwrap(),
             FileLocation::Path(expected.clone())
@@ -457,7 +471,10 @@ mod tests {
             FileLocation::Url(url) => url,
             other => panic!("expected a signed link, got {other:?}"),
         };
-        assert!(url.contains(&stored.blob.file_name()), "{url}");
+        assert!(
+            url.contains(&format!("/files/{}", stored.blob.file_name())),
+            "{url}"
+        );
         let fetched = reqwest::get(&url).await.unwrap();
         assert!(fetched.status().is_success(), "{}", fetched.status());
         assert_eq!(fetched.bytes().await.unwrap().as_ref(), PNG_1X1);

@@ -9,11 +9,11 @@
 </ParamField>
 
 <ParamField body="storage.files" type="object">
-  Where files that tools return, such as screenshots, are kept. Omitted, files follow `backend`: under `<data_dir>/blobs`, or in memory.
+  Where files that tools return, such as screenshots, are kept. Omitted, files follow `backend`: under `<data_dir>/files`, or in memory.
 </ParamField>
 
 <ParamField body="storage.files.backend" type="enum<string>" required>
-  `file` keeps files under `<data_dir>/blobs`, `memory` keeps nothing between runs, and `s3` uses an S3 or S3-compatible bucket.
+  `file` keeps files under `<data_dir>/files`, `memory` keeps nothing between runs, and `s3` uses an S3 or S3-compatible bucket.
 
   Available options: `file`, `memory`, `s3`
 </ParamField>

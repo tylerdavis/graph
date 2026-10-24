@@ -36,7 +36,9 @@ pub(crate) fn open(
     let data_dir = dive_config::expand_tilde(&config.settings.data_dir);
     let opened = match (&config.storage.files, backend) {
         (Some(files), _) => ObjectFiles::from_config(files, &data_dir),
-        (None, dive_config::StorageBackend::File) => ObjectFiles::local(&data_dir.join("blobs")),
+        (None, dive_config::StorageBackend::File) => {
+            ObjectFiles::local(&dive_store::files_dir(&data_dir))
+        }
         (None, dive_config::StorageBackend::Memory) => ObjectFiles::memory(),
     };
     match opened {
@@ -61,14 +63,14 @@ mod tests {
         let stored = on_disk.put(b"hi".to_vec(), "text/plain").await.unwrap();
         assert_eq!(
             on_disk.locate(&stored.blob).await.unwrap(),
-            FileLocation::Path(dir.path().join("blobs").join(stored.blob.file_name()))
+            FileLocation::Path(dir.path().join("files").join(stored.blob.file_name()))
         );
 
         let in_memory = open(&config, dive_config::StorageBackend::Memory);
         let stored = in_memory.put(b"hi".to_vec(), "text/plain").await.unwrap();
         assert!(!dir
             .path()
-            .join("blobs")
+            .join("files")
             .join(format!("{}.bin", stored.blob.hash()))
             .exists());
         assert_eq!(in_memory.get(&stored.blob).await.unwrap(), b"hi");

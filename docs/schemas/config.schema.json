@@ -425,14 +425,14 @@
           "type": "string"
         },
         "files": {
-          "description": "Where files that tools return, such as screenshots, are kept. Omitted, files follow `backend`: under `<data_dir>/blobs`, or in memory.",
+          "description": "Where files that tools return, such as screenshots, are kept. Omitted, files follow `backend`: under `<data_dir>/files`, or in memory.",
           "properties": {
             "access_key_id": {
               "description": "The access key ID. Expands `${NAME}` references.",
               "type": "string"
             },
             "backend": {
-              "description": "`file` keeps files under `<data_dir>/blobs`, `memory` keeps nothing between runs, and `s3` uses an S3 or S3-compatible bucket.",
+              "description": "`file` keeps files under `<data_dir>/files`, `memory` keeps nothing between runs, and `s3` uses an S3 or S3-compatible bucket.",
               "enum": [
                 "file",
                 "memory",

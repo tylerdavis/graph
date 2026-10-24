@@ -14,6 +14,8 @@ Dive keeps its runtime state in one directory, `~/.local/share/dive` by default.
 | `threads/<id>/meta.json` | A thread's title, timestamps, message count, the agent that owns it and the one that's active, the project it was started in, and its attachments. |
 | `threads/<id>/entries.jsonl` | A thread's history, one entry per line: messages, handoffs between agents, and subagent runs. |
 | `threads/<id>/.lock` | A lock file that keeps concurrent writers in order. |
+| `files/<hash>.<ext>` | Files that tools return and that you attach, such as images, named by a SHA-256 hash of their contents. Only when [`[storage.files]`](/reference/configuration#param-storage-files) keeps files on disk, the default. |
+| `cache/files/<hash>.<ext>` | Files downloaded from an S3 bucket, kept to 512 MB by dropping the least recently used. Safe to delete. |
 | `shapes/<tool>.json` | The observed output of one tool: an inferred schema, an example, and how many times it was seen. |
 | `workbench.log` | The workbench's log, appended across sessions. |
 
@@ -72,4 +74,4 @@ Keep the directory on a local filesystem. File locks aren't reliable on network 
 
 - To back up your state, copy the directory.
 - To discard learned shapes, delete `shapes/`. Dive records them again as tools run.
-- To delete a thread, use [`dive thread rm`](/reference/cli/thread/rm). It also removes the files in `blobs/` that no other thread refers to.
+- To delete a thread, use [`dive thread rm`](/reference/cli/thread/rm). It also removes the files in `files/` that no other thread refers to. Files in an S3 bucket are kept, since threads on another machine may refer to them.

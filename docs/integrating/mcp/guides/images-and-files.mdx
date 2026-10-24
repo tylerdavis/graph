@@ -99,12 +99,12 @@ Files the command writes to the directory in `$DIVE_OUT` are stored when it exit
 
 ## Where files are kept
 
-Without a `[storage.files]` table, files follow `[storage].backend`: under `<data_dir>/blobs` for `file`, and in memory for `memory`, which keeps nothing between runs.
+Without a `[storage.files]` table, files follow `[storage].backend`: under `<data_dir>/files` for `file`, and in memory for `memory`, which keeps nothing between runs.
 
 To keep files somewhere else, set `[storage.files].backend`:
 
-- `file` keeps files under `<data_dir>/blobs`.
+- `file` keeps files under `<data_dir>/files`.
 - `memory` keeps files only for the length of the run.
-- `s3` keeps files in an S3 bucket, or a bucket on an S3-compatible server such as Garage or MinIO. Set `endpoint` for an S3-compatible server, and `region` to the region it expects. Keys go under `prefix` when you set one, so several stores can share a bucket.
+- `s3` keeps files in an S3 bucket, or a bucket on an S3-compatible server such as Garage or MinIO. Set `endpoint` for an S3-compatible server, and `region` to the region it expects. Files are kept under `files/` in the bucket, or under `<prefix>/files/` when you set `prefix`, so several stores can share a bucket.
 
 Credentials expand `${NAME}` references like the rest of config.toml, so you can keep them in the OS credential store with `dive secret set DIVE_S3_SECRET`. When `access_key_id` and `secret_access_key` are omitted, Dive reads the standard `AWS_*` environment variables. If a referenced secret isn't set, Dive still starts. A tool call that receives a file then fails naming the missing variable, and files a tool returns are left out of its result, with a warning in the log.

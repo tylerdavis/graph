@@ -7,6 +7,7 @@
 //! <root>/threads/<id>/entries.jsonl   one ThreadEntry per line (O_APPEND)
 //! <root>/threads/<id>/.lock           advisory lock for append+meta updates
 //! <root>/shapes/<tool>.json           one file per tool shape (atomic rename)
+//! <root>/files/<hash>.<ext>           stored files, see `ObjectFiles`
 //! ```
 //!
 //! Concurrency model: whole files are written to a temp file and renamed
@@ -30,7 +31,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub const STORE_FORMAT: u32 = 3;
+pub const STORE_FORMAT: u32 = 4;
 
 pub const STORE_FORMAT_OLDEST: u32 = 1;
 
@@ -201,6 +202,7 @@ fn migrate(root: &Path) -> Result<(), StoreError> {
         match found {
             1 => migrate_threads_v1(&root.join("threads"))?,
             2 => {}
+            3 => move_files_v3(root)?,
             other => {
                 return Err(StoreError(format!(
                     "no migration from store version {other}"
@@ -228,6 +230,34 @@ fn migrate_threads_v1(threads_dir: &Path) -> Result<(), StoreError> {
         upgrade_legacy_log(&dir, &mut meta)?;
     }
     Ok(())
+}
+
+fn move_files_v3(root: &Path) -> Result<(), StoreError> {
+    move_dir(&root.join("blobs"), &crate::files_dir(root))?;
+    move_dir(&root.join("cache").join("blobs"), &crate::cache_dir(root))
+}
+
+fn move_dir(old: &Path, new: &Path) -> Result<(), StoreError> {
+    let failed = |what: &str, path: &Path, e: std::io::Error| {
+        StoreError(format!("{what} {}: {e}", path.display()))
+    };
+    if !old.is_dir() {
+        return Ok(());
+    }
+    if !new.exists() {
+        return std::fs::rename(old, new).map_err(|e| failed("moving", old, e));
+    }
+    let entries = std::fs::read_dir(old).map_err(|e| failed("reading", old, e))?;
+    for entry in entries.flatten() {
+        let from = entry.path();
+        let to = new.join(entry.file_name());
+        if to.exists() {
+            std::fs::remove_file(&from).map_err(|e| failed("removing", &from, e))?;
+        } else {
+            std::fs::rename(&from, &to).map_err(|e| failed("moving", &from, e))?;
+        }
+    }
+    std::fs::remove_dir(old).map_err(|e| failed("removing", old, e))
 }
 
 fn link_new(root: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -762,6 +792,31 @@ mod tests {
             store.get_thread(&id).await.unwrap().unwrap().message_count,
             3
         );
+    }
+
+    #[test]
+    fn opening_a_version_3_store_moves_its_files_and_their_cache_into_files() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(FORMAT_MARKER), "3\n").unwrap();
+        let blobs = root.path().join("blobs");
+        let cached = root.path().join("cache").join("blobs");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::create_dir_all(&cached).unwrap();
+        std::fs::write(blobs.join("aaa.png"), "a").unwrap();
+        std::fs::write(blobs.join("bbb.png"), "b").unwrap();
+        std::fs::write(cached.join("ccc.png"), "c").unwrap();
+        let files = crate::files_dir(root.path());
+        std::fs::create_dir_all(&files).unwrap();
+        std::fs::write(files.join("bbb.png"), "b").unwrap();
+
+        FileStore::open(root.path()).unwrap();
+        assert_eq!(marker_format(root.path()).unwrap(), Some(STORE_FORMAT));
+        assert!(!blobs.exists());
+        assert!(!cached.exists());
+        assert_eq!(std::fs::read_to_string(files.join("aaa.png")).unwrap(), "a");
+        assert_eq!(std::fs::read_to_string(files.join("bbb.png")).unwrap(), "b");
+        let cache = crate::cache_dir(root.path());
+        assert_eq!(std::fs::read_to_string(cache.join("ccc.png")).unwrap(), "c");
     }
 
     #[tokio::test]

@@ -362,8 +362,8 @@ pub fn usage(data_dir: &Path) -> StorageUsage {
         })
         .unwrap_or(0);
     let (_, thread_bytes) = walk(&threads_dir);
-    let (files, file_bytes) = walk(&data_dir.join("blobs"));
-    let (_, cache_bytes) = walk(&data_dir.join("cache").join("blobs"));
+    let (files, file_bytes) = walk(&dive_store::files_dir(data_dir));
+    let (_, cache_bytes) = walk(&dive_store::cache_dir(data_dir));
     StorageUsage {
         threads,
         thread_bytes,

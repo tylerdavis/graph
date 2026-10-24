@@ -7,7 +7,7 @@ mod file;
 mod memory;
 mod recording;
 
-pub use blobs::{ObjectFiles, S3Settings};
+pub use blobs::{cache_dir, files_dir, ObjectFiles, S3Settings, FILES_DIR};
 pub use file::{marker_format, FileStore, STORE_FORMAT, STORE_FORMAT_OLDEST};
 pub use memory::MemoryStore;
 pub use recording::RecordingRegistry;

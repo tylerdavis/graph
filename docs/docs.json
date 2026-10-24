@@ -404,7 +404,7 @@
     "plan_file_version": "2",
     "tool_file_version": "3",
     "agent_file_version": "2",
-    "data_directory_version": "3",
+    "data_directory_version": "4",
     "pack_file_version": "2",
     "pack_lock_version": "1"
   }

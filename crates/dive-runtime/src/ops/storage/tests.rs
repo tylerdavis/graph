@@ -205,9 +205,9 @@ fn usage_counts_threads_files_and_cache() {
         ("threads/a/meta.json", 10),
         ("threads/a/entries.jsonl", 30),
         ("threads/b/meta.json", 5),
-        ("blobs/one.png", 100),
-        ("blobs/two.png", 50),
-        ("cache/blobs/three.png", 7),
+        ("files/one.png", 100),
+        ("files/two.png", 50),
+        ("cache/files/three.png", 7),
     ] {
         let path = dir.path().join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
